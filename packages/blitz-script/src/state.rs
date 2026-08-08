@@ -30,7 +30,7 @@ pub(crate) struct Listener {
 }
 
 pub(crate) type ListenerMap = HashMap<String, Vec<Listener>>;
-pub(crate) type IpcHandler = std::sync::Arc<dyn Fn(String) + Send + Sync>;
+pub(crate) type IpcHandler = std::rc::Rc<dyn Fn(String)>;
 
 /// State owned by the script runtime but shared (via `Rc`) with the native
 /// functions exposed to JavaScript.

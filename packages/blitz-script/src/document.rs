@@ -98,8 +98,8 @@ impl ScriptDocument {
     ///
     /// The callback may forward work to another thread, but JavaScript and DOM state remain on
     /// the document's owning thread. Replacing the callback is supported before script startup.
-    pub fn set_ipc_handler(&mut self, handler: impl Fn(String) + Send + Sync + 'static) {
-        self.runtime.ctx.state.borrow_mut().ipc_handler = Some(Arc::new(handler));
+    pub fn set_ipc_handler(&mut self, handler: impl Fn(String) + 'static) {
+        self.runtime.ctx.state.borrow_mut().ipc_handler = Some(Rc::new(handler));
     }
 
     /// Execute the document's `<script>` elements in document order, then fire
