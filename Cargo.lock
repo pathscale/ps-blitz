@@ -830,6 +830,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "blitz-debug-control"
+version = "0.3.0-beta.1"
+dependencies = [
+ "getrandom 0.4.3",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "blitz-dom"
 version = "0.3.0-beta.1"
 dependencies = [
@@ -960,6 +969,8 @@ version = "0.3.0-beta.1"
 dependencies = [
  "anyrender",
  "anyrender_vello_cpu",
+ "base64 0.22.1",
+ "blitz-debug-control",
  "blitz-dom",
  "blitz-html",
  "blitz-paint",
@@ -971,6 +982,7 @@ dependencies = [
  "image",
  "keyboard-types 0.7.0",
  "markup5ever",
+ "serde_json",
  "tracing",
  "url",
  "web-time",

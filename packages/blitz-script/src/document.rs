@@ -159,6 +159,16 @@ impl ScriptDocument {
         self.arm_timer_thread();
     }
 
+    /// Current document URL for automation and diagnostics.
+    pub fn current_url(&self) -> Option<&Url> {
+        self.base_url.as_ref()
+    }
+
+    /// Serialize the current document tree as HTML.
+    pub fn page_source(&self) -> String {
+        self.inner.borrow().root_element().outer_html()
+    }
+
     /// Dispatch a synthetic DOM event (e.g. a click created with
     /// [`Node::synthetic_click_event`](blitz_dom::Node::synthetic_click_event))
     /// through the document's event driver. The event is exposed to JavaScript

@@ -4,6 +4,7 @@ members = [
     "packages/debug_timer",
     "packages/blitz-traits",
     "packages/blitz-dom",
+    "packages/blitz-debug-control",
     "packages/blitz-html",
     "packages/blitz-net",
     "packages/blitz-paint",
@@ -41,6 +42,7 @@ rust-version = "1.91.0"
 # Blitz dependencies(in-repo)
 blitz = { version = "=0.3.0-beta.1", path = "./packages/blitz" }
 blitz-dom = { version = "=0.3.0-beta.1", path = "./packages/blitz-dom", default-features = false }
+blitz-debug-control = { version = "=0.3.0-beta.1", path = "./packages/blitz-debug-control" }
 blitz-html = { version = "=0.3.0-beta.1", path = "./packages/blitz-html", default-features = false }
 blitz-net = { version = "=0.3.0-beta.1", path = "./packages/blitz-net", default-features = false }
 blitz-paint = { version = "=0.3.0-beta.1", path = "./packages/blitz-paint", default-features = false }
@@ -152,6 +154,9 @@ html-escape = "0.2.13"
 percent-encoding = "2.3.1"
 png = "0.18"
 serde = "1"
+serde_json = "1"
+getrandom = "0.4"
+base64 = "0.22"
 
 # Dioxus Native
 webbrowser = "1.0"

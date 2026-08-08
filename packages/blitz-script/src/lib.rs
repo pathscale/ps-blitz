@@ -29,6 +29,8 @@
 
 #![allow(clippy::collapsible_if)]
 
+#[cfg(feature = "debug-control")]
+mod debug_control;
 mod document;
 mod dom;
 mod event_handler;
@@ -37,5 +39,7 @@ mod runtime;
 mod state;
 mod timers;
 
+#[cfg(feature = "debug-control")]
+pub use debug_control::DebugController;
 pub use document::ScriptDocument;
 pub use fetch::{DefaultScriptFetcher, FetchError, ScriptFetcher};

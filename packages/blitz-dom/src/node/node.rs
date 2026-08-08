@@ -17,7 +17,7 @@ use std::cell::{Cell, RefCell};
 use std::fmt::Write;
 use std::ops::Deref;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use style::Atom;
 use style::invalidation::element::restyle_hints::RestyleHint;
 use style::properties::ComputedValues;
@@ -93,6 +93,8 @@ pub struct Node {
 
     /// Our Id
     pub id: usize,
+    /// Process-unique identity that changes when a slab slot is reused.
+    pub instance_id: u64,
     /// Our parent's ID
     pub parent: Option<usize>,
     // What are our children?
@@ -149,6 +151,7 @@ impl Node {
         guard: SharedRwLock,
         data: NodeData,
     ) -> Self {
+        static NEXT_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
         // The element state needs to be modified if the element is disabled
         let state = match &data {
             NodeData::Element(data) => {
@@ -169,6 +172,7 @@ impl Node {
             tree,
 
             id,
+            instance_id: NEXT_INSTANCE_ID.fetch_add(1, Ordering::Relaxed),
             parent: None,
             children: vec![],
             layout_parent: Cell::new(None),
