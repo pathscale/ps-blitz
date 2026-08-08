@@ -13,14 +13,18 @@ use serde_json::{Value, json};
 const ELEMENT_KEY: &str = "element-6066-11e4-a52e-4f735466cecf";
 const DEADLINE: Duration = Duration::from_secs(10);
 
-struct ChildGuard(Child);
+struct ChildGuard {
+    child: Child,
+    descriptor_path: PathBuf,
+}
 
 impl Drop for ChildGuard {
     fn drop(&mut self) {
-        if self.0.try_wait().ok().flatten().is_none() {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
+        if self.child.try_wait().ok().flatten().is_none() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
         }
+        let _ = fs::remove_file(&self.descriptor_path);
     }
 }
 
@@ -101,8 +105,8 @@ fn session_request(
 #[test]
 fn separate_process_controls_solid_without_fixed_sleeps() {
     let descriptor_path = temporary_descriptor();
-    let mut child = ChildGuard(
-        Command::new(env!("CARGO_BIN_EXE_solid-debug-harness"))
+    let mut child = ChildGuard {
+        child: Command::new(env!("CARGO_BIN_EXE_solid-debug-harness"))
             .env("TAURI_BLITZ_DRIVER", "127.0.0.1:0")
             .env("TAURI_BLITZ_DRIVER_DESCRIPTOR", &descriptor_path)
             .stdin(Stdio::null())
@@ -110,10 +114,11 @@ fn separate_process_controls_solid_without_fixed_sleeps() {
             .stderr(Stdio::inherit())
             .spawn()
             .unwrap(),
-    );
+        descriptor_path: descriptor_path.clone(),
+    };
 
-    let descriptor = wait_for_descriptor(&descriptor_path, &mut child.0);
-    assert_eq!(descriptor["pid"].as_u64(), Some(child.0.id() as u64));
+    let descriptor = wait_for_descriptor(&descriptor_path, &mut child.child);
+    assert_eq!(descriptor["pid"].as_u64(), Some(child.child.id() as u64));
     let address: SocketAddr = descriptor["address"].as_str().unwrap().parse().unwrap();
     let token = descriptor["token"].as_str().unwrap();
 
@@ -161,6 +166,22 @@ fn separate_process_controls_solid_without_fixed_sleeps() {
         "POST",
         &format!("element/{button}/click"),
         json!({}),
+    );
+    let trace = session_request(
+        address,
+        &session,
+        "POST",
+        "blitz/traceEvent",
+        json!({"after": 0}),
+    );
+    assert!(
+        trace["value"]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["event"] == "click"
+                && entry["includedDocument"] == true
+                && entry["inputPath"] == "pointer-hit-test")
     );
     let idle = session_request(address, &session, "POST", "blitz/waitForIdle", json!({}));
     assert!(idle["value"]["layoutRevision"].as_u64().unwrap() > 0);
@@ -224,6 +245,42 @@ fn separate_process_controls_solid_without_fixed_sleeps() {
         }),
     );
     assert_eq!(asynchronous["value"], 42);
+    session_request(
+        address,
+        &session,
+        "POST",
+        "execute/sync",
+        json!({
+            "script": "const input = document.createElement('input'); input.id = 'remote-input'; document.getElementById('app').appendChild(input);",
+            "args": [],
+        }),
+    );
+    let input = session_request(
+        address,
+        &session,
+        "POST",
+        "element",
+        json!({"using": "css selector", "value": "#remote-input"}),
+    );
+    let input = input["value"][ELEMENT_KEY].as_str().unwrap();
+    session_request(
+        address,
+        &session,
+        "POST",
+        &format!("element/{input}/value"),
+        json!({"text": "typed remotely"}),
+    );
+    let input_value = session_request(
+        address,
+        &session,
+        "POST",
+        "execute/sync",
+        json!({
+            "script": "return document.getElementById('remote-input').value",
+            "args": [],
+        }),
+    );
+    assert_eq!(input_value["value"], "typed remotely");
     let console = session_request(
         address,
         &session,
@@ -287,7 +344,7 @@ fn separate_process_controls_solid_without_fixed_sleeps() {
 
     let deadline = Instant::now() + DEADLINE;
     loop {
-        if let Some(status) = child.0.try_wait().unwrap() {
+        if let Some(status) = child.child.try_wait().unwrap() {
             assert!(status.success());
             break;
         }

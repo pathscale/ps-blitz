@@ -295,7 +295,7 @@ fn get_value(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<J
         doc.get_node(node_id)
             .and_then(|node| node.element_data())
             .map(|element| match element.text_input_data() {
-                Some(input_data) => input_data.editor.raw_text().to_string(),
+                Some(input_data) => input_data.editor.text().to_string(),
                 None => element
                     .attrs()
                     .iter()

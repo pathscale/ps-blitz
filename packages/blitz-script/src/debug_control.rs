@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::io;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -11,8 +12,8 @@ use blitz_debug_control::{ControlRequest, ControlResponse, DebugServer, ServerCo
 use blitz_dom::Document;
 use blitz_paint::paint_scene;
 use blitz_traits::events::{
-    BlitzPointerEvent, BlitzPointerId, MouseEventButton, MouseEventButtons, Point, PointerCoords,
-    PointerDetails, UiEvent,
+    BlitzImeEvent, BlitzPointerEvent, BlitzPointerId, MouseEventButton, MouseEventButtons, Point,
+    PointerCoords, PointerDetails, UiEvent,
 };
 use serde_json::{Value, json};
 
@@ -21,6 +22,7 @@ use crate::ScriptDocument;
 const ELEMENT_KEY: &str = "element-6066-11e4-a52e-4f735466cecf";
 const MAX_IDLE_TURNS: usize = 1_000;
 const ASYNC_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
+const EVENT_TRACE_CAPACITY: usize = 256;
 
 /// UI-thread half of the debug-control channel.
 ///
@@ -37,6 +39,8 @@ pub struct DebugController {
     screenshot_size: Option<(u32, u32)>,
     latest_screenshot: Option<String>,
     next_async_id: u64,
+    next_event_sequence: u64,
+    event_traces: VecDeque<Value>,
     exit_requested: bool,
 }
 
@@ -54,6 +58,8 @@ impl DebugController {
             screenshot_size: None,
             latest_screenshot: None,
             next_async_id: 1,
+            next_event_sequence: 1,
+            event_traces: VecDeque::new(),
             exit_requested: false,
         })
     }
@@ -155,6 +161,7 @@ impl DebugController {
             ("GET" | "POST", "blitz/getRuntimeErrors") => {
                 self.runtime_errors(document, &request.body)
             }
+            ("GET" | "POST", "blitz/traceEvent") => self.event_trace(&request.body),
             ("POST", "blitz/shutdown") => {
                 self.exit_requested = true;
                 success(Value::Null)
@@ -257,6 +264,21 @@ impl DebugController {
         }))
     }
 
+    fn event_trace(&self, body: &Value) -> ControlResponse {
+        let after = body.get("after").and_then(Value::as_u64).unwrap_or(0);
+        let entries = self
+            .event_traces
+            .iter()
+            .filter(|entry| {
+                entry["sequence"]
+                    .as_u64()
+                    .is_some_and(|value| value > after)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        success(json!({"after": after, "entries": entries}))
+    }
+
     fn find(&self, document: &ScriptDocument, body: &Value, many: bool) -> ControlResponse {
         if body.get("using").and_then(Value::as_str) != Some("css selector") {
             return invalid("only the css selector locator strategy is supported");
@@ -326,6 +348,7 @@ impl DebugController {
                 }))
             }
             ("POST", "click") => self.click(document, node_id),
+            ("POST", "value") => self.send_keys(document, node_id, &request.body),
             _ => ControlResponse::unsupported("element command is not implemented"),
         }
     }
@@ -363,12 +386,63 @@ impl DebugController {
         }
         let x = (rect.x + rect.width / 2.0) as f32;
         let y = (rect.y + rect.height / 2.0) as f32;
+        let (hit_node_id, path, document_node_id) = {
+            let inner = document.inner();
+            let hit_node_id = inner.hit(x, y).map(|hit| hit.node_id).unwrap_or(node_id);
+            (
+                hit_node_id,
+                inner.node_chain(hit_node_id),
+                inner.root_node().id,
+            )
+        };
         let pointer = pointer_event(x, y);
         document.handle_ui_event(UiEvent::PointerMove(pointer.clone()));
         document.handle_ui_event(UiEvent::PointerDown(pointer.clone()));
         document.handle_ui_event(UiEvent::PointerUp(pointer));
+        self.push_event_trace(json!({
+            "sequence": self.next_event_sequence,
+            "event": "click",
+            "requestedNodeId": node_id,
+            "targetNodeId": hit_node_id,
+            "path": path,
+            "includedDocument": path.contains(&document_node_id),
+            "inputPath": "pointer-hit-test",
+        }));
         self.document_revision += 1;
         success(Value::Null)
+    }
+
+    fn send_keys(
+        &mut self,
+        document: &mut ScriptDocument,
+        node_id: usize,
+        body: &Value,
+    ) -> ControlResponse {
+        let text = body
+            .get("text")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| {
+                body.get("value")
+                    .and_then(Value::as_array)
+                    .map(|parts| parts.iter().filter_map(Value::as_str).collect::<String>())
+            });
+        let Some(text) = text else {
+            return invalid("send keys requires text or a string value array");
+        };
+        document.inner_mut().resolve(0.0);
+        document.inner_mut().set_focus_to(node_id);
+        document.handle_ui_event(UiEvent::Ime(BlitzImeEvent::Commit(text)));
+        self.document_revision += 1;
+        success(Value::Null)
+    }
+
+    fn push_event_trace(&mut self, entry: Value) {
+        if self.event_traces.len() == EVENT_TRACE_CAPACITY {
+            self.event_traces.pop_front();
+        }
+        self.event_traces.push_back(entry);
+        self.next_event_sequence += 1;
     }
 
     fn wait_for_idle(&mut self, document: &mut ScriptDocument) -> ControlResponse {
