@@ -55,12 +55,12 @@ accesskit_xplat = { version = "0.1", path = "./packages/accesskit_xplat", defaul
 browser-persistence = { path = "./apps/browser/persistence" }
 
 # Servo dependencies
-style = { git = "https://github.com/servo/stylo", rev = "2d289c14fdf46952d52cabce63b1f0dc55b2ccde", package = "stylo" }
-style_traits = { git = "https://github.com/servo/stylo", rev = "2d289c14fdf46952d52cabce63b1f0dc55b2ccde", package = "stylo_traits" }
-style_atoms = { git = "https://github.com/servo/stylo", rev = "2d289c14fdf46952d52cabce63b1f0dc55b2ccde", package = "stylo_atoms" }
-style_config = { git = "https://github.com/servo/stylo", rev = "2d289c14fdf46952d52cabce63b1f0dc55b2ccde", package = "stylo_static_prefs" }
-style_dom = { git = "https://github.com/servo/stylo", rev = "2d289c14fdf46952d52cabce63b1f0dc55b2ccde", package = "stylo_dom" }
-selectors = { git = "https://github.com/servo/stylo", rev = "2d289c14fdf46952d52cabce63b1f0dc55b2ccde", package = "selectors" }
+style = { git = "https://github.com/pathscale/stylo-less-py", rev = "8f39d56b7f96e874ee55a20e9b11517cf87624d0", package = "stylo" }
+style_traits = { git = "https://github.com/pathscale/stylo-less-py", rev = "8f39d56b7f96e874ee55a20e9b11517cf87624d0", package = "stylo_traits" }
+style_atoms = { git = "https://github.com/pathscale/stylo-less-py", rev = "8f39d56b7f96e874ee55a20e9b11517cf87624d0", package = "stylo_atoms" }
+style_config = { git = "https://github.com/pathscale/stylo-less-py", rev = "8f39d56b7f96e874ee55a20e9b11517cf87624d0", package = "stylo_static_prefs" }
+style_dom = { git = "https://github.com/pathscale/stylo-less-py", rev = "8f39d56b7f96e874ee55a20e9b11517cf87624d0", package = "stylo_dom" }
+selectors = { git = "https://github.com/pathscale/stylo-less-py", rev = "8f39d56b7f96e874ee55a20e9b11517cf87624d0", package = "selectors" }
 cssparser = { version = "0.37.0" }
 
 # HTML5ever dependencies
