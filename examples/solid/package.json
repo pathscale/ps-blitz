@@ -1,0 +1,16 @@
+{
+  "name": "blitz-solid-probe",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "build": "rsbuild build"
+  },
+  "dependencies": {
+    "solid-js": "1.9.14"
+  },
+  "devDependencies": {
+    "@rsbuild/core": "1.7.6",
+    "@rsbuild/plugin-babel": "1.2.1",
+    "@rsbuild/plugin-solid": "1.2.2"
+  }
+}

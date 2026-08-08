@@ -69,6 +69,7 @@ pub(crate) fn init_element_proto(proto: &JsObject, context: &mut Context) {
     );
     define_accessor(proto, "outerHTML", Some(get_outer_html), None, context);
     define_accessor(proto, "children", Some(children), None, context);
+    define_accessor(proto, "content", Some(get_template_content), None, context);
 
     define_method(proto, "getAttribute", 1, get_attribute, context);
     define_method(proto, "setAttribute", 2, set_attribute, context);
@@ -372,6 +373,26 @@ fn get_style(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<J
 }
 
 // === innerHTML / outerHTML ===
+
+fn get_template_content(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    let is_template = ctx
+        .doc
+        .borrow()
+        .get_node(node_id)
+        .and_then(|node| node.element_data())
+        .is_some_and(|element| element.name.local == markup5ever::local_name!("template"));
+
+    // Blitz currently stores parsed template children on the template node
+    // itself. Expose that node as the content container until blitz-dom grows a
+    // distinct DocumentFragment node type.
+    Ok(if is_template {
+        this.clone()
+    } else {
+        JsValue::undefined()
+    })
+}
 
 fn get_inner_html(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;

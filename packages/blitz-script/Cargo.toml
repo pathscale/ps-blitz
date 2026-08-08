@@ -12,6 +12,7 @@ rust-version.workspace = true
 
 [features]
 default = []
+system-fonts = ["blitz-dom/system-fonts"]
 tracing = ["dep:tracing", "blitz-dom/tracing"]
 
 [dependencies]
@@ -36,6 +37,10 @@ web-time = { workspace = true }
 tracing = { workspace = true, optional = true }
 
 [dev-dependencies]
+anyrender = { workspace = true }
+anyrender_vello_cpu = { workspace = true }
+blitz-paint = { workspace = true }
 blitz-traits = { workspace = true }
+image = { workspace = true, features = ["png"] }
 keyboard-types = { workspace = true }
 url = { workspace = true }

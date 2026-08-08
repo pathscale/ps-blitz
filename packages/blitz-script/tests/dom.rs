@@ -157,6 +157,24 @@ fn inner_html() {
 }
 
 #[test]
+fn template_content_exposes_parsed_children() {
+    let doc = doc_from_html(
+        r#"
+        <html><body>
+            <script>
+                const template = document.createElement("template");
+                template.innerHTML = "<span class='from-template'>hello</span>";
+                const clone = template.content.firstChild.cloneNode(true);
+                document.body.appendChild(clone);
+            </script>
+        </body></html>
+        "#,
+    );
+
+    assert_eq!(text_of_selector(&doc, ".from-template"), "hello");
+}
+
+#[test]
 fn click_event_listeners() {
     let mut doc = doc_from_html(
         r#"
@@ -197,6 +215,39 @@ fn click_event_listeners() {
         text_of_selector(&doc, "#out"),
         "clicked 2 times; target=BUTTON; ct=btn"
     );
+}
+
+#[test]
+fn click_events_bubble_to_document() {
+    let mut doc = doc_from_html(
+        r#"
+        <html><body>
+            <button id="btn">Click me</button>
+            <div id="out">unhandled</div>
+            <script>
+                document.addEventListener("click", (event) => {
+                    document.getElementById("out").textContent =
+                        `${event.target.tagName}|${event.currentTarget === document}`;
+                });
+            </script>
+        </body></html>
+        "#,
+    );
+
+    let click_event = {
+        let inner = doc.inner();
+        let btn_id = inner.query_selector("#btn").unwrap().unwrap();
+        DomEvent::new(
+            btn_id,
+            inner
+                .get_node(btn_id)
+                .unwrap()
+                .synthetic_click_event(Modifiers::empty()),
+        )
+    };
+    doc.dispatch_dom_event(click_event);
+
+    assert_eq!(text_of_selector(&doc, "#out"), "BUTTON|true");
 }
 
 #[test]

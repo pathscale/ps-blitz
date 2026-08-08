@@ -124,13 +124,18 @@ impl Node {
 }
 
 impl BaseDocument {
-    /// Collect the nodes into a chain by traversing upwards
+    /// Collect the event propagation chain from a target through its element
+    /// ancestors and the document node.
     pub fn node_chain(&self, node_id: usize) -> Vec<usize> {
         let mut chain = Vec::with_capacity(16);
         chain.push(node_id);
         chain.extend(
             AncestorTraverser::new(self, node_id).filter(|id| self.nodes[*id].is_element()),
         );
+        let document_id = self.root_node().id;
+        if chain.last().copied() != Some(document_id) {
+            chain.push(document_id);
+        }
         chain
     }
 
