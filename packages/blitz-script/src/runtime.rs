@@ -24,6 +24,7 @@ use crate::state::{DomCtx, Listener};
 const DIAGNOSTIC_CAPACITY: usize = 1_000;
 
 #[derive(Debug, Clone)]
+#[cfg_attr(not(feature = "debug-control"), allow(dead_code))]
 pub(crate) struct DiagnosticEntry {
     pub sequence: u64,
     pub level: String,
@@ -290,7 +291,6 @@ impl ScriptRuntime {
         self.run_jobs(description);
     }
 
-    #[cfg(feature = "debug-control")]
     pub fn eval_json(
         &mut self,
         code: &str,

@@ -627,3 +627,17 @@ fn style_bindings() {
     );
     assert_eq!(text_of_selector(&doc, "#out"), "color: red;|blue");
 }
+
+#[test]
+fn eval_json_returns_embedder_friendly_results() {
+    let mut doc = doc_from_html("<html><body></body></html>");
+
+    let result = doc
+        .eval_json("({ greeting: 'hello', count: 2 })")
+        .expect("script should evaluate");
+
+    assert_eq!(
+        result,
+        serde_json::json!({ "greeting": "hello", "count": 2 })
+    );
+}

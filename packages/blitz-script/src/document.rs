@@ -167,9 +167,13 @@ impl ScriptDocument {
         self.arm_timer_thread();
     }
 
-    #[cfg(feature = "debug-control")]
-    pub(crate) fn eval_json(&mut self, code: &str) -> Result<serde_json::Value, String> {
-        let result = self.runtime.eval_json(code, "<debug execute>");
+    /// Evaluate JavaScript and convert its result to JSON.
+    ///
+    /// Embedders use this for APIs that return an evaluation result, such as Tauri's
+    /// `eval_script_with_callback`. JavaScript exceptions are recorded in the runtime diagnostics
+    /// and returned as an error.
+    pub fn eval_json(&mut self, code: &str) -> Result<serde_json::Value, String> {
+        let result = self.runtime.eval_json(code, "<eval with result>");
         self.request_redraw();
         self.arm_timer_thread();
         result
