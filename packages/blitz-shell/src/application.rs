@@ -63,8 +63,10 @@ impl<Rend: WindowRenderer> BlitzApplication<Rend> {
                 // channel, so `complete_resume` should always succeed here.
                 // If a stale event survives a suspend, dropping it is safe.
                 if let Some(window) = self.windows.get_mut(&window_id) {
-                    let ok = window.complete_resume();
-                    debug_assert!(ok, "ResumeReady received but renderer not ready");
+                    if window.waker.is_none() {
+                        let ok = window.complete_resume();
+                        debug_assert!(ok, "ResumeReady received but renderer not ready");
+                    }
                 }
             }
             BlitzShellEvent::RequestRedraw { doc_id } => {
@@ -114,6 +116,11 @@ impl<Rend: WindowRenderer> ApplicationHandler for BlitzApplication<Rend> {
         // Resume existing windows
         for view in self.windows.values_mut() {
             view.resume();
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let ok = view.complete_resume();
+                debug_assert!(ok, "native renderer did not resume synchronously");
+            }
         }
 
         // Initialise pending windows. The renderer's resume is non-blocking —
@@ -123,6 +130,11 @@ impl<Rend: WindowRenderer> ApplicationHandler for BlitzApplication<Rend> {
         for window_config in self.pending_windows.drain(..) {
             let mut view = View::init(window_config, event_loop, &self.proxy);
             view.resume();
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let ok = view.complete_resume();
+                debug_assert!(ok, "native renderer did not resume synchronously");
+            }
             self.windows.insert(view.window_id(), view);
         }
     }

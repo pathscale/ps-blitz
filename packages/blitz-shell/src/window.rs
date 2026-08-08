@@ -330,8 +330,13 @@ impl<Rend: WindowRenderer> View<Rend> {
                 insets.top,
             )
         });
+        drop(inner);
 
         self.waker = Some(create_waker(&self.proxy, window_id));
+        // Scripts can schedule timers before the native surface exists. Their timer thread has
+        // nothing to wake until this point, so poll once after installing the event-loop waker
+        // to run already-due work and re-arm future deadlines.
+        self.poll();
         true
     }
 
