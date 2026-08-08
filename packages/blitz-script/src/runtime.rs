@@ -155,6 +155,17 @@ impl ScriptRuntime {
         register_global(&mut context, "window", global.clone());
         register_global(&mut context, "self", global);
 
+        // Tauri and other webview embedders conventionally provide this object. It is inert
+        // until the embedder installs a callback on `ScriptDocument`.
+        let ipc = ObjectInitializer::new(&mut context)
+            .function(
+                NativeFunction::from_fn_ptr(ipc_post_message),
+                js_string!("postMessage"),
+                1,
+            )
+            .build();
+        register_global(&mut context, "ipc", ipc.into());
+
         // `location`
         let location = build_location(base_url, &mut context);
         register_global(&mut context, "location", location);
@@ -645,6 +656,19 @@ impl ScriptRuntime {
         }
         any_called
     }
+}
+
+fn ipc_post_message(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let body = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .to_string(context)?
+        .to_std_string_lossy();
+    let handler = dom_ctx(context)?.state.borrow().ipc_handler.clone();
+    if let Some(handler) = handler {
+        handler(body);
+    }
+    Ok(JsValue::undefined())
 }
 
 fn register_global(context: &mut Context, name: &str, value: JsValue) {

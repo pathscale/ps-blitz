@@ -30,6 +30,7 @@ pub(crate) struct Listener {
 }
 
 pub(crate) type ListenerMap = HashMap<String, Vec<Listener>>;
+pub(crate) type IpcHandler = std::sync::Arc<dyn Fn(String) + Send + Sync>;
 
 /// State owned by the script runtime but shared (via `Rc`) with the native
 /// functions exposed to JavaScript.
@@ -55,6 +56,8 @@ pub(crate) struct RuntimeState {
     pub node_listeners: HashMap<usize, ListenerMap>,
     /// Event listeners registered on `window`.
     pub window_listeners: ListenerMap,
+    /// Host callback backing `window.ipc.postMessage`, installed by an embedder.
+    pub ipc_handler: Option<IpcHandler>,
     /// Pending timers (`setTimeout`/`setInterval`/`requestAnimationFrame`)
     pub timers: TimerQueue,
 }

@@ -94,6 +94,14 @@ impl ScriptDocument {
         self
     }
 
+    /// Install the host callback invoked by `window.ipc.postMessage(body)`.
+    ///
+    /// The callback may forward work to another thread, but JavaScript and DOM state remain on
+    /// the document's owning thread. Replacing the callback is supported before script startup.
+    pub fn set_ipc_handler(&mut self, handler: impl Fn(String) + Send + Sync + 'static) {
+        self.runtime.ctx.state.borrow_mut().ipc_handler = Some(Arc::new(handler));
+    }
+
     /// Execute the document's `<script>` elements in document order, then fire
     /// the `DOMContentLoaded` and `load` events.
     ///

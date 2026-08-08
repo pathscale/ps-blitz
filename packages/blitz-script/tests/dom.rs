@@ -4,6 +4,7 @@ use blitz_dom::{Document, DocumentConfig};
 use blitz_script::ScriptDocument;
 use blitz_traits::events::DomEvent;
 use keyboard_types::Modifiers;
+use std::sync::{Arc, Mutex};
 
 fn doc_from_html(html: &str) -> ScriptDocument {
     let mut doc = ScriptDocument::from_html(html, DocumentConfig::default());
@@ -52,6 +53,23 @@ fn scripts_run_in_document_order_and_share_globals() {
         "#,
     );
     assert_eq!(text_of_selector(&doc, "#root"), "counter = 2");
+}
+
+#[test]
+fn window_ipc_forwards_messages_to_the_embedder() {
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let received_by_handler = Arc::clone(&received);
+    let mut doc = ScriptDocument::from_html(
+        r#"<script>window.ipc.postMessage(JSON.stringify({ cmd: "greet", value: 42 }));</script>"#,
+        DocumentConfig::default(),
+    );
+    doc.set_ipc_handler(move |body| received_by_handler.lock().unwrap().push(body));
+    doc.execute_scripts();
+
+    assert_eq!(
+        received.lock().unwrap().as_slice(),
+        [r#"{"cmd":"greet","value":42}"#]
+    );
 }
 
 #[test]
