@@ -641,3 +641,23 @@ fn eval_json_returns_embedder_friendly_results() {
         serde_json::json!({ "greeting": "hello", "count": 2 })
     );
 }
+
+#[test]
+fn embedder_poll_hook_runs_after_document_scripts() {
+    let mut doc = ScriptDocument::from_html(
+        r#"
+        <div id="out">waiting</div>
+        <script>window.fromDocument = "ready";</script>
+        "#,
+        DocumentConfig::default(),
+    );
+    doc.set_poll_hook(|document, _| {
+        document.eval(
+            "document.getElementById('out').textContent = window.fromDocument + ' from hook';",
+        );
+        true
+    });
+
+    assert!(doc.poll(None));
+    assert_eq!(text_of_selector(&doc, "#out"), "ready from hook");
+}

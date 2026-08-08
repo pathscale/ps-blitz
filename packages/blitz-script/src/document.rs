@@ -18,6 +18,9 @@ use crate::event_handler::ScriptEventHandler;
 use crate::fetch::{DefaultScriptFetcher, ScriptFetcher};
 use crate::runtime::ScriptRuntime;
 
+type PollHook =
+    Box<dyn for<'a> FnMut(&mut ScriptDocument, Option<&TaskContext<'a>>) -> bool + 'static>;
+
 /// A `<script>` element found in the document
 struct PendingScript {
     src: Option<String>,
@@ -38,6 +41,7 @@ pub struct ScriptDocument {
     base_url: Option<Url>,
     fetcher: Box<dyn ScriptFetcher>,
     scripts_executed: bool,
+    poll_hook: Option<PollHook>,
 
     // Timer wakeups: a background thread which wakes the event loop (via the
     // `Waker` passed to `poll`) when the next JS timer is due.
@@ -82,6 +86,7 @@ impl ScriptDocument {
             base_url,
             fetcher: Box::new(DefaultScriptFetcher),
             scripts_executed: false,
+            poll_hook: None,
             waker: Arc::new(Mutex::new(None)),
             timer_thread: None,
         }
@@ -100,6 +105,16 @@ impl ScriptDocument {
     /// the document's owning thread. Replacing the callback is supported before script startup.
     pub fn set_ipc_handler(&mut self, handler: impl Fn(String) + 'static) {
         self.runtime.ctx.state.borrow_mut().ipc_handler = Some(Rc::new(handler));
+    }
+
+    /// Install work that an embedder needs to run on the document thread during polling.
+    ///
+    /// The hook runs after document scripts and due timers. Returning `true` requests a redraw.
+    pub fn set_poll_hook(
+        &mut self,
+        hook: impl for<'a> FnMut(&mut ScriptDocument, Option<&TaskContext<'a>>) -> bool + 'static,
+    ) {
+        self.poll_hook = Some(Box::new(hook));
     }
 
     /// Execute the document's `<script>` elements in document order, then fire
@@ -367,6 +382,12 @@ impl Document for ScriptDocument {
         }
 
         ran |= self.runtime.run_due_timers();
+
+        if let Some(mut hook) = self.poll_hook.take() {
+            ran |= hook(self, task_context.as_ref());
+            self.poll_hook = Some(hook);
+        }
+
         self.arm_timer_thread();
         ran
     }
