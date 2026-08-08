@@ -6,6 +6,8 @@ use std::sync::mpsc::Receiver;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
+#[cfg(feature = "debug-control")]
+use winit::event_loop::ControlFlow;
 use winit::window::WindowId;
 
 #[cfg(target_os = "macos")]
@@ -18,6 +20,8 @@ pub struct BlitzApplication<Rend: WindowRenderer> {
     pub pending_windows: Vec<WindowConfig<Rend>>,
     pub proxy: BlitzShellProxy,
     pub event_queue: Receiver<BlitzShellEvent>,
+    #[cfg(feature = "debug-control")]
+    debug_controller: Option<blitz_script::DebugController>,
 }
 
 impl<Rend: WindowRenderer> BlitzApplication<Rend> {
@@ -27,11 +31,40 @@ impl<Rend: WindowRenderer> BlitzApplication<Rend> {
             pending_windows: Vec::new(),
             proxy,
             event_queue,
+            #[cfg(feature = "debug-control")]
+            debug_controller: None,
         }
     }
 
     pub fn add_window(&mut self, window_config: WindowConfig<Rend>) {
         self.pending_windows.push(window_config);
+    }
+
+    #[cfg(feature = "debug-control")]
+    pub fn set_debug_controller(&mut self, controller: blitz_script::DebugController) {
+        self.debug_controller = Some(controller);
+    }
+
+    #[cfg(feature = "debug-control")]
+    fn service_debug_controller(&mut self, event_loop: &dyn ActiveEventLoop) {
+        let Some(controller) = self.debug_controller.as_mut() else {
+            return;
+        };
+        let Some(document) = self
+            .windows
+            .values_mut()
+            .find_map(|view| view.try_downcast_doc_mut::<blitz_script::ScriptDocument>())
+        else {
+            return;
+        };
+        controller.service_pending(document);
+        if controller.exit_requested() {
+            event_loop.exit();
+        } else {
+            event_loop.set_control_flow(ControlFlow::wait_duration(
+                std::time::Duration::from_millis(10),
+            ));
+        }
     }
 
     fn window_mut_by_doc_id(&mut self, doc_id: usize) -> Option<&mut View<Rend>> {
@@ -181,6 +214,8 @@ impl<Rend: WindowRenderer> ApplicationHandler for BlitzApplication<Rend> {
         while let Ok(event) = self.event_queue.try_recv() {
             self.handle_blitz_shell_event(event_loop, event);
         }
+        #[cfg(feature = "debug-control")]
+        self.service_debug_controller(event_loop);
     }
 
     #[cfg(target_os = "macos")]
@@ -188,8 +223,11 @@ impl<Rend: WindowRenderer> ApplicationHandler for BlitzApplication<Rend> {
         Some(self)
     }
 
-    #[cfg(target_os = "ios")]
-    fn about_to_wait(&mut self, _event_loop: &dyn ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
+        #[cfg(feature = "debug-control")]
+        self.service_debug_controller(event_loop);
+
+        #[cfg(target_os = "ios")]
         for view in self.windows.values_mut() {
             if view.ios_request_redraw.get() {
                 view.window.request_redraw();

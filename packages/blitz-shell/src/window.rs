@@ -260,6 +260,10 @@ impl<Rend: WindowRenderer> View<Rend> {
             .unwrap()
     }
 
+    pub fn try_downcast_doc_mut<T: 'static>(&mut self) -> Option<&mut T> {
+        (&mut *self.doc as &mut dyn Any).downcast_mut::<T>()
+    }
+
     pub fn current_animation_time(&mut self) -> f64 {
         match &self.animation_timer {
             Some(start) => Instant::now().duration_since(*start).as_secs_f64(),

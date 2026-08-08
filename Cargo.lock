@@ -1000,6 +1000,7 @@ dependencies = [
  "atomic_refcell",
  "blitz-dom",
  "blitz-paint",
+ "blitz-script",
  "blitz-traits",
  "data-url",
  "futures-util",
