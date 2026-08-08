@@ -240,6 +240,30 @@ impl Node {
         Some(self.primary_styles().as_ref()?.clone_display())
     }
 
+    /// A compact computed-style view for renderer diagnostics.
+    pub fn diagnostic_computed_style(&self) -> Option<Vec<(&'static str, String)>> {
+        let style = self.primary_styles()?;
+        Some(vec![
+            ("display", style.clone_display().to_css_string()),
+            ("color", style.clone_color().to_css_string()),
+            (
+                "background-color",
+                style.clone_background_color().to_css_string(),
+            ),
+            (
+                "font-size",
+                format!("{}px", style.clone_font_size().computed_size().px()),
+            ),
+            ("width", style.clone_width().to_css_string()),
+        ])
+    }
+
+    /// Whether computed style removes this node from layout.
+    pub fn is_display_none(&self) -> bool {
+        self.display_style()
+            .is_some_and(|display| display.is_none())
+    }
+
     pub fn is_or_contains_block(&self) -> bool {
         let style = self.primary_styles();
         let style = style.as_ref();

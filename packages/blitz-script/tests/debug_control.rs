@@ -135,6 +135,24 @@ fn separate_process_controls_solid_without_fixed_sleeps() {
     assert_eq!(rejected["value"]["error"], "invalid argument");
 
     let session = create_session(address, token);
+    assert_eq!(
+        session_request(address, &session, "GET", "window", Value::Null)["value"],
+        "blitz-main"
+    );
+    assert_eq!(
+        session_request(address, &session, "GET", "window/handles", Value::Null)["value"],
+        json!(["blitz-main"])
+    );
+    assert!(
+        session_request(
+            address,
+            &session,
+            "POST",
+            "window",
+            json!({"handle": "blitz-main"}),
+        )["value"]
+            .is_null()
+    );
     let button = session_request(
         address,
         &session,
@@ -151,6 +169,46 @@ fn separate_process_controls_solid_without_fixed_sleeps() {
         Value::Null,
     );
     assert_eq!(text["value"], "increment");
+    assert_eq!(
+        session_request(
+            address,
+            &session,
+            "GET",
+            &format!("element/{button}/attribute/id"),
+            Value::Null,
+        )["value"],
+        "increment"
+    );
+    assert_eq!(
+        session_request(
+            address,
+            &session,
+            "GET",
+            &format!("element/{button}/property/textContent"),
+            Value::Null,
+        )["value"],
+        "increment"
+    );
+    assert_eq!(
+        session_request(
+            address,
+            &session,
+            "GET",
+            &format!("element/{button}/displayed"),
+            Value::Null,
+        )["value"],
+        true
+    );
+    assert_eq!(
+        session_request(
+            address,
+            &session,
+            "GET",
+            &format!("element/{button}/enabled"),
+            Value::Null,
+        )["value"],
+        true
+    );
     let rect = session_request(
         address,
         &session,
@@ -160,6 +218,25 @@ fn separate_process_controls_solid_without_fixed_sleeps() {
     );
     assert!(rect["value"]["width"].as_f64().unwrap() > 0.0);
     assert!(rect["value"]["height"].as_f64().unwrap() > 0.0);
+    let computed = session_request(
+        address,
+        &session,
+        "POST",
+        "blitz/getComputedStyle",
+        json!({"element": button}),
+    );
+    assert!(
+        computed["value"]["properties"]["display"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
+    let before_png = base64::engine::general_purpose::STANDARD
+        .decode(
+            session_request(address, &session, "GET", "screenshot", Value::Null)["value"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
     session_request(
         address,
         &session,
@@ -207,6 +284,7 @@ fn separate_process_controls_solid_without_fixed_sleeps() {
         .decode(screenshot["value"].as_str().unwrap())
         .unwrap();
     assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    assert_ne!(png, before_png);
     let snapshot = session_request(
         address,
         &session,
@@ -222,6 +300,100 @@ fn separate_process_controls_solid_without_fixed_sleeps() {
             .any(|node| { node["attributes"]["id"] == "count" && node["text"] == "1" })
     );
     assert!(snapshot["value"]["paintRevision"].as_u64().unwrap() > 0);
+    let layout = session_request(address, &session, "GET", "blitz/getLayoutTree", Value::Null);
+    assert!(
+        layout["value"]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| {
+                node["nodeId"]
+                    == snapshot["value"]["nodes"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|node| node["attributes"]["id"] == "count")
+                        .unwrap()["nodeId"]
+            })
+    );
+    let metrics = session_request(
+        address,
+        &session,
+        "GET",
+        "blitz/getRendererMetrics",
+        Value::Null,
+    );
+    assert!(metrics["value"]["paintRevision"].as_u64().unwrap() > 0);
+
+    for _ in 0..2 {
+        session_request(
+            address,
+            &session,
+            "POST",
+            &format!("element/{button}/click"),
+            json!({}),
+        );
+    }
+    let add = session_request(
+        address,
+        &session,
+        "POST",
+        "element",
+        json!({"using": "css selector", "value": "#add"}),
+    );
+    let add = add["value"][ELEMENT_KEY].as_str().unwrap();
+    session_request(
+        address,
+        &session,
+        "POST",
+        &format!("element/{add}/click"),
+        json!({}),
+    );
+    session_request(address, &session, "POST", "blitz/waitForIdle", json!({}));
+    let over = session_request(
+        address,
+        &session,
+        "POST",
+        "element",
+        json!({"using": "css selector", "value": "#over"}),
+    );
+    let over = over["value"][ELEMENT_KEY].as_str().unwrap();
+    assert_eq!(
+        session_request(
+            address,
+            &session,
+            "GET",
+            &format!("element/{over}/text"),
+            Value::Null,
+        )["value"],
+        "over"
+    );
+    let items = session_request(
+        address,
+        &session,
+        "POST",
+        "elements",
+        json!({"using": "css selector", "value": "#items > li"}),
+    );
+    let item_text = items["value"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| {
+            let reference = item[ELEMENT_KEY].as_str().unwrap();
+            session_request(
+                address,
+                &session,
+                "GET",
+                &format!("element/{reference}/text"),
+                Value::Null,
+            )["value"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(item_text, ["a", "b", "c"]);
 
     let executed = session_request(
         address,
@@ -233,7 +405,7 @@ fn separate_process_controls_solid_without_fixed_sleeps() {
             "args": [],
         }),
     );
-    assert_eq!(executed["value"], "1");
+    assert_eq!(executed["value"], "3");
     let asynchronous = session_request(
         address,
         &session,
@@ -281,6 +453,50 @@ fn separate_process_controls_solid_without_fixed_sleeps() {
         }),
     );
     assert_eq!(input_value["value"], "typed remotely");
+    session_request(
+        address,
+        &session,
+        "POST",
+        "actions",
+        json!({"actions": [{
+            "type": "key",
+            "id": "keyboard",
+            "actions": [
+                {"type": "keyDown", "value": "X"},
+                {"type": "keyUp", "value": "X"}
+            ]
+        }]}),
+    );
+    assert_eq!(
+        session_request(
+            address,
+            &session,
+            "GET",
+            &format!("element/{input}/property/value"),
+            Value::Null,
+        )["value"],
+        "typed remotelyX"
+    );
+    session_request(
+        address,
+        &session,
+        "POST",
+        "execute/sync",
+        json!({
+            "script": "const old = document.getElementById('remote-input'); old.parentNode.removeChild(old); const replacement = document.createElement('input'); replacement.id = 'remote-input'; document.getElementById('app').appendChild(replacement);",
+            "args": [],
+        }),
+    );
+    assert_eq!(
+        session_request(
+            address,
+            &session,
+            "GET",
+            &format!("element/{input}/text"),
+            Value::Null,
+        )["value"]["error"],
+        "stale element reference"
+    );
     let console = session_request(
         address,
         &session,
@@ -294,6 +510,47 @@ fn separate_process_controls_solid_without_fixed_sleeps() {
             .unwrap()
             .iter()
             .any(|entry| entry["level"] == "warn" && entry["message"] == "remote-note")
+    );
+    assert!(
+        console["value"]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("effect: 3")))
+    );
+
+    let pointer_x =
+        rect["value"]["x"].as_f64().unwrap() + rect["value"]["width"].as_f64().unwrap() / 2.0;
+    let pointer_y =
+        rect["value"]["y"].as_f64().unwrap() + rect["value"]["height"].as_f64().unwrap() / 2.0;
+    session_request(
+        address,
+        &session,
+        "POST",
+        "actions",
+        json!({"actions": [{
+            "type": "pointer",
+            "id": "mouse",
+            "parameters": {"pointerType": "mouse"},
+            "actions": [
+                {"type": "pointerMove", "origin": "viewport", "x": pointer_x, "y": pointer_y},
+                {"type": "pointerDown", "button": 0},
+                {"type": "pointerUp", "button": 0}
+            ]
+        }]}),
+    );
+    session_request(address, &session, "POST", "blitz/waitForIdle", json!({}));
+    assert_eq!(
+        session_request(
+            address,
+            &session,
+            "GET",
+            &format!("element/{count}/text"),
+            Value::Null,
+        )["value"],
+        "4"
     );
 
     let thrown = session_request(

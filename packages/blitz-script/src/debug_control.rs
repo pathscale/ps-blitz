@@ -12,9 +12,10 @@ use blitz_debug_control::{ControlRequest, ControlResponse, DebugServer, ServerCo
 use blitz_dom::Document;
 use blitz_paint::paint_scene;
 use blitz_traits::events::{
-    BlitzImeEvent, BlitzPointerEvent, BlitzPointerId, MouseEventButton, MouseEventButtons, Point,
-    PointerCoords, PointerDetails, UiEvent,
+    BlitzImeEvent, BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, KeyState, MouseEventButton,
+    MouseEventButtons, Point, PointerCoords, PointerDetails, UiEvent,
 };
+use keyboard_types::{Code, Key, Location, Modifiers};
 use serde_json::{Value, json};
 
 use crate::ScriptDocument;
@@ -41,6 +42,8 @@ pub struct DebugController {
     next_async_id: u64,
     next_event_sequence: u64,
     event_traces: VecDeque<Value>,
+    action_pointer: (f32, f32),
+    action_buttons: MouseEventButtons,
     exit_requested: bool,
 }
 
@@ -60,6 +63,8 @@ impl DebugController {
             next_async_id: 1,
             next_event_sequence: 1,
             event_traces: VecDeque::new(),
+            action_pointer: (0.0, 0.0),
+            action_buttons: MouseEventButtons::default(),
             exit_requested: false,
         })
     }
@@ -149,8 +154,16 @@ impl DebugController {
             )),
             ("GET", "source") => success(json!(document.page_source())),
             ("GET", "screenshot") => self.screenshot(document),
+            ("GET", "window") => success(json!("blitz-main")),
+            ("GET", "window/handles") => success(json!(["blitz-main"])),
+            ("POST", "window") => match request.body.get("handle").and_then(Value::as_str) {
+                Some("blitz-main") => success(Value::Null),
+                _ => error("no such window", "only the blitz-main window exists"),
+            },
             ("POST", "execute/sync") => self.execute_sync(document, &request.body),
             ("POST", "execute/async") => self.execute_async(document, &request.body),
+            ("POST", "actions") => self.perform_actions(document, &request.body),
+            ("DELETE", "actions") => success(Value::Null),
             ("POST", "element") => self.find(document, &request.body, false),
             ("POST", "elements") => self.find(document, &request.body, true),
             ("POST", "blitz/waitForIdle") => self.wait_for_idle(document),
@@ -162,12 +175,146 @@ impl DebugController {
                 self.runtime_errors(document, &request.body)
             }
             ("GET" | "POST", "blitz/traceEvent") => self.event_trace(&request.body),
+            ("GET" | "POST", "blitz/getComputedStyle") => {
+                self.computed_style(document, &request.body)
+            }
+            ("GET", "blitz/getLayoutTree") => self.layout_tree(document),
+            ("GET", "blitz/getRendererMetrics") => self.renderer_metrics(),
             ("POST", "blitz/shutdown") => {
                 self.exit_requested = true;
                 success(Value::Null)
             }
             _ => self.element_command(document, request),
         }
+    }
+
+    fn computed_style(&mut self, document: &mut ScriptDocument, body: &Value) -> ControlResponse {
+        let Some(reference) = body.get("element").and_then(Value::as_str) else {
+            return invalid("blitz/getComputedStyle requires an element reference");
+        };
+        let Some(node_id) = self.resolve_element(document, reference) else {
+            return error("stale element reference", "element is no longer attached");
+        };
+        document.inner_mut().resolve(0.0);
+        self.style_revision += 1;
+        let inner = document.inner();
+        let Some(properties) = inner
+            .get_node(node_id)
+            .and_then(|node| node.diagnostic_computed_style())
+        else {
+            return error("unknown error", "computed style is unavailable");
+        };
+        success(json!({
+            "nodeId": node_id,
+            "styleRevision": self.style_revision,
+            "properties": properties.into_iter()
+                .map(|(name, value)| (name.to_string(), Value::String(value)))
+                .collect::<serde_json::Map<String, Value>>(),
+        }))
+    }
+
+    fn layout_tree(&mut self, document: &mut ScriptDocument) -> ControlResponse {
+        document.inner_mut().resolve(0.0);
+        self.layout_revision += 1;
+        let inner = document.inner();
+        let nodes = inner
+            .tree()
+            .iter()
+            .filter_map(|(node_id, _)| {
+                inner.get_client_bounding_rect(node_id).map(|rect| {
+                    json!({
+                        "nodeId": node_id,
+                        "x": rect.x,
+                        "y": rect.y,
+                        "width": rect.width,
+                        "height": rect.height,
+                    })
+                })
+            })
+            .collect::<Vec<_>>();
+        success(json!({"layoutRevision": self.layout_revision, "nodes": nodes}))
+    }
+
+    fn renderer_metrics(&self) -> ControlResponse {
+        success(json!({
+            "documentRevision": self.document_revision,
+            "styleRevision": self.style_revision,
+            "layoutRevision": self.layout_revision,
+            "paintRevision": self.paint_revision,
+            "eventTraceEntries": self.event_traces.len(),
+        }))
+    }
+
+    fn perform_actions(&mut self, document: &mut ScriptDocument, body: &Value) -> ControlResponse {
+        let Some(sources) = body.get("actions").and_then(Value::as_array) else {
+            return invalid("actions must be an array");
+        };
+        for source in sources {
+            let source_type = source.get("type").and_then(Value::as_str).unwrap_or("");
+            let Some(actions) = source.get("actions").and_then(Value::as_array) else {
+                return invalid("each input source requires an actions array");
+            };
+            for action in actions {
+                let action_type = action.get("type").and_then(Value::as_str).unwrap_or("");
+                match (source_type, action_type) {
+                    (_, "pause") => {}
+                    ("pointer", "pointerMove") => {
+                        let Some(x) = action.get("x").and_then(Value::as_f64) else {
+                            return invalid("pointerMove requires x");
+                        };
+                        let Some(y) = action.get("y").and_then(Value::as_f64) else {
+                            return invalid("pointerMove requires y");
+                        };
+                        if action
+                            .get("origin")
+                            .and_then(Value::as_str)
+                            .is_some_and(|origin| origin != "viewport")
+                        {
+                            return ControlResponse::unsupported(
+                                "only viewport-origin pointer actions are supported",
+                            );
+                        }
+                        self.action_pointer = (x as f32, y as f32);
+                        document.handle_ui_event(UiEvent::PointerMove(action_pointer_event(
+                            self.action_pointer,
+                            self.action_buttons,
+                        )));
+                    }
+                    ("pointer", "pointerDown") => {
+                        if action.get("button").and_then(Value::as_u64).unwrap_or(0) != 0 {
+                            return ControlResponse::unsupported(
+                                "only the primary pointer button is supported",
+                            );
+                        }
+                        self.action_buttons = MouseEventButtons::Primary;
+                        document.handle_ui_event(UiEvent::PointerDown(action_pointer_event(
+                            self.action_pointer,
+                            self.action_buttons,
+                        )));
+                    }
+                    ("pointer", "pointerUp") => {
+                        let event = action_pointer_event(self.action_pointer, self.action_buttons);
+                        document.handle_ui_event(UiEvent::PointerUp(event));
+                        self.action_buttons = MouseEventButtons::default();
+                    }
+                    ("key", "keyDown") => {
+                        let Some(value) = action.get("value").and_then(Value::as_str) else {
+                            return invalid("keyDown requires value");
+                        };
+                        document.handle_ui_event(UiEvent::KeyDown(key_event(value, true)));
+                    }
+                    ("key", "keyUp") => {
+                        let Some(value) = action.get("value").and_then(Value::as_str) else {
+                            return invalid("keyUp requires value");
+                        };
+                        document.handle_ui_event(UiEvent::KeyUp(key_event(value, false)));
+                    }
+                    _ => return ControlResponse::unsupported("input action is not implemented"),
+                }
+            }
+        }
+        self.document_revision += 1;
+        success(Value::Null)
     }
 
     fn execute_sync(&mut self, document: &mut ScriptDocument, body: &Value) -> ControlResponse {
@@ -330,6 +477,14 @@ impl DebugController {
         let Some(node_id) = self.resolve_element(document, reference) else {
             return error("stale element reference", "element is no longer attached");
         };
+        if request.method == "GET" {
+            if let Some(name) = command.strip_prefix("attribute/") {
+                return self.element_attribute(document, node_id, name);
+            }
+            if let Some(name) = command.strip_prefix("property/") {
+                return self.element_property(document, node_id, name);
+            }
+        }
         match (request.method.as_str(), command) {
             ("GET", "text") => {
                 let inner = document.inner();
@@ -349,8 +504,87 @@ impl DebugController {
             }
             ("POST", "click") => self.click(document, node_id),
             ("POST", "value") => self.send_keys(document, node_id, &request.body),
+            ("POST", "focus") => {
+                document.inner_mut().set_focus_to(node_id);
+                success(Value::Null)
+            }
+            ("GET", "displayed") => {
+                document.inner_mut().resolve(0.0);
+                let inner = document.inner();
+                let displayed = inner.get_node(node_id).is_some_and(|node| {
+                    !node.is_display_none()
+                        && inner
+                            .get_client_bounding_rect(node_id)
+                            .is_some_and(|rect| rect.width > 0.0 && rect.height > 0.0)
+                });
+                success(json!(displayed))
+            }
+            ("GET", "enabled") => {
+                let inner = document.inner();
+                let enabled = inner.get_node(node_id).is_some_and(|node| {
+                    node.attrs().is_none_or(|attributes| {
+                        !attributes
+                            .iter()
+                            .any(|attribute| &*attribute.name.local == "disabled")
+                    })
+                });
+                success(json!(enabled))
+            }
             _ => ControlResponse::unsupported("element command is not implemented"),
         }
+    }
+
+    fn element_attribute(
+        &self,
+        document: &ScriptDocument,
+        node_id: usize,
+        name: &str,
+    ) -> ControlResponse {
+        let inner = document.inner();
+        let value = inner
+            .get_node(node_id)
+            .and_then(|node| node.attrs())
+            .and_then(|attributes| {
+                attributes
+                    .iter()
+                    .find(|attribute| &*attribute.name.local == name)
+            })
+            .map(|attribute| attribute.value.clone());
+        success(value.map(Value::String).unwrap_or(Value::Null))
+    }
+
+    fn element_property(
+        &self,
+        document: &ScriptDocument,
+        node_id: usize,
+        name: &str,
+    ) -> ControlResponse {
+        let inner = document.inner();
+        let Some(node) = inner.get_node(node_id) else {
+            return error("stale element reference", "element is no longer attached");
+        };
+        let value = match name {
+            "textContent" => Value::String(node.text_content()),
+            "className" => node
+                .attr(blitz_dom::local_name!("class"))
+                .map(|value| Value::String(value.to_string()))
+                .unwrap_or(Value::Null),
+            "value" => node
+                .element_data()
+                .and_then(|element| element.text_input_data())
+                .map(|input| Value::String(input.editor.text().to_string()))
+                .unwrap_or(Value::Null),
+            "checked" => node
+                .element_data()
+                .and_then(|element| element.checkbox_input_checked())
+                .map(Value::Bool)
+                .unwrap_or(Value::Bool(false)),
+            _ => {
+                drop(inner);
+                return self.element_attribute(document, node_id, name);
+            }
+        };
+        success(value)
     }
 
     fn resolve_element(&self, document: &ScriptDocument, reference: &str) -> Option<usize> {
@@ -369,7 +603,7 @@ impl DebugController {
         document
             .inner()
             .get_node(node_id)
-            .filter(|node| node.instance_id == instance_id)
+            .filter(|node| node.instance_id == instance_id && node.flags.is_in_document())
             .map(|_| node_id)
     }
 
@@ -565,6 +799,10 @@ impl DebugController {
 }
 
 fn pointer_event(x: f32, y: f32) -> BlitzPointerEvent {
+    action_pointer_event((x, y), MouseEventButtons::from(MouseEventButton::Main))
+}
+
+fn action_pointer_event((x, y): (f32, f32), buttons: MouseEventButtons) -> BlitzPointerEvent {
     BlitzPointerEvent {
         id: BlitzPointerId::Mouse,
         is_primary: true,
@@ -577,11 +815,37 @@ fn pointer_event(x: f32, y: f32) -> BlitzPointerEvent {
             client_y: y,
         },
         button: MouseEventButton::Main,
-        buttons: MouseEventButtons::from(MouseEventButton::Main),
+        buttons,
         mods: Default::default(),
         details: PointerDetails::default(),
         element: Point::default(),
         active_pointers: Default::default(),
+    }
+}
+
+fn key_event(value: &str, pressed: bool) -> BlitzKeyEvent {
+    let (key, code, text) = match value {
+        "\u{e003}" => (Key::Backspace, Code::Backspace, None),
+        "\u{e007}" | "\n" | "\r" => (Key::Enter, Code::Enter, None),
+        value => (
+            Key::Character(value.into()),
+            Code::Unidentified,
+            Some(value.into()),
+        ),
+    };
+    BlitzKeyEvent {
+        key,
+        code,
+        modifiers: Modifiers::empty(),
+        location: Location::Standard,
+        is_auto_repeating: false,
+        is_composing: false,
+        state: if pressed {
+            KeyState::Pressed
+        } else {
+            KeyState::Released
+        },
+        text,
     }
 }
 
