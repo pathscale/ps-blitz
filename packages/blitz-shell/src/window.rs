@@ -44,7 +44,10 @@ pub struct WindowConfig<Rend: WindowRenderer> {
     doc: Box<dyn Document>,
     pub(crate) attributes: WindowAttributes,
     renderer: Rend,
+    on_created: Option<WindowCreatedCallback>,
 }
+
+type WindowCreatedCallback = Box<dyn FnOnce(Arc<dyn Window>) + 'static>;
 
 impl<Rend: WindowRenderer> WindowConfig<Rend> {
     pub fn new(doc: Box<dyn Document>, renderer: Rend) -> Self {
@@ -60,7 +63,14 @@ impl<Rend: WindowRenderer> WindowConfig<Rend> {
             doc,
             attributes,
             renderer,
+            on_created: None,
         }
+    }
+
+    /// Run a callback after the native window is created and before the first frame is prepared.
+    pub fn with_on_created(mut self, callback: impl FnOnce(Arc<dyn Window>) + 'static) -> Self {
+        self.on_created = Some(Box::new(callback));
+        self
     }
 }
 
@@ -122,7 +132,7 @@ pub struct View<Rend: WindowRenderer> {
 
 impl<Rend: WindowRenderer> View<Rend> {
     pub fn init(
-        config: WindowConfig<Rend>,
+        mut config: WindowConfig<Rend>,
         event_loop: &dyn ActiveEventLoop,
         proxy: &BlitzShellProxy,
     ) -> Self {
@@ -136,6 +146,9 @@ impl<Rend: WindowRenderer> View<Rend> {
         let attrs = config.attributes.with_visible(false);
 
         let winit_window: Arc<dyn Window> = Arc::from(event_loop.create_window(attrs).unwrap());
+        if let Some(on_created) = config.on_created.take() {
+            on_created(Arc::clone(&winit_window));
+        }
         #[cfg(feature = "accessibility")]
         let accessibility = AccessibilityState::new(&*winit_window, proxy.clone());
 

@@ -95,11 +95,11 @@ impl<Rend: WindowRenderer> BlitzApplication<Rend> {
                 // The renderer fires `on_ready` after it has sent on the
                 // channel, so `complete_resume` should always succeed here.
                 // If a stale event survives a suspend, dropping it is safe.
-                if let Some(window) = self.windows.get_mut(&window_id) {
-                    if window.waker.is_none() {
-                        let ok = window.complete_resume();
-                        debug_assert!(ok, "ResumeReady received but renderer not ready");
-                    }
+                if let Some(window) = self.windows.get_mut(&window_id)
+                    && window.waker.is_none()
+                {
+                    let ok = window.complete_resume();
+                    debug_assert!(ok, "ResumeReady received but renderer not ready");
                 }
             }
             BlitzShellEvent::RequestRedraw { doc_id } => {
@@ -224,6 +224,7 @@ impl<Rend: WindowRenderer> ApplicationHandler for BlitzApplication<Rend> {
     }
 
     fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
+        let _ = event_loop;
         #[cfg(feature = "debug-control")]
         self.service_debug_controller(event_loop);
 
