@@ -159,6 +159,30 @@ impl ScriptDocument {
         self.arm_timer_thread();
     }
 
+    #[cfg(feature = "debug-control")]
+    pub(crate) fn eval_json(&mut self, code: &str) -> Result<serde_json::Value, String> {
+        let result = self.runtime.eval_json(code, "<debug execute>");
+        self.request_redraw();
+        self.arm_timer_thread();
+        result
+    }
+
+    #[cfg(feature = "debug-control")]
+    pub(crate) fn console_entries_after(
+        &self,
+        sequence: u64,
+    ) -> Vec<crate::runtime::DiagnosticEntry> {
+        self.runtime.console_entries_after(sequence)
+    }
+
+    #[cfg(feature = "debug-control")]
+    pub(crate) fn runtime_errors_after(
+        &self,
+        sequence: u64,
+    ) -> Vec<crate::runtime::DiagnosticEntry> {
+        self.runtime.runtime_errors_after(sequence)
+    }
+
     /// Current document URL for automation and diagnostics.
     pub fn current_url(&self) -> Option<&Url> {
         self.base_url.as_ref()

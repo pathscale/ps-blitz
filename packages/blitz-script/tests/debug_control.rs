@@ -202,6 +202,71 @@ fn separate_process_controls_solid_without_fixed_sleeps() {
     );
     assert!(snapshot["value"]["paintRevision"].as_u64().unwrap() > 0);
 
+    let executed = session_request(
+        address,
+        &session,
+        "POST",
+        "execute/sync",
+        json!({
+            "script": "console.warn('remote-note'); return document.getElementById('count').textContent;",
+            "args": [],
+        }),
+    );
+    assert_eq!(executed["value"], "1");
+    let asynchronous = session_request(
+        address,
+        &session,
+        "POST",
+        "execute/async",
+        json!({
+            "script": "const done = arguments[arguments.length - 1]; setTimeout(() => done(arguments[0] * 2), 1);",
+            "args": [21],
+        }),
+    );
+    assert_eq!(asynchronous["value"], 42);
+    let console = session_request(
+        address,
+        &session,
+        "POST",
+        "blitz/getConsoleEntries",
+        json!({"after": 0}),
+    );
+    assert!(
+        console["value"]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["level"] == "warn" && entry["message"] == "remote-note")
+    );
+
+    let thrown = session_request(
+        address,
+        &session,
+        "POST",
+        "execute/sync",
+        json!({"script": "throw new Error('deliberate-probe-error')", "args": []}),
+    );
+    assert_eq!(thrown["value"]["error"], "javascript error");
+    let errors = session_request(
+        address,
+        &session,
+        "POST",
+        "blitz/getRuntimeErrors",
+        json!({"after": 0}),
+    );
+    let deliberate = errors["value"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| {
+            entry["message"]
+                .as_str()
+                .unwrap()
+                .contains("deliberate-probe-error")
+        })
+        .expect("deliberate error should be retained");
+    assert!(!deliberate["stack"].as_str().unwrap().is_empty());
+
     request(
         address,
         "DELETE",

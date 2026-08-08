@@ -2,7 +2,7 @@ use std::io;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyrender::render_to_buffer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
@@ -20,6 +20,7 @@ use crate::ScriptDocument;
 
 const ELEMENT_KEY: &str = "element-6066-11e4-a52e-4f735466cecf";
 const MAX_IDLE_TURNS: usize = 1_000;
+const ASYNC_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// UI-thread half of the debug-control channel.
 ///
@@ -35,6 +36,7 @@ pub struct DebugController {
     paint_revision: u64,
     screenshot_size: Option<(u32, u32)>,
     latest_screenshot: Option<String>,
+    next_async_id: u64,
     exit_requested: bool,
 }
 
@@ -51,6 +53,7 @@ impl DebugController {
             paint_revision: 0,
             screenshot_size: None,
             latest_screenshot: None,
+            next_async_id: 1,
             exit_requested: false,
         })
     }
@@ -140,16 +143,118 @@ impl DebugController {
             )),
             ("GET", "source") => success(json!(document.page_source())),
             ("GET", "screenshot") => self.screenshot(document),
+            ("POST", "execute/sync") => self.execute_sync(document, &request.body),
+            ("POST", "execute/async") => self.execute_async(document, &request.body),
             ("POST", "element") => self.find(document, &request.body, false),
             ("POST", "elements") => self.find(document, &request.body, true),
             ("POST", "blitz/waitForIdle") => self.wait_for_idle(document),
             ("GET", "blitz/getDomSnapshot") => self.dom_snapshot(document),
+            ("GET" | "POST", "blitz/getConsoleEntries") => {
+                self.console_entries(document, &request.body)
+            }
+            ("GET" | "POST", "blitz/getRuntimeErrors") => {
+                self.runtime_errors(document, &request.body)
+            }
             ("POST", "blitz/shutdown") => {
                 self.exit_requested = true;
                 success(Value::Null)
             }
             _ => self.element_command(document, request),
         }
+    }
+
+    fn execute_sync(&mut self, document: &mut ScriptDocument, body: &Value) -> ControlResponse {
+        let Some(script) = body.get("script").and_then(Value::as_str) else {
+            return invalid("missing script");
+        };
+        let args = body.get("args").cloned().unwrap_or_else(|| json!([]));
+        if !args.is_array() {
+            return invalid("args must be an array");
+        }
+        let source = format!("(function() {{\n{script}\n}}).apply(null, {args})");
+        match document.eval_json(&source) {
+            Ok(value) => {
+                self.document_revision += 1;
+                success(value)
+            }
+            Err(message) => error("javascript error", message),
+        }
+    }
+
+    fn execute_async(&mut self, document: &mut ScriptDocument, body: &Value) -> ControlResponse {
+        let Some(script) = body.get("script").and_then(Value::as_str) else {
+            return invalid("missing script");
+        };
+        let args = body.get("args").cloned().unwrap_or_else(|| json!([]));
+        let Some(args) = args.as_array() else {
+            return invalid("args must be an array");
+        };
+        let result_name = format!("__blitzAsyncResult{}", self.next_async_id);
+        self.next_async_id += 1;
+        let args_source = serde_json::to_string(args).unwrap();
+        let source = format!(
+            "globalThis.{result_name} = {{ done: false }};\n\
+             (function() {{\n{script}\n}}).apply(null, [...{args_source}, value => {{\
+               globalThis.{result_name} = {{ done: true, value }};\
+             }}]);\nnull"
+        );
+        if let Err(message) = document.eval_json(&source) {
+            return error("javascript error", message);
+        }
+
+        let deadline = Instant::now() + ASYNC_SCRIPT_TIMEOUT;
+        loop {
+            document.poll(None);
+            match document.eval_json(&format!("globalThis.{result_name}")) {
+                Ok(state) if state.get("done").and_then(Value::as_bool) == Some(true) => {
+                    let value = state.get("value").cloned().unwrap_or(Value::Null);
+                    let _ = document.eval_json(&format!("delete globalThis.{result_name}"));
+                    self.document_revision += 1;
+                    return success(value);
+                }
+                Ok(_) => {}
+                Err(message) => return error("javascript error", message),
+            }
+            if Instant::now() >= deadline {
+                let _ = document.eval_json(&format!("delete globalThis.{result_name}"));
+                return error("script timeout", "asynchronous script callback did not run");
+            }
+            std::thread::yield_now();
+        }
+    }
+
+    fn console_entries(&self, document: &ScriptDocument, body: &Value) -> ControlResponse {
+        let after = body.get("after").and_then(Value::as_u64).unwrap_or(0);
+        let entries = document.console_entries_after(after);
+        let overflowed = entries
+            .first()
+            .is_some_and(|entry| entry.sequence > after.saturating_add(1));
+        success(json!({
+            "after": after,
+            "overflowed": overflowed,
+            "entries": entries.into_iter().map(|entry| json!({
+                "sequence": entry.sequence,
+                "level": entry.level,
+                "message": entry.message,
+            })).collect::<Vec<_>>(),
+        }))
+    }
+
+    fn runtime_errors(&self, document: &ScriptDocument, body: &Value) -> ControlResponse {
+        let after = body.get("after").and_then(Value::as_u64).unwrap_or(0);
+        let entries = document.runtime_errors_after(after);
+        let overflowed = entries
+            .first()
+            .is_some_and(|entry| entry.sequence > after.saturating_add(1));
+        success(json!({
+            "after": after,
+            "overflowed": overflowed,
+            "entries": entries.into_iter().map(|entry| json!({
+                "sequence": entry.sequence,
+                "message": entry.message,
+                "stack": entry.stack,
+            })).collect::<Vec<_>>(),
+        }))
     }
 
     fn find(&self, document: &ScriptDocument, body: &Value, many: bool) -> ControlResponse {

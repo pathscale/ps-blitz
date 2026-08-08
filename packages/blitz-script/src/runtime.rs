@@ -2,6 +2,7 @@
 //! dispatches events / timers into JavaScript.
 
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::rc::Rc;
 
 use blitz_dom::BaseDocument;
@@ -10,8 +11,9 @@ use boa_engine::object::{JsObject, ObjectInitializer};
 use boa_engine::property::Attribute;
 use boa_engine::value::JsValue;
 use boa_engine::{Context, JsResult, JsString, NativeFunction, Source, js_string};
+use boa_gc::{Finalize, Trace};
 use boa_runtime::Console;
-use boa_runtime::console::DefaultLogger;
+use boa_runtime::console::{ConsoleState, DefaultLogger, Logger};
 use url::Url;
 use web_time::{Duration, Instant};
 
@@ -19,8 +21,102 @@ use crate::dom::event::{EventRef, create_event, create_event_for_dom_event};
 use crate::dom::{dom_ctx, node_wrapper};
 use crate::state::{DomCtx, Listener};
 
-/// Print an unhandled JavaScript error
-fn report_js_error(what: &str, error: &boa_engine::JsError) {
+const DIAGNOSTIC_CAPACITY: usize = 1_000;
+
+#[derive(Debug, Clone)]
+pub(crate) struct DiagnosticEntry {
+    pub sequence: u64,
+    pub level: String,
+    pub message: String,
+    pub stack: String,
+}
+
+#[derive(Debug, Default)]
+struct RuntimeDiagnostics {
+    next_console_sequence: u64,
+    next_error_sequence: u64,
+    console: VecDeque<DiagnosticEntry>,
+    errors: VecDeque<DiagnosticEntry>,
+}
+
+impl RuntimeDiagnostics {
+    fn push_console(&mut self, level: &str, message: String) {
+        self.next_console_sequence += 1;
+        push_bounded(
+            &mut self.console,
+            DiagnosticEntry {
+                sequence: self.next_console_sequence,
+                level: level.into(),
+                message,
+                stack: String::new(),
+            },
+        );
+    }
+
+    fn push_error(&mut self, what: &str, error: &boa_engine::JsError) {
+        self.next_error_sequence += 1;
+        push_bounded(
+            &mut self.errors,
+            DiagnosticEntry {
+                sequence: self.next_error_sequence,
+                level: "error".into(),
+                message: format!("Uncaught JS error in {what}: {error}"),
+                stack: format!("{error:?}"),
+            },
+        );
+    }
+}
+
+fn push_bounded(queue: &mut VecDeque<DiagnosticEntry>, entry: DiagnosticEntry) {
+    if queue.len() == DIAGNOSTIC_CAPACITY {
+        queue.pop_front();
+    }
+    queue.push_back(entry);
+}
+
+#[derive(Debug, Trace, Finalize)]
+struct CapturingLogger {
+    #[unsafe_ignore_trace]
+    diagnostics: Rc<RefCell<RuntimeDiagnostics>>,
+}
+
+impl Logger for CapturingLogger {
+    fn log(&self, msg: String, state: &ConsoleState, context: &mut Context) -> JsResult<()> {
+        self.diagnostics
+            .borrow_mut()
+            .push_console("log", msg.clone());
+        DefaultLogger.log(msg, state, context)
+    }
+
+    fn info(&self, msg: String, state: &ConsoleState, context: &mut Context) -> JsResult<()> {
+        self.diagnostics
+            .borrow_mut()
+            .push_console("info", msg.clone());
+        DefaultLogger.info(msg, state, context)
+    }
+
+    fn warn(&self, msg: String, state: &ConsoleState, context: &mut Context) -> JsResult<()> {
+        self.diagnostics
+            .borrow_mut()
+            .push_console("warn", msg.clone());
+        DefaultLogger.warn(msg, state, context)
+    }
+
+    fn error(&self, msg: String, state: &ConsoleState, context: &mut Context) -> JsResult<()> {
+        self.diagnostics
+            .borrow_mut()
+            .push_console("error", msg.clone());
+        DefaultLogger.error(msg, state, context)
+    }
+}
+
+/// Print and retain an unhandled JavaScript error.
+fn report_js_error(
+    diagnostics: &Rc<RefCell<RuntimeDiagnostics>>,
+    what: &str,
+    error: &boa_engine::JsError,
+) {
+    diagnostics.borrow_mut().push_error(what, error);
     #[cfg(feature = "tracing")]
     tracing::error!("Uncaught JS error in {what}: {error}");
     eprintln!("Uncaught JS error in {what}: {error}");
@@ -29,6 +125,7 @@ fn report_js_error(what: &str, error: &boa_engine::JsError) {
 pub(crate) struct ScriptRuntime {
     pub context: Context,
     pub ctx: DomCtx,
+    diagnostics: Rc<RefCell<RuntimeDiagnostics>>,
 }
 
 impl ScriptRuntime {
@@ -36,9 +133,15 @@ impl ScriptRuntime {
         let mut context = Context::default();
         let ctx = DomCtx::new(doc);
         context.insert_data(ctx.clone());
+        let diagnostics = Rc::new(RefCell::new(RuntimeDiagnostics::default()));
 
-        Console::register_with_logger(DefaultLogger, &mut context)
-            .expect("failed to register console");
+        Console::register_with_logger(
+            CapturingLogger {
+                diagnostics: Rc::clone(&diagnostics),
+            },
+            &mut context,
+        )
+        .expect("failed to register console");
 
         crate::dom::init_protos(&ctx, &mut context);
 
@@ -91,7 +194,11 @@ impl ScriptRuntime {
             window_remove_event_listener,
         );
 
-        let mut runtime = Self { context, ctx };
+        let mut runtime = Self {
+            context,
+            ctx,
+            diagnostics,
+        };
 
         // Small JS bootstrap for APIs that are easiest to define in JS
         runtime.eval_internal(
@@ -115,16 +222,59 @@ impl ScriptRuntime {
         self.run_jobs(description);
     }
 
+    #[cfg(feature = "debug-control")]
+    pub fn eval_json(
+        &mut self,
+        code: &str,
+        description: &str,
+    ) -> Result<serde_json::Value, String> {
+        match self.context.eval(Source::from_bytes(code)) {
+            Ok(value) => {
+                self.run_jobs(description);
+                value
+                    .to_json(&mut self.context)
+                    .map(|value| value.unwrap_or(serde_json::Value::Null))
+                    .map_err(|error| error.to_string())
+            }
+            Err(error) => {
+                report_js_error(&self.diagnostics, description, &error);
+                Err(error.to_string())
+            }
+        }
+    }
+
+    #[cfg(feature = "debug-control")]
+    pub fn console_entries_after(&self, sequence: u64) -> Vec<DiagnosticEntry> {
+        self.diagnostics
+            .borrow()
+            .console
+            .iter()
+            .filter(|entry| entry.sequence > sequence)
+            .cloned()
+            .collect()
+    }
+
+    #[cfg(feature = "debug-control")]
+    pub fn runtime_errors_after(&self, sequence: u64) -> Vec<DiagnosticEntry> {
+        self.diagnostics
+            .borrow()
+            .errors
+            .iter()
+            .filter(|entry| entry.sequence > sequence)
+            .cloned()
+            .collect()
+    }
+
     fn eval_internal(&mut self, code: &str, description: &str) {
         if let Err(error) = self.context.eval(Source::from_bytes(code)) {
-            report_js_error(description, &error);
+            report_js_error(&self.diagnostics, description, &error);
         }
     }
 
     /// Run pending promise jobs (microtasks)
     pub fn run_jobs(&mut self, description: &str) {
         if let Err(error) = self.context.run_jobs() {
-            report_js_error(description, &error);
+            report_js_error(&self.diagnostics, description, &error);
         }
     }
 
@@ -145,7 +295,7 @@ impl ScriptRuntime {
                     .callback
                     .call(&JsValue::undefined(), &timer.args, &mut self.context)
             {
-                report_js_error("timer callback", &error);
+                report_js_error(&self.diagnostics, "timer callback", &error);
             }
         }
         self.run_jobs("timer microtasks");
@@ -310,7 +460,7 @@ impl ScriptRuntime {
                 if let Err(error) =
                     callback.call(&current_target, &[event_obj.clone().into()], context)
                 {
-                    report_js_error("event listener", &error);
+                    report_js_error(&self.diagnostics, "event listener", &error);
                 }
                 if event_ref(&event_obj, &|event| event.stopped_immediate.get()) {
                     break 'chain;
@@ -345,7 +495,7 @@ impl ScriptRuntime {
                             .callback
                             .call(&global, &[event_obj.clone().into()], context)
                     {
-                        report_js_error("event listener", &error);
+                        report_js_error(&self.diagnostics, "event listener", &error);
                     }
                     if event_ref(&event_obj, &|event| event.stopped_immediate.get()) {
                         break;
@@ -416,7 +566,7 @@ impl ScriptRuntime {
                     .callback
                     .call(&global, &[event_obj.clone().into()], context)
             {
-                report_js_error("event listener", &error);
+                report_js_error(&self.diagnostics, "event listener", &error);
             }
         }
 
@@ -427,7 +577,7 @@ impl ScriptRuntime {
                 if handler.is_callable() {
                     any_called = true;
                     if let Err(error) = handler.call(&global, &[event_obj.into()], context) {
-                        report_js_error("event listener", &error);
+                        report_js_error(&self.diagnostics, "event listener", &error);
                     }
                 }
             }
