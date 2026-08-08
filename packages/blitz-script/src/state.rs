@@ -47,6 +47,10 @@ pub(crate) struct RuntimeState {
     /// by the *same* JS object: scripts rely on object identity (`===`) and on
     /// expando properties persisting across accesses.
     pub node_wrappers: HashMap<usize, JsObject>,
+    /// Cache of `DOMStringMap` proxy objects returned by `Element.dataset`.
+    pub dataset_wrappers: HashMap<usize, JsObject>,
+    /// Cache of `DOMTokenList` objects returned by `Element.classList`.
+    pub class_list_wrappers: HashMap<usize, JsObject>,
     /// Event listeners registered on nodes, keyed by node id then event type.
     pub node_listeners: HashMap<usize, ListenerMap>,
     /// Event listeners registered on `window`.

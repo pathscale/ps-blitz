@@ -2,10 +2,10 @@
 //! `style`, `innerHTML` and friends.
 
 use blitz_dom::{LocalName, QualName};
-use boa_engine::object::{JsObject, ObjectInitializer};
-use boa_engine::property::Attribute as PropAttribute;
+use boa_engine::object::{JsObject, ObjectInitializer, builtins::JsProxyBuilder};
+use boa_engine::property::{Attribute as PropAttribute, PropertyKey};
 use boa_engine::value::JsValue;
-use boa_engine::{Context, JsResult, js_string};
+use boa_engine::{Context, Finalize, JsData, JsNativeError, JsResult, Trace, js_string};
 
 use super::{
     define_accessor, define_method, dom_ctx, js_str, node_wrapper, this_node_id, to_rust_string,
@@ -60,6 +60,8 @@ pub(crate) fn init_element_proto(proto: &JsObject, context: &mut Context) {
         context,
     );
     define_accessor(proto, "style", Some(get_style), None, context);
+    define_accessor(proto, "dataset", Some(get_dataset), None, context);
+    define_accessor(proto, "classList", Some(get_class_list), None, context);
     define_accessor(
         proto,
         "innerHTML",
@@ -361,6 +363,356 @@ fn set_disabled(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsRe
         clear_attr(&ctx, node_id, "disabled");
     }
     Ok(JsValue::undefined())
+}
+
+// === dataset ===
+
+#[derive(Trace, Finalize, JsData)]
+struct DatasetRef {
+    #[unsafe_ignore_trace]
+    node_id: usize,
+}
+
+fn dataset_ref(args: &[JsValue]) -> JsResult<usize> {
+    args.first()
+        .and_then(JsValue::as_object)
+        .and_then(|target| target.downcast_ref::<DatasetRef>().map(|data| data.node_id))
+        .ok_or_else(|| {
+            JsNativeError::typ()
+                .with_message("dataset proxy target is invalid")
+                .into()
+        })
+}
+
+fn dataset_key(value: &JsValue, context: &mut Context) -> JsResult<Option<String>> {
+    Ok(match value.to_property_key(context)? {
+        PropertyKey::String(key) => Some(key.to_std_string_lossy()),
+        PropertyKey::Index(key) => Some(key.get().to_string()),
+        PropertyKey::Symbol(_) => None,
+    })
+}
+
+fn dataset_attr_name(key: &str) -> String {
+    let mut name = String::with_capacity(key.len() + 5);
+    name.push_str("data-");
+    for ch in key.chars() {
+        if ch.is_ascii_uppercase() {
+            name.push('-');
+            name.push(ch.to_ascii_lowercase());
+        } else {
+            name.push(ch);
+        }
+    }
+    name
+}
+
+fn dataset_property_name(attr: &str) -> Option<String> {
+    let suffix = attr.strip_prefix("data-")?;
+    let mut key = String::with_capacity(suffix.len());
+    let mut chars = suffix.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '-' && chars.peek().is_some_and(char::is_ascii_lowercase) {
+            key.push(chars.next().expect("peeked character").to_ascii_uppercase());
+        } else {
+            key.push(ch);
+        }
+    }
+    Some(key)
+}
+
+fn dataset_get(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let Some(key) = dataset_key(args.get(1).unwrap_or(&JsValue::undefined()), context)? else {
+        return Ok(JsValue::undefined());
+    };
+    let ctx = dom_ctx(context)?;
+    let node_id = dataset_ref(args)?;
+    Ok(read_attr(&ctx, node_id, &dataset_attr_name(&key))
+        .map_or_else(JsValue::undefined, |value| js_str(&value)))
+}
+
+fn dataset_set(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let Some(key) = dataset_key(args.get(1).unwrap_or(&JsValue::undefined()), context)? else {
+        return Ok(JsValue::from(false));
+    };
+    let value = to_rust_string(args.get(2).unwrap_or(&JsValue::undefined()), context)?;
+    let ctx = dom_ctx(context)?;
+    let node_id = dataset_ref(args)?;
+    write_attr(&ctx, node_id, &dataset_attr_name(&key), &value);
+    Ok(JsValue::from(true))
+}
+
+fn dataset_delete(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let Some(key) = dataset_key(args.get(1).unwrap_or(&JsValue::undefined()), context)? else {
+        return Ok(JsValue::from(true));
+    };
+    let ctx = dom_ctx(context)?;
+    let node_id = dataset_ref(args)?;
+    clear_attr(&ctx, node_id, &dataset_attr_name(&key));
+    Ok(JsValue::from(true))
+}
+
+fn dataset_has(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let Some(key) = dataset_key(args.get(1).unwrap_or(&JsValue::undefined()), context)? else {
+        return Ok(JsValue::from(false));
+    };
+    let ctx = dom_ctx(context)?;
+    let node_id = dataset_ref(args)?;
+    Ok(JsValue::from(
+        read_attr(&ctx, node_id, &dataset_attr_name(&key)).is_some(),
+    ))
+}
+
+fn dataset_own_keys(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let node_id = dataset_ref(args)?;
+    let keys: Vec<JsValue> = {
+        let doc = ctx.doc.borrow();
+        doc.get_node(node_id)
+            .and_then(|node| node.element_data())
+            .map(|element| {
+                element
+                    .attrs()
+                    .iter()
+                    .filter_map(|attr| dataset_property_name(&attr.name.local))
+                    .map(|key| js_str(&key))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    Ok(boa_engine::object::builtins::JsArray::from_iter(keys, context).into())
+}
+
+fn dataset_descriptor(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let Some(key) = dataset_key(args.get(1).unwrap_or(&JsValue::undefined()), context)? else {
+        return Ok(JsValue::undefined());
+    };
+    let ctx = dom_ctx(context)?;
+    let node_id = dataset_ref(args)?;
+    let Some(value) = read_attr(&ctx, node_id, &dataset_attr_name(&key)) else {
+        return Ok(JsValue::undefined());
+    };
+    Ok(ObjectInitializer::new(context)
+        .property(js_string!("value"), js_str(&value), PropAttribute::all())
+        .property(js_string!("writable"), true, PropAttribute::all())
+        .property(js_string!("enumerable"), true, PropAttribute::all())
+        .property(js_string!("configurable"), true, PropAttribute::all())
+        .build()
+        .into())
+}
+
+fn get_dataset(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    if let Some(dataset) = ctx.state.borrow().dataset_wrappers.get(&node_id) {
+        return Ok(dataset.clone().into());
+    }
+
+    let target = JsObject::from_proto_and_data(
+        Some(context.intrinsics().constructors().object().prototype()),
+        DatasetRef { node_id },
+    );
+    let dataset: JsObject = JsProxyBuilder::new(target)
+        .get(dataset_get)
+        .set(dataset_set)
+        .delete_property(dataset_delete)
+        .has(dataset_has)
+        .own_keys(dataset_own_keys)
+        .get_own_property_descriptor(dataset_descriptor)
+        .build(context)?
+        .into();
+    ctx.state
+        .borrow_mut()
+        .dataset_wrappers
+        .insert(node_id, dataset.clone());
+    Ok(dataset.into())
+}
+
+// === classList ===
+
+fn class_tokens(ctx: &DomCtx, node_id: usize) -> Vec<String> {
+    read_attr(ctx, node_id, "class")
+        .unwrap_or_default()
+        .split_ascii_whitespace()
+        .map(str::to_owned)
+        .collect()
+}
+
+fn write_class_tokens(ctx: &DomCtx, node_id: usize, tokens: &[String]) {
+    write_attr(ctx, node_id, "class", &tokens.join(" "));
+}
+
+fn class_token(value: &JsValue, context: &mut Context) -> JsResult<String> {
+    let token = to_rust_string(value, context)?;
+    if token.is_empty() || token.chars().any(|ch| ch.is_ascii_whitespace()) {
+        return Err(JsNativeError::syntax()
+            .with_message("classList token must be non-empty and contain no ASCII whitespace")
+            .into());
+    }
+    Ok(token)
+}
+
+fn class_list_length(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    Ok(JsValue::from(
+        class_tokens(&ctx, this_node_id(this)?).len() as u32
+    ))
+}
+
+fn class_list_value(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    Ok(js_str(
+        &read_attr(&ctx, this_node_id(this)?, "class").unwrap_or_default(),
+    ))
+}
+
+fn set_class_list_value(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let value = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
+    write_attr(&ctx, this_node_id(this)?, "class", &value);
+    Ok(JsValue::undefined())
+}
+
+fn class_list_item(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let index = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .to_u32(context)? as usize;
+    let ctx = dom_ctx(context)?;
+    Ok(class_tokens(&ctx, this_node_id(this)?)
+        .get(index)
+        .map_or_else(JsValue::null, |token| js_str(token)))
+}
+
+fn class_list_contains(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let token = class_token(args.first().unwrap_or(&JsValue::undefined()), context)?;
+    let ctx = dom_ctx(context)?;
+    Ok(JsValue::from(
+        class_tokens(&ctx, this_node_id(this)?).contains(&token),
+    ))
+}
+
+fn class_list_add(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let tokens_to_add = args
+        .iter()
+        .map(|value| class_token(value, context))
+        .collect::<JsResult<Vec<_>>>()?;
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    let mut tokens = class_tokens(&ctx, node_id);
+    for token in tokens_to_add {
+        if !tokens.contains(&token) {
+            tokens.push(token);
+        }
+    }
+    write_class_tokens(&ctx, node_id, &tokens);
+    Ok(JsValue::undefined())
+}
+
+fn class_list_remove(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let tokens_to_remove = args
+        .iter()
+        .map(|value| class_token(value, context))
+        .collect::<JsResult<Vec<_>>>()?;
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    let mut tokens = class_tokens(&ctx, node_id);
+    tokens.retain(|token| !tokens_to_remove.contains(token));
+    write_class_tokens(&ctx, node_id, &tokens);
+    Ok(JsValue::undefined())
+}
+
+fn class_list_toggle(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let token = class_token(args.first().unwrap_or(&JsValue::undefined()), context)?;
+    let force = args.get(1).map(JsValue::to_boolean);
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    let mut tokens = class_tokens(&ctx, node_id);
+    let present = tokens.contains(&token);
+    let retain = force.unwrap_or(!present);
+    if retain && !present {
+        tokens.push(token);
+    } else if !retain && present {
+        tokens.retain(|item| item != &token);
+    }
+    write_class_tokens(&ctx, node_id, &tokens);
+    Ok(JsValue::from(retain))
+}
+
+fn class_list_replace(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let old = class_token(args.first().unwrap_or(&JsValue::undefined()), context)?;
+    let new = class_token(args.get(1).unwrap_or(&JsValue::undefined()), context)?;
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    let mut tokens = class_tokens(&ctx, node_id);
+    let Some(index) = tokens.iter().position(|token| token == &old) else {
+        return Ok(JsValue::from(false));
+    };
+    if old != new {
+        tokens[index] = new;
+        let mut seen = std::collections::HashSet::new();
+        tokens.retain(|token| seen.insert(token.clone()));
+    }
+    write_class_tokens(&ctx, node_id, &tokens);
+    Ok(JsValue::from(true))
+}
+
+fn class_list_to_string(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    class_list_value(this, args, context)
+}
+
+fn get_class_list(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    if let Some(class_list) = ctx.state.borrow().class_list_wrappers.get(&node_id) {
+        return Ok(class_list.clone().into());
+    }
+
+    let class_list = JsObject::from_proto_and_data(
+        Some(context.intrinsics().constructors().object().prototype()),
+        super::NodeRef { node_id },
+    );
+    define_accessor(
+        &class_list,
+        "length",
+        Some(class_list_length),
+        None,
+        context,
+    );
+    define_accessor(
+        &class_list,
+        "value",
+        Some(class_list_value),
+        Some(set_class_list_value),
+        context,
+    );
+    define_method(&class_list, "item", 1, class_list_item, context);
+    define_method(&class_list, "contains", 1, class_list_contains, context);
+    define_method(&class_list, "add", 1, class_list_add, context);
+    define_method(&class_list, "remove", 1, class_list_remove, context);
+    define_method(&class_list, "toggle", 1, class_list_toggle, context);
+    define_method(&class_list, "replace", 2, class_list_replace, context);
+    define_method(&class_list, "toString", 0, class_list_to_string, context);
+    ctx.state
+        .borrow_mut()
+        .class_list_wrappers
+        .insert(node_id, class_list.clone());
+    Ok(class_list.into())
 }
 
 // === Style ===

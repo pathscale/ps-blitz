@@ -116,6 +116,113 @@ fn attributes_and_properties() {
 }
 
 #[test]
+fn dataset_reflects_data_attributes() {
+    let doc = doc_from_html(
+        r#"
+        <html><body>
+            <div id="box" data-user-id="42"></div>
+            <script>
+                const box = document.getElementById("box");
+                const sameObject = box.dataset === box.dataset;
+                const initial = box.dataset.userId;
+                box.dataset.colorMode = "dark";
+                const reflected = box.getAttribute("data-color-mode");
+                const present = "colorMode" in box.dataset;
+                const keys = Object.keys(box.dataset).sort().join(",");
+                delete box.dataset.userId;
+                const removed = !box.hasAttribute("data-user-id");
+                const out = document.createElement("div");
+                out.id = "dataset-out";
+                out.textContent = [sameObject, initial, reflected, present, keys, removed].join("|");
+                document.body.appendChild(out);
+            </script>
+        </body></html>
+        "#,
+    );
+    assert_eq!(
+        text_of_selector(&doc, "#dataset-out"),
+        "true|42|dark|true|colorMode,userId|true"
+    );
+}
+
+#[test]
+fn class_list_reflects_the_class_attribute() {
+    let doc = doc_from_html(
+        r#"
+        <html><body>
+            <div id="box" class="one two"></div>
+            <script>
+                const box = document.getElementById("box");
+                const sameObject = box.classList === box.classList;
+                box.classList.add("three", "one");
+                const forcedOff = box.classList.toggle("two", false);
+                const toggledOn = box.classList.toggle("four");
+                const replaced = box.classList.replace("three", "five");
+                box.classList.remove("one");
+                const out = document.createElement("div");
+                out.id = "class-list-out";
+                out.textContent = [
+                    sameObject,
+                    forcedOff,
+                    toggledOn,
+                    replaced,
+                    box.className,
+                    box.classList.length,
+                    box.classList.item(0),
+                    box.classList.contains("five"),
+                    String(box.classList),
+                ].join("|");
+                document.body.appendChild(out);
+            </script>
+        </body></html>
+        "#,
+    );
+    assert_eq!(
+        text_of_selector(&doc, "#class-list-out"),
+        "true|false|true|true|five four|2|five|true|five four"
+    );
+}
+
+#[test]
+fn structured_clone_copies_supported_values_and_cycles() {
+    let doc = doc_from_html(
+        r#"
+        <html><body>
+            <script>
+                const source = {
+                    nested: { value: 7 },
+                    list: [1, 2],
+                    date: new Date("2024-01-02T03:04:05Z"),
+                    map: new Map([["key", { value: 9 }]]),
+                    set: new Set(["a", "b"]),
+                };
+                source.self = source;
+                const copy = structuredClone(source);
+                copy.nested.value = 8;
+                const out = document.createElement("div");
+                out.id = "clone-out";
+                out.textContent = [
+                    copy !== source,
+                    copy.self === copy,
+                    source.nested.value,
+                    copy.nested.value,
+                    copy.list.join(","),
+                    copy.date.toISOString(),
+                    copy.map.get("key").value,
+                    [...copy.set].join(","),
+                ].join("|");
+                document.body.appendChild(out);
+            </script>
+        </body></html>
+        "#,
+    );
+    assert_eq!(
+        text_of_selector(&doc, "#clone-out"),
+        "true|true|7|8|1,2|2024-01-02T03:04:05.000Z|9|a,b"
+    );
+}
+
+#[test]
 fn query_selectors() {
     let doc = doc_from_html(
         r#"

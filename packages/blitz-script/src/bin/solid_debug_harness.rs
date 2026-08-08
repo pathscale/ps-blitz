@@ -7,7 +7,8 @@ use blitz_traits::shell::{ColorScheme, Viewport};
 use url::Url;
 
 fn main() {
-    let index_path = std::env::var_os("BLITZ_SOLID_PROBE")
+    let index_path = std::env::var_os("BLITZ_DEBUG_DOCUMENT")
+        .or_else(|| std::env::var_os("BLITZ_SOLID_PROBE"))
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/solid-probe/index.html")

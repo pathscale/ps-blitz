@@ -208,6 +208,63 @@ impl ScriptRuntime {
                     Promise.resolve().then(callback);
                 };
             }
+            if (typeof globalThis.structuredClone !== "function") {
+                globalThis.structuredClone = function (input, options) {
+                    if (options && options.transfer && options.transfer.length) {
+                        throw new TypeError("structuredClone transfer is not supported");
+                    }
+
+                    const seen = new Map();
+                    const clone = function (value) {
+                        if (value === null || typeof value !== "object") {
+                            if (typeof value === "function" || typeof value === "symbol") {
+                                throw new TypeError("value cannot be structured-cloned");
+                            }
+                            return value;
+                        }
+                        if (value === globalThis || typeof value.nodeType === "number") {
+                            throw new TypeError("value cannot be structured-cloned");
+                        }
+                        if (seen.has(value)) return seen.get(value);
+
+                        let copy;
+                        if (Array.isArray(value)) {
+                            copy = [];
+                        } else if (value instanceof Date) {
+                            return new Date(value.getTime());
+                        } else if (value instanceof RegExp) {
+                            return new RegExp(value.source, value.flags);
+                        } else if (value instanceof Map) {
+                            copy = new Map();
+                            seen.set(value, copy);
+                            for (const [key, entry] of value) copy.set(clone(key), clone(entry));
+                            return copy;
+                        } else if (value instanceof Set) {
+                            copy = new Set();
+                            seen.set(value, copy);
+                            for (const entry of value) copy.add(clone(entry));
+                            return copy;
+                        } else if (typeof ArrayBuffer !== "undefined" && value instanceof ArrayBuffer) {
+                            return value.slice(0);
+                        } else if (typeof ArrayBuffer !== "undefined" && ArrayBuffer.isView(value)) {
+                            const buffer = clone(value.buffer);
+                            if (typeof DataView !== "undefined" && value instanceof DataView) {
+                                return new DataView(buffer, value.byteOffset, value.byteLength);
+                            }
+                            return new value.constructor(buffer, value.byteOffset, value.length);
+                        } else if (value instanceof WeakMap || value instanceof WeakSet || value instanceof Promise) {
+                            throw new TypeError("value cannot be structured-cloned");
+                        } else {
+                            copy = Object.create(Object.getPrototypeOf(value) === null ? null : Object.prototype);
+                        }
+
+                        seen.set(value, copy);
+                        for (const key of Object.keys(value)) copy[key] = clone(value[key]);
+                        return copy;
+                    };
+                    return clone(input);
+                };
+            }
             "#,
             "<blitz-bootstrap>",
         );
