@@ -339,21 +339,42 @@ impl TextInputData {
                 return Some(GeneratedTextInputEvent::Select);
             }
             Key::Delete => {
-                if action_mod {
-                    driver.delete_word()
+                #[cfg(target_os = "macos")]
+                if mods.contains(Modifiers::SUPER) {
+                    if driver.editor.raw_selection().is_collapsed() {
+                        driver.select_to_line_end();
+                    }
+                    driver.delete_selection();
+                } else if mods.contains(Modifiers::ALT) {
+                    driver.delete_word();
                 } else {
-                    driver.delete()
+                    driver.delete();
+                }
+                #[cfg(not(target_os = "macos"))]
+                if action_mod {
+                    driver.delete_word();
+                } else {
+                    driver.delete();
                 }
                 return Some(GeneratedTextInputEvent::Input);
             }
-
-            // On macOS this is handled by the apple standard keybindings
-            #[cfg(not(target_os = "macos"))]
             Key::Backspace => {
-                if action_mod {
-                    driver.backdelete_word()
+                #[cfg(target_os = "macos")]
+                if mods.contains(Modifiers::SUPER) {
+                    if driver.editor.raw_selection().is_collapsed() {
+                        driver.select_to_line_start();
+                    }
+                    driver.delete_selection();
+                } else if mods.contains(Modifiers::ALT) {
+                    driver.backdelete_word();
                 } else {
-                    driver.backdelete()
+                    driver.backdelete();
+                }
+                #[cfg(not(target_os = "macos"))]
+                if action_mod {
+                    driver.backdelete_word();
+                } else {
+                    driver.backdelete();
                 }
                 return Some(GeneratedTextInputEvent::Input);
             }
@@ -447,15 +468,10 @@ impl TextInputData {
             // Deleting Content
 
             // Deletes content moving backward from the current insertion point.
-            // TODO: handle deleteBackwardByDecomposingPreviousCharacter separately
-            "deleteBackward:" | "deleteBackwardByDecomposingPreviousCharacter:" => {
-                driver.backdelete();
-                return Some(GeneratedTextInputEvent::Input);
-            }
-            "deleteForward:" => {
-                driver.delete();
-                return Some(GeneratedTextInputEvent::Input);
-            }
+            // Physical Backspace/Delete events are handled directly above. AppKit may
+            // deliver these selectors as well, but applying both would delete twice.
+            "deleteBackward:" | "deleteBackwardByDecomposingPreviousCharacter:" => {}
+            "deleteForward:" => {}
             // Deletes content from the insertion point to the beginning of the current line.
             "deleteToBeginningOfLine:" => {
                 if driver.editor.raw_selection().is_collapsed() {
@@ -489,15 +505,9 @@ impl TextInputData {
                 return Some(GeneratedTextInputEvent::Input);
             }
             // Deletes content from the insertion point to the end of the current paragraph.
-            "deleteWordBackward:" => {
-                driver.backdelete_word();
-                return Some(GeneratedTextInputEvent::Input);
-            }
+            "deleteWordBackward:" => {}
             // Deletes the word preceding the current insertion point.
-            "deleteWordForward:" => {
-                driver.delete_word();
-                return Some(GeneratedTextInputEvent::Input);
-            }
+            "deleteWordForward:" => {}
             // Deletes the current selection, placing it in a temporary buffer, such as the Clipboard.
             "yank:" => {
                 if let Some(text) = driver.editor.selected_text() {
@@ -824,6 +834,7 @@ impl TextInputData {
 mod shortcut_tests {
     use super::*;
     use blitz_traits::events::{BlitzKeyEvent, KeyState};
+    use blitz_traits::shell::DummyShellProvider;
     use keyboard_types::Location;
 
     fn control_event(key: Key, code: Code) -> BlitzKeyEvent {
@@ -843,5 +854,32 @@ mod shortcut_tests {
     fn control_character_cut_uses_the_physical_key_code() {
         let event = control_event(Key::Character("\u{18}".into()), Code::KeyX);
         assert_eq!(clipboard_command(&event), Some(ClipboardCommand::Cut));
+    }
+
+    #[test]
+    fn backspace_does_not_depend_on_an_apple_standard_keybinding() {
+        let mut data = TextInputData::new(false);
+        let mut font_ctx = FontContext::default();
+        let mut layout_ctx = LayoutContext::new();
+        data.set_text(&mut font_ctx, &mut layout_ctx, "typo");
+        data.editor
+            .driver(&mut font_ctx, &mut layout_ctx)
+            .move_to_text_end();
+        let event = BlitzKeyEvent {
+            key: Key::Backspace,
+            code: Code::Backspace,
+            modifiers: Modifiers::empty(),
+            location: Location::Standard,
+            is_auto_repeating: false,
+            is_composing: false,
+            state: KeyState::Pressed,
+            text: None,
+        };
+
+        assert!(matches!(
+            data.apply_keypress_event(&mut font_ctx, &mut layout_ctx, &DummyShellProvider, event,),
+            Some(GeneratedTextInputEvent::Input)
+        ));
+        assert_eq!(data.editor.raw_text(), "typ");
     }
 }
