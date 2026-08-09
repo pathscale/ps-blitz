@@ -4,6 +4,7 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
+use std::sync::LazyLock;
 
 use blitz_dom::BaseDocument;
 use blitz_traits::events::{DomEvent, DomEventData, EventState};
@@ -216,6 +217,16 @@ impl ScriptRuntime {
             )
             .build();
         register_global(&mut context, "navigator", navigator.into());
+
+        // `performance`
+        let performance = ObjectInitializer::new(&mut context)
+            .function(
+                NativeFunction::from_fn_ptr(performance_now),
+                js_string!("now"),
+                0,
+            )
+            .build();
+        register_global(&mut context, "performance", performance.into());
 
         // Timers and window event listeners
         register_global_fn(&mut context, "setTimeout", 2, set_timeout);
@@ -877,6 +888,15 @@ fn ipc_post_message(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
         handler(body);
     }
     Ok(JsValue::undefined())
+}
+
+/// The spec's time origin is document creation. A first-use instant is close
+/// enough for the elapsed-time measurements callers actually take, and sharing
+/// one origin across documents keeps their readings comparable.
+static TIME_ORIGIN: LazyLock<Instant> = LazyLock::new(Instant::now);
+
+fn performance_now(_: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+    Ok(JsValue::new(TIME_ORIGIN.elapsed().as_secs_f64() * 1000.0))
 }
 
 fn random_u32(_: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
