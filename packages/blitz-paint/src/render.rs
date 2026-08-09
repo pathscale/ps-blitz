@@ -801,13 +801,27 @@ impl ElementCx<'_, '_> {
                 };
             }
 
-            // Render text
-            crate::text::stroke_text(
+            // Render the editable value, or its placeholder while empty. The
+            // placeholder uses the inherited input color at reduced opacity;
+            // dedicated ::placeholder styling can refine this later without
+            // conflating placeholder text with the form value.
+            let placeholder = input_data.editor.text() == "";
+            let layout = if placeholder {
+                input_data
+                    .placeholder_editor
+                    .as_ref()
+                    .and_then(|editor| editor.try_layout())
+                    .unwrap_or_else(|| input_data.editor.try_layout().unwrap())
+            } else {
+                input_data.editor.try_layout().unwrap()
+            };
+            crate::text::stroke_text_with_alpha(
                 scene,
-                input_data.editor.try_layout().unwrap().lines(),
+                layout.lines(),
                 self.context.dom,
                 transform,
                 self.scale,
+                if placeholder { 0.55 } else { 1.0 },
             );
         }
     }

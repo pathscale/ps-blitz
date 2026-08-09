@@ -56,6 +56,8 @@ pub enum GeneratedTextInputEvent {
 pub struct TextInputData {
     /// A parley TextEditor instance
     pub editor: Box<parley::PlainEditor<TextBrush>>,
+    /// Shaped placeholder text, painted only while the editable value is empty.
+    pub placeholder_editor: Option<Box<parley::PlainEditor<TextBrush>>>,
     /// Whether the input is a singleline or multiline input
     pub is_multiline: bool,
     /// The scroll offset of the text content within the input, in CSS (unscaled) pixels.
@@ -78,6 +80,7 @@ impl TextInputData {
         let editor = Box::new(parley::PlainEditor::new(16.0));
         Self {
             editor,
+            placeholder_editor: None,
             is_multiline,
             scroll_offset: 0.0,
         }
