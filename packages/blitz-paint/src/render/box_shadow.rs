@@ -1,7 +1,7 @@
 use super::ElementCx;
 use crate::color::{Color, ToColorColor as _};
 use anyrender::PaintScene;
-use kurbo::{Rect, Vec2};
+use kurbo::Vec2;
 use peniko::{Compose, Fill, Mix};
 
 impl ElementCx<'_, '_> {
@@ -23,17 +23,26 @@ impl ElementCx<'_, '_> {
         let bg_is_opaque = bg_color.components[3] >= 1.0;
         let needs_clip = opacity < 1.0 || !bg_is_opaque;
 
-        let max_shadow_rect = box_shadow.iter().fold(Rect::ZERO, |prev, shadow| {
-            let x = shadow.base.horizontal.px() as f64 * self.scale;
-            let y = shadow.base.vertical.px() as f64 * self.scale;
-            let blur = shadow.base.blur.px() as f64 * self.scale;
-            let spread = shadow.spread.px() as f64 * self.scale;
-            let offset = spread + blur * 2.5;
+        // Start from the first real outset shadow. Including Rect::ZERO pulls
+        // the clip toward the scene origin, while including inset shadows can
+        // make the compositing layer much larger than anything drawn here.
+        // Both are especially visible for Tailwind-style rings on transparent
+        // circular elements, where the oversized layer becomes an opaque
+        // rectangular artifact.
+        let max_shadow_rect = box_shadow
+            .iter()
+            .filter(|shadow| !shadow.inset)
+            .map(|shadow| {
+                let x = shadow.base.horizontal.px() as f64 * self.scale;
+                let y = shadow.base.vertical.px() as f64 * self.scale;
+                let blur = shadow.base.blur.px() as f64 * self.scale;
+                let spread = shadow.spread.px() as f64 * self.scale;
+                let offset = spread + blur * 2.5;
 
-            let rect = self.frame.border_box.inflate(offset, offset) + Vec2::new(x, y);
-
-            prev.union(rect)
-        });
+                self.frame.border_box.inflate(offset, offset) + Vec2::new(x, y)
+            })
+            .reduce(|prev, rect| prev.union(rect))
+            .expect("outset shadow checked above");
 
         self.context.layer_manager.maybe_with_layer(
             scene,

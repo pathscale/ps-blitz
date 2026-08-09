@@ -108,6 +108,11 @@ pub struct View<Rend: WindowRenderer> {
     pub is_visible: bool,
     pub safe_area_insets: PhysicalInsets<u32>,
 
+    /// Whether a platform redraw has already been requested and has not yet
+    /// entered [`Self::redraw`]. DOM mutations can invalidate a window many
+    /// times during one input burst; the platform only needs one frame request.
+    redraw_pending: std::cell::Cell<bool>,
+
     #[cfg(target_arch = "wasm32")]
     pending_resize: Option<winit::dpi::PhysicalSize<u32>>,
     #[cfg(target_arch = "wasm32")]
@@ -223,6 +228,7 @@ impl<Rend: WindowRenderer> View<Rend> {
             resize_timer_scheduled: false,
             pointer_pos: Default::default(),
             is_visible: winit_window.is_visible().unwrap_or(true),
+            redraw_pending: std::cell::Cell::new(false),
             #[cfg(feature = "accessibility")]
             accessibility,
 
@@ -348,6 +354,7 @@ impl<Rend: WindowRenderer> View<Rend> {
             )
         });
         drop(inner);
+        self.redraw_pending.set(false);
 
         self.waker = Some(create_waker(&self.proxy, window_id));
         // Scripts can schedule timers before the native surface exists. Their timer thread has
@@ -359,6 +366,7 @@ impl<Rend: WindowRenderer> View<Rend> {
 
     pub fn suspend(&mut self) {
         self.waker = None;
+        self.redraw_pending.set(false);
         self.renderer.suspend();
 
         #[cfg(feature = "custom-widget")]
@@ -386,7 +394,7 @@ impl<Rend: WindowRenderer> View<Rend> {
     }
 
     pub fn request_redraw(&self) {
-        if self.renderer.is_active() {
+        if self.renderer.is_active() && !self.redraw_pending.replace(true) {
             self.window.request_redraw();
             #[cfg(target_os = "ios")]
             self.ios_request_redraw.set(true);
@@ -394,6 +402,7 @@ impl<Rend: WindowRenderer> View<Rend> {
     }
 
     pub fn redraw(&mut self) {
+        self.redraw_pending.set(false);
         #[cfg(target_os = "ios")]
         self.ios_request_redraw.set(false);
         let animation_time = self.current_animation_time();
