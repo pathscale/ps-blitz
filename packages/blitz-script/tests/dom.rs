@@ -526,6 +526,44 @@ fn click_events_bubble_to_document() {
 }
 
 #[test]
+fn click_events_expose_the_composed_path() {
+    let mut doc = doc_from_html(
+        r#"
+        <html><body>
+            <div id="outer"><button id="btn">Click me</button></div>
+            <div id="out">missing</div>
+            <script>
+                const btn = document.getElementById("btn");
+                btn.addEventListener("click", (event) => {
+                    const path = event.composedPath();
+                    document.getElementById("out").textContent = [
+                        path[0] === btn,
+                        path.indexOf(document) >= 0,
+                        path[path.length - 1] === window,
+                    ].join("|");
+                });
+            </script>
+        </body></html>
+        "#,
+    );
+
+    let click_event = {
+        let inner = doc.inner();
+        let btn_id = inner.query_selector("#btn").unwrap().unwrap();
+        DomEvent::new(
+            btn_id,
+            inner
+                .get_node(btn_id)
+                .unwrap()
+                .synthetic_click_event(Modifiers::empty()),
+        )
+    };
+    doc.dispatch_dom_event(click_event);
+
+    assert_eq!(text_of_selector(&doc, "#out"), "true|true|true");
+}
+
+#[test]
 fn click_events_bubble_and_stop_propagation() {
     let mut doc = doc_from_html(
         r#"

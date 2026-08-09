@@ -11,7 +11,7 @@ use super::{
     define_accessor, define_method, define_value, dom_ctx, js_str, node_id_of_value, node_or_null,
     node_wrapper, this_node_id, to_rust_string,
 };
-use crate::dom::event::EventRef;
+use crate::dom::event::{EventRef, set_event_path};
 use crate::state::Listener;
 
 pub(crate) fn init_node_proto(proto: &JsObject, context: &mut Context) {
@@ -630,6 +630,12 @@ fn dispatch_event(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
     define_value(&event, "target", target.clone(), context);
     define_value(&event, "srcElement", target, context);
     define_value(&event, "eventPhase", JsValue::from(2), context);
+    let mut event_path: Vec<JsObject> = chain
+        .iter()
+        .map(|&node_id| node_wrapper(&ctx, node_id, context))
+        .collect();
+    event_path.push(context.global_object().clone());
+    set_event_path(&event, event_path);
     let on_name = boa_engine::JsString::from(format!("on{event_type}"));
 
     'chain: for node_id in chain {

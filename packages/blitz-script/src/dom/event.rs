@@ -6,8 +6,10 @@ use blitz_traits::events::{
     BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, DomEventData,
 };
 use boa_engine::object::JsObject;
+use boa_engine::object::builtins::JsArray;
 use boa_engine::value::JsValue;
 use boa_engine::{Context, Finalize, JsData, JsNativeError, JsResult, NativeFunction, Trace};
+use boa_gc::GcRefCell;
 use keyboard_types::Modifiers;
 
 use super::{define_accessor, define_method, define_value, dom_ctx, js_str, to_rust_string};
@@ -17,6 +19,7 @@ use crate::state::DomCtx;
 /// `preventDefault` / `stopPropagation` so they can be read back after dispatch.
 #[derive(Default, Trace, Finalize, JsData)]
 pub(crate) struct EventRef {
+    pub path: GcRefCell<Vec<JsObject>>,
     #[unsafe_ignore_trace]
     pub prevented: Cell<bool>,
     #[unsafe_ignore_trace]
@@ -26,6 +29,7 @@ pub(crate) struct EventRef {
 }
 
 pub(crate) fn init_event_proto(proto: &JsObject, context: &mut Context) {
+    define_method(proto, "composedPath", 0, composed_path, context);
     define_method(proto, "preventDefault", 0, prevent_default, context);
     define_method(proto, "stopPropagation", 0, stop_propagation, context);
     define_method(
@@ -42,6 +46,12 @@ pub(crate) fn init_event_proto(proto: &JsObject, context: &mut Context) {
         None,
         context,
     );
+}
+
+pub(crate) fn set_event_path(event: &JsObject, path: Vec<JsObject>) {
+    if let Some(event) = event.downcast_ref::<EventRef>() {
+        *event.path.borrow_mut() = path;
+    }
 }
 
 pub(crate) fn register_event_constructor(proto: &JsObject, context: &mut Context) {
@@ -103,6 +113,11 @@ fn event_constructor(_: &JsValue, args: &[JsValue], context: &mut Context) -> Js
 fn event_ref<T>(this: &JsValue, f: impl FnOnce(&EventRef) -> T) -> Option<T> {
     this.as_object()
         .and_then(|obj| obj.downcast_ref::<EventRef>().map(|event| f(&event)))
+}
+
+fn composed_path(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let path = event_ref(this, |event| event.path.borrow().clone()).unwrap_or_default();
+    Ok(JsArray::from_iter(path.into_iter().map(Into::into), context).into())
 }
 
 fn prevent_default(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {

@@ -18,7 +18,7 @@ use boa_runtime::console::{ConsoleState, DefaultLogger, Logger};
 use url::Url;
 use web_time::{Duration, Instant};
 
-use crate::dom::event::{EventRef, create_event, create_event_for_dom_event};
+use crate::dom::event::{EventRef, create_event, create_event_for_dom_event, set_event_path};
 use crate::dom::{define_accessor, dom_ctx, node_wrapper};
 use crate::state::{DomCtx, Listener};
 
@@ -747,6 +747,12 @@ impl ScriptRuntime {
 
         let target: JsValue = node_wrapper(&ctx, chain[0], context).into();
         let event_obj = make_event(&ctx, &target, context);
+        let mut event_path: Vec<JsObject> = chain
+            .iter()
+            .map(|&node_id| node_wrapper(&ctx, node_id, context))
+            .collect();
+        event_path.push(context.global_object().clone());
+        set_event_path(&event_obj, event_path);
         let event_ref = |event_obj: &JsObject, f: &dyn Fn(&EventRef) -> bool| -> bool {
             event_obj
                 .downcast_ref::<EventRef>()
