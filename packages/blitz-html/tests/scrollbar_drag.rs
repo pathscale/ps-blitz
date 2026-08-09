@@ -121,20 +121,23 @@ fn drag_clamps_at_the_end_of_the_track() {
 }
 
 #[test]
-fn faded_out_thumb_does_not_capture_drags() {
+fn initially_visible_thumb_captures_drags() {
     let mut doc = scroller_doc();
     let scroller = doc.query_selector("#scroller").unwrap().unwrap();
 
-    // Never scrolled, so the scrollbars are hidden: a drag across where the
-    // thumb would be must fall through to the content.
+    // Before the first scroll, the thumb is visible for discoverability and
+    // must already be interactive.
     drag(&mut doc, (97.0, 8.0), (97.0, 42.0));
 
     let offset = doc.get_node(scroller).unwrap().scroll_offset.y;
-    assert_eq!(offset, 0.0, "hidden thumbs must not capture pointer events");
+    assert!(
+        offset > 0.0,
+        "the initially visible thumb must be draggable"
+    );
 }
 
 #[test]
-fn pointer_hover_does_not_summon_hidden_scrollbars() {
+fn pointer_hover_brightens_the_initial_scrollbar() {
     use anyrender::render_to_buffer;
     use anyrender_vello_cpu::VelloCpuImageRenderer;
     use blitz_paint::paint_scene;
@@ -150,8 +153,8 @@ fn pointer_hover_does_not_summon_hidden_scrollbars() {
     let mut doc = scroller_doc();
     let at_rest = render(&mut doc);
 
-    // Only scrolling shows overlay scrollbars: hovering where the thumb
-    // would be must not fade them in.
+    // The initial scrollbar is visible, so hovering its thumb should provide
+    // the same feedback as a thumb revealed by scrolling.
     {
         let mut driver = EventDriver::new(&mut doc, NoopEventHandler);
         driver.handle_ui_event(UiEvent::PointerMove(pointer_event(
@@ -162,7 +165,7 @@ fn pointer_hover_does_not_summon_hidden_scrollbars() {
     }
     let hovered = render(&mut doc);
 
-    assert_eq!(at_rest, hovered, "hovering must not paint a thumb");
+    assert_ne!(at_rest, hovered, "hovering must brighten the initial thumb");
 }
 
 #[test]

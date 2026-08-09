@@ -11,6 +11,7 @@ use crate::{
     Attribute, BaseDocument, Document, ElementData, Node, NodeData, QualName, local_name, qual_name,
 };
 use blitz_traits::shell::Viewport;
+use markup5ever::ns;
 use style::Atom;
 use style::invalidation::element::restyle_hints::RestyleHint;
 use style::stylesheets::OriginSet;
@@ -670,7 +671,7 @@ impl<'doc> DocumentMutator<'doc> {
             // Custom post-processing by element tag name
             let tag = element.name.local.as_ref();
             match tag {
-                "title" => self.title_node = Some(node_id),
+                "title" if element.name.ns == ns!(html) => self.title_node = Some(node_id),
                 "link" => self.eager_op_queue.push(SpecialOp::LoadStylesheet(node_id)),
                 "img" => self.eager_op_queue.push(SpecialOp::LoadImage(node_id)),
                 "canvas" => self
@@ -779,16 +780,12 @@ impl<'doc> DocumentMutator<'doc> {
             return;
         };
 
-        let Some(tag_name) = self.doc.nodes[node_id]
-            .data
-            .downcast_element()
-            .map(|elem| &elem.name.local)
-        else {
+        let Some(element) = self.doc.nodes[node_id].data.downcast_element() else {
             return;
         };
 
-        match tag_name.as_ref() {
-            "title" => self.title_node = Some(node_id),
+        match element.name.local.as_ref() {
+            "title" if element.name.ns == ns!(html) => self.title_node = Some(node_id),
             "style" => {
                 self.style_nodes.insert(node_id);
             }

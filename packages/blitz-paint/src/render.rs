@@ -583,9 +583,9 @@ impl ElementCx<'_, '_> {
     /// Paint overlay scrollbar thumbs for scroll containers: `overflow:
     /// scroll`, or `auto` when the content overflows (never `hidden`/`clip`,
     /// which scroll only programmatically). Thumbs appear on scroll and fade
-    /// out after a delay ([`BaseDocument::scrollbar_opacity`]); never-scrolled
-    /// containers paint nothing, keeping thumbs out of static reftest
-    /// screenshots.
+    /// out after a delay ([`BaseDocument::scrollbar_opacity`]). Newly
+    /// overflowing containers remain visible until their first interaction so
+    /// the user can discover that more content is available.
     ///
     /// Geometry comes from [`Node::scrollbar_thumb`], shared with the
     /// thumb-drag hit testing in blitz-dom.

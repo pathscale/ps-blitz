@@ -24,7 +24,7 @@ use blitz_traits::net::{AbortSignal, DummyNetProvider, NetProvider, Request};
 use blitz_traits::shell::{ColorScheme, DummyShellProvider, ShellProvider, Viewport};
 use cursor_icon::CursorIcon;
 use linebender_resource_handle::Blob;
-use markup5ever::local_name;
+use markup5ever::{local_name, ns};
 use parley::{FontContext, PlainEditorDriver};
 use selectors::{Element, matching::QuirksMode};
 use slab::Slab;
@@ -1392,9 +1392,9 @@ impl BaseDocument {
     }
 
     /// The current opacity of `node_id`'s overlay scrollbars. They show at
-    /// full opacity on scroll and fade out after a delay (Chromium's overlay
-    /// timings); the pointer resting on a thumb, or dragging it, holds them
-    /// visible.
+    /// full opacity before their first interaction so newly overflowing
+    /// content remains discoverable. After the first scroll they fade out on
+    /// Chromium's overlay timings; hovering or dragging holds them visible.
     pub fn scrollbar_opacity(&self, node_id: usize) -> f32 {
         let interacting = |scrollbar: &crate::node::ScrollbarRef| scrollbar.node_id == node_id;
         if self.hovered_scrollbar.as_ref().is_some_and(interacting)
@@ -1405,7 +1405,7 @@ impl BaseDocument {
         {
             return 1.0;
         }
-        self.scrollbar_activity.get(&node_id).map_or(0.0, |last| {
+        self.scrollbar_activity.get(&node_id).map_or(1.0, |last| {
             crate::node::scrollbar::opacity_at(last.elapsed())
         })
     }
@@ -2022,9 +2022,19 @@ impl BaseDocument {
     pub fn find_title_node(&self) -> Option<&Node> {
         TreeTraverser::new(self)
             .find(|node_id| {
-                self.nodes[*node_id]
-                    .data
-                    .is_element_with_tag_name(&local_name!("title"))
+                let node = &self.nodes[*node_id];
+                let Some(element) = node.element_data() else {
+                    return false;
+                };
+                if element.name.ns != ns!(html) || element.name.local != local_name!("title") {
+                    return false;
+                }
+                node.parent
+                    .and_then(|parent_id| self.nodes.get(parent_id))
+                    .and_then(Node::element_data)
+                    .is_some_and(|parent| {
+                        parent.name.ns == ns!(html) && parent.name.local == local_name!("head")
+                    })
             })
             .map(|node_id| &self.nodes[node_id])
     }

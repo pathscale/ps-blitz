@@ -20,6 +20,7 @@ thread_local! {
     pub(crate) static LAYOUT_CTX: RefCell<Option<Box<LayoutContext<TextBrush>>>> = const { RefCell::new(None) };
 }
 
+use style::properties::generated::longhands::position::computed_value::T as Position;
 use style::selector_parser::RestyleDamage;
 use taffy::AvailableSpace;
 
@@ -54,13 +55,12 @@ impl BaseDocument {
 
         self.resolve_scroll_animation();
 
-        // Drop scrollbar-activity entries whose fade-out has finished (also
-        // sheds entries for removed nodes).
-        {
-            use crate::node::scrollbar::{FADE_DELAY, FADE_DURATION};
-            self.scrollbar_activity
-                .retain(|_, last| last.elapsed() < FADE_DELAY + FADE_DURATION);
-        }
+        // Retain completed activity entries so an initially visible scrollbar
+        // stays faded after its first interaction. Only removed nodes need to
+        // shed their entry.
+        let nodes = &self.nodes;
+        self.scrollbar_activity
+            .retain(|node_id, _| nodes.contains(*node_id));
 
         let root_node_id = self.root_element().id;
         debug_timer!(timer, feature = "log-phase-times");
@@ -374,6 +374,32 @@ impl BaseDocument {
 
         taffy::compute_root_layout(self, root_element_id, available_space);
         taffy::round_layout(self, root_element_id);
+
+        // Taffy currently maps CSS `position: fixed` to absolute positioning,
+        // which leaves the box relative to its DOM layout parent. A portal
+        // mounted after a full-height application root therefore starts one
+        // viewport below the window even with `top: 0`. Cancel the layout
+        // parent's document-space offset so fixed boxes use the viewport as
+        // their containing block, as CSS requires.
+        let fixed_nodes = self
+            .nodes
+            .iter()
+            .filter_map(|(node_id, node)| {
+                let is_fixed = node
+                    .primary_styles()
+                    .is_some_and(|style| style.clone_position() == Position::Fixed);
+                is_fixed.then_some((node_id, node.layout_parent.get()))
+            })
+            .collect::<Vec<_>>();
+
+        for (node_id, parent_id) in fixed_nodes {
+            let Some(parent_id) = parent_id else {
+                continue;
+            };
+            let parent_position = self.nodes[parent_id].absolute_position(0.0, 0.0);
+            self.nodes[node_id].final_layout.location.x -= parent_position.x;
+            self.nodes[node_id].final_layout.location.y -= parent_position.y;
+        }
 
         // println!("\n\n");
         // taffy::print_tree(self, root_node_id)
