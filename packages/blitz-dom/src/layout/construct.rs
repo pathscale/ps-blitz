@@ -245,6 +245,20 @@ fn serialize_inline_svg(doc: &BaseDocument, svg_node_id: usize) -> String {
     outer_html
 }
 
+#[cfg(feature = "svg")]
+impl BaseDocument {
+    /// Return the self-contained SVG source used by the image parser.
+    ///
+    /// This is intended for opt-in renderer diagnostics. Unlike `outer_html`,
+    /// it includes any same-document symbols referenced by `<use>` elements.
+    #[doc(hidden)]
+    pub fn debug_inline_svg_source(&self, svg_node_id: usize) -> Option<String> {
+        let node = self.get_node(svg_node_id)?;
+        let element = node.element_data()?;
+        (element.name.local == local_name!("svg")).then(|| serialize_inline_svg(self, svg_node_id))
+    }
+}
+
 fn push_children_and_pseudos(layout_children: &mut Vec<usize>, node: &Node) {
     if let Some(before) = node.before {
         layout_children.push(before);

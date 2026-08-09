@@ -179,6 +179,7 @@ impl DebugController {
                 self.computed_style(document, &request.body)
             }
             ("GET", "blitz/getLayoutTree") => self.layout_tree(document),
+            ("GET", "blitz/getSvgDiagnostics") => self.svg_diagnostics(document),
             ("GET", "blitz/getRendererMetrics") => self.renderer_metrics(),
             ("POST", "blitz/shutdown") => {
                 self.exit_requested = true;
@@ -243,6 +244,53 @@ impl DebugController {
             "paintRevision": self.paint_revision,
             "eventTraceEntries": self.event_traces.len(),
         }))
+    }
+
+    fn svg_diagnostics(&mut self, document: &mut ScriptDocument) -> ControlResponse {
+        document.inner_mut().resolve(0.0);
+        let inner = document.inner();
+        let entries = inner
+            .tree()
+            .iter()
+            .filter_map(|(node_id, node)| {
+                let element = node.element_data()?;
+                if element.name.local != blitz_dom::local_name!("svg")
+                    || !node.flags.is_in_document()
+                {
+                    return None;
+                }
+                let source = inner.debug_inline_svg_source(node_id)?;
+                let rect = inner.get_client_bounding_rect(node_id);
+                let image = match element.image_data() {
+                    Some(blitz_dom::node::ImageData::Svg(svg)) => json!({
+                        "kind": "svg",
+                        "width": svg.tree.size().width(),
+                        "height": svg.tree.size().height(),
+                        "intrinsicWidth": svg.intrinsic_width,
+                        "intrinsicHeight": svg.intrinsic_height,
+                    }),
+                    Some(blitz_dom::node::ImageData::Raster(raster)) => json!({
+                        "kind": "raster",
+                        "width": raster.width,
+                        "height": raster.height,
+                    }),
+                    Some(blitz_dom::node::ImageData::None) => json!({"kind": "none"}),
+                    None => Value::Null,
+                };
+                Some(json!({
+                    "nodeId": node_id,
+                    "source": source,
+                    "layout": rect.map(|rect| json!({
+                        "x": rect.x,
+                        "y": rect.y,
+                        "width": rect.width,
+                        "height": rect.height,
+                    })),
+                    "image": image,
+                }))
+            })
+            .collect::<Vec<_>>();
+        success(json!({"entries": entries}))
     }
 
     fn perform_actions(&mut self, document: &mut ScriptDocument, body: &Value) -> ControlResponse {

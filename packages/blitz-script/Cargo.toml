@@ -24,6 +24,7 @@ debug-control = [
     "dep:blitz-debug-control",
     "dep:blitz-paint",
     "dep:image",
+    "blitz-dom/svg",
 ]
 system-fonts = ["blitz-dom/system-fonts"]
 tracing = ["dep:tracing", "blitz-dom/tracing"]
