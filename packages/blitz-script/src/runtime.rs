@@ -124,6 +124,20 @@ fn report_js_error(
     eprintln!("Uncaught JS error in {what}: {error}");
 }
 
+fn listener_error_context(
+    event_name: &str,
+    target: &str,
+    callback: &JsObject,
+    context: &mut Context,
+) -> String {
+    let source = JsValue::from(callback.clone())
+        .to_string(context)
+        .map(|source| source.to_std_string_escaped())
+        .unwrap_or_else(|_| "<source unavailable>".to_owned());
+    let source = source.chars().take(500).collect::<String>();
+    format!("{event_name} event listener on {target}: {source}")
+}
+
 pub(crate) struct ScriptRuntime {
     pub context: Context,
     pub ctx: DomCtx,
@@ -784,7 +798,13 @@ impl ScriptRuntime {
                 if let Err(error) =
                     callback.call(&current_target, &[event_obj.clone().into()], context)
                 {
-                    report_js_error(&self.diagnostics, "event listener", &error);
+                    let what = listener_error_context(
+                        name,
+                        &format!("node {node_id}"),
+                        &callback,
+                        context,
+                    );
+                    report_js_error(&self.diagnostics, &what, &error);
                 }
                 if event_ref(&event_obj, &|event| event.stopped_immediate.get()) {
                     break 'chain;
@@ -819,7 +839,9 @@ impl ScriptRuntime {
                             .callback
                             .call(&global, &[event_obj.clone().into()], context)
                     {
-                        report_js_error(&self.diagnostics, "event listener", &error);
+                        let what =
+                            listener_error_context(name, "window", &listener.callback, context);
+                        report_js_error(&self.diagnostics, &what, &error);
                     }
                     if event_ref(&event_obj, &|event| event.stopped_immediate.get()) {
                         break;
@@ -890,7 +912,8 @@ impl ScriptRuntime {
                     .callback
                     .call(&global, &[event_obj.clone().into()], context)
             {
-                report_js_error(&self.diagnostics, "event listener", &error);
+                let what = listener_error_context(name, "window", &listener.callback, context);
+                report_js_error(&self.diagnostics, &what, &error);
             }
         }
 
@@ -901,7 +924,8 @@ impl ScriptRuntime {
                 if handler.is_callable() {
                     any_called = true;
                     if let Err(error) = handler.call(&global, &[event_obj.into()], context) {
-                        report_js_error(&self.diagnostics, "event listener", &error);
+                        let what = listener_error_context(name, "window.on*", &handler, context);
+                        report_js_error(&self.diagnostics, &what, &error);
                     }
                 }
             }
