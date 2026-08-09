@@ -57,12 +57,12 @@ accesskit_xplat = { package = "ps-accesskit-xplat", version = "0.1.1", path = ".
 browser-persistence = { path = "./apps/browser/persistence" }
 
 # Servo dependencies
-style = { git = "https://github.com/pathscale/stylo-less-py", rev = "8f39d56b7f96e874ee55a20e9b11517cf87624d0", package = "stylo" }
-style_traits = { git = "https://github.com/pathscale/stylo-less-py", rev = "8f39d56b7f96e874ee55a20e9b11517cf87624d0", package = "stylo_traits" }
-style_atoms = { git = "https://github.com/pathscale/stylo-less-py", rev = "8f39d56b7f96e874ee55a20e9b11517cf87624d0", package = "stylo_atoms" }
-style_config = { git = "https://github.com/pathscale/stylo-less-py", rev = "8f39d56b7f96e874ee55a20e9b11517cf87624d0", package = "stylo_static_prefs" }
-style_dom = { git = "https://github.com/pathscale/stylo-less-py", rev = "8f39d56b7f96e874ee55a20e9b11517cf87624d0", package = "stylo_dom" }
-selectors = { git = "https://github.com/pathscale/stylo-less-py", rev = "8f39d56b7f96e874ee55a20e9b11517cf87624d0", package = "selectors" }
+style = { version = "0.19.0", git = "https://github.com/pathscale/stylo-less-py", rev = "8f39d56b7f96e874ee55a20e9b11517cf87624d0", package = "stylo" }
+style_traits = { version = "0.19.0", git = "https://github.com/pathscale/stylo-less-py", rev = "8f39d56b7f96e874ee55a20e9b11517cf87624d0", package = "stylo_traits" }
+style_atoms = { version = "0.19.0", git = "https://github.com/pathscale/stylo-less-py", rev = "8f39d56b7f96e874ee55a20e9b11517cf87624d0", package = "stylo_atoms" }
+style_config = { version = "0.19.0", git = "https://github.com/pathscale/stylo-less-py", rev = "8f39d56b7f96e874ee55a20e9b11517cf87624d0", package = "stylo_static_prefs" }
+style_dom = { version = "0.19.0", git = "https://github.com/pathscale/stylo-less-py", rev = "8f39d56b7f96e874ee55a20e9b11517cf87624d0", package = "stylo_dom" }
+selectors = { version = "0.39.0", git = "https://github.com/pathscale/stylo-less-py", rev = "8f39d56b7f96e874ee55a20e9b11517cf87624d0", package = "selectors" }
 cssparser = { version = "0.37.0" }
 
 # HTML5ever dependencies
