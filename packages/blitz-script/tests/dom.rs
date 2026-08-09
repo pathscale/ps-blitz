@@ -69,6 +69,27 @@ fn pointer_capture_methods_retarget_pointer_events() {
 }
 
 #[test]
+fn matches_and_closest_follow_the_element_ancestor_chain() {
+    let doc = doc_from_html(
+        r#"
+        <div id="root" data-drag><button><span id="target">target</span></button></div>
+        <div id="out"></div>
+        <script>
+            const target = document.getElementById("target");
+            const closest = target.closest("[data-drag]");
+            document.getElementById("out").textContent = [
+                target.matches("span"),
+                target.matches("button"),
+                closest && closest.id,
+                target.closest("[data-missing]") === null,
+            ].join("|");
+        </script>
+        "#,
+    );
+    assert_eq!(text_of_selector(&doc, "#out"), "true|false|root|true");
+}
+
+#[test]
 fn executes_inline_scripts() {
     let doc = doc_from_html(
         r#"

@@ -88,6 +88,8 @@ pub(crate) fn init_element_proto(proto: &JsObject, context: &mut Context) {
     );
     define_method(proto, "querySelector", 1, query_selector, context);
     define_method(proto, "querySelectorAll", 1, query_selector_all, context);
+    define_method(proto, "matches", 1, matches_selector, context);
+    define_method(proto, "closest", 1, closest, context);
     define_method(proto, "setPointerCapture", 1, set_pointer_capture, context);
     define_method(
         proto,
@@ -950,4 +952,37 @@ fn query_selector_all(
         .map(|match_id| node_wrapper(&ctx, match_id, context).into())
         .collect();
     Ok(boa_engine::object::builtins::JsArray::from_iter(wrappers, context).into())
+}
+
+fn matches_selector(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    let selector = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
+    let is_match = ctx
+        .doc
+        .borrow()
+        .query_selector_all(&selector)
+        .is_ok_and(|matches| matches.contains(&node_id));
+    Ok(JsValue::from(is_match))
+}
+
+fn closest(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    let selector = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
+    let result = {
+        let doc = ctx.doc.borrow();
+        let matches = doc.query_selector_all(&selector).unwrap_or_default();
+        let mut current = Some(node_id);
+        let mut result = None;
+        while let Some(id) = current {
+            if matches.contains(&id) {
+                result = Some(id);
+                break;
+            }
+            current = doc.get_node(id).and_then(|node| node.parent);
+        }
+        result
+    };
+    Ok(super::node_or_null(&ctx, result, context))
 }
