@@ -14,6 +14,10 @@ use blitz_traits::shell::{ColorScheme, Viewport};
 use std::sync::Arc;
 
 fn render(html: &str) -> Vec<u8> {
+    render_at(html, 0, 0)
+}
+
+fn render_at(html: &str, x_offset: u32, y_offset: u32) -> Vec<u8> {
     let mut doc = HtmlDocument::from_html(
         html,
         DocumentConfig {
@@ -24,7 +28,7 @@ fn render(html: &str) -> Vec<u8> {
     );
     doc.resolve(0.0);
     render_to_buffer::<VelloCpuImageRenderer, _>(
-        |scene| paint_scene(scene, &mut doc, 1.0, 40, 40, 0, 0),
+        |scene| paint_scene(scene, &mut doc, 1.0, 40, 40, x_offset, y_offset),
         40,
         40,
     )
@@ -56,6 +60,27 @@ fn use_resolves_symbol_from_sibling_sprite_and_inherits_current_color() {
         [220, 10, 20],
         "a visible use must resolve its sibling symbol and inherit currentColor"
     );
+}
+
+#[test]
+fn svg_paint_transform_includes_the_parent_view_translation() {
+    let buffer = render_at(
+        r##"<html><body style="margin:0; background:white;">
+            <svg width="0" height="0" style="position:absolute">
+                <symbol id="i-square" viewBox="0 0 10 10">
+                    <rect width="10" height="10" />
+                </symbol>
+            </svg>
+            <svg width="20" height="20" viewBox="0 0 10 10"
+                 style="color:rgb(30, 90, 210)" fill="currentColor">
+                <use href="#i-square" />
+            </svg>
+        </body></html>"##,
+        10,
+        8,
+    );
+
+    assert_eq!(pixel(&buffer, 20, 18), [30, 90, 210]);
 }
 
 #[test]

@@ -962,8 +962,8 @@ impl ElementCx<'_, '_> {
 
         let transform = self
             .transform
-            .pre_scale_non_uniform(x_scale, y_scale)
-            .then_translate(Vec2 { x, y });
+            .pre_translate(Vec2 { x, y })
+            .pre_scale_non_uniform(x_scale, y_scale);
 
         anyrender_svg::render_svg_tree(scene, svg, transform);
     }
