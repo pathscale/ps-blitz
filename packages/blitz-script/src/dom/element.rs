@@ -72,6 +72,36 @@ pub(crate) fn init_element_proto(proto: &JsObject, context: &mut Context) {
     define_accessor(proto, "outerHTML", Some(get_outer_html), None, context);
     define_accessor(proto, "children", Some(children), None, context);
     define_accessor(proto, "content", Some(get_template_content), None, context);
+    define_accessor(
+        proto,
+        "scrollLeft",
+        Some(get_scroll_left),
+        Some(set_scroll_left),
+        context,
+    );
+    define_accessor(
+        proto,
+        "scrollTop",
+        Some(get_scroll_top),
+        Some(set_scroll_top),
+        context,
+    );
+    define_accessor(proto, "scrollWidth", Some(get_scroll_width), None, context);
+    define_accessor(
+        proto,
+        "scrollHeight",
+        Some(get_scroll_height),
+        None,
+        context,
+    );
+    define_accessor(proto, "clientWidth", Some(get_client_width), None, context);
+    define_accessor(
+        proto,
+        "clientHeight",
+        Some(get_client_height),
+        None,
+        context,
+    );
 
     define_method(proto, "getAttribute", 1, get_attribute, context);
     define_method(proto, "setAttribute", 2, set_attribute, context);
@@ -872,6 +902,125 @@ fn blur(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValu
 }
 
 // === Geometry ===
+
+fn get_scroll_left(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    let value = ctx
+        .doc
+        .borrow()
+        .get_node(node_id)
+        .map(|node| node.scroll_offset.x)
+        .unwrap_or(0.0);
+    Ok(JsValue::from(value))
+}
+
+fn set_scroll_left(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    set_scroll_axis(this, args, context, true)
+}
+
+fn get_scroll_top(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    let value = ctx
+        .doc
+        .borrow()
+        .get_node(node_id)
+        .map(|node| node.scroll_offset.y)
+        .unwrap_or(0.0);
+    Ok(JsValue::from(value))
+}
+
+fn set_scroll_top(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    set_scroll_axis(this, args, context, false)
+}
+
+fn set_scroll_axis(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+    horizontal: bool,
+) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    let requested = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .to_number(context)?;
+    let target = if requested.is_finite() {
+        requested.max(0.0)
+    } else {
+        0.0
+    };
+    let mut doc = ctx.doc.borrow_mut();
+    let current = doc
+        .get_node(node_id)
+        .map(|node| {
+            if horizontal {
+                node.scroll_offset.x
+            } else {
+                node.scroll_offset.y
+            }
+        })
+        .unwrap_or(0.0);
+    let (delta_x, delta_y) = if horizontal {
+        (current - target, 0.0)
+    } else {
+        (0.0, current - target)
+    };
+    if doc.scroll_by(Some(node_id), delta_x, delta_y, &mut |_| {}) {
+        doc.shell_provider.request_redraw();
+    }
+    Ok(JsValue::undefined())
+}
+
+fn get_scroll_width(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    let value = ctx
+        .doc
+        .borrow()
+        .get_node(node_id)
+        .map(|node| f64::from(node.final_layout.size.width + node.final_layout.scroll_width()))
+        .unwrap_or(0.0);
+    Ok(JsValue::from(value))
+}
+
+fn get_scroll_height(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    let value = ctx
+        .doc
+        .borrow()
+        .get_node(node_id)
+        .map(|node| f64::from(node.final_layout.size.height + node.final_layout.scroll_height()))
+        .unwrap_or(0.0);
+    Ok(JsValue::from(value))
+}
+
+fn get_client_width(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    let value = ctx
+        .doc
+        .borrow()
+        .get_node(node_id)
+        .map(|node| f64::from(node.final_layout.size.width))
+        .unwrap_or(0.0);
+    Ok(JsValue::from(value))
+}
+
+fn get_client_height(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    let value = ctx
+        .doc
+        .borrow()
+        .get_node(node_id)
+        .map(|node| f64::from(node.final_layout.size.height))
+        .unwrap_or(0.0);
+    Ok(JsValue::from(value))
+}
 
 fn get_bounding_client_rect(
     this: &JsValue,

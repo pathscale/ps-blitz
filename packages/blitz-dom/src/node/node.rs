@@ -1260,13 +1260,21 @@ impl Node {
 
     /// Computes the Document-relative coordinates of the `Node`
     pub fn absolute_position(&self, x: f32, y: f32) -> crate::util::Point<f32> {
-        let x = x + self.final_layout.location.x - self.scroll_offset.x as f32;
-        let y = y + self.final_layout.location.y - self.scroll_offset.y as f32;
+        // A scroll offset moves this node's descendants, not its own border
+        // box. Parent recursion applies each ancestor offset to the child.
+        let x = x + self.final_layout.location.x;
+        let y = y + self.final_layout.location.y;
 
         // Recurse up the layout hierarchy
         self.layout_parent
             .get()
-            .map(|i| self.with(i).absolute_position(x, y))
+            .map(|i| {
+                let parent = self.with(i);
+                parent.absolute_position(
+                    x - parent.scroll_offset.x as f32,
+                    y - parent.scroll_offset.y as f32,
+                )
+            })
             .unwrap_or(crate::util::Point { x, y })
     }
 

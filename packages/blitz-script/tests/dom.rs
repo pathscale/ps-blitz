@@ -177,6 +177,62 @@ fn window_dimensions_follow_the_current_viewport() {
 }
 
 #[test]
+fn element_scroll_metrics_and_offsets_follow_layout() {
+    let mut doc = ScriptDocument::from_html(
+        r#"
+        <div id="strip" style="width: 100px; height: 50px; overflow: auto">
+            <div style="width: 300px; height: 150px"></div>
+        </div>
+        "#,
+        DocumentConfig {
+            viewport: Some(Viewport::new(400, 200, 1.0, ColorScheme::Light)),
+            ..DocumentConfig::default()
+        },
+    );
+    doc.execute_scripts();
+    doc.inner_mut().resolve(0.0);
+
+    let metrics = doc
+        .eval_json(
+            r#"
+            const strip = document.getElementById("strip");
+            const child = strip.children[0];
+            strip.scrollLeft = 80;
+            strip.scrollTop = 30;
+            ({
+                clientWidth: strip.clientWidth,
+                clientHeight: strip.clientHeight,
+                scrollWidth: strip.scrollWidth,
+                scrollHeight: strip.scrollHeight,
+                scrollLeft: strip.scrollLeft,
+                scrollTop: strip.scrollTop,
+                stripLeft: strip.getBoundingClientRect().left,
+                stripTop: strip.getBoundingClientRect().top,
+                childLeft: child.getBoundingClientRect().left,
+                childTop: child.getBoundingClientRect().top,
+            })
+            "#,
+        )
+        .expect("scroll metrics should evaluate");
+
+    assert_eq!(
+        metrics,
+        serde_json::json!({
+            "clientWidth": 100.0,
+            "clientHeight": 50.0,
+            "scrollWidth": 300.0,
+            "scrollHeight": 150.0,
+            "scrollLeft": 80.0,
+            "scrollTop": 30.0,
+            "stripLeft": 8.0,
+            "stripTop": 8.0,
+            "childLeft": -72.0,
+            "childTop": -22.0,
+        })
+    );
+}
+
+#[test]
 fn window_ipc_forwards_messages_to_the_embedder() {
     let received = Arc::new(Mutex::new(Vec::new()));
     let received_by_handler = Arc::clone(&received);
