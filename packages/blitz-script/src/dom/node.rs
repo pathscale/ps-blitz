@@ -54,6 +54,13 @@ pub(crate) fn init_node_proto(proto: &JsObject, context: &mut Context) {
     define_method(proto, "remove", 0, remove, context);
     define_method(proto, "hasChildNodes", 0, has_child_nodes, context);
     define_method(proto, "contains", 1, contains, context);
+    define_method(
+        proto,
+        "compareDocumentPosition",
+        1,
+        compare_document_position,
+        context,
+    );
     define_method(proto, "cloneNode", 1, clone_node, context);
     define_method(proto, "addEventListener", 2, add_event_listener, context);
     define_method(
@@ -395,6 +402,86 @@ fn contains(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult
             None => return Ok(JsValue::from(false)),
         }
     }
+}
+
+fn compare_document_position(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    const DISCONNECTED: u16 = 0x01;
+    const PRECEDING: u16 = 0x02;
+    const FOLLOWING: u16 = 0x04;
+    const CONTAINS: u16 = 0x08;
+    const CONTAINED_BY: u16 = 0x10;
+    const IMPLEMENTATION_SPECIFIC: u16 = 0x20;
+
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    let other_id = args
+        .first()
+        .and_then(node_id_of_value)
+        .ok_or_else(|| JsNativeError::typ().with_message("argument is not a Node"))?;
+    if node_id == other_id {
+        return Ok(JsValue::from(0));
+    }
+
+    let doc = ctx.doc.borrow();
+    let path = |mut id: usize| {
+        let mut path = Vec::new();
+        loop {
+            path.push(id);
+            let Some(parent) = doc.get_node(id).and_then(|node| node.parent) else {
+                break;
+            };
+            id = parent;
+        }
+        path.reverse();
+        path
+    };
+    let node_path = path(node_id);
+    let other_path = path(other_id);
+    if node_path.first() != other_path.first() {
+        let order = if node_id < other_id {
+            FOLLOWING
+        } else {
+            PRECEDING
+        };
+        return Ok(JsValue::from(
+            DISCONNECTED | IMPLEMENTATION_SPECIFIC | order,
+        ));
+    }
+
+    let common = node_path
+        .iter()
+        .zip(&other_path)
+        .take_while(|(left, right)| left == right)
+        .count();
+    if common == node_path.len() {
+        return Ok(JsValue::from(FOLLOWING | CONTAINED_BY));
+    }
+    if common == other_path.len() {
+        return Ok(JsValue::from(PRECEDING | CONTAINS));
+    }
+    let parent_id = node_path[common - 1];
+    let parent = doc
+        .get_node(parent_id)
+        .expect("common ancestor is missing from document");
+    let node_index = parent
+        .children
+        .iter()
+        .position(|child| *child == node_path[common])
+        .expect("node missing from common ancestor");
+    let other_index = parent
+        .children
+        .iter()
+        .position(|child| *child == other_path[common])
+        .expect("other node missing from common ancestor");
+    Ok(JsValue::from(if node_index < other_index {
+        FOLLOWING
+    } else {
+        PRECEDING
+    }))
 }
 
 fn clone_node(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {

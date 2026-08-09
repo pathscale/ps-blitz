@@ -414,6 +414,23 @@ impl ScriptRuntime {
                 return function (value) { return isElement(value) && value.tagName === tagName; };
             };
             defineDomInterface("Node", isNode);
+            Object.defineProperties(globalThis.Node, {
+                ELEMENT_NODE: { value: 1 },
+                ATTRIBUTE_NODE: { value: 2 },
+                TEXT_NODE: { value: 3 },
+                CDATA_SECTION_NODE: { value: 4 },
+                PROCESSING_INSTRUCTION_NODE: { value: 7 },
+                COMMENT_NODE: { value: 8 },
+                DOCUMENT_NODE: { value: 9 },
+                DOCUMENT_TYPE_NODE: { value: 10 },
+                DOCUMENT_FRAGMENT_NODE: { value: 11 },
+                DOCUMENT_POSITION_DISCONNECTED: { value: 0x01 },
+                DOCUMENT_POSITION_PRECEDING: { value: 0x02 },
+                DOCUMENT_POSITION_FOLLOWING: { value: 0x04 },
+                DOCUMENT_POSITION_CONTAINS: { value: 0x08 },
+                DOCUMENT_POSITION_CONTAINED_BY: { value: 0x10 },
+                DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC: { value: 0x20 },
+            });
             defineDomInterface("Element", isElement);
             defineDomInterface("HTMLElement", isElement);
             defineDomInterface("Document", function (value) { return isNode(value) && value.nodeType === 9; });

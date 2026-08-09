@@ -627,6 +627,35 @@ fn dom_interface_instanceof_checks_match_node_types_and_tags() {
 }
 
 #[test]
+fn compare_document_position_reports_tree_order_and_containment() {
+    let doc = doc_from_html(
+        r#"
+        <html><body>
+            <main id="parent"><span id="first"></span><span id="second"></span></main>
+            <div id="out"></div>
+            <script>
+                const parent = document.getElementById("parent");
+                const first = document.getElementById("first");
+                const second = document.getElementById("second");
+                document.getElementById("out").textContent = [
+                    first.compareDocumentPosition(first),
+                    first.compareDocumentPosition(second),
+                    second.compareDocumentPosition(first),
+                    parent.compareDocumentPosition(first),
+                    first.compareDocumentPosition(parent),
+                    Node.DOCUMENT_POSITION_FOLLOWING,
+                    Node.DOCUMENT_POSITION_PRECEDING,
+                    Node.DOCUMENT_POSITION_CONTAINED_BY,
+                    Node.DOCUMENT_POSITION_CONTAINS,
+                ].join("|");
+            </script>
+        </body></html>
+        "#,
+    );
+    assert_eq!(text_of_selector(&doc, "#out"), "0|4|2|20|10|4|2|16|8");
+}
+
+#[test]
 fn checkbox_click_fires_input_and_change_events() {
     let mut doc = doc_from_html(
         r#"
