@@ -752,7 +752,7 @@ checksum = "6099cdc01846bc367c4e7dd630dc5966dccf36b652fae7a74e17b640411a91b2"
 
 [[package]]
 name = "blitz"
-version = "0.3.0-beta.1"
+version = "0.3.0-beta.2"
 dependencies = [
  "blitz-net",
  "ps-anyrender-vello",
@@ -798,7 +798,7 @@ dependencies = [
 
 [[package]]
 name = "blitz-net"
-version = "0.3.0-beta.1"
+version = "0.3.0-beta.2"
 dependencies = [
  "data-url",
  "directories",
@@ -5883,7 +5883,7 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-debug-control"
-version = "0.3.0-beta.1"
+version = "0.3.0-beta.2"
 dependencies = [
  "getrandom 0.4.3",
  "serde",
@@ -5892,7 +5892,7 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-dom"
-version = "0.3.0-beta.1"
+version = "0.3.0-beta.2"
 dependencies = [
  "accesskit",
  "app_units",
@@ -5935,7 +5935,7 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-html"
-version = "0.3.0-beta.1"
+version = "0.3.0-beta.2"
 dependencies = [
  "html5ever",
  "markup5ever",
@@ -5951,7 +5951,7 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-paint"
-version = "0.3.0-beta.1"
+version = "0.3.0-beta.2"
 dependencies = [
  "color",
  "euclid",
@@ -5971,7 +5971,7 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-script"
-version = "0.3.0-beta.1"
+version = "0.3.0-beta.2"
 dependencies = [
  "base64 0.22.1",
  "boa_engine",
@@ -5997,7 +5997,7 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-shell"
-version = "0.3.0-beta.1"
+version = "0.3.0-beta.2"
 dependencies = [
  "accesskit",
  "android-activity",
@@ -6022,7 +6022,7 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-traits"
-version = "0.3.0-beta.1"
+version = "0.3.0-beta.2"
 dependencies = [
  "atomic_refcell",
  "bitflags 2.13.0",
@@ -6041,7 +6041,7 @@ version = "0.1.3"
 
 [[package]]
 name = "ps-stylo-taffy"
-version = "0.3.0-beta.1"
+version = "0.3.0-beta.2"
 dependencies = [
  "stylo",
  "stylo_atoms",
@@ -6776,8 +6776,9 @@ dependencies = [
 
 [[package]]
 name = "selectors"
-version = "0.39.0"
-source = "git+https://github.com/pathscale/stylo-less-py?rev=8f39d56b7f96e874ee55a20e9b11517cf87624d0#8f39d56b7f96e874ee55a20e9b11517cf87624d0"
+version = "0.40.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eeee001a77567bb05e71652718d3ff76d8697c151ac523e68e9513194eb2b75a"
 dependencies = [
  "bitflags 2.13.0",
  "cssparser",
@@ -6942,7 +6943,8 @@ dependencies = [
 [[package]]
 name = "servo_arc"
 version = "0.4.3"
-source = "git+https://github.com/pathscale/stylo-less-py?rev=8f39d56b7f96e874ee55a20e9b11517cf87624d0#8f39d56b7f96e874ee55a20e9b11517cf87624d0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "170fb83ab34de17dc69aa7c67482b22218ddb85da56546f9bd6b929e32a05930"
 dependencies = [
  "serde",
  "stable_deref_trait",
@@ -7381,8 +7383,9 @@ dependencies = [
 
 [[package]]
 name = "stylo"
-version = "0.19.0"
-source = "git+https://github.com/pathscale/stylo-less-py?rev=8f39d56b7f96e874ee55a20e9b11517cf87624d0#8f39d56b7f96e874ee55a20e9b11517cf87624d0"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ebaeb0b51f5e574bf36606c4dc982430a20d7a17175bdc0deab4d43d2063040b"
 dependencies = [
  "app_units",
  "arrayvec",
@@ -7437,8 +7440,9 @@ dependencies = [
 
 [[package]]
 name = "stylo_atoms"
-version = "0.19.0"
-source = "git+https://github.com/pathscale/stylo-less-py?rev=8f39d56b7f96e874ee55a20e9b11517cf87624d0#8f39d56b7f96e874ee55a20e9b11517cf87624d0"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d448de89b7d18169a160ca258d2ee63efe79bd6cb20360654101835e9b80e386"
 dependencies = [
  "string_cache",
  "string_cache_codegen",
@@ -7446,8 +7450,9 @@ dependencies = [
 
 [[package]]
 name = "stylo_derive"
-version = "0.19.0"
-source = "git+https://github.com/pathscale/stylo-less-py?rev=8f39d56b7f96e874ee55a20e9b11517cf87624d0#8f39d56b7f96e874ee55a20e9b11517cf87624d0"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9cfdbf36a2d2db4fc75db0bfc1abd16e90971c360f00773cbd2501a5175dbec7"
 dependencies = [
  "darling 0.20.11",
  "proc-macro2",
@@ -7458,8 +7463,9 @@ dependencies = [
 
 [[package]]
 name = "stylo_dom"
-version = "0.19.0"
-source = "git+https://github.com/pathscale/stylo-less-py?rev=8f39d56b7f96e874ee55a20e9b11517cf87624d0#8f39d56b7f96e874ee55a20e9b11517cf87624d0"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "346fde14a66fdc568ef79a8c81f8b6a35722a0906295bce2997df6c90c7b848f"
 dependencies = [
  "bitflags 2.13.0",
  "stylo_malloc_size_of",
@@ -7467,8 +7473,9 @@ dependencies = [
 
 [[package]]
 name = "stylo_malloc_size_of"
-version = "0.19.0"
-source = "git+https://github.com/pathscale/stylo-less-py?rev=8f39d56b7f96e874ee55a20e9b11517cf87624d0#8f39d56b7f96e874ee55a20e9b11517cf87624d0"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a1ee5ec323e0207ebaafff2210fec808214575d67cfe25e288d34a12010e2b3"
 dependencies = [
  "app_units",
  "cssparser",
@@ -7484,16 +7491,18 @@ dependencies = [
 
 [[package]]
 name = "stylo_static_prefs"
-version = "0.19.0"
-source = "git+https://github.com/pathscale/stylo-less-py?rev=8f39d56b7f96e874ee55a20e9b11517cf87624d0#8f39d56b7f96e874ee55a20e9b11517cf87624d0"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e017eb7fd506fa0fb0da653a6bc3793d9fc11edf92d4721c16b350432f8116f"
 dependencies = [
  "toml 1.1.2+spec-1.1.0",
 ]
 
 [[package]]
 name = "stylo_traits"
-version = "0.19.0"
-source = "git+https://github.com/pathscale/stylo-less-py?rev=8f39d56b7f96e874ee55a20e9b11517cf87624d0#8f39d56b7f96e874ee55a20e9b11517cf87624d0"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00a8d2ca5b29c7f5dd94ec66fbb256b274b76ecaab164417c92ce9a4586c8259"
 dependencies = [
  "app_units",
  "bitflags 2.13.0",
@@ -7891,7 +7900,8 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 [[package]]
 name = "to_shmem"
 version = "0.5.0"
-source = "git+https://github.com/pathscale/stylo-less-py?rev=8f39d56b7f96e874ee55a20e9b11517cf87624d0#8f39d56b7f96e874ee55a20e9b11517cf87624d0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8c81cee0d28327337a94f3f32a1a77c03bbfd926510f3b42956f9d914e7810c"
 dependencies = [
  "cssparser",
  "servo_arc",
@@ -7904,7 +7914,8 @@ dependencies = [
 [[package]]
 name = "to_shmem_derive"
 version = "0.1.0"
-source = "git+https://github.com/pathscale/stylo-less-py?rev=8f39d56b7f96e874ee55a20e9b11517cf87624d0#8f39d56b7f96e874ee55a20e9b11517cf87624d0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ba1f5563024b63bb6acb4558452d9ba737518c1d11fcc1861febe98d1e31cf4"
 dependencies = [
  "darling 0.20.11",
  "proc-macro2",
