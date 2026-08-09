@@ -2,10 +2,34 @@ use blitz_traits::{
     events::{BlitzImeEvent, BlitzKeyEvent},
     shell::ShellProvider,
 };
-use keyboard_types::{Key, Modifiers};
+use keyboard_types::{Code, Key, Modifiers};
 use parley::{ContentWidths, FontContext, LayoutContext};
 
 use crate::util::{ACTION_MOD, has_clipboard_modifier};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClipboardCommand {
+    Copy,
+    Cut,
+    Paste,
+}
+
+fn clipboard_command(event: &BlitzKeyEvent) -> Option<ClipboardCommand> {
+    if !has_clipboard_modifier(event.modifiers) {
+        return None;
+    }
+    match event.code {
+        Code::KeyC => Some(ClipboardCommand::Copy),
+        Code::KeyX => Some(ClipboardCommand::Cut),
+        Code::KeyV => Some(ClipboardCommand::Paste),
+        _ => match &event.key {
+            Key::Character(c) if c.eq_ignore_ascii_case("c") => Some(ClipboardCommand::Copy),
+            Key::Character(c) if c.eq_ignore_ascii_case("x") => Some(ClipboardCommand::Cut),
+            Key::Character(c) if c.eq_ignore_ascii_case("v") => Some(ClipboardCommand::Paste),
+            _ => None,
+        },
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 /// Parley Brush type for Blitz which contains the Blitz node id
@@ -209,36 +233,31 @@ impl TextInputData {
         let mods = event.modifiers;
         let shift = mods.contains(Modifiers::SHIFT);
         let action_mod = mods.contains(ACTION_MOD);
-        let clipboard_mod = has_clipboard_modifier(mods);
-
         let is_multiline = self.is_multiline;
         let editor = &mut self.editor;
         let mut driver = editor.driver(font_ctx, layout_ctx);
-        match event.key {
-            Key::Character(c)
-                if clipboard_mod && matches!(c.to_lowercase().as_str(), "c" | "x" | "v") =>
-            {
-                match c.to_lowercase().as_str() {
-                    "c" => {
-                        if let Some(text) = driver.editor.selected_text() {
-                            let _ = shell_provider.set_clipboard_text(text.to_owned());
-                        }
+        if let Some(command) = clipboard_command(&event) {
+            match command {
+                ClipboardCommand::Copy => {
+                    if let Some(text) = driver.editor.selected_text() {
+                        let _ = shell_provider.set_clipboard_text(text.to_owned());
                     }
-                    "x" => {
-                        if let Some(text) = driver.editor.selected_text() {
-                            let _ = shell_provider.set_clipboard_text(text.to_owned());
-                            driver.delete_selection()
-                        }
-                    }
-                    "v" => {
-                        let text = shell_provider.get_clipboard_text().unwrap_or_default();
-                        driver.insert_or_replace_selection(&text)
-                    }
-                    _ => unreachable!(),
                 }
-
-                return Some(GeneratedTextInputEvent::Input);
+                ClipboardCommand::Cut => {
+                    if let Some(text) = driver.editor.selected_text() {
+                        let _ = shell_provider.set_clipboard_text(text.to_owned());
+                        driver.delete_selection()
+                    }
+                }
+                ClipboardCommand::Paste => {
+                    let text = shell_provider.get_clipboard_text().unwrap_or_default();
+                    driver.insert_or_replace_selection(&text)
+                }
             }
+
+            return Some(GeneratedTextInputEvent::Input);
+        }
+        match event.key {
             Key::Character(c) if action_mod && matches!(c.to_lowercase().as_str(), "a") => {
                 if shift {
                     driver.collapse_selection()
@@ -798,5 +817,31 @@ impl TextInputData {
                 None
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod shortcut_tests {
+    use super::*;
+    use blitz_traits::events::{BlitzKeyEvent, KeyState};
+    use keyboard_types::Location;
+
+    fn control_event(key: Key, code: Code) -> BlitzKeyEvent {
+        BlitzKeyEvent {
+            key,
+            code,
+            modifiers: Modifiers::CONTROL,
+            location: Location::Standard,
+            is_auto_repeating: false,
+            is_composing: false,
+            state: KeyState::Pressed,
+            text: None,
+        }
+    }
+
+    #[test]
+    fn control_character_cut_uses_the_physical_key_code() {
+        let event = control_event(Key::Character("\u{18}".into()), Code::KeyX);
+        assert_eq!(clipboard_command(&event), Some(ClipboardCommand::Cut));
     }
 }
