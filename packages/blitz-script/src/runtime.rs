@@ -215,7 +215,7 @@ impl ScriptRuntime {
 
         // Small JS bootstrap for APIs that are easiest to define in JS
         runtime.eval_internal(
-            r#"
+            r##"
             if (typeof globalThis.queueMicrotask !== "function") {
                 globalThis.queueMicrotask = function (callback) {
                     Promise.resolve().then(callback);
@@ -318,8 +318,79 @@ impl ScriptRuntime {
                     configurable: true,
                 });
             }
+            if (typeof globalThis.history !== "object" || globalThis.history === null) {
+                const entries = [{ state: null, url: globalThis.location.href }];
+                let index = 0;
+                const applyUrl = function (url) {
+                    if (url === undefined || url === null) return;
+                    const value = String(url);
+                    let pathname = globalThis.location.pathname;
+                    let search = globalThis.location.search;
+                    let hash = globalThis.location.hash;
+
+                    if (value.startsWith("#")) {
+                        hash = value;
+                    } else if (value.startsWith("?")) {
+                        const hashAt = value.indexOf("#");
+                        search = hashAt < 0 ? value : value.slice(0, hashAt);
+                        hash = hashAt < 0 ? "" : value.slice(hashAt);
+                    } else {
+                        let relative = value;
+                        const schemeAt = relative.indexOf("://");
+                        if (schemeAt >= 0) {
+                            const pathAt = relative.indexOf("/", schemeAt + 3);
+                            relative = pathAt < 0 ? "/" : relative.slice(pathAt);
+                        }
+                        if (!relative.startsWith("/")) {
+                            const slashAt = pathname.lastIndexOf("/");
+                            relative = pathname.slice(0, slashAt + 1) + relative;
+                        }
+                        const hashAt = relative.indexOf("#");
+                        hash = hashAt < 0 ? "" : relative.slice(hashAt);
+                        const withoutHash = hashAt < 0 ? relative : relative.slice(0, hashAt);
+                        const searchAt = withoutHash.indexOf("?");
+                        search = searchAt < 0 ? "" : withoutHash.slice(searchAt);
+                        pathname = searchAt < 0 ? withoutHash : withoutHash.slice(0, searchAt);
+                    }
+
+                    globalThis.location.pathname = pathname || "/";
+                    globalThis.location.search = search;
+                    globalThis.location.hash = hash;
+                    globalThis.location.href = globalThis.location.protocol + "//" +
+                        globalThis.location.host + globalThis.location.pathname + search + hash;
+                };
+                const history = {
+                    scrollRestoration: "auto",
+                    get length() { return entries.length; },
+                    get state() { return entries[index].state; },
+                    pushState(state, _unused, url) {
+                        const entry = { state: structuredClone(state), url: url ?? globalThis.location.href };
+                        entries.splice(index + 1, entries.length, entry);
+                        index += 1;
+                        applyUrl(url);
+                    },
+                    replaceState(state, _unused, url) {
+                        entries[index] = { state: structuredClone(state), url: url ?? entries[index].url };
+                        applyUrl(url);
+                    },
+                    go(delta) {
+                        const next = Math.max(0, Math.min(entries.length - 1, index + Number(delta || 0)));
+                        if (next === index) return;
+                        index = next;
+                        applyUrl(entries[index].url);
+                    },
+                    back() { this.go(-1); },
+                    forward() { this.go(1); },
+                };
+                Object.defineProperty(globalThis, "history", {
+                    value: history,
+                    writable: false,
+                    enumerable: true,
+                    configurable: true,
+                });
+            }
             delete globalThis.__blitzRandomU32;
-            "#,
+            "##,
             "<blitz-bootstrap>",
         );
 

@@ -823,6 +823,7 @@ impl Node {
         self.write_outer_html_in_style(writer, OutputStyle::Normal, 0, None);
     }
 
+    #[cfg(feature = "svg")]
     pub(crate) fn write_outer_html_with_current_color(
         &self,
         writer: &mut String,

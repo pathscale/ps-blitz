@@ -251,7 +251,6 @@ impl ToColorColor for AbsoluteColor {
 /// Serialize a computed CSS color in the legacy sRGB syntax accepted by SVG
 /// preprocessors such as usvg. Stylo preserves modern author color spaces such
 /// as `oklab()`, but those must not leak into the self-contained SVG source.
-#[cfg(feature = "svg")]
 pub(crate) fn absolute_color_to_svg_css(color: &AbsoluteColor) -> String {
     let [red, green, blue, alpha] = color.as_color_color().components;
     let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;

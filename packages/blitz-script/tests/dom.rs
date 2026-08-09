@@ -56,6 +56,35 @@ fn scripts_run_in_document_order_and_share_globals() {
 }
 
 #[test]
+fn history_tracks_state_and_same_origin_urls() {
+    let mut doc = ScriptDocument::from_html(
+        r#"
+        <html><body>
+            <div id="out"></div>
+            <script>
+                const initialState = history.state;
+                history.replaceState({ ...history.state, depth: 0 }, "");
+                history.pushState({ page: 1 }, "", "/components?group=forms#input");
+                const pushed = [history.length, history.state.page, location.pathname, location.search, location.hash];
+                history.back();
+                const restored = [history.state.depth, location.pathname, location.search, location.hash];
+                document.getElementById("out").textContent = [initialState === null, ...pushed, ...restored].join("|");
+            </script>
+        </body></html>
+        "#,
+        DocumentConfig {
+            base_url: Some("tauri://localhost/".into()),
+            ..DocumentConfig::default()
+        },
+    );
+    doc.execute_scripts();
+    assert_eq!(
+        text_of_selector(&doc, "#out"),
+        "true|2|1|/components|?group=forms|#input|0|/||"
+    );
+}
+
+#[test]
 fn window_ipc_forwards_messages_to_the_embedder() {
     let received = Arc::new(Mutex::new(Vec::new()));
     let received_by_handler = Arc::clone(&received);
