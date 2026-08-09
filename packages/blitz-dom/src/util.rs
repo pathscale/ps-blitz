@@ -196,10 +196,26 @@ pub(crate) fn parse_svg_image(source: &[u8]) -> Result<crate::node::SvgImageData
 
     let tree = usvg::Tree::from_xmltree(&doc, &options)?;
     let size = tree.size();
+    let raster_scale = 2.0;
+    let raster_width = (size.width() * raster_scale).ceil() as u32;
+    let raster_height = (size.height() * raster_scale).ceil() as u32;
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(raster_width, raster_height)
+        .ok_or(usvg::Error::InvalidSize)?;
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::from_scale(raster_scale, raster_scale),
+        &mut pixmap.as_mut(),
+    );
+    let raster = crate::node::RasterImageData::new_premultiplied(
+        raster_width,
+        raster_height,
+        Arc::new(pixmap.take()),
+    );
     Ok(crate::node::SvgImageData {
         intrinsic_width: has_width.then(|| size.width()),
         intrinsic_height: has_height.then(|| size.height()),
         tree: Arc::new(tree),
+        raster,
     })
 }
 
