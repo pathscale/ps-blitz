@@ -3,6 +3,7 @@
 use blitz_dom::{Document, DocumentConfig};
 use blitz_script::ScriptDocument;
 use blitz_traits::events::DomEvent;
+use blitz_traits::shell::{ColorScheme, Viewport};
 use keyboard_types::Modifiers;
 use std::sync::{Arc, Mutex};
 
@@ -82,6 +83,30 @@ fn history_tracks_state_and_same_origin_urls() {
         text_of_selector(&doc, "#out"),
         "true|2|1|/components|?group=forms|#input|0|/||"
     );
+}
+
+#[test]
+fn window_dimensions_follow_the_current_viewport() {
+    let mut doc = ScriptDocument::from_html(
+        r#"<div id="out"></div><script>
+            document.getElementById("out").textContent =
+                [innerWidth, innerHeight, outerWidth, outerHeight, devicePixelRatio].join("|");
+        </script>"#,
+        DocumentConfig {
+            viewport: Some(Viewport::new(800, 600, 2.0, ColorScheme::Light)),
+            ..DocumentConfig::default()
+        },
+    );
+    doc.execute_scripts();
+    assert_eq!(text_of_selector(&doc, "#out"), "400|300|400|300|2");
+
+    doc.inner_mut()
+        .set_viewport(Viewport::new(1000, 700, 2.0, ColorScheme::Light));
+    doc.eval(
+        r#"document.getElementById("out").textContent =
+            [innerWidth, innerHeight, outerWidth, outerHeight, devicePixelRatio].join("|");"#,
+    );
+    assert_eq!(text_of_selector(&doc, "#out"), "500|350|500|350|2");
 }
 
 #[test]

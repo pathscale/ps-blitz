@@ -18,7 +18,7 @@ use url::Url;
 use web_time::{Duration, Instant};
 
 use crate::dom::event::{EventRef, create_event, create_event_for_dom_event};
-use crate::dom::{dom_ctx, node_wrapper};
+use crate::dom::{define_accessor, dom_ctx, node_wrapper};
 use crate::state::{DomCtx, Listener};
 
 const DIAGNOSTIC_CAPACITY: usize = 1_000;
@@ -155,6 +155,42 @@ impl ScriptRuntime {
         let global: JsValue = context.global_object().into();
         register_global(&mut context, "window", global.clone());
         register_global(&mut context, "self", global);
+        let global_object = context.global_object().clone();
+        define_accessor(
+            &global_object,
+            "innerWidth",
+            Some(window_inner_width),
+            None,
+            &mut context,
+        );
+        define_accessor(
+            &global_object,
+            "innerHeight",
+            Some(window_inner_height),
+            None,
+            &mut context,
+        );
+        define_accessor(
+            &global_object,
+            "outerWidth",
+            Some(window_inner_width),
+            None,
+            &mut context,
+        );
+        define_accessor(
+            &global_object,
+            "outerHeight",
+            Some(window_inner_height),
+            None,
+            &mut context,
+        );
+        define_accessor(
+            &global_object,
+            "devicePixelRatio",
+            Some(window_device_pixel_ratio),
+            None,
+            &mut context,
+        );
 
         // Tauri and other webview embedders conventionally provide this object. It is inert
         // until the embedder installs a callback on `ScriptDocument`.
@@ -925,6 +961,31 @@ fn build_location(base_url: Option<&Url>, context: &mut Context) -> JsValue {
         .property(js_string!("hash"), JsString::from(hash), Attribute::all())
         .build()
         .into()
+}
+
+fn window_inner_width(_: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let viewport = ctx.doc.borrow().get_viewport();
+    Ok(JsValue::from(
+        viewport.window_size.0 as f64 / viewport.scale_f64(),
+    ))
+}
+
+fn window_inner_height(_: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let viewport = ctx.doc.borrow().get_viewport();
+    Ok(JsValue::from(
+        viewport.window_size.1 as f64 / viewport.scale_f64(),
+    ))
+}
+
+fn window_device_pixel_ratio(
+    _: &JsValue,
+    _: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    Ok(JsValue::from(ctx.doc.borrow().get_viewport().scale_f64()))
 }
 
 // === Timer + window listener native functions ===
