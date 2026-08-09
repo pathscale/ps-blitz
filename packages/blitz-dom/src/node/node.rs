@@ -820,20 +820,38 @@ impl Node {
     }
 
     pub fn write_outer_html(&self, writer: &mut String) {
-        self.write_outer_html_in_style(writer, OutputStyle::Normal, 0);
+        self.write_outer_html_in_style(writer, OutputStyle::Normal, 0, None);
+    }
+
+    pub(crate) fn write_outer_html_with_current_color(
+        &self,
+        writer: &mut String,
+        current_color: &str,
+    ) {
+        self.write_outer_html_in_style(writer, OutputStyle::Normal, 0, Some(current_color));
     }
 
     pub fn write_outer_html_pretty(&self, writer: &mut String) {
-        self.write_outer_html_in_style(writer, OutputStyle::Pretty, 0);
+        self.write_outer_html_in_style(writer, OutputStyle::Pretty, 0, None);
     }
 
-    fn write_outer_html_in_style(&self, writer: &mut String, style: OutputStyle, nesting: usize) {
+    fn write_outer_html_in_style(
+        &self,
+        writer: &mut String,
+        style: OutputStyle,
+        nesting: usize,
+        current_color_override: Option<&str>,
+    ) {
         const INDENT: &str = "  ";
         let has_children = !self.children.is_empty();
-        let current_color = self
-            .primary_styles()
-            .map(|style| style.clone_color())
-            .map(|color| color.to_css_string());
+        let computed_current_color = || {
+            self.primary_styles()
+                .map(|style| style.clone_color())
+                .map(|color| color.to_css_string())
+        };
+        let current_color = current_color_override
+            .map(ToOwned::to_owned)
+            .or_else(computed_current_color);
 
         match &self.data {
             NodeData::Document => {}
@@ -885,7 +903,12 @@ impl Node {
 
                 if has_children {
                     for &child_id in &self.children {
-                        self.tree()[child_id].write_outer_html_in_style(writer, style, nesting + 1);
+                        self.tree()[child_id].write_outer_html_in_style(
+                            writer,
+                            style,
+                            nesting + 1,
+                            current_color_override,
+                        );
                     }
 
                     if matches!(style, OutputStyle::Pretty) {

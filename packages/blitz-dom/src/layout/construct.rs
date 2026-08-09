@@ -1,4 +1,6 @@
 use core::str;
+#[cfg(feature = "svg")]
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
 use markup5ever::{QualName, local_name, ns};
@@ -16,6 +18,8 @@ use style::{
         specified::box_::{DisplayInside, DisplayOutside},
     },
 };
+#[cfg(feature = "svg")]
+use style_traits::values::ToCss;
 
 use crate::{
     BaseDocument, ElementData, Node, NodeData,
@@ -156,6 +160,91 @@ impl LayoutChildren {
         self.children.push(node_id);
         self.anonymous_block_id = Some(node_id);
     }
+}
+
+#[cfg(feature = "svg")]
+fn enqueue_local_svg_references(
+    doc: &BaseDocument,
+    root_node_id: usize,
+    pending: &mut VecDeque<String>,
+) {
+    let mut stack = vec![root_node_id];
+    while let Some(node_id) = stack.pop() {
+        let node = &doc.nodes[node_id];
+        if let Some(element) = node.data.downcast_element()
+            && element.name.local == local_name!("use")
+            && let Some(fragment) = element
+                .attr(local_name!("href"))
+                .and_then(|href| href.strip_prefix('#'))
+            && !fragment.is_empty()
+        {
+            pending.push_back(fragment.to_owned());
+        }
+        stack.extend(node.children.iter().rev().copied());
+    }
+}
+
+#[cfg(feature = "svg")]
+fn is_in_subtree(doc: &BaseDocument, node_id: usize, root_node_id: usize) -> bool {
+    let mut current = Some(node_id);
+    while let Some(id) = current {
+        if id == root_node_id {
+            return true;
+        }
+        current = doc.nodes[id].parent;
+    }
+    false
+}
+
+/// Serialize an inline SVG together with definitions referenced elsewhere in
+/// the same document.
+///
+/// Blitz paints inline SVGs as replaced images. Passing only the visible SVG's
+/// subtree to usvg loses references into a sibling icon sprite, such as
+/// `<use href="#icon">`. Importing those nodes into a generated `<defs>` makes
+/// the source self-contained while leaving the live DOM untouched.
+#[cfg(feature = "svg")]
+fn serialize_inline_svg(doc: &BaseDocument, svg_node_id: usize) -> String {
+    let mut outer_html = doc.nodes[svg_node_id].outer_html();
+    if let Some(root_open_end) = outer_html.find('>')
+        && !outer_html[..root_open_end].contains("xmlns")
+    {
+        outer_html.insert_str("<svg".len(), " xmlns=\"http://www.w3.org/2000/svg\"");
+    }
+
+    let current_color = doc.nodes[svg_node_id]
+        .primary_styles()
+        .map(|style| style.clone_color().to_css_string())
+        .unwrap_or_else(|| "black".to_owned());
+    let mut pending = VecDeque::new();
+    let mut imported = HashSet::new();
+    let mut definitions = String::new();
+
+    enqueue_local_svg_references(doc, svg_node_id, &mut pending);
+    while let Some(fragment) = pending.pop_front() {
+        if !imported.insert(fragment.clone()) {
+            continue;
+        }
+        let Some(reference_node_id) = doc.get_element_by_id(&fragment) else {
+            continue;
+        };
+        if is_in_subtree(doc, reference_node_id, svg_node_id) {
+            continue;
+        }
+
+        enqueue_local_svg_references(doc, reference_node_id, &mut pending);
+        doc.nodes[reference_node_id]
+            .write_outer_html_with_current_color(&mut definitions, &current_color);
+    }
+
+    if !definitions.is_empty()
+        && let Some(root_open_end) = outer_html.find('>')
+    {
+        let defs = format!("<defs>{definitions}</defs>");
+        outer_html.insert_str(root_open_end + 1, &defs);
+    }
+
+    outer_html
 }
 
 fn push_children_and_pseudos(layout_children: &mut Vec<usize>, node: &Node) {
@@ -356,14 +445,7 @@ pub(crate) fn collect_layout_children(
 
         #[cfg(feature = "svg")]
         if matches!(tag_name, "svg") {
-            let mut outer_html = doc.get_node(container_node_id).unwrap().outer_html();
-
-            // HACK: usvg fails to parse SVGs that don't have the SVG xmlns set. So inject it
-            // if the generated source doesn't have it.
-            if !outer_html.contains("xmlns") {
-                outer_html =
-                    outer_html.replace("<svg", "<svg xmlns=\"http://www.w3.org/2000/svg\"");
-            }
+            let outer_html = serialize_inline_svg(doc, container_node_id);
 
             // Remove contruction damage from subtree
             doc.iter_subtree_mut(container_node_id, |id: usize, doc: &mut BaseDocument| {
