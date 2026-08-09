@@ -7,7 +7,7 @@
 
 use anyrender::render_to_buffer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
-use blitz_dom::DocumentConfig;
+use blitz_dom::{DocumentConfig, LocalName, Namespace, QualName};
 use blitz_html::{HtmlDocument, HtmlProvider};
 use blitz_paint::paint_scene;
 use blitz_traits::shell::{ColorScheme, Viewport};
@@ -170,4 +170,46 @@ fn cyclic_symbol_references_do_not_loop_or_paint() {
     );
 
     assert_eq!(pixel(&buffer, 10, 10), [255, 255, 255]);
+}
+
+#[test]
+fn href_set_after_use_is_mounted_reconstructs_the_svg_image() {
+    let mut doc = HtmlDocument::from_html(
+        r##"<html><body style="margin:0; background:white;">
+            <svg width="0" height="0" style="position:absolute">
+                <symbol id="i-late" viewBox="0 0 10 10">
+                    <rect width="10" height="10" />
+                </symbol>
+            </svg>
+            <svg width="20" height="20" viewBox="0 0 10 10"
+                 style="color:rgb(30, 80, 210)" fill="currentColor">
+                <use id="late-use" />
+            </svg>
+        </body></html>"##,
+        DocumentConfig {
+            viewport: Some(Viewport::new(40, 40, 1.0, ColorScheme::Light)),
+            html_parser_provider: Some(Arc::new(HtmlProvider) as _),
+            ..Default::default()
+        },
+    );
+    doc.resolve(0.0);
+
+    let use_id = doc.query_selector("#late-use").unwrap().unwrap();
+    doc.mutate().set_attribute(
+        use_id,
+        QualName {
+            prefix: None,
+            ns: Namespace::from(""),
+            local: LocalName::from("href"),
+        },
+        "#i-late",
+    );
+    doc.resolve(0.0);
+
+    let buffer = render_to_buffer::<VelloCpuImageRenderer, _>(
+        |scene| paint_scene(scene, &mut doc, 1.0, 40, 40, 0, 0),
+        40,
+        40,
+    );
+    assert_eq!(pixel(&buffer, 10, 10), [30, 80, 210]);
 }

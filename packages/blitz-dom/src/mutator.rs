@@ -81,6 +81,25 @@ impl DocumentMutator<'_> {
         }
     }
 
+    #[cfg(feature = "svg")]
+    fn mark_containing_svg_for_reconstruction(&mut self, node_id: usize) {
+        let mut current = Some(node_id);
+        while let Some(id) = current {
+            let node = &self.doc.nodes[id];
+            let is_svg_root = node.element_data().is_some_and(|element| {
+                element.name.ns == ns!(svg) && element.name.local == local_name!("svg")
+            });
+            let parent = node.parent;
+            if is_svg_root {
+                let svg = &mut self.doc.nodes[id];
+                svg.insert_damage(ALL_DAMAGE);
+                svg.mark_ancestors_dirty();
+                return;
+            }
+            current = parent;
+        }
+    }
+
     // Query methods
 
     pub fn node_has_parent(&self, node_id: usize) -> bool {
@@ -240,6 +259,14 @@ impl DocumentMutator<'_> {
             self.doc.nodes[node_id].mark_ancestors_dirty();
         }
 
+        // Inline SVG is cached as a replaced image. Frameworks commonly append
+        // `<use>` first and set its `href` in a later DOM operation; rebuilding
+        // only the changed child leaves the root image cached from the empty
+        // pre-attribute source. Reconstruct the containing image after any SVG
+        // subtree attribute mutation so the next resolve serializes final DOM.
+        #[cfg(feature = "svg")]
+        self.mark_containing_svg_for_reconstruction(node_id);
+
         let node = &mut self.doc.nodes[node_id];
 
         let NodeData::Element(ref mut element) = node.data else {
@@ -320,6 +347,9 @@ impl DocumentMutator<'_> {
             // Without this, the traversal may skip nodes with pending RestyleHint/damage.
             node.mark_ancestors_dirty();
         }
+
+        #[cfg(feature = "svg")]
+        self.mark_containing_svg_for_reconstruction(node_id);
 
         let node = &mut self.doc.nodes[node_id];
 
