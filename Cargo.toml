@@ -32,8 +32,8 @@ resolver = "2"
 [workspace.package]
 version = "0.3.0-beta.1"
 license = "MIT OR Apache-2.0"
-homepage = "https://github.com/dioxuslabs/blitz"
-repository = "https://github.com/dioxuslabs/blitz"
+homepage = "https://github.com/pathscale/ps-blitz"
+repository = "https://github.com/pathscale/ps-blitz"
 categories = ["gui"]
 edition = "2024"
 rust-version = "1.91.0"
