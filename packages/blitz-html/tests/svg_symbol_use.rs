@@ -78,6 +78,50 @@ fn current_color_inside_imported_symbol_uses_visible_svg_color() {
 }
 
 #[test]
+fn imported_icon_inherits_visible_svg_stroke_attributes() {
+    let buffer = render(
+        r##"<html><body style="margin:0; background:white;">
+            <svg width="0" height="0" style="position:absolute">
+                <symbol id="i-line" viewBox="0 0 10 10">
+                    <path d="M1 5h8" />
+                </symbol>
+            </svg>
+            <svg width="20" height="20" viewBox="0 0 10 10"
+                 style="color:rgb(190, 30, 80)" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <use href="#i-line" />
+            </svg>
+        </body></html>"##,
+    );
+
+    assert_eq!(pixel(&buffer, 10, 10), [190, 30, 80]);
+}
+
+#[test]
+fn modern_css_current_color_is_converted_for_svg_painting() {
+    let buffer = render(
+        r##"<html><body style="margin:0; background:white;">
+            <svg width="0" height="0" style="position:absolute">
+                <symbol id="i-modern-color" viewBox="0 0 10 10">
+                    <path d="M1 5h8" />
+                </symbol>
+            </svg>
+            <svg width="20" height="20" viewBox="0 0 10 10"
+                 style="color:oklab(0.66 -0.004 -0.009)" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <use href="#i-modern-color" />
+            </svg>
+        </body></html>"##,
+    );
+
+    assert_ne!(
+        pixel(&buffer, 10, 10),
+        [255, 255, 255],
+        "modern computed colors must remain paintable after SVG preprocessing"
+    );
+}
+
+#[test]
 fn missing_local_reference_is_non_fatal() {
     let buffer = render(
         r##"<html><body style="margin:0; background:white;">

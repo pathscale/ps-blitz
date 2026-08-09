@@ -847,7 +847,7 @@ impl Node {
         let computed_current_color = || {
             self.primary_styles()
                 .map(|style| style.clone_color())
-                .map(|color| color.to_css_string())
+                .map(|color| crate::util::absolute_color_to_svg_css(&color))
         };
         let current_color = current_color_override
             .map(ToOwned::to_owned)

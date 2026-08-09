@@ -18,8 +18,6 @@ use style::{
         specified::box_::{DisplayInside, DisplayOutside},
     },
 };
-#[cfg(feature = "svg")]
-use style_traits::values::ToCss;
 
 use crate::{
     BaseDocument, ElementData, Node, NodeData,
@@ -214,7 +212,7 @@ fn serialize_inline_svg(doc: &BaseDocument, svg_node_id: usize) -> String {
 
     let current_color = doc.nodes[svg_node_id]
         .primary_styles()
-        .map(|style| style.clone_color().to_css_string())
+        .map(|style| crate::util::absolute_color_to_svg_css(&style.clone_color()))
         .unwrap_or_else(|| "black".to_owned());
     let mut pending = VecDeque::new();
     let mut imported = HashSet::new();
