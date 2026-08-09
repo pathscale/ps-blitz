@@ -18,8 +18,10 @@ use winit::keyboard::PhysicalKey;
 
 use atomic_refcell::AtomicRefCell;
 use std::any::Any;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::task::Waker;
+use std::time::Duration;
 use web_time::Instant;
 use winit::event::{ButtonSource, ElementState, MouseButton};
 use winit::event_loop::ActiveEventLoop;
@@ -113,6 +115,8 @@ pub struct View<Rend: WindowRenderer> {
     /// times during one input burst; the platform only needs one frame request.
     redraw_pending: std::cell::Cell<bool>,
 
+    frame_stats: FrameStats,
+
     #[cfg(target_arch = "wasm32")]
     pending_resize: Option<winit::dpi::PhysicalSize<u32>>,
     #[cfg(target_arch = "wasm32")]
@@ -133,6 +137,150 @@ pub struct View<Rend: WindowRenderer> {
     // See https://github.com/rust-windowing/winit/issues/3406
     #[cfg(target_os = "ios")]
     pub ios_request_redraw: std::cell::Cell<bool>,
+}
+
+struct FrameStats {
+    enabled: bool,
+    output_path: Option<PathBuf>,
+    refresh_millihertz: Option<u32>,
+    last_frame_started: Option<Instant>,
+    sample_started: Instant,
+    frames: u32,
+    active_intervals: u32,
+    missed_refreshes: u32,
+    interval_total: Duration,
+    interval_max: Duration,
+    resolve_total: Duration,
+    paint_total: Duration,
+    renderer_total: Duration,
+}
+
+impl FrameStats {
+    fn emit(output_path: Option<&PathBuf>, message: &str) {
+        eprintln!("{message}");
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(path) = output_path
+            && let Ok(mut output) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+        {
+            let _ = std::io::Write::write_all(&mut output, message.as_bytes());
+            let _ = std::io::Write::write_all(&mut output, b"\n");
+        }
+    }
+
+    fn new(window: &dyn Window) -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        let enabled = std::env::var_os("BLITZ_FRAME_STATS").is_some();
+        #[cfg(target_arch = "wasm32")]
+        let enabled = false;
+        #[cfg(not(target_arch = "wasm32"))]
+        let output_path = std::env::var_os("BLITZ_FRAME_STATS_FILE").map(PathBuf::from);
+        #[cfg(target_arch = "wasm32")]
+        let output_path = None;
+
+        let refresh_millihertz = window
+            .current_monitor()
+            .and_then(|monitor| monitor.current_video_mode())
+            .and_then(|mode| mode.refresh_rate_millihertz())
+            .map(std::num::NonZeroU32::get);
+
+        if enabled {
+            let message = match refresh_millihertz {
+                Some(rate) => format!(
+                    "[blitz-frame] display_refresh_hz={:.3}",
+                    f64::from(rate) / 1000.0
+                ),
+                None => "[blitz-frame] display_refresh_hz=unknown".to_owned(),
+            };
+            Self::emit(output_path.as_ref(), &message);
+        }
+
+        Self {
+            enabled,
+            output_path,
+            refresh_millihertz,
+            last_frame_started: None,
+            sample_started: Instant::now(),
+            frames: 0,
+            active_intervals: 0,
+            missed_refreshes: 0,
+            interval_total: Duration::ZERO,
+            interval_max: Duration::ZERO,
+            resolve_total: Duration::ZERO,
+            paint_total: Duration::ZERO,
+            renderer_total: Duration::ZERO,
+        }
+    }
+
+    fn record(
+        &mut self,
+        frame_started: Instant,
+        resolve: Duration,
+        paint: Duration,
+        renderer: Duration,
+    ) {
+        if !self.enabled {
+            return;
+        }
+
+        if let Some(previous) = self.last_frame_started.replace(frame_started) {
+            let interval = frame_started.duration_since(previous);
+            // Ignore idle gaps. These statistics describe active interaction bursts,
+            // not the intentional zero-FPS idle state.
+            if interval <= Duration::from_millis(100) {
+                self.active_intervals += 1;
+                self.interval_total += interval;
+                self.interval_max = self.interval_max.max(interval);
+
+                if let Some(rate) = self.refresh_millihertz {
+                    let target = Duration::from_secs_f64(1000.0 / f64::from(rate));
+                    if interval > target.mul_f64(1.5) {
+                        self.missed_refreshes += 1;
+                    }
+                }
+            }
+        }
+
+        self.frames += 1;
+        self.resolve_total += resolve;
+        self.paint_total += paint;
+        self.renderer_total += renderer;
+
+        let sample_elapsed = self.sample_started.elapsed();
+        if sample_elapsed < Duration::from_secs(1) || self.frames < 2 {
+            return;
+        }
+
+        let active_fps = if self.interval_total.is_zero() {
+            0.0
+        } else {
+            f64::from(self.active_intervals) / self.interval_total.as_secs_f64()
+        };
+        let frames = f64::from(self.frames);
+        let message = format!(
+            "[blitz-frame] active_fps={active_fps:.1} frames={} active_intervals={} missed_refreshes={} max_interval_ms={:.2} resolve_avg_ms={:.2} paint_avg_ms={:.2} renderer_avg_ms={:.2}",
+            self.frames,
+            self.active_intervals,
+            self.missed_refreshes,
+            self.interval_max.as_secs_f64() * 1000.0,
+            self.resolve_total.as_secs_f64() * 1000.0 / frames,
+            self.paint_total.as_secs_f64() * 1000.0 / frames,
+            self.renderer_total.as_secs_f64() * 1000.0 / frames,
+        );
+        Self::emit(self.output_path.as_ref(), &message);
+
+        self.sample_started = frame_started;
+        self.frames = 0;
+        self.active_intervals = 0;
+        self.missed_refreshes = 0;
+        self.interval_total = Duration::ZERO;
+        self.interval_max = Duration::ZERO;
+        self.resolve_total = Duration::ZERO;
+        self.paint_total = Duration::ZERO;
+        self.renderer_total = Duration::ZERO;
+    }
 }
 
 impl<Rend: WindowRenderer> View<Rend> {
@@ -229,6 +377,7 @@ impl<Rend: WindowRenderer> View<Rend> {
             pointer_pos: Default::default(),
             is_visible: winit_window.is_visible().unwrap_or(true),
             redraw_pending: std::cell::Cell::new(false),
+            frame_stats: FrameStats::new(&*winit_window),
             #[cfg(feature = "accessibility")]
             accessibility,
 
@@ -402,14 +551,17 @@ impl<Rend: WindowRenderer> View<Rend> {
     }
 
     pub fn redraw(&mut self) {
+        let frame_started = Instant::now();
         self.redraw_pending.set(false);
         #[cfg(target_os = "ios")]
         self.ios_request_redraw.set(false);
         let animation_time = self.current_animation_time();
         let is_visible = self.is_visible;
 
+        let resolve_started = Instant::now();
         let mut inner = self.doc.inner_mut();
         inner.resolve(animation_time);
+        let resolve_time = resolve_started.elapsed();
 
         // Unregister resources (e.g. textures) from dropped custom widget nodes
         #[cfg(feature = "custom-widget")]
@@ -423,8 +575,11 @@ impl<Rend: WindowRenderer> View<Rend> {
         let is_blocked = inner.has_pending_critical_resources();
         let insets = self.safe_area_insets.to_logical(scale);
 
+        let mut paint_time = Duration::ZERO;
+        let render_started = Instant::now();
         if !is_blocked && is_visible {
             self.renderer.render(|scene| {
+                let paint_started = Instant::now();
                 paint_scene(
                     scene,
                     &mut inner,
@@ -433,11 +588,16 @@ impl<Rend: WindowRenderer> View<Rend> {
                     height,
                     insets.left,
                     insets.top,
-                )
+                );
+                paint_time = paint_started.elapsed();
             });
         }
+        let renderer_time = render_started.elapsed().saturating_sub(paint_time);
 
         drop(inner);
+
+        self.frame_stats
+            .record(frame_started, resolve_time, paint_time, renderer_time);
 
         if !is_blocked && is_visible && is_animating {
             self.request_redraw();
