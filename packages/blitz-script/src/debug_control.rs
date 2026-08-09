@@ -268,6 +268,13 @@ impl DebugController {
                         "height": svg.tree.size().height(),
                         "intrinsicWidth": svg.intrinsic_width,
                         "intrinsicHeight": svg.intrinsic_height,
+                        "rootChildren": svg.tree.root().children().len(),
+                        "contentBounds": {
+                            "x": svg.tree.root().layer_bounding_box().x(),
+                            "y": svg.tree.root().layer_bounding_box().y(),
+                            "width": svg.tree.root().layer_bounding_box().width(),
+                            "height": svg.tree.root().layer_bounding_box().height(),
+                        },
                     }),
                     Some(blitz_dom::node::ImageData::Raster(raster)) => json!({
                         "kind": "raster",
