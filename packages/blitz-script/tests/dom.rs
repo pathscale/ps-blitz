@@ -594,6 +594,39 @@ fn constructed_events_dispatch_and_bubble() {
 }
 
 #[test]
+fn dom_interface_instanceof_checks_match_node_types_and_tags() {
+    let doc = doc_from_html(
+        r#"
+        <html><head></head><body>
+            <input id="field"><div id="out"></div>
+            <script>
+                const head = document.querySelector("head");
+                const body = document.body;
+                const field = document.getElementById("field");
+                document.getElementById("out").textContent = [
+                    document instanceof Node,
+                    document instanceof Document,
+                    document instanceof HTMLDocument,
+                    body instanceof Node,
+                    body instanceof Element,
+                    body instanceof HTMLElement,
+                    body instanceof HTMLBodyElement,
+                    body instanceof HTMLHeadElement,
+                    head instanceof HTMLHeadElement,
+                    field instanceof HTMLInputElement,
+                    field instanceof HTMLTextAreaElement,
+                ].join("|");
+            </script>
+        </body></html>
+        "#,
+    );
+    assert_eq!(
+        text_of_selector(&doc, "#out"),
+        "true|true|true|true|true|true|true|false|true|true|false"
+    );
+}
+
+#[test]
 fn checkbox_click_fires_input_and_change_events() {
     let mut doc = doc_from_html(
         r#"

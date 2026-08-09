@@ -389,6 +389,48 @@ impl ScriptRuntime {
                     configurable: true,
                 });
             }
+            const defineDomInterface = function (name, matches) {
+                if (typeof globalThis[name] === "function") return;
+                const Interface = function () {
+                    throw new TypeError("Illegal constructor");
+                };
+                Object.defineProperty(Interface, "name", { value: name, configurable: true });
+                Object.defineProperty(Interface, Symbol.hasInstance, {
+                    value: matches,
+                    configurable: true,
+                });
+                Object.defineProperty(globalThis, name, {
+                    value: Interface,
+                    writable: true,
+                    enumerable: false,
+                    configurable: true,
+                });
+            };
+            const isNode = function (value) {
+                return value !== null && typeof value === "object" && typeof value.nodeType === "number";
+            };
+            const isElement = function (value) { return isNode(value) && value.nodeType === 1; };
+            const isTag = function (tagName) {
+                return function (value) { return isElement(value) && value.tagName === tagName; };
+            };
+            defineDomInterface("Node", isNode);
+            defineDomInterface("Element", isElement);
+            defineDomInterface("HTMLElement", isElement);
+            defineDomInterface("Document", function (value) { return isNode(value) && value.nodeType === 9; });
+            defineDomInterface("HTMLDocument", function (value) { return isNode(value) && value.nodeType === 9; });
+            defineDomInterface("HTMLHeadElement", isTag("HEAD"));
+            defineDomInterface("HTMLBodyElement", isTag("BODY"));
+            defineDomInterface("HTMLAnchorElement", isTag("A"));
+            defineDomInterface("HTMLButtonElement", isTag("BUTTON"));
+            defineDomInterface("HTMLFormElement", isTag("FORM"));
+            defineDomInterface("HTMLImageElement", isTag("IMG"));
+            defineDomInterface("HTMLInputElement", isTag("INPUT"));
+            defineDomInterface("HTMLOptionElement", isTag("OPTION"));
+            defineDomInterface("HTMLScriptElement", isTag("SCRIPT"));
+            defineDomInterface("HTMLSelectElement", isTag("SELECT"));
+            defineDomInterface("HTMLStyleElement", isTag("STYLE"));
+            defineDomInterface("HTMLTemplateElement", isTag("TEMPLATE"));
+            defineDomInterface("HTMLTextAreaElement", isTag("TEXTAREA"));
             delete globalThis.__blitzRandomU32;
             "##,
             "<blitz-bootstrap>",
