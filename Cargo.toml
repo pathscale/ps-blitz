@@ -127,7 +127,6 @@ peniko = "0.6.0"
 kurbo = "0.13.1"
 wgpu = "29"
 usvg = "0.46"
-resvg = { path = "../resvg-0.46.0", default-features = false, features = ["text", "system-fonts"] }
 
 # Windowing & Input
 raw-window-handle = "0.6.0"

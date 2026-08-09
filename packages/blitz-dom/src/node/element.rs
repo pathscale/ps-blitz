@@ -239,13 +239,8 @@ impl ElementData {
 
     #[cfg(feature = "svg")]
     pub fn svg_data(&self) -> Option<&usvg::Tree> {
-        Some(&self.svg_image_data()?.tree)
-    }
-
-    #[cfg(feature = "svg")]
-    pub fn svg_image_data(&self) -> Option<&SvgImageData> {
         match self.image_data()? {
-            ImageData::Svg(data) => Some(data),
+            ImageData::Svg(data) => Some(&data.tree),
             _ => None,
         }
     }
@@ -490,8 +485,6 @@ pub struct RasterImageData {
     pub height: u32,
     /// The raw image data in RGBA8 format
     pub data: Blob<u8>,
-    /// Whether the RGB channels have already been multiplied by alpha.
-    pub premultiplied_alpha: bool,
 }
 impl RasterImageData {
     pub fn new(width: u32, height: u32, data: Arc<Vec<u8>>) -> Self {
@@ -499,16 +492,6 @@ impl RasterImageData {
             width,
             height,
             data: Blob::new(data),
-            premultiplied_alpha: false,
-        }
-    }
-
-    pub fn new_premultiplied(width: u32, height: u32, data: Arc<Vec<u8>>) -> Self {
-        Self {
-            width,
-            height,
-            data: Blob::new(data),
-            premultiplied_alpha: true,
         }
     }
 }
@@ -526,8 +509,6 @@ impl RasterImageData {
 pub struct SvgImageData {
     /// The parsed SVG tree.
     pub tree: Arc<usvg::Tree>,
-    /// A 2x premultiplied RGBA raster retained for stable, low-cost painting.
-    pub raster: RasterImageData,
     /// The intrinsic width in CSS px, present only when the root `<svg>`
     /// declared an absolute (non-percentage) `width`.
     pub intrinsic_width: Option<f32>,

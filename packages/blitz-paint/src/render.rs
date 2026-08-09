@@ -520,7 +520,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             element,
             transform,
             #[cfg(feature = "svg")]
-            svg: element.svg_image_data(),
+            svg: element.svg_data(),
             text_input: element.text_input_data(),
             list_item: element.list_item_data.as_deref(),
             devtools: self.dom.devtools(),
@@ -545,11 +545,7 @@ fn to_peniko_image(image: &RasterImageData, quality: peniko::ImageQuality) -> pe
             format: peniko::ImageFormat::Rgba8,
             width: image.width,
             height: image.height,
-            alpha_type: if image.premultiplied_alpha {
-                peniko::ImageAlphaType::AlphaPremultiplied
-            } else {
-                peniko::ImageAlphaType::Alpha
-            },
+            alpha_type: peniko::ImageAlphaType::Alpha,
         },
         sampler: ImageSampler {
             x_extend: peniko::Extend::Repeat,
@@ -570,7 +566,7 @@ struct ElementCx<'dom, 'a> {
     element: &'dom ElementData,
     transform: Affine,
     #[cfg(feature = "svg")]
-    svg: Option<&'dom blitz_dom::node::SvgImageData>,
+    svg: Option<&'dom usvg::Tree>,
     text_input: Option<&'dom TextInputData>,
     list_item: Option<&'dom ListItemLayout>,
     devtools: &'dom DevtoolSettings,
@@ -932,7 +928,7 @@ impl ElementCx<'_, '_> {
 
         let width = self.frame.content_box.width() as u32;
         let height = self.frame.content_box.height() as u32;
-        let svg_size = svg.tree.size();
+        let svg_size = svg.size();
 
         let x = self.frame.content_box.origin().x;
         let y = self.frame.content_box.origin().y;
@@ -969,13 +965,7 @@ impl ElementCx<'_, '_> {
             .pre_translate(Vec2 { x, y })
             .pre_scale_non_uniform(x_scale, y_scale);
 
-        scene.draw_image(
-            to_peniko_image(&svg.raster, peniko::ImageQuality::High).as_ref(),
-            transform.pre_scale_non_uniform(
-                svg_size.width() as f64 / svg.raster.width as f64,
-                svg_size.height() as f64 / svg.raster.height as f64,
-            ),
-        );
+        anyrender_svg::render_svg_tree(scene, svg, transform);
     }
 
     fn draw_image(&self, scene: &mut impl PaintScene) {
