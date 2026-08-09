@@ -241,6 +241,35 @@ fn structured_clone_copies_supported_values_and_cycles() {
 }
 
 #[test]
+fn web_crypto_fills_integer_typed_arrays() {
+    let doc = doc_from_html(
+        r#"
+        <html><body>
+            <script>
+                const values = new Uint32Array(2);
+                const returned = crypto.getRandomValues(values);
+                const nullPrototype = Object.create(null);
+                const out = document.createElement("div");
+                out.id = "crypto-out";
+                out.textContent = [
+                    typeof crypto.getRandomValues,
+                    returned === values,
+                    values.length,
+                    Number.isInteger(values[0]),
+                    Object.getPrototypeOf(nullPrototype) === null,
+                ].join("|");
+                document.body.appendChild(out);
+            </script>
+        </body></html>
+        "#,
+    );
+    assert_eq!(
+        text_of_selector(&doc, "#crypto-out"),
+        "function|true|2|true|true"
+    );
+}
+
+#[test]
 fn query_selectors() {
     let doc = doc_from_html(
         r#"

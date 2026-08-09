@@ -979,6 +979,7 @@ dependencies = [
  "boa_gc",
  "boa_runtime",
  "data-url",
+ "getrandom 0.4.3",
  "image",
  "keyboard-types 0.7.0",
  "markup5ever",

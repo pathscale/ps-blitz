@@ -10,7 +10,7 @@ use blitz_traits::events::{DomEvent, DomEventData, EventState};
 use boa_engine::object::{JsObject, ObjectInitializer};
 use boa_engine::property::Attribute;
 use boa_engine::value::JsValue;
-use boa_engine::{Context, JsResult, JsString, NativeFunction, Source, js_string};
+use boa_engine::{Context, JsNativeError, JsResult, JsString, NativeFunction, Source, js_string};
 use boa_gc::{Finalize, Trace};
 use boa_runtime::Console;
 use boa_runtime::console::{ConsoleState, DefaultLogger, Logger};
@@ -205,6 +205,7 @@ impl ScriptRuntime {
             2,
             window_remove_event_listener,
         );
+        register_global_fn(&mut context, "__blitzRandomU32", 0, random_u32);
 
         let mut runtime = Self {
             context,
@@ -277,6 +278,47 @@ impl ScriptRuntime {
                     return clone(input);
                 };
             }
+            if (typeof globalThis.crypto !== "object" || globalThis.crypto === null) {
+                Object.defineProperty(globalThis, "crypto", {
+                    value: {},
+                    writable: false,
+                    enumerable: true,
+                    configurable: true,
+                });
+            }
+            if (typeof globalThis.crypto.getRandomValues !== "function") {
+                const randomU32 = globalThis.__blitzRandomU32;
+                Object.defineProperty(globalThis.crypto, "getRandomValues", {
+                    value: function (array) {
+                        if (typeof ArrayBuffer === "undefined" || !ArrayBuffer.isView(array)) {
+                            throw new TypeError("getRandomValues requires an integer TypedArray");
+                        }
+                        const supported = [
+                            Int8Array,
+                            Uint8Array,
+                            Uint8ClampedArray,
+                            Int16Array,
+                            Uint16Array,
+                            Int32Array,
+                            Uint32Array,
+                        ];
+                        if (!supported.some((Type) => array instanceof Type)) {
+                            throw new TypeError("getRandomValues requires an integer TypedArray");
+                        }
+                        if (array.byteLength > 65536) {
+                            throw new TypeError("getRandomValues quota exceeded");
+                        }
+                        for (let index = 0; index < array.length; index += 1) {
+                            array[index] = randomU32();
+                        }
+                        return array;
+                    },
+                    writable: true,
+                    enumerable: true,
+                    configurable: true,
+                });
+            }
+            delete globalThis.__blitzRandomU32;
             "#,
             "<blitz-bootstrap>",
         );
@@ -669,6 +711,14 @@ fn ipc_post_message(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
         handler(body);
     }
     Ok(JsValue::undefined())
+}
+
+fn random_u32(_: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+    getrandom::u32().map(JsValue::new).map_err(|error| {
+        JsNativeError::error()
+            .with_message(format!("secure random generation failed: {error}"))
+            .into()
+    })
 }
 
 fn register_global(context: &mut Context, name: &str, value: JsValue) {
