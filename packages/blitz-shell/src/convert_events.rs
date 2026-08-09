@@ -135,7 +135,10 @@ pub(crate) fn winit_modifiers_to_kbt_modifiers(winit_modifiers: WinitModifiers) 
         modifiers.insert(Modifiers::SHIFT);
     }
     if winit_modifiers.meta_key() {
-        modifiers.insert(Modifiers::SUPER);
+        // keyboard-types keeps the physical Super modifier and the DOM-facing
+        // Meta modifier as separate bits. macOS Command is both: Blitz's text
+        // editing uses SUPER, while KeyboardEvent.metaKey reads META.
+        modifiers.insert(Modifiers::SUPER | Modifiers::META);
     }
     modifiers
 }
@@ -146,6 +149,19 @@ pub(crate) fn winit_key_location_to_kbt_location(location: WinitKeyLocation) -> 
         WinitKeyLocation::Left => Location::Left,
         WinitKeyLocation::Right => Location::Right,
         WinitKeyLocation::Numpad => Location::Numpad,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn macos_command_is_exposed_as_dom_meta_and_native_super() {
+        let modifiers = winit_modifiers_to_kbt_modifiers(WinitModifiers::META);
+
+        assert!(modifiers.contains(Modifiers::META));
+        assert!(modifiers.contains(Modifiers::SUPER));
     }
 }
 
