@@ -2,7 +2,7 @@
 
 use blitz_dom::{Document, DocumentConfig};
 use blitz_script::ScriptDocument;
-use blitz_traits::events::DomEvent;
+use blitz_traits::events::{DomEvent, DomEventData};
 use blitz_traits::shell::{ColorScheme, Viewport};
 use keyboard_types::Modifiers;
 use std::sync::{Arc, Mutex};
@@ -20,6 +20,52 @@ fn text_of_selector(doc: &ScriptDocument, selector: &str) -> String {
         .unwrap()
         .unwrap_or_else(|| panic!("no node matching {selector}"));
     inner.get_node(node_id).unwrap().text_content()
+}
+
+#[test]
+fn pointer_capture_methods_retarget_pointer_events() {
+    let mut doc = doc_from_html(
+        r#"
+        <html><body>
+            <button id="capture">capture</button><div id="other"></div><div id="out"></div>
+            <script>
+                const capture = document.getElementById("capture");
+                const out = document.getElementById("out");
+                capture.addEventListener("pointerdown", (event) => {
+                    capture.setPointerCapture(event.pointerId);
+                    out.textContent = `down:${event.pointerId}:${capture.hasPointerCapture(event.pointerId)}`;
+                });
+                capture.addEventListener("pointermove", (event) => {
+                    out.textContent += `|move:${event.pointerId}`;
+                    capture.releasePointerCapture(event.pointerId);
+                });
+            </script>
+        </body></html>
+        "#,
+    );
+
+    let (capture_id, other_id, pointer) = {
+        let inner = doc.inner();
+        let capture_id = inner.query_selector("#capture").unwrap().unwrap();
+        let other_id = inner.query_selector("#other").unwrap().unwrap();
+        let pointer = match inner
+            .get_node(capture_id)
+            .unwrap()
+            .synthetic_click_event(Modifiers::empty())
+        {
+            DomEventData::Click(pointer) => pointer,
+            _ => unreachable!(),
+        };
+        (capture_id, other_id, pointer)
+    };
+
+    doc.dispatch_dom_event(DomEvent::new(
+        capture_id,
+        DomEventData::PointerDown(pointer.clone()),
+    ));
+    doc.dispatch_dom_event(DomEvent::new(other_id, DomEventData::PointerMove(pointer)));
+
+    assert_eq!(text_of_selector(&doc, "#out"), "down:1:true|move:1");
 }
 
 #[test]

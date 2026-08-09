@@ -2,7 +2,9 @@
 
 use std::cell::Cell;
 
-use blitz_traits::events::{BlitzKeyEvent, BlitzPointerEvent, BlitzWheelDelta, DomEventData};
+use blitz_traits::events::{
+    BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, DomEventData,
+};
 use boa_engine::object::JsObject;
 use boa_engine::value::JsValue;
 use boa_engine::{Context, Finalize, JsData, JsNativeError, JsResult, NativeFunction, Trace};
@@ -183,6 +185,20 @@ fn add_modifiers(event: &JsObject, mods: Modifiers, context: &mut Context) {
 }
 
 fn add_pointer_fields(event: &JsObject, data: &BlitzPointerEvent, context: &mut Context) {
+    let (pointer_id, pointer_type) = match data.id {
+        BlitzPointerId::Mouse => (1, "mouse"),
+        BlitzPointerId::Pen => (2, "pen"),
+        BlitzPointerId::Finger(id) => (id.saturating_add(3), "touch"),
+    };
+    define_value(event, "pointerId", JsValue::from(pointer_id), context);
+    define_value(event, "pointerType", js_str(pointer_type), context);
+    define_value(event, "isPrimary", JsValue::from(data.is_primary), context);
+    define_value(
+        event,
+        "pressure",
+        JsValue::from(data.details.pressure),
+        context,
+    );
     define_value(
         event,
         "clientX",

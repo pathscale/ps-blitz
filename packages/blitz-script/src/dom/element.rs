@@ -88,6 +88,71 @@ pub(crate) fn init_element_proto(proto: &JsObject, context: &mut Context) {
     );
     define_method(proto, "querySelector", 1, query_selector, context);
     define_method(proto, "querySelectorAll", 1, query_selector_all, context);
+    define_method(proto, "setPointerCapture", 1, set_pointer_capture, context);
+    define_method(
+        proto,
+        "releasePointerCapture",
+        1,
+        release_pointer_capture,
+        context,
+    );
+    define_method(proto, "hasPointerCapture", 1, has_pointer_capture, context);
+}
+
+fn pointer_id_arg(args: &[JsValue], context: &mut Context) -> JsResult<u64> {
+    let value = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .to_number(context)?;
+    if !value.is_finite() || value < 0.0 {
+        return Err(JsNativeError::typ()
+            .with_message("pointerId must be a non-negative finite number")
+            .into());
+    }
+    Ok(value as u64)
+}
+
+fn set_pointer_capture(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    let pointer_id = pointer_id_arg(args, context)?;
+    ctx.state
+        .borrow_mut()
+        .pointer_capture
+        .insert(pointer_id, node_id);
+    Ok(JsValue::undefined())
+}
+
+fn release_pointer_capture(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    let pointer_id = pointer_id_arg(args, context)?;
+    let mut state = ctx.state.borrow_mut();
+    if state.pointer_capture.get(&pointer_id) == Some(&node_id) {
+        state.pointer_capture.remove(&pointer_id);
+    }
+    Ok(JsValue::undefined())
+}
+
+fn has_pointer_capture(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    let pointer_id = pointer_id_arg(args, context)?;
+    Ok(JsValue::from(
+        ctx.state.borrow().pointer_capture.get(&pointer_id) == Some(&node_id),
+    ))
 }
 
 // === Attribute helpers ===

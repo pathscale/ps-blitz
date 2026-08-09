@@ -56,6 +56,8 @@ pub(crate) struct RuntimeState {
     pub node_listeners: HashMap<usize, ListenerMap>,
     /// Event listeners registered on `window`.
     pub window_listeners: ListenerMap,
+    /// Active Pointer Events capture target, keyed by the web-facing pointer id.
+    pub pointer_capture: HashMap<u64, usize>,
     /// Host callback backing `window.ipc.postMessage`, installed by an embedder.
     pub ipc_handler: Option<IpcHandler>,
     /// Pending timers (`setTimeout`/`setInterval`/`requestAnimationFrame`)

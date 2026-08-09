@@ -7,7 +7,7 @@ use std::rc::Rc;
 use std::sync::LazyLock;
 
 use blitz_dom::BaseDocument;
-use blitz_traits::events::{DomEvent, DomEventData, EventState};
+use blitz_traits::events::{BlitzPointerId, DomEvent, DomEventData, EventState};
 use boa_engine::object::{JsObject, ObjectInitializer};
 use boa_engine::property::Attribute;
 use boa_engine::value::JsValue;
@@ -599,6 +599,31 @@ impl ScriptRuntime {
         event: &DomEvent,
         event_state: &mut EventState,
     ) -> bool {
+        let pointer_id = match &event.data {
+            DomEventData::PointerMove(pointer)
+            | DomEventData::PointerDown(pointer)
+            | DomEventData::PointerUp(pointer)
+            | DomEventData::PointerCancel(pointer) => Some(match pointer.id {
+                BlitzPointerId::Mouse => 1,
+                BlitzPointerId::Pen => 2,
+                BlitzPointerId::Finger(id) => id.saturating_add(3),
+            }),
+            _ => None,
+        };
+        let captured_node =
+            pointer_id.and_then(|id| self.ctx.state.borrow().pointer_capture.get(&id).copied());
+        let captured_chain = captured_node.map(|target| {
+            let doc = self.ctx.doc.borrow();
+            let mut chain = Vec::new();
+            let mut current = Some(target);
+            while let Some(node_id) = current {
+                chain.push(node_id);
+                current = doc.get_node(node_id).and_then(|node| node.parent);
+            }
+            chain
+        });
+        let chain = captured_chain.as_deref().unwrap_or(chain);
+
         let name = event.name().to_string();
         let mut any_called = self.dispatch_event_inner(
             chain,
@@ -638,6 +663,18 @@ impl ScriptRuntime {
 
         if any_called {
             self.run_jobs("event microtasks");
+        }
+
+        if matches!(
+            event.data,
+            DomEventData::PointerUp(_) | DomEventData::PointerCancel(_)
+        ) && let Some(pointer_id) = pointer_id
+        {
+            self.ctx
+                .state
+                .borrow_mut()
+                .pointer_capture
+                .remove(&pointer_id);
         }
 
         any_called
