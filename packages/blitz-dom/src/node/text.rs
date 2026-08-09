@@ -5,7 +5,7 @@ use blitz_traits::{
 use keyboard_types::{Key, Modifiers};
 use parley::{ContentWidths, FontContext, LayoutContext};
 
-use crate::util::ACTION_MOD;
+use crate::util::{ACTION_MOD, has_clipboard_modifier};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 /// Parley Brush type for Blitz which contains the Blitz node id
@@ -209,12 +209,15 @@ impl TextInputData {
         let mods = event.modifiers;
         let shift = mods.contains(Modifiers::SHIFT);
         let action_mod = mods.contains(ACTION_MOD);
+        let clipboard_mod = has_clipboard_modifier(mods);
 
         let is_multiline = self.is_multiline;
         let editor = &mut self.editor;
         let mut driver = editor.driver(font_ctx, layout_ctx);
         match event.key {
-            Key::Character(c) if action_mod && matches!(c.as_str(), "c" | "x" | "v") => {
+            Key::Character(c)
+                if clipboard_mod && matches!(c.to_lowercase().as_str(), "c" | "x" | "v") =>
+            {
                 match c.to_lowercase().as_str() {
                     "c" => {
                         if let Some(text) = driver.editor.selected_text() {

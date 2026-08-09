@@ -9,6 +9,28 @@ pub(crate) const ACTION_MOD: Modifiers = Modifiers::SUPER;
 #[cfg(not(target_os = "macos"))]
 pub(crate) const ACTION_MOD: Modifiers = Modifiers::CONTROL;
 
+/// Clipboard shortcuts accept Control as well as the platform action modifier.
+///
+/// macOS normally uses Command, but applications may expose Control+C/X/V as
+/// explicit shortcuts and Blitz must not drop those when a text control owns
+/// focus. Cursor movement continues to use `ACTION_MOD`, preserving the native
+/// macOS Control-key editing bindings.
+pub(crate) fn has_clipboard_modifier(modifiers: Modifiers) -> bool {
+    modifiers.contains(ACTION_MOD) || modifiers.contains(Modifiers::CONTROL)
+}
+
+#[cfg(test)]
+mod shortcut_tests {
+    use super::*;
+
+    #[test]
+    fn clipboard_accepts_control_and_the_platform_action_modifier() {
+        assert!(has_clipboard_modifier(Modifiers::CONTROL));
+        assert!(has_clipboard_modifier(ACTION_MOD));
+        assert!(!has_clipboard_modifier(Modifiers::SHIFT));
+    }
+}
+
 pub type Color = AlphaColor<Srgb>;
 
 /// Decode raw font bytes, decompressing WOFF/WOFF2 if the `woff` feature is enabled.
