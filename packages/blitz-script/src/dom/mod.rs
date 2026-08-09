@@ -276,7 +276,8 @@ pub(crate) fn init_protos(ctx: &DomCtx, context: &mut Context) {
         element: element_proto,
         character_data: character_data_proto,
         document: document_proto,
-        event: event_proto,
+        event: event_proto.clone(),
         style: style_proto,
     });
+    event::register_event_constructor(&event_proto, context);
 }

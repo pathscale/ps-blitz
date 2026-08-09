@@ -5,10 +5,10 @@ use std::cell::Cell;
 use blitz_traits::events::{BlitzKeyEvent, BlitzPointerEvent, BlitzWheelDelta, DomEventData};
 use boa_engine::object::JsObject;
 use boa_engine::value::JsValue;
-use boa_engine::{Context, Finalize, JsData, JsResult, Trace};
+use boa_engine::{Context, Finalize, JsData, JsNativeError, JsResult, NativeFunction, Trace};
 use keyboard_types::Modifiers;
 
-use super::{define_accessor, define_method, define_value, js_str};
+use super::{define_accessor, define_method, define_value, dom_ctx, js_str, to_rust_string};
 use crate::state::DomCtx;
 
 /// Native data attached to JS `Event` objects. Tracks the flags set by
@@ -40,6 +40,62 @@ pub(crate) fn init_event_proto(proto: &JsObject, context: &mut Context) {
         None,
         context,
     );
+}
+
+pub(crate) fn register_event_constructor(proto: &JsObject, context: &mut Context) {
+    context
+        .register_global_callable(
+            boa_engine::js_string!("Event"),
+            1,
+            NativeFunction::from_fn_ptr(event_constructor),
+        )
+        .expect("failed to register Event constructor");
+    let global = context.global_object().clone();
+    let constructor = global
+        .get(boa_engine::js_string!("Event"), context)
+        .expect("Event constructor missing")
+        .as_object()
+        .expect("Event is not an object");
+    constructor
+        .set(
+            boa_engine::js_string!("prototype"),
+            proto.clone(),
+            true,
+            context,
+        )
+        .expect("failed to set Event prototype");
+    define_value(proto, "constructor", constructor.into(), context);
+}
+
+fn event_constructor(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let event_type = args
+        .first()
+        .ok_or_else(|| JsNativeError::typ().with_message("Event constructor requires a type"))?;
+    let event_type = to_rust_string(event_type, context)?;
+    let (bubbles, cancelable, composed) = match args.get(1).and_then(JsValue::as_object) {
+        Some(init) => (
+            init.get(boa_engine::js_string!("bubbles"), context)?
+                .to_boolean(),
+            init.get(boa_engine::js_string!("cancelable"), context)?
+                .to_boolean(),
+            init.get(boa_engine::js_string!("composed"), context)?
+                .to_boolean(),
+        ),
+        None => (false, false, false),
+    };
+    let ctx = dom_ctx(context)?;
+    let event = create_event(
+        &ctx,
+        &event_type,
+        bubbles,
+        cancelable,
+        &JsValue::null(),
+        context,
+    );
+    define_value(&event, "composed", JsValue::from(composed), context);
+    define_value(&event, "isTrusted", JsValue::from(false), context);
+    define_value(&event, "eventPhase", JsValue::from(0), context);
+    Ok(event.into())
 }
 
 fn event_ref<T>(this: &JsValue, f: impl FnOnce(&EventRef) -> T) -> Option<T> {

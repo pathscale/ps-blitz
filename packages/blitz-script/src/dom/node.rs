@@ -8,9 +8,10 @@ use boa_engine::value::JsValue;
 use boa_engine::{Context, JsNativeError, JsResult};
 
 use super::{
-    define_accessor, define_method, dom_ctx, js_str, node_id_of_value, node_or_null, node_wrapper,
-    this_node_id, to_rust_string,
+    define_accessor, define_method, define_value, dom_ctx, js_str, node_id_of_value, node_or_null,
+    node_wrapper, this_node_id, to_rust_string,
 };
+use crate::dom::event::EventRef;
 use crate::state::Listener;
 
 pub(crate) fn init_node_proto(proto: &JsObject, context: &mut Context) {
@@ -62,6 +63,7 @@ pub(crate) fn init_node_proto(proto: &JsObject, context: &mut Context) {
         remove_event_listener,
         context,
     );
+    define_method(proto, "dispatchEvent", 1, dispatch_event, context);
 }
 
 pub(crate) fn init_character_data_proto(proto: &JsObject, context: &mut Context) {
@@ -519,4 +521,74 @@ fn remove_event_listener(
     }
 
     Ok(JsValue::undefined())
+}
+
+fn dispatch_event(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let target_id = this_node_id(this)?;
+    let event = args
+        .first()
+        .and_then(JsValue::as_object)
+        .filter(|event| event.downcast_ref::<EventRef>().is_some())
+        .ok_or_else(|| JsNativeError::typ().with_message("dispatchEvent requires an Event"))?;
+    let event_type = to_rust_string(
+        &event.get(boa_engine::js_string!("type"), context)?,
+        context,
+    )?;
+    let bubbles = event
+        .get(boa_engine::js_string!("bubbles"), context)?
+        .to_boolean();
+    let chain = ctx.doc.borrow().node_chain(target_id);
+    let target: JsValue = node_wrapper(&ctx, target_id, context).into();
+    define_value(&event, "target", target.clone(), context);
+    define_value(&event, "srcElement", target, context);
+    define_value(&event, "eventPhase", JsValue::from(2), context);
+    let on_name = boa_engine::JsString::from(format!("on{event_type}"));
+
+    'chain: for node_id in chain {
+        let mut callbacks = Vec::new();
+        {
+            let mut state = ctx.state.borrow_mut();
+            if let Some(listeners) = state
+                .node_listeners
+                .get_mut(&node_id)
+                .and_then(|listeners| listeners.get_mut(&event_type))
+            {
+                callbacks.extend(listeners.iter().map(|listener| listener.callback.clone()));
+                listeners.retain(|listener| !listener.once);
+            }
+        }
+        if let Some(wrapper) = ctx.state.borrow().node_wrappers.get(&node_id).cloned() {
+            if let Some(handler) = wrapper.get(on_name.clone(), context)?.as_object()
+                && handler.is_callable()
+            {
+                callbacks.push(handler.clone());
+            }
+        }
+
+        let current_target: JsValue = node_wrapper(&ctx, node_id, context).into();
+        define_value(&event, "currentTarget", current_target.clone(), context);
+        for callback in callbacks {
+            callback.call(&current_target, &[event.clone().into()], context)?;
+            if event
+                .downcast_ref::<EventRef>()
+                .is_some_and(|event| event.stopped_immediate.get())
+            {
+                break 'chain;
+            }
+        }
+        let stopped = event
+            .downcast_ref::<EventRef>()
+            .is_some_and(|event| event.stopped.get());
+        if !bubbles || stopped {
+            break;
+        }
+    }
+
+    define_value(&event, "currentTarget", JsValue::null(), context);
+    define_value(&event, "eventPhase", JsValue::from(0), context);
+    let prevented = event
+        .downcast_ref::<EventRef>()
+        .is_some_and(|event| event.prevented.get());
+    Ok(JsValue::from(!prevented))
 }

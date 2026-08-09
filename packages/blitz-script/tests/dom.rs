@@ -555,6 +555,45 @@ fn input_value_property() {
 }
 
 #[test]
+fn constructed_events_dispatch_and_bubble() {
+    let doc = doc_from_html(
+        r#"
+        <html><body>
+            <input id="field">
+            <div id="out"></div>
+            <script>
+                const field = document.getElementById("field");
+                const out = document.getElementById("out");
+                field.addEventListener("input", (event) => {
+                    out.textContent = [
+                        event instanceof Event,
+                        event.target.id,
+                        event.bubbles,
+                        event.cancelable,
+                        event.composed,
+                        event.isTrusted,
+                        event.currentTarget.id,
+                    ].join("|");
+                    event.preventDefault();
+                });
+                document.addEventListener("input", () => out.textContent += "|document");
+                const accepted = field.dispatchEvent(new Event("input", {
+                    bubbles: true,
+                    cancelable: true,
+                    composed: true,
+                }));
+                out.textContent += `|${accepted}`;
+            </script>
+        </body></html>
+        "#,
+    );
+    assert_eq!(
+        text_of_selector(&doc, "#out"),
+        "true|field|true|true|true|false|field|document|false"
+    );
+}
+
+#[test]
 fn checkbox_click_fires_input_and_change_events() {
     let mut doc = doc_from_html(
         r#"
