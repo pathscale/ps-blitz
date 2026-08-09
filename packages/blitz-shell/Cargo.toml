@@ -1,7 +1,7 @@
 [package]
-name = "blitz-shell"
+name = "ps-blitz-shell"
 description = "Blitz application shell"
-documentation = "https://docs.rs/blitz-shell"
+documentation = "https://docs.rs/ps-blitz-shell"
 version.workspace = true
 license.workspace = true
 homepage.workspace = true

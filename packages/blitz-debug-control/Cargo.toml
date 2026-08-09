@@ -1,7 +1,7 @@
 [package]
-name = "blitz-debug-control"
+name = "ps-blitz-debug-control"
 description = "Debug-only WebDriver-compatible control transport for Blitz"
-documentation = "https://docs.rs/blitz-debug-control"
+documentation = "https://docs.rs/ps-blitz-debug-control"
 version.workspace = true
 license.workspace = true
 homepage.workspace = true

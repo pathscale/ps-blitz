@@ -1,7 +1,7 @@
 [package]
-name = "blitz-html"
+name = "ps-blitz-html"
 description = "Blitz HTML parser"
-documentation = "https://docs.rs/blitz-html"
+documentation = "https://docs.rs/ps-blitz-html"
 version.workspace = true
 license.workspace = true
 homepage.workspace = true

@@ -1,7 +1,7 @@
 [package]
-name = "blitz-dom"
+name = "ps-blitz-dom"
 description = "Blitz DOM implementation"
-documentation = "https://docs.rs/blitz-dom"
+documentation = "https://docs.rs/ps-blitz-dom"
 version.workspace = true
 license.workspace = true
 homepage.workspace = true
