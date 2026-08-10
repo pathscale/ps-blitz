@@ -39,7 +39,7 @@ fn set_css_text(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsRe
     ctx.mark_layout_dirty();
     let node_id = this_node_id(this)?;
     let css = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
-    let mut doc = ctx.doc.borrow_mut();
+    let mut doc = ctx.mutate_doc();
     doc.mutate()
         .set_attribute(node_id, attr_name("style"), &css);
     Ok(JsValue::undefined())
@@ -71,7 +71,7 @@ fn update_style_attr(
     node_id: usize,
     f: impl FnOnce(&mut Vec<(String, String)>),
 ) {
-    let mut doc = ctx.doc.borrow_mut();
+    let mut doc = ctx.mutate_doc();
     let style_attr = doc
         .get_node(node_id)
         .and_then(|node| node.attr(blitz_dom::local_name!("style")))
