@@ -306,6 +306,7 @@ fn get_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
 }
 
 fn set_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let _t = crate::script_stats::Timed::new("dom:setAttribute");
     let ctx = dom_ctx(context)?;
     // Layout is now behind the tree. The next geometry read flushes.
     ctx.mark_layout_dirty();

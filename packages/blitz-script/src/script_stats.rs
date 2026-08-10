@@ -38,6 +38,10 @@ struct Bucket {
 
 #[derive(Debug, Default)]
 struct Log {
+    /// Buckets keyed by a compile-time label, for call sites hot enough that
+    /// allocating a `String` per call would be its own measurement error. DOM
+    /// construction runs thousands of times per mount.
+    statics: std::collections::BTreeMap<&'static str, Bucket>,
     /// Event names are dynamic, so they are interned into a small set rather
     /// than leaking a `String` per dispatch.
     dynamic: std::collections::BTreeMap<String, Bucket>,
@@ -51,6 +55,23 @@ struct Log {
 }
 
 static LOG: Mutex<Option<Log>> = Mutex::new(None);
+
+/// Attribute a slice of script time to a fixed source, without allocating.
+///
+/// Use for anything called per DOM node. `record_work` takes a `&str` and
+/// interns it, which is fine per event and far too expensive per element.
+pub fn record_static(label: &'static str, duration: Duration) {
+    let Ok(mut guard) = LOG.lock() else {
+        return;
+    };
+    let log = guard.get_or_insert_with(Log::default);
+    let bucket = log.statics.entry(label).or_default();
+    bucket.calls += 1;
+    bucket.spent += duration;
+    if duration > bucket.worst {
+        bucket.worst = duration;
+    }
+}
 
 /// Attribute a slice of script time to a named source.
 ///
@@ -80,16 +101,24 @@ pub fn work_breakdown() -> Vec<(String, u64, f64, f64)> {
         return Vec::new();
     };
     let mut rows: Vec<(String, u64, f64, f64)> = log
-        .dynamic
+        .statics
         .iter()
         .map(|(label, bucket)| {
+            (
+                (*label).to_string(),
+                bucket.calls,
+                bucket.spent.as_secs_f64() * 1_000.0,
+                bucket.worst.as_secs_f64() * 1_000.0,
+            )
+        })
+        .chain(log.dynamic.iter().map(|(label, bucket)| {
             (
                 label.clone(),
                 bucket.calls,
                 bucket.spent.as_secs_f64() * 1_000.0,
                 bucket.worst.as_secs_f64() * 1_000.0,
             )
-        })
+        }))
         .collect();
     rows.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
     rows
@@ -215,5 +244,30 @@ mod tests {
         assert_eq!(stats.window_polls, 1);
         assert_eq!(stats.total_polls, 11);
         assert_eq!(stats.productive_polls, 1);
+    }
+}
+
+/// Times a scope and attributes it on drop.
+///
+/// Every early return and `?` in a DOM binding is an exit path, and a manual
+/// stopwatch would miss most of them. This cannot.
+pub struct Timed {
+    label: &'static str,
+    started: std::time::Instant,
+}
+
+impl Timed {
+    #[must_use]
+    pub fn new(label: &'static str) -> Self {
+        Self {
+            label,
+            started: std::time::Instant::now(),
+        }
+    }
+}
+
+impl Drop for Timed {
+    fn drop(&mut self) {
+        record_static(self.label, self.started.elapsed());
     }
 }

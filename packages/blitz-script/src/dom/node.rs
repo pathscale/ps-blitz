@@ -222,6 +222,7 @@ fn text_content(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResul
 }
 
 fn set_text_content(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let _t = crate::script_stats::Timed::new("dom:textContent=");
     let ctx = dom_ctx(context)?;
     // Layout is now behind the tree. The next geometry read flushes.
     ctx.mark_layout_dirty();
@@ -285,6 +286,7 @@ fn arg_node_id(args: &[JsValue], index: usize) -> JsResult<usize> {
 }
 
 fn append_child(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let _t = crate::script_stats::Timed::new("dom:appendChild");
     let ctx = dom_ctx(context)?;
     // Layout is now behind the tree. The next geometry read flushes.
     ctx.mark_layout_dirty();
@@ -306,6 +308,7 @@ fn append_child(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsRe
 }
 
 fn insert_before(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let _t = crate::script_stats::Timed::new("dom:insertBefore");
     let ctx = dom_ctx(context)?;
     // Layout is now behind the tree. The next geometry read flushes.
     ctx.mark_layout_dirty();
