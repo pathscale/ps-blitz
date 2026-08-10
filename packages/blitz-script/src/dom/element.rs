@@ -201,11 +201,18 @@ fn read_attr(ctx: &DomCtx, node_id: usize, name: &str) -> Option<String> {
 }
 
 fn write_attr(ctx: &DomCtx, node_id: usize, name: &str, value: &str) {
+    // Timed here rather than at `setAttribute`, because that method is the
+    // least used way in. The reflected properties (`value`, `className`, `id`)
+    // and every classList mutation reach the DOM through this function and
+    // through nothing else, and while they were uncounted a keystroke looked
+    // like it touched no DOM at all while dirtying layout every time.
+    let _t = crate::script_stats::Timed::new("dom:attr=");
     let mut doc = ctx.mutate_doc();
     doc.mutate().set_attribute(node_id, attr_name(name), value);
 }
 
 fn clear_attr(ctx: &DomCtx, node_id: usize, name: &str) {
+    let _t = crate::script_stats::Timed::new("dom:attr-remove");
     let mut doc = ctx.mutate_doc();
     doc.mutate().clear_attribute(node_id, attr_name(name));
 }
@@ -306,7 +313,6 @@ fn get_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
 }
 
 fn set_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let _t = crate::script_stats::Timed::new("dom:setAttribute");
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
     let name = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?
