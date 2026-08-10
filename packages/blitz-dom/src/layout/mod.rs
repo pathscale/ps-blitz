@@ -25,6 +25,7 @@ use taffy::{
 /// handful of slow nodes or the whole tree missing its cache. These counters
 /// answer that, and a wrong answer sends the fix to the wrong place entirely.
 /// Thread-local and read once per resolve, so the counting itself is free.
+#[cfg(feature = "log-phase-times")]
 pub(crate) mod layout_counters {
     use std::cell::Cell;
 
@@ -60,7 +61,7 @@ pub(crate) mod layout_counters {
                 .iter()
                 .map(|(id, count)| (*id, *count))
                 .collect();
-            rows.sort_by(|a, b| b.1.cmp(&a.1));
+            rows.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
             rows.truncate(limit);
             rows
         })
@@ -138,6 +139,7 @@ impl BaseDocument {
         // resolve, and the two explanations (a few nodes that are each slow, or
         // the whole tree recomputing) call for opposite fixes. Only the blast
         // radius separates them, and a cache hit never reaches this function.
+        #[cfg(feature = "log-phase-times")]
         layout_counters::note_computed(node_id.into());
         let node = &mut self.nodes[node_id.into()];
 
@@ -440,6 +442,7 @@ impl taffy::CacheTree for BaseDocument {
         inputs: &taffy::LayoutInput,
     ) -> Option<taffy::LayoutOutput> {
         let found = self.node_from_id(node_id).cache.get(inputs);
+        #[cfg(feature = "log-phase-times")]
         layout_counters::note_lookup(found.is_some());
         found
     }
