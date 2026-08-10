@@ -12,6 +12,12 @@ rust-version.workspace = true
 
 [features]
 http2 = ["reqwest/http2"]
+# Transparent Content-Encoding handling. Without these reqwest hands back the
+# raw compressed bytes, so a server answering `content-encoding: br` yields an
+# unparseable page, an unparseable stylesheet, and a script that fails on its
+# first byte. Servers may compress regardless of Accept-Encoding, so this is
+# not optional in practice.
+compression = ["reqwest/brotli", "reqwest/gzip", "reqwest/deflate", "reqwest/zstd"]
 cookies = ["reqwest/cookies"]
 multipart = ["reqwest/multipart", "reqwest/stream"]
 cache = ["dep:reqwest-middleware", "dep:http-cache-reqwest", "dep:directories", "dep:http-cache"]

@@ -158,6 +158,15 @@ impl NodeHandle {
         self.doc.borrow_mut()
     }
 
+    /// Returns `None` if the document is already borrowed.
+    ///
+    /// The mutable counterpart to [`Self::try_doc`], for the same reason:
+    /// a background task that ticks on a timer will eventually land while the
+    /// document is held, and a dropped tick is cheaper than a panic.
+    pub fn try_doc_mut(&self) -> Option<RefMut<'_, BaseDocument>> {
+        self.doc.try_borrow_mut().ok()
+    }
+
     pub fn node(&self) -> Ref<'_, Node> {
         Ref::map(self.doc.borrow(), |doc| {
             doc.get_node(self.node_id)

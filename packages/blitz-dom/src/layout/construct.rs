@@ -203,7 +203,13 @@ fn is_in_subtree(doc: &BaseDocument, node_id: usize, root_node_id: usize) -> boo
 /// the source self-contained while leaving the live DOM untouched.
 #[cfg(feature = "svg")]
 fn serialize_inline_svg(doc: &BaseDocument, svg_node_id: usize) -> String {
-    let mut outer_html = doc.nodes[svg_node_id].outer_html();
+    // `outer_html` lowercases attribute names, which is right for HTML and
+    // wrong here: SVG attributes are case sensitive, so `viewBox` serialised as
+    // `viewbox` is ignored and usvg falls back to the bounding box of the path
+    // geometry. The intrinsic aspect ratio is then wrong, and `width: auto`
+    // resolves against it.
+    let mut outer_html =
+        crate::util::restore_svg_attribute_case(&doc.nodes[svg_node_id].outer_html());
     if let Some(root_open_end) = outer_html.find('>')
         && !outer_html[..root_open_end].contains("xmlns")
     {
