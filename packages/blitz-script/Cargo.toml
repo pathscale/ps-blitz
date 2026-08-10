@@ -17,7 +17,11 @@ required-features = ["debug-control"]
 
 [features]
 default = []
+# Per-DOM-call timing. Off by default: a shipping build has no reader for it
+# and the clock reads are a measurable share of a mount. See `script_stats`.
+dom-stats = []
 debug-control = [
+    "dom-stats",
     "dep:anyrender",
     "dep:anyrender_vello_cpu",
     "dep:base64",

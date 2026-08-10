@@ -36,6 +36,24 @@ struct Bucket {
     worst: Duration,
 }
 
+impl Bucket {
+    fn record(&mut self, duration: Duration) {
+        self.calls += 1;
+        self.spent += duration;
+        if duration > self.worst {
+            self.worst = duration;
+        }
+    }
+
+    fn absorb(&mut self, other: &Bucket) {
+        self.calls += other.calls;
+        self.spent += other.spent;
+        if other.worst > self.worst {
+            self.worst = other.worst;
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct Log {
     /// Buckets keyed by a compile-time label, for call sites hot enough that
@@ -56,21 +74,64 @@ struct Log {
 
 static LOG: Mutex<Option<Log>> = Mutex::new(None);
 
+thread_local! {
+    /// Per-thread buckets for the static labels, folded into [`LOG`] once per
+    /// poll.
+    ///
+    /// `record_static` runs per DOM node, so a 4,000-node mount calls it tens
+    /// of thousands of times. Taking the process-global lock there cost more
+    /// than several of the operations being timed, which inflated every
+    /// absolute the profile reported: the instrument was a measurable share of
+    /// the measurement. Script runs on one thread, so the accumulator can be
+    /// thread-local and the hot path needs no synchronisation at all.
+    static LOCAL_STATICS: std::cell::RefCell<Vec<(&'static str, Bucket)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// Attribute a slice of script time to a fixed source, without allocating.
 ///
 /// Use for anything called per DOM node. `record_work` takes a `&str` and
 /// interns it, which is fine per event and far too expensive per element.
 pub fn record_static(label: &'static str, duration: Duration) {
-    let Ok(mut guard) = LOG.lock() else {
-        return;
-    };
-    let log = guard.get_or_insert_with(Log::default);
-    let bucket = log.statics.entry(label).or_default();
-    bucket.calls += 1;
-    bucket.spent += duration;
-    if duration > bucket.worst {
-        bucket.worst = duration;
-    }
+    // `try_with`/`try_borrow_mut` rather than the panicking forms: this runs
+    // inside `Drop`, and a profiler that can panic during unwinding turns a
+    // recoverable error into an abort.
+    let _ = LOCAL_STATICS.try_with(|local| {
+        let Ok(mut buckets) = local.try_borrow_mut() else {
+            return;
+        };
+        // Linear scan over a fixed, tiny label set (one entry per DOM binding).
+        // Cheaper than hashing or an ordered map at this size, and identical
+        // literals share an address, so the common case is one word compare.
+        if let Some((_, bucket)) = buckets
+            .iter_mut()
+            .find(|(seen, _)| std::ptr::eq(*seen, label) || *seen == label)
+        {
+            bucket.record(duration);
+            return;
+        }
+        let mut bucket = Bucket::default();
+        bucket.record(duration);
+        buckets.push((label, bucket));
+    });
+}
+
+/// Fold the calling thread's static buckets into the shared log.
+///
+/// Only this thread's, by construction. Script and the diagnostics collection
+/// that reads these both run on the document thread, so that is the thread
+/// whose buckets matter; a reader on any other thread sees the totals as of the
+/// last poll rather than a torn half-update.
+fn drain_local_statics(log: &mut Log) {
+    let _ = LOCAL_STATICS.try_with(|local| {
+        let Ok(mut buckets) = local.try_borrow_mut() else {
+            return;
+        };
+        for (label, bucket) in buckets.iter_mut() {
+            log.statics.entry(*label).or_default().absorb(bucket);
+            *bucket = Bucket::default();
+        }
+    });
 }
 
 /// Attribute a slice of script time to a named source.
@@ -83,23 +144,22 @@ pub fn record_work(label: &str, duration: Duration) {
         return;
     };
     let log = guard.get_or_insert_with(Log::default);
-    let bucket = log.dynamic.entry(label.to_string()).or_default();
-    bucket.calls += 1;
-    bucket.spent += duration;
-    if duration > bucket.worst {
-        bucket.worst = duration;
-    }
+    log.dynamic
+        .entry(label.to_string())
+        .or_default()
+        .record(duration);
 }
 
 /// The costliest sources seen so far, worst total first.
 #[must_use]
 pub fn work_breakdown() -> Vec<(String, u64, f64, f64)> {
-    let Ok(guard) = LOG.lock() else {
+    let Ok(mut guard) = LOG.lock() else {
         return Vec::new();
     };
-    let Some(log) = guard.as_ref() else {
-        return Vec::new();
-    };
+    // Statics accumulate off-lock, so fold this thread's in before reading or
+    // the breakdown reports the state as of the previous poll.
+    let log = guard.get_or_insert_with(Log::default);
+    drain_local_statics(log);
     let mut rows: Vec<(String, u64, f64, f64)> = log
         .statics
         .iter()
@@ -130,6 +190,9 @@ pub fn record_poll(duration: Duration, ran_script: bool) {
         return;
     };
     let log = guard.get_or_insert_with(Log::default);
+    // Once per poll is the natural fold point: the lock is already held, and a
+    // poll is the unit the rest of these numbers are reported in.
+    drain_local_statics(log);
     log.total += 1;
     log.spent += duration;
     if !ran_script {
@@ -205,7 +268,41 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         *LOG.lock().unwrap() = None;
+        // The static buckets outlive the shared log, so clearing only the log
+        // would leak the previous test's DOM samples into the next one.
+        LOCAL_STATICS.with(|local| local.borrow_mut().clear());
         guard
+    }
+
+    #[test]
+    fn static_labels_reach_the_breakdown_without_locking_per_call() {
+        let _serial = reset();
+        for _ in 0..3 {
+            record_static("dom:appendChild", Duration::from_micros(10));
+        }
+        record_static("dom:appendChild", Duration::from_micros(90));
+        let rows = work_breakdown();
+        let row = rows
+            .iter()
+            .find(|(label, ..)| label == "dom:appendChild")
+            .expect("the static bucket is reported");
+        assert_eq!(row.1, 4, "every call counted: {rows:?}");
+        assert!(
+            (row.3 - 0.09).abs() < 0.01,
+            "the worst call survives the total: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn folding_twice_does_not_double_count() {
+        let _serial = reset();
+        record_static("dom:createElement", Duration::from_micros(50));
+        let first = work_breakdown();
+        let second = work_breakdown();
+        assert_eq!(
+            first, second,
+            "a drained bucket must not be added to the shared log again"
+        );
     }
 
     #[test]
@@ -251,11 +348,19 @@ mod tests {
 ///
 /// Every early return and `?` in a DOM binding is an exit path, and a manual
 /// stopwatch would miss most of them. This cannot.
+///
+/// Compiled out unless the `dom-stats` feature is on. The clock reads alone are
+/// two `mach_absolute_time` calls per DOM operation, which a release build has
+/// no reader for and should not pay. `debug-control` turns it on, so inspector
+/// builds keep the attribution; it can also be enabled by itself to profile a
+/// build shaped like the shipping one.
+#[cfg(feature = "dom-stats")]
 pub struct Timed {
     label: &'static str,
     started: std::time::Instant,
 }
 
+#[cfg(feature = "dom-stats")]
 impl Timed {
     #[must_use]
     pub fn new(label: &'static str) -> Self {
@@ -266,8 +371,22 @@ impl Timed {
     }
 }
 
+#[cfg(feature = "dom-stats")]
 impl Drop for Timed {
     fn drop(&mut self) {
         record_static(self.label, self.started.elapsed());
+    }
+}
+
+/// The zero-cost stand-in. Same call sites, no clock, no bucket, no drop glue.
+#[cfg(not(feature = "dom-stats"))]
+pub struct Timed;
+
+#[cfg(not(feature = "dom-stats"))]
+impl Timed {
+    #[must_use]
+    #[inline(always)]
+    pub fn new(_label: &'static str) -> Self {
+        Self
     }
 }
