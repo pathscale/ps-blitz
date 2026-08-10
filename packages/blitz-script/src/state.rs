@@ -143,6 +143,13 @@ impl DomCtx {
         if !self.layout_dirty.replace(false) {
             return;
         }
+        // Attributed separately from the read that triggered it. A geometry
+        // read is nanoseconds; the resolve it forces is not, and rolling the
+        // two together reports an accessor as expensive when what is expensive
+        // is the mutation that preceded it. The count matters as much as the
+        // total: a handler that measures, mutates and measures again pays this
+        // once per cycle, and the cycles are what to remove.
+        let _t = crate::script_stats::Timed::new("layout:flush_from_script");
         if let Ok(mut doc) = self.doc.try_borrow_mut() {
             doc.resolve(0.0);
         } else {
