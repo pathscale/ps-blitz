@@ -32,6 +32,7 @@ fn get_css_text(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResul
 }
 
 fn set_css_text(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let _t = crate::script_stats::Timed::new("dom:style=");
     let ctx = dom_ctx(context)?;
     // A style write changes geometry, and the composer measures its own
     // scrollHeight immediately after setting height to auto. Without this the
@@ -71,6 +72,10 @@ fn update_style_attr(
     node_id: usize,
     f: impl FnOnce(&mut Vec<(String, String)>),
 ) {
+    // Every `element.style.x = y` lands here, re-parsing and re-serialising the
+    // whole style attribute each time. It was entirely uncounted, which is how
+    // the composer's two height writes per keystroke stayed invisible.
+    let _t = crate::script_stats::Timed::new("dom:style=");
     let mut doc = ctx.mutate_doc();
     let style_attr = doc
         .get_node(node_id)
