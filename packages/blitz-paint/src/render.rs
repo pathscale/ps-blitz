@@ -164,7 +164,18 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         // The root clip rectangle is the viewport (in screen coordinates, with the
         // initial offset already subtracted). Elements outside of this are culled, and
         // scrollports narrow this rectangle further for their descendants.
-        let viewport_clip_rect = Rect::new(0.0, 0.0, self.width as f64, self.height as f64);
+        //
+        // `width`/`height` are physical pixels, while the boxes tested against
+        // this rectangle are laid out in CSS pixels and then scaled. Building
+        // the rectangle from the unscaled numbers culls everything past
+        // `width / scale`, which on a HiDPI display silently drops the right
+        // and bottom of the page.
+        let viewport_clip_rect = Rect::new(
+            0.0,
+            0.0,
+            self.width as f64 * self.scale,
+            self.height as f64 * self.scale,
+        );
 
         self.render_element(
             scene,
