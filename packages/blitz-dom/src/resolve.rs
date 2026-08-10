@@ -135,11 +135,22 @@ impl BaseDocument {
         // the document, and those need opposite fixes.
         #[cfg(feature = "log-phase-times")]
         {
-            let (computed, caches_cleared) = crate::layout::layout_counters::take();
+            let counts = crate::layout::layout_counters::take();
             let total_nodes = self.nodes.len();
+            let hit_rate = if counts.lookups > 0 {
+                (counts.hits as f64 / counts.lookups as f64) * 100.0
+            } else {
+                0.0
+            };
             timer.print_times(&format!(
-                "Resolve({}) [computed {computed}/{total_nodes} nodes, {caches_cleared} caches cleared]: ",
-                self.id()
+                "Resolve({}) [computed {} over {} distinct of {total_nodes} nodes, \
+                 cache {}/{} hits {hit_rate:.0}%, {} cleared]: ",
+                self.id(),
+                counts.computed,
+                counts.distinct,
+                counts.hits,
+                counts.lookups,
+                counts.caches_cleared,
             ));
         }
         #[cfg(not(feature = "log-phase-times"))]

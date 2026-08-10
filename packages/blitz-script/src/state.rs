@@ -131,7 +131,21 @@ impl DomCtx {
     /// for nothing.
     pub fn mutate_doc(&self) -> std::cell::RefMut<'_, BaseDocument> {
         self.layout_dirty.set(true);
-        self.doc.borrow_mut()
+        let doc = self.doc.borrow_mut();
+        // Ask for a frame as well as marking layout stale.
+        //
+        // Marking only helps the next geometry read. Nothing else was asking
+        // the shell to draw, so a mutation with no event behind it, a cleanup
+        // removing a dialog, a promise resolving, a timer callback, updated the
+        // tree and then waited for some unrelated thing to schedule a frame.
+        // The visible form was a dismissed dialog whose pixels stayed on
+        // screen and a layout that did not reflow into the space it left.
+        //
+        // Coalesced by the shell: `request_redraw` is a no-op while a redraw is
+        // already pending, so a mutation loop asks once per frame, not once per
+        // node.
+        doc.shell_provider.request_redraw();
+        doc
     }
 
     /// Bring layout up to date before script observes geometry.
