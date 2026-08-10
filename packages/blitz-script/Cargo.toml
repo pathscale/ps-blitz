@@ -48,6 +48,7 @@ boa_gc = { workspace = true }
 
 # Servo dependencies
 markup5ever = { workspace = true }
+rustc-hash = { workspace = true }
 
 # Other dependencies
 keyboard-types = { workspace = true }
