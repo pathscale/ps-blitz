@@ -129,6 +129,20 @@ impl BaseDocument {
         self.subdoc_is_animating = subdoc_is_animating;
         timer.record_time("subdocs");
 
+        // Printed with the phases so a single line says both how long layout
+        // took and how much of the tree it touched. Without the counts the
+        // timings cannot distinguish a few slow nodes from a cache miss across
+        // the document, and those need opposite fixes.
+        #[cfg(feature = "log-phase-times")]
+        {
+            let (computed, caches_cleared) = crate::layout::layout_counters::take();
+            let total_nodes = self.nodes.len();
+            timer.print_times(&format!(
+                "Resolve({}) [computed {computed}/{total_nodes} nodes, {caches_cleared} caches cleared]: ",
+                self.id()
+            ));
+        }
+        #[cfg(not(feature = "log-phase-times"))]
         timer.print_times(&format!("Resolve({}): ", self.id()));
     }
 
