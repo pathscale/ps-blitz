@@ -19,6 +19,37 @@ use taffy::{
     prelude::*,
 };
 
+/// How much of the tree a single resolve actually recomputed.
+///
+/// Phase timings say layout is expensive; they cannot say whether that is a
+/// handful of slow nodes or the whole tree missing its cache. These counters
+/// answer that, and a wrong answer sends the fix to the wrong place entirely.
+/// Thread-local and read once per resolve, so the counting itself is free.
+pub(crate) mod layout_counters {
+    use std::cell::Cell;
+
+    thread_local! {
+        static COMPUTED: Cell<u64> = const { Cell::new(0) };
+        static CACHES_CLEARED: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn note_computed() {
+        COMPUTED.with(|count| count.set(count.get() + 1));
+    }
+
+    pub(crate) fn note_cache_cleared() {
+        CACHES_CLEARED.with(|count| count.set(count.get() + 1));
+    }
+
+    /// Nodes computed and caches cleared since the last call, then reset.
+    pub(crate) fn take() -> (u64, u64) {
+        (
+            COMPUTED.with(|count| count.replace(0)),
+            CACHES_CLEARED.with(|count| count.replace(0)),
+        )
+    }
+}
+
 pub(crate) mod construct;
 pub(crate) mod damage;
 pub(crate) mod inline;
@@ -51,6 +82,11 @@ impl BaseDocument {
         inputs: taffy::tree::LayoutInput,
         block_ctx: Option<&mut BlockContext<'_>>,
     ) -> taffy::tree::LayoutOutput {
+        // Counted, not timed. The layout phase dominates a script-forced
+        // resolve, and the two explanations (a few nodes that are each slow, or
+        // the whole tree recomputing) call for opposite fixes. Only the blast
+        // radius separates them, and a cache hit never reaches this function.
+        layout_counters::note_computed();
         let node = &mut self.nodes[node_id.into()];
 
         let font_styles = node.primary_styles().map(|style| {
