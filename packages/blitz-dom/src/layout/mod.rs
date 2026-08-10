@@ -31,22 +31,55 @@ pub(crate) mod layout_counters {
     thread_local! {
         static COMPUTED: Cell<u64> = const { Cell::new(0) };
         static CACHES_CLEARED: Cell<u64> = const { Cell::new(0) };
+        static LOOKUPS: Cell<u64> = const { Cell::new(0) };
+        static HITS: Cell<u64> = const { Cell::new(0) };
+        /// Distinct nodes recomputed, to tell "the whole tree once" apart from
+        /// "a few nodes many times". Those have completely different fixes and
+        /// the totals alone cannot distinguish them.
+        static DISTINCT: std::cell::RefCell<std::collections::HashSet<usize>> =
+            std::cell::RefCell::new(std::collections::HashSet::new());
     }
 
-    pub(crate) fn note_computed() {
+    pub(crate) fn note_computed(node_id: usize) {
         COMPUTED.with(|count| count.set(count.get() + 1));
+        DISTINCT.with(|seen| {
+            let _ = seen.borrow_mut().insert(node_id);
+        });
     }
 
     pub(crate) fn note_cache_cleared() {
         CACHES_CLEARED.with(|count| count.set(count.get() + 1));
     }
 
-    /// Nodes computed and caches cleared since the last call, then reset.
-    pub(crate) fn take() -> (u64, u64) {
-        (
-            COMPUTED.with(|count| count.replace(0)),
-            CACHES_CLEARED.with(|count| count.replace(0)),
-        )
+    pub(crate) fn note_lookup(hit: bool) {
+        LOOKUPS.with(|count| count.set(count.get() + 1));
+        if hit {
+            HITS.with(|count| count.set(count.get() + 1));
+        }
+    }
+
+    pub(crate) struct LayoutCounts {
+        pub computed: u64,
+        pub distinct: usize,
+        pub caches_cleared: u64,
+        pub lookups: u64,
+        pub hits: u64,
+    }
+
+    /// Counts since the last call, then reset.
+    pub(crate) fn take() -> LayoutCounts {
+        LayoutCounts {
+            computed: COMPUTED.with(|count| count.replace(0)),
+            distinct: DISTINCT.with(|seen| {
+                let mut seen = seen.borrow_mut();
+                let len = seen.len();
+                seen.clear();
+                len
+            }),
+            caches_cleared: CACHES_CLEARED.with(|count| count.replace(0)),
+            lookups: LOOKUPS.with(|count| count.replace(0)),
+            hits: HITS.with(|count| count.replace(0)),
+        }
     }
 }
 
@@ -86,7 +119,7 @@ impl BaseDocument {
         // resolve, and the two explanations (a few nodes that are each slow, or
         // the whole tree recomputing) call for opposite fixes. Only the blast
         // radius separates them, and a cache hit never reaches this function.
-        layout_counters::note_computed();
+        layout_counters::note_computed(node_id.into());
         let node = &mut self.nodes[node_id.into()];
 
         let font_styles = node.primary_styles().map(|style| {
@@ -387,7 +420,9 @@ impl taffy::CacheTree for BaseDocument {
         node_id: NodeId,
         inputs: &taffy::LayoutInput,
     ) -> Option<taffy::LayoutOutput> {
-        self.node_from_id(node_id).cache.get(inputs)
+        let found = self.node_from_id(node_id).cache.get(inputs);
+        layout_counters::note_lookup(found.is_some());
+        found
     }
 
     #[inline]
