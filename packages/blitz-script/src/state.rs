@@ -8,6 +8,7 @@ use std::rc::Rc;
 use blitz_dom::BaseDocument;
 use boa_engine::object::JsObject;
 use boa_engine::{Finalize, JsData, Trace};
+use rustc_hash::FxHashMap;
 
 use crate::timers::TimerQueue;
 
@@ -47,17 +48,22 @@ pub(crate) struct RuntimeState {
     /// DOM wrappers must be cached so that a given DOM node is always represented
     /// by the *same* JS object: scripts rely on object identity (`===`) and on
     /// expando properties persisting across accesses.
-    pub node_wrappers: HashMap<usize, JsObject>,
+    ///
+    /// Keys are node ids the document allocated, not anything a page controls,
+    /// so there is nothing here for HashDoS resistance to defend and the
+    /// default SipHash is pure cost. This map is hit on every node touch, so
+    /// that cost is paid thousands of times per mount.
+    pub node_wrappers: FxHashMap<usize, JsObject>,
     /// Cache of `DOMStringMap` proxy objects returned by `Element.dataset`.
-    pub dataset_wrappers: HashMap<usize, JsObject>,
+    pub dataset_wrappers: FxHashMap<usize, JsObject>,
     /// Cache of `DOMTokenList` objects returned by `Element.classList`.
-    pub class_list_wrappers: HashMap<usize, JsObject>,
+    pub class_list_wrappers: FxHashMap<usize, JsObject>,
     /// Event listeners registered on nodes, keyed by node id then event type.
-    pub node_listeners: HashMap<usize, ListenerMap>,
+    pub node_listeners: FxHashMap<usize, ListenerMap>,
     /// Event listeners registered on `window`.
     pub window_listeners: ListenerMap,
     /// Active Pointer Events capture target, keyed by the web-facing pointer id.
-    pub pointer_capture: HashMap<u64, usize>,
+    pub pointer_capture: FxHashMap<u64, usize>,
     /// Host callback backing `window.ipc.postMessage`, installed by an embedder.
     pub ipc_handler: Option<IpcHandler>,
     /// Pending timers (`setTimeout`/`setInterval`/`requestAnimationFrame`)
