@@ -22,6 +22,9 @@ apple-font-embolden = []
 # matures).
 scrollbars = ["blitz-dom/scrollbars"]
 
+[lib]
+name = "blitz_paint"
+
 [dependencies]
 # Blitz dependencies
 anyrender = { workspace = true }

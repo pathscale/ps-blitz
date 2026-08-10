@@ -26,6 +26,9 @@ file-dialog = ["dep:rfd"]
 data-uri = ["dep:data-url"]
 custom-widget = ["blitz-dom/custom-widget"]
 
+[lib]
+name = "blitz_shell"
+
 [dependencies]
 # Blitz dependencies
 blitz-traits = { workspace = true }

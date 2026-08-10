@@ -13,6 +13,9 @@ rust-version.workspace = true
 [features]
 tracing = ["dep:tracing", "blitz-dom/tracing"]
 
+[lib]
+name = "blitz_html"
+
 [dependencies]
 # Blitz dependencies
 blitz-dom = { workspace = true }

@@ -11,6 +11,9 @@ edition.workspace = true
 rust-version.workspace = true
 
 
+[lib]
+name = "stylo_taffy"
+
 [dependencies]
 taffy = { workspace = true }
 style = { workspace = true }

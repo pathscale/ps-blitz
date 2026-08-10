@@ -33,6 +33,9 @@ debug-control = [
 system-fonts = ["blitz-dom/system-fonts"]
 tracing = ["dep:tracing", "blitz-dom/tracing"]
 
+[lib]
+name = "blitz_script"
+
 [dependencies]
 # Blitz dependencies
 blitz-dom = { workspace = true, features = ["autofocus"] }
