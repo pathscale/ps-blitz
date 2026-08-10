@@ -135,6 +135,29 @@ impl BaseDocument {
         // the document, and those need opposite fixes.
         #[cfg(feature = "log-phase-times")]
         {
+            // Named before the counters are drained, and only when the pass was
+            // expensive enough to be worth looking at.
+            let offenders = crate::layout::layout_counters::worst_offenders(6);
+            if offenders.first().is_some_and(|(_, count)| *count > 8) {
+                let described: Vec<String> = offenders
+                    .iter()
+                    .map(|(id, count)| {
+                        let tag = self
+                            .nodes
+                            .get(*id)
+                            .and_then(|node| node.element_data())
+                            .map(|element| element.name.local.to_string())
+                            .unwrap_or_else(|| "?".to_string());
+                        let display = self
+                            .nodes
+                            .get(*id)
+                            .map(|node| format!("{:?}", node.style.display))
+                            .unwrap_or_default();
+                        format!("{id}:{tag}({display})x{count}")
+                    })
+                    .collect();
+                println!("  layout hotspots: {}", described.join(" "));
+            }
             let counts = crate::layout::layout_counters::take();
             let total_nodes = self.nodes.len();
             let hit_rate = if counts.lookups > 0 {
