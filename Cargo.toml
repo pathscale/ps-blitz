@@ -111,18 +111,18 @@ skrifa = { version = "0.42", default-features = false, features = [
 ] } # Should match parley and vello versions
 
 # AnyRender
-anyrender = { package = "ps-anyrender", git = "https://github.com/pathscale/ps-anyrender.git", branch = "perf/selectable-present-mode" }
+anyrender = { package = "ps-anyrender", git = "https://github.com/pathscale/ps-anyrender.git", rev = "7d0e61b3587a" }
 anyrender_serialize = { version = "0.6.0" }
 anyrender_skia = { version = "0.10.0" }
-anyrender_vello = { package = "ps-anyrender-vello", git = "https://github.com/pathscale/ps-anyrender.git", branch = "perf/selectable-present-mode" }
-anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", git = "https://github.com/pathscale/ps-anyrender.git", branch = "perf/selectable-present-mode" }
+anyrender_vello = { package = "ps-anyrender-vello", git = "https://github.com/pathscale/ps-anyrender.git", rev = "7d0e61b3587a" }
+anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", git = "https://github.com/pathscale/ps-anyrender.git", rev = "7d0e61b3587a" }
 # The fork's copy of this crate carries the same name and version as the
 # upstream one, because the namespacing pass covered only the publishable
 # crates. `version = "0.9.0"` therefore resolves to upstream's, which depends on
 # the upstream `anyrender` rather than ps-anyrender, and the graph ends up with
 # two copies of WindowRenderer. Taken from the fork by git so there is one.
-anyrender_vello_hybrid = { git = "https://github.com/pathscale/ps-anyrender.git", branch = "perf/selectable-present-mode" }
-anyrender_svg = { package = "ps-anyrender-svg", git = "https://github.com/pathscale/ps-anyrender.git", branch = "perf/selectable-present-mode" }
+anyrender_vello_hybrid = { git = "https://github.com/pathscale/ps-anyrender.git", rev = "7d0e61b3587a" }
+anyrender_svg = { package = "ps-anyrender-svg", git = "https://github.com/pathscale/ps-anyrender.git", rev = "7d0e61b3587a" }
 wgpu_context = { package = "ps-wgpu-context", version = "0.8.0" }
 
 # Linebender + Fontations + WGPU + SVG
