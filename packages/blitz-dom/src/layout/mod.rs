@@ -36,15 +36,34 @@ pub(crate) mod layout_counters {
         /// Distinct nodes recomputed, to tell "the whole tree once" apart from
         /// "a few nodes many times". Those have completely different fixes and
         /// the totals alone cannot distinguish them.
-        static DISTINCT: std::cell::RefCell<std::collections::HashSet<usize>> =
-            std::cell::RefCell::new(std::collections::HashSet::new());
+        static DISTINCT: std::cell::RefCell<std::collections::HashMap<usize, u32>> =
+            std::cell::RefCell::new(std::collections::HashMap::new());
     }
 
     pub(crate) fn note_computed(node_id: usize) {
         COMPUTED.with(|count| count.set(count.get() + 1));
         DISTINCT.with(|seen| {
-            let _ = seen.borrow_mut().insert(node_id);
+            *seen.borrow_mut().entry(node_id).or_insert(0u32) += 1;
         });
+    }
+
+    /// The nodes recomputed most often, worst first.
+    ///
+    /// Totals say the work is concentrated; only the identities say where. A
+    /// node recomputed a hundred times is either being measured under a hundred
+    /// different constraints or sitting under a container that re-descends, and
+    /// naming it is the difference between fixing that and guessing again.
+    pub(crate) fn worst_offenders(limit: usize) -> Vec<(usize, u32)> {
+        DISTINCT.with(|seen| {
+            let mut rows: Vec<(usize, u32)> = seen
+                .borrow()
+                .iter()
+                .map(|(id, count)| (*id, *count))
+                .collect();
+            rows.sort_by(|a, b| b.1.cmp(&a.1));
+            rows.truncate(limit);
+            rows
+        })
     }
 
     pub(crate) fn note_cache_cleared() {
