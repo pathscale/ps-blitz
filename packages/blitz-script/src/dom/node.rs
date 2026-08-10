@@ -223,6 +223,8 @@ fn text_content(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResul
 
 fn set_text_content(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
+    // Layout is now behind the tree. The next geometry read flushes.
+    ctx.mark_layout_dirty();
     let node_id = this_node_id(this)?;
     let text = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
 
@@ -284,6 +286,8 @@ fn arg_node_id(args: &[JsValue], index: usize) -> JsResult<usize> {
 
 fn append_child(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
+    // Layout is now behind the tree. The next geometry read flushes.
+    ctx.mark_layout_dirty();
     let parent_id = this_node_id(this)?;
     let child_id = arg_node_id(args, 0)?;
 
@@ -303,6 +307,8 @@ fn append_child(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsRe
 
 fn insert_before(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
+    // Layout is now behind the tree. The next geometry read flushes.
+    ctx.mark_layout_dirty();
     let parent_id = this_node_id(this)?;
     let new_id = arg_node_id(args, 0)?;
 
@@ -335,6 +341,8 @@ fn insert_before(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
 
 fn remove_child(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
+    // Layout is now behind the tree. The next geometry read flushes.
+    ctx.mark_layout_dirty();
     let _parent_id = this_node_id(this)?;
     let child_id = arg_node_id(args, 0)?;
 
@@ -347,6 +355,8 @@ fn remove_child(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsRe
 
 fn replace_child(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
+    // Layout is now behind the tree. The next geometry read flushes.
+    ctx.mark_layout_dirty();
     let _parent_id = this_node_id(this)?;
     let new_id = arg_node_id(args, 0)?;
     let old_id = arg_node_id(args, 1)?;

@@ -81,6 +81,17 @@ pub(crate) struct DomCtx {
     pub doc: Rc<RefCell<BaseDocument>>,
     #[unsafe_ignore_trace]
     pub state: Rc<RefCell<RuntimeState>>,
+    /// Whether the DOM has been mutated since layout last ran.
+    ///
+    /// Browsers flush layout synchronously when script reads geometry, which
+    /// is why `element.scrollHeight` immediately after an insertion returns
+    /// the new height. Blitz read `final_layout` directly, so the same read
+    /// returned the height from *before* the mutation. Code that measures,
+    /// mutates, then re-measures to restore scroll position therefore did its
+    /// arithmetic on stale numbers and put the viewport in the wrong place,
+    /// which is what a reader sees as the view jumping.
+    #[unsafe_ignore_trace]
+    pub layout_dirty: Rc<std::cell::Cell<bool>>,
 }
 
 impl DomCtx {
@@ -88,6 +99,33 @@ impl DomCtx {
         Self {
             doc,
             state: Rc::new(RefCell::new(RuntimeState::default())),
+            layout_dirty: Rc::new(std::cell::Cell::new(true)),
+        }
+    }
+}
+
+impl DomCtx {
+    /// Note that script changed the DOM, so the next geometry read flushes.
+    pub fn mark_layout_dirty(&self) {
+        self.layout_dirty.set(true);
+    }
+
+    /// Bring layout up to date before script observes geometry.
+    ///
+    /// Only resolves when something actually changed: a reader that measures
+    /// in a loop pays once, not once per element. Incremental layout makes the
+    /// flush itself cheap, which is what makes doing this at all affordable.
+    pub fn flush_layout(&self) {
+        if !self.layout_dirty.replace(false) {
+            return;
+        }
+        if let Ok(mut doc) = self.doc.try_borrow_mut() {
+            doc.resolve(0.0);
+        } else {
+            // Already borrowed further up the stack, so a resolve here would
+            // panic. Leave the flag set so the next read tries again rather
+            // than silently serving stale geometry forever.
+            self.layout_dirty.set(true);
         }
     }
 }

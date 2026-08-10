@@ -11,6 +11,7 @@
 mod application;
 mod convert_events;
 mod event;
+pub mod frame_stats;
 mod net;
 mod window;
 
@@ -19,6 +20,7 @@ mod accessibility;
 
 pub use crate::application::BlitzApplication;
 pub use crate::event::{BlitzShellEvent, BlitzShellProxy};
+pub use crate::frame_stats::{FrameStatsSnapshot, FrameTimings, TimingStats, latest_frame_stats};
 pub use crate::window::{View, WindowConfig};
 
 #[cfg(feature = "data-uri")]

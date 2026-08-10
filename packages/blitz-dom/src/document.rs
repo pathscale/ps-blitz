@@ -346,6 +346,22 @@ pub(crate) fn make_device(
     )
 }
 
+/// Whether layout reuses its caches, and how that can be overridden at runtime.
+///
+/// Compiled default comes from the `incremental` feature. The environment
+/// override exists so a single build can be measured both ways: with the flag
+/// off every `resolve` clears the Taffy cache and re-shapes every inline root
+/// from scratch, so comparing the two in separate binaries would also compare
+/// two different compilations. `BLITZ_INCREMENTAL=0` forces the old behaviour,
+/// `=1` forces the new one.
+fn incremental_layout_default() -> bool {
+    match std::env::var("BLITZ_INCREMENTAL").ok().as_deref() {
+        Some("0" | "false" | "off") => false,
+        Some(_) => true,
+        None => cfg!(feature = "incremental"),
+    }
+}
+
 impl BaseDocument {
     /// Create a new (empty) [`BaseDocument`] with the specified configuration
     pub fn new(config: DocumentConfig) -> Self {
@@ -429,7 +445,7 @@ impl BaseDocument {
             viewport,
             media_type,
             style_threading: config.style_threading,
-            incremental_layout: cfg!(feature = "incremental"),
+            incremental_layout: incremental_layout_default(),
             devtool_settings: DevtoolSettings::default(),
             viewport_scroll: crate::Point::ZERO,
             url: base_url,

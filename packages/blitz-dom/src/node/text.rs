@@ -44,10 +44,24 @@ impl TextBrush {
     }
 }
 
+/// A [`ContentWidths`] result together with the inline box widths it was derived from.
+///
+/// Only ever produced by [`TextLayout::content_widths`]. Invalidation sites set
+/// [`TextLayout::content_widths`] to `None` rather than constructing this.
+#[derive(Clone, Debug)]
+pub struct CachedContentWidths {
+    /// The `width` of every inline box in the layout, as raw bit patterns, at the moment
+    /// `widths` was computed. Stored as bits so the comparison is exact rather than
+    /// approximate, and boxed so that the overwhelmingly common "no inline boxes" case does
+    /// not allocate.
+    inline_box_widths: Box<[u32]>,
+    widths: ContentWidths,
+}
+
 #[derive(Clone, Default)]
 pub struct TextLayout {
     pub text: String,
-    pub content_widths: Option<ContentWidths>,
+    pub content_widths: Option<CachedContentWidths>,
     pub layout: parley::layout::Layout<TextBrush>,
 }
 
@@ -56,10 +70,54 @@ impl TextLayout {
         Default::default()
     }
 
+    /// The layout's min-content and max-content widths, recomputed only when the inputs to
+    /// that computation have actually changed.
+    ///
+    /// WHY this is cached: `Layout::calculate_content_widths` walks every shaped cluster in
+    /// the layout, and block layout asks for the content widths two or three times per pass
+    /// (once under a min-content constraint, once under max-content, then again for the
+    /// definite measure), so the same scan is repeated over the same data.
+    ///
+    /// WHY it is safe: the result is a pure function of exactly two things, the shaped runs
+    /// and the current width of each inline box.
+    ///
+    /// The shaped runs only change when the inline layout is rebuilt, and every rebuild goes
+    /// through `build_inline_layout_into`, which clears this cache. Damage propagation clears
+    /// it too, in the same places it clears the Taffy layout cache, so a text edit or a style
+    /// change affecting font, size, weight, letter/word spacing or white-space collapsing
+    /// always re-measures.
+    ///
+    /// The inline box widths are the reason this cannot be a plain one-shot cache: they are
+    /// re-measured on every pass, and an inline box legitimately measures differently under a
+    /// min-content constraint than under a max-content one, so the same shaped text can yield
+    /// different content widths from one call to the next. Rather than guess which constraint
+    /// a cached entry belongs to, we record the box widths the entry was computed from and
+    /// reuse it only when they are bit-for-bit identical. A layout containing no inline
+    /// boxes, which is the common case and where the scan cost is concentrated, therefore
+    /// hits the cache on every pass after the first.
     pub fn content_widths(&mut self) -> ContentWidths {
-        *self
-            .content_widths
-            .get_or_insert_with(|| self.layout.calculate_content_widths())
+        // `InlineBox::kind` is fixed when the layout is built (and a change to it goes via a
+        // rebuild, which invalidates this cache), so the widths alone identify the inline box
+        // state that `calculate_content_widths` reads.
+        let inline_box_widths: Box<[u32]> = self
+            .layout
+            .inline_boxes()
+            .iter()
+            .map(|ibox| ibox.width.to_bits())
+            .collect();
+
+        if let Some(cached) = &self.content_widths
+            && cached.inline_box_widths == inline_box_widths
+        {
+            return cached.widths;
+        }
+
+        let widths = self.layout.calculate_content_widths();
+        self.content_widths = Some(CachedContentWidths {
+            inline_box_widths,
+            widths,
+        });
+        widths
     }
 }
 
@@ -90,6 +148,7 @@ pub struct TextInputData {
     /// vertical offset. It is kept up to date so that the caret remains visible within the
     /// input's content box.
     pub scroll_offset: f32,
+    pub layout_width: Option<f32>,
 }
 
 // FIXME: Implement Clone for PlainEditor
@@ -107,6 +166,31 @@ impl TextInputData {
             placeholder_editor: None,
             is_multiline,
             scroll_offset: 0.0,
+            layout_width: None,
+        }
+    }
+
+    pub fn sync_multiline_width(
+        &mut self,
+        font_ctx: &mut FontContext,
+        layout_ctx: &mut LayoutContext<TextBrush>,
+        width: f32,
+    ) {
+        if !self.is_multiline || width <= 0.0 {
+            return;
+        }
+        if self
+            .layout_width
+            .is_some_and(|current| (current - width).abs() < 0.01)
+        {
+            return;
+        }
+        self.layout_width = Some(width);
+        self.editor.set_width(Some(width));
+        self.editor.driver(font_ctx, layout_ctx).refresh_layout();
+        if let Some(placeholder) = self.placeholder_editor.as_mut() {
+            placeholder.set_width(Some(width));
+            placeholder.driver(font_ctx, layout_ctx).refresh_layout();
         }
     }
 
@@ -233,6 +317,7 @@ impl TextInputData {
         let mods = event.modifiers;
         let shift = mods.contains(Modifiers::SHIFT);
         let action_mod = mods.contains(ACTION_MOD);
+        let word_mod = mods.contains(Modifiers::ALT);
         let is_multiline = self.is_multiline;
         let editor = &mut self.editor;
         let mut driver = editor.driver(font_ctx, layout_ctx);
@@ -269,6 +354,12 @@ impl TextInputData {
             Key::ArrowLeft => {
                 if action_mod {
                     if shift {
+                        driver.select_to_line_start()
+                    } else {
+                        driver.move_to_line_start()
+                    }
+                } else if word_mod {
+                    if shift {
                         driver.select_word_left()
                     } else {
                         driver.move_word_left()
@@ -283,6 +374,12 @@ impl TextInputData {
             Key::ArrowRight => {
                 if action_mod {
                     if shift {
+                        driver.select_to_line_end()
+                    } else {
+                        driver.move_to_line_end()
+                    }
+                } else if word_mod {
+                    if shift {
                         driver.select_word_right()
                     } else {
                         driver.move_word_right()
@@ -295,7 +392,11 @@ impl TextInputData {
                 return Some(GeneratedTextInputEvent::Select);
             }
             Key::ArrowUp => {
-                if shift {
+                if action_mod && shift {
+                    driver.select_to_text_start()
+                } else if action_mod {
+                    driver.move_to_text_start()
+                } else if shift {
                     driver.select_up()
                 } else {
                     driver.move_up()
@@ -303,7 +404,11 @@ impl TextInputData {
                 return Some(GeneratedTextInputEvent::Select);
             }
             Key::ArrowDown => {
-                if shift {
+                if action_mod && shift {
+                    driver.select_to_text_end()
+                } else if action_mod {
+                    driver.move_to_text_end()
+                } else if shift {
                     driver.select_down()
                 } else {
                     driver.move_down()
@@ -827,6 +932,122 @@ impl TextInputData {
                 None
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod content_widths_cache_tests {
+    use super::*;
+    use parley::{InlineBox, InlineBoxKind, TextStyle};
+
+    /// Build a [`TextLayout`] containing `text`, optionally followed by an inline box of
+    /// `inline_box_width` pixels.
+    fn build_layout(text: &str, inline_box_width: Option<f32>) -> TextLayout {
+        let mut font_ctx = FontContext::default();
+        let mut layout_ctx = LayoutContext::new();
+        let style: TextStyle<'_, '_, TextBrush> = TextStyle::default();
+        let mut builder = layout_ctx.tree_builder(&mut font_ctx, 1.0, true, &style);
+        builder.push_text(text);
+        if let Some(width) = inline_box_width {
+            builder.push_inline_box(InlineBox {
+                id: 0,
+                kind: InlineBoxKind::InFlow,
+                index: text.len(),
+                width,
+                height: 10.0,
+            });
+        }
+
+        let mut text_layout = TextLayout::new();
+        text_layout.text = builder.build_into(&mut text_layout.layout);
+        text_layout
+    }
+
+    #[test]
+    fn first_call_matches_an_uncached_computation() {
+        let mut text_layout = build_layout("the quick brown fox", None);
+        let expected = text_layout.layout.calculate_content_widths();
+
+        let cached = text_layout.content_widths();
+
+        assert_eq!(cached.min, expected.min);
+        assert_eq!(cached.max, expected.max);
+        assert!(cached.min > 0.0);
+        assert!(cached.max > cached.min);
+    }
+
+    #[test]
+    fn text_only_layout_reuses_the_cached_widths() {
+        let mut text_layout = build_layout("the quick brown fox", None);
+        text_layout.content_widths();
+
+        // Poison the stored result. A second call that recomputed would overwrite this with
+        // the real widths, so seeing the poisoned value back proves the cache was hit.
+        let poison = ContentWidths {
+            min: -1.0,
+            max: -2.0,
+        };
+        text_layout.content_widths.as_mut().unwrap().widths = poison;
+
+        let second = text_layout.content_widths();
+        assert_eq!(second.min, poison.min);
+        assert_eq!(second.max, poison.max);
+    }
+
+    #[test]
+    fn a_changed_inline_box_width_forces_a_recompute() {
+        let mut text_layout = build_layout("the quick brown fox", Some(40.0));
+        let first = text_layout.content_widths();
+
+        // Same poison as above, so a stale hit would be visible.
+        text_layout.content_widths.as_mut().unwrap().widths = ContentWidths {
+            min: -1.0,
+            max: -2.0,
+        };
+
+        // Re-measuring the inline box under a different constraint is exactly what block
+        // layout does between a min-content and a max-content pass.
+        text_layout.layout.inline_boxes_mut()[0].width = 400.0;
+
+        let second = text_layout.content_widths();
+        assert!(second.min > 0.0);
+        assert!(second.max > first.max);
+        assert_eq!(second.min, 400.0);
+    }
+
+    #[test]
+    fn an_unchanged_inline_box_width_still_hits_the_cache() {
+        let mut text_layout = build_layout("the quick brown fox", Some(40.0));
+        text_layout.content_widths();
+
+        let poison = ContentWidths {
+            min: -1.0,
+            max: -2.0,
+        };
+        text_layout.content_widths.as_mut().unwrap().widths = poison;
+        // Write the identical width back; the key is unchanged so this must not recompute.
+        text_layout.layout.inline_boxes_mut()[0].width = 40.0;
+
+        let second = text_layout.content_widths();
+        assert_eq!(second.min, poison.min);
+        assert_eq!(second.max, poison.max);
+    }
+
+    #[test]
+    fn rebuilding_the_layout_discards_the_cache() {
+        let mut text_layout = build_layout("the quick brown fox", None);
+        text_layout.content_widths();
+        assert!(text_layout.content_widths.is_some());
+
+        // Stand in for `build_inline_layout_into`, which clears the cache before re-shaping.
+        text_layout.content_widths = None;
+        let rebuilt = build_layout("a much much much longer run of text", None);
+        text_layout.layout = rebuilt.layout;
+        text_layout.text = rebuilt.text;
+
+        let widths = text_layout.content_widths();
+        let expected = text_layout.layout.calculate_content_widths();
+        assert_eq!(widths.max, expected.max);
     }
 }
 
