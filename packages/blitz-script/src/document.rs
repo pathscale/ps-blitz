@@ -362,6 +362,17 @@ impl Document for ScriptDocument {
     }
 
     fn poll(&mut self, task_context: Option<TaskContext>) -> bool {
+        let poll_started = std::time::Instant::now();
+        let ran = self.poll_inner(task_context);
+        crate::script_stats::record_poll(poll_started.elapsed(), ran);
+        ran
+    }
+}
+
+impl ScriptDocument {
+    /// The real poll. Split out so every exit path is timed by the wrapper
+    /// above rather than by a stopwatch threaded through each early return.
+    fn poll_inner(&mut self, task_context: Option<TaskContext>) -> bool {
         // Store the waker so the timer thread can wake the event loop
         if let Some(cx) = &task_context {
             let mut waker = self.waker.lock().unwrap();
@@ -377,14 +388,24 @@ impl Document for ScriptDocument {
         // Execute scripts on first poll if they haven't been run explicitly
         let mut ran = false;
         if !self.scripts_executed {
+            // One-time: parsing and running the application bundle. Separated
+            // because it is startup cost, and folding it into the steady-state
+            // numbers made every per-poll average meaningless.
+            let started = std::time::Instant::now();
             self.execute_scripts();
+            crate::script_stats::record_work("startup:execute_scripts", started.elapsed());
             ran = true;
         }
 
         ran |= self.runtime.run_due_timers();
 
         if let Some(mut hook) = self.poll_hook.take() {
+            // The embedder's per-poll work. For a Solid application this is
+            // where reactive updates and DOM mutation actually happen, so it is
+            // the bucket that matters once startup is excluded.
+            let started = std::time::Instant::now();
             ran |= hook(self, task_context.as_ref());
+            crate::script_stats::record_work("poll_hook", started.elapsed());
             self.poll_hook = Some(hook);
         }
 

@@ -307,6 +307,8 @@ fn get_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
 
 fn set_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
+    // Layout is now behind the tree. The next geometry read flushes.
+    ctx.mark_layout_dirty();
     let node_id = this_node_id(this)?;
     let name = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?
         .to_ascii_lowercase();
@@ -317,6 +319,8 @@ fn set_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
 
 fn remove_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
+    // Layout is now behind the tree. The next geometry read flushes.
+    ctx.mark_layout_dirty();
     let node_id = this_node_id(this)?;
     let name = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?
         .to_ascii_lowercase();
@@ -860,6 +864,8 @@ fn get_inner_html(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsRes
 
 fn set_inner_html(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
+    // Layout is now behind the tree. The next geometry read flushes.
+    ctx.mark_layout_dirty();
     let node_id = this_node_id(this)?;
     let html = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
 
@@ -921,6 +927,9 @@ fn set_scroll_left(this: &JsValue, args: &[JsValue], context: &mut Context) -> J
 
 fn get_scroll_top(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
+    // Geometry is only meaningful after layout has caught up with the
+    // mutations script already made. See DomCtx::flush_layout.
+    ctx.flush_layout();
     let node_id = this_node_id(this)?;
     let value = ctx
         .doc
@@ -942,6 +951,11 @@ fn set_scroll_axis(
     horizontal: bool,
 ) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
+    // Flush before clamping. Assigning scrollTop clamps against the element's
+    // scrollable height, and after an insertion that height is stale, so the
+    // assignment lands short and the viewport jumps to the wrong place. This
+    // is the read-modify-write that scroll restoration depends on.
+    ctx.flush_layout();
     let node_id = this_node_id(this)?;
     let requested = args
         .first()
@@ -976,6 +990,9 @@ fn set_scroll_axis(
 
 fn get_scroll_width(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
+    // Geometry is only meaningful after layout has caught up with the
+    // mutations script already made. See DomCtx::flush_layout.
+    ctx.flush_layout();
     let node_id = this_node_id(this)?;
     let value = ctx
         .doc
@@ -988,6 +1005,9 @@ fn get_scroll_width(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsR
 
 fn get_scroll_height(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
+    // Geometry is only meaningful after layout has caught up with the
+    // mutations script already made. See DomCtx::flush_layout.
+    ctx.flush_layout();
     let node_id = this_node_id(this)?;
     let value = ctx
         .doc
@@ -1000,6 +1020,9 @@ fn get_scroll_height(this: &JsValue, _: &[JsValue], context: &mut Context) -> Js
 
 fn get_client_width(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
+    // Geometry is only meaningful after layout has caught up with the
+    // mutations script already made. See DomCtx::flush_layout.
+    ctx.flush_layout();
     let node_id = this_node_id(this)?;
     let value = ctx
         .doc
@@ -1012,6 +1035,9 @@ fn get_client_width(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsR
 
 fn get_client_height(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
+    // Geometry is only meaningful after layout has caught up with the
+    // mutations script already made. See DomCtx::flush_layout.
+    ctx.flush_layout();
     let node_id = this_node_id(this)?;
     let value = ctx
         .doc
@@ -1028,6 +1054,9 @@ fn get_bounding_client_rect(
     context: &mut Context,
 ) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
+    // Geometry is only meaningful after layout has caught up with the
+    // mutations script already made. See DomCtx::flush_layout.
+    ctx.flush_layout();
     let node_id = this_node_id(this)?;
     let rect = ctx.doc.borrow().get_client_bounding_rect(node_id);
     let (x, y, width, height) = match rect {

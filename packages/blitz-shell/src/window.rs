@@ -186,6 +186,11 @@ impl FrameStats {
             .and_then(|mode| mode.refresh_rate_millihertz())
             .map(std::num::NonZeroU32::get);
 
+        // Publish the refresh rate even when the log line is off. The shared frame
+        // log needs it to tell a late frame from an on-time one, and that readout
+        // is not gated on BLITZ_FRAME_STATS.
+        crate::frame_stats::set_display_refresh_millihertz(refresh_millihertz);
+
         if enabled {
             let message = match refresh_millihertz {
                 Some(rate) => format!(
@@ -221,6 +226,13 @@ impl FrameStats {
         paint: Duration,
         renderer: Duration,
     ) {
+        // Publish every frame to the process-global log before the enabled check.
+        // Out-of-band readers (the MCP diagnostics endpoint) need real numbers from
+        // a normally launched app; gating this on BLITZ_FRAME_STATS would leave them
+        // with nothing to report, which is what previously drove that endpoint to
+        // time its own snapshot collection and present it as frame cost.
+        crate::frame_stats::record_frame(frame_started, resolve, paint, renderer);
+
         if !self.enabled {
             return;
         }

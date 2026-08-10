@@ -450,7 +450,18 @@ impl RoundTree for BaseDocument {
     }
 
     fn set_final_layout(&mut self, node_id: NodeId, layout: &Layout) {
-        self.node_from_id_mut(node_id).final_layout = *layout;
+        let index: usize = node_id.into();
+        self.nodes[index].final_layout = *layout;
+        let width = layout.content_box_width();
+        let font_ctx = Arc::clone(&self.font_ctx);
+        let layout_ctx = &mut self.layout_ctx;
+        if let Some(input) = self.nodes[index]
+            .element_data_mut()
+            .and_then(|element| element.text_input_data_mut())
+        {
+            let mut font_ctx = font_ctx.lock().unwrap();
+            input.sync_multiline_width(&mut font_ctx, layout_ctx, width);
+        }
     }
 }
 

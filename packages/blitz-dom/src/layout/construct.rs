@@ -1103,6 +1103,10 @@ pub(crate) fn build_inline_layout_into(
         );
     }
 
+    // Re-shaping replaces every run in the layout, so any cached content widths describe text
+    // that no longer exists. Clearing here rather than relying on callers means no rebuild can
+    // leave a stale measurement behind.
+    text_layout.content_widths = None;
     text_layout.text = builder.build_into(&mut text_layout.layout);
     return;
 
