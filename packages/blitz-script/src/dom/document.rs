@@ -97,6 +97,7 @@ fn default_view(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResul
 // === Node creation ===
 
 fn create_element(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let _t = crate::script_stats::Timed::new("dom:createElement");
     let ctx = dom_ctx(context)?;
     let _ = this_node_id(this)?;
     let tag = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?
@@ -122,6 +123,7 @@ fn create_element_ns(this: &JsValue, args: &[JsValue], context: &mut Context) ->
 }
 
 fn create_text_node(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let _t = crate::script_stats::Timed::new("dom:createTextNode");
     let ctx = dom_ctx(context)?;
     let _ = this_node_id(this)?;
     let text = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
