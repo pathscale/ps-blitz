@@ -138,6 +138,12 @@ impl BaseDocument {
         // resolve, and the two explanations (a few nodes that are each slow, or
         // the whole tree recomputing) call for opposite fixes. Only the blast
         // radius separates them, and a cache hit never reaches this function.
+        //
+        // Gated, because this is the hottest function in the engine: one
+        // keystroke reaches it 16,842 times, and an ungated hash insert here
+        // would make every shipping build pay for a diagnostic only the
+        // inspector reads.
+        #[cfg(feature = "log-phase-times")]
         layout_counters::note_computed(node_id.into());
         let node = &mut self.nodes[node_id.into()];
 
@@ -440,6 +446,9 @@ impl taffy::CacheTree for BaseDocument {
         inputs: &taffy::LayoutInput,
     ) -> Option<taffy::LayoutOutput> {
         let found = self.node_from_id(node_id).cache.get(inputs);
+        // Gated for the same reason as note_computed: cache_get runs more often
+        // than anything else in a layout pass.
+        #[cfg(feature = "log-phase-times")]
         layout_counters::note_lookup(found.is_some());
         found
     }
