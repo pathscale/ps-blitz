@@ -33,6 +33,10 @@ fn get_css_text(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResul
 
 fn set_css_text(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
+    // A style write changes geometry, and the composer measures its own
+    // scrollHeight immediately after setting height to auto. Without this the
+    // measurement returns the pre-write layout and the field never grows.
+    ctx.mark_layout_dirty();
     let node_id = this_node_id(this)?;
     let css = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
     let mut doc = ctx.doc.borrow_mut();
@@ -82,6 +86,10 @@ fn update_style_attr(
 
 fn set_property(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
+    // A style write changes geometry, and the composer measures its own
+    // scrollHeight immediately after setting height to auto. Without this the
+    // measurement returns the pre-write layout and the field never grows.
+    ctx.mark_layout_dirty();
     let node_id = this_node_id(this)?;
     let name = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
     let value = to_rust_string(args.get(1).unwrap_or(&JsValue::undefined()), context)?;
@@ -96,6 +104,10 @@ fn set_property(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsRe
 
 fn remove_property(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
+    // A style write changes geometry, and the composer measures its own
+    // scrollHeight immediately after setting height to auto. Without this the
+    // measurement returns the pre-write layout and the field never grows.
+    ctx.mark_layout_dirty();
     let node_id = this_node_id(this)?;
     let name = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
     let mut removed = String::new();
