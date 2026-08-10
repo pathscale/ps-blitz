@@ -225,6 +225,10 @@ fn attr_setter(
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
     let value = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
+    // Covers every attribute alias that routes through here, class and id
+    // included. An attribute can select a different rule, and a rule can change
+    // geometry, so the next measurement has to see the new layout.
+    ctx.mark_layout_dirty();
     write_attr(&ctx, node_id, name, &value);
     Ok(JsValue::undefined())
 }
@@ -636,6 +640,11 @@ fn class_tokens(ctx: &DomCtx, node_id: usize) -> Vec<String> {
 }
 
 fn write_class_tokens(ctx: &DomCtx, node_id: usize, tokens: &[String]) {
+    // A class change is a style change, and Solid drives layout almost entirely
+    // through `classList`. Without this a geometry read after a class toggle
+    // reports the layout from before it, which is the same stale-read bug that
+    // made scroll restoration land in the wrong place.
+    ctx.mark_layout_dirty();
     write_attr(ctx, node_id, "class", &tokens.join(" "));
 }
 
