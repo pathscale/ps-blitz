@@ -201,12 +201,12 @@ fn read_attr(ctx: &DomCtx, node_id: usize, name: &str) -> Option<String> {
 }
 
 fn write_attr(ctx: &DomCtx, node_id: usize, name: &str, value: &str) {
-    let mut doc = ctx.doc.borrow_mut();
+    let mut doc = ctx.mutate_doc();
     doc.mutate().set_attribute(node_id, attr_name(name), value);
 }
 
 fn clear_attr(ctx: &DomCtx, node_id: usize, name: &str) {
-    let mut doc = ctx.doc.borrow_mut();
+    let mut doc = ctx.mutate_doc();
     doc.mutate().clear_attribute(node_id, attr_name(name));
 }
 
@@ -308,8 +308,6 @@ fn get_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
 fn set_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let _t = crate::script_stats::Timed::new("dom:setAttribute");
     let ctx = dom_ctx(context)?;
-    // Layout is now behind the tree. The next geometry read flushes.
-    ctx.mark_layout_dirty();
     let node_id = this_node_id(this)?;
     let name = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?
         .to_ascii_lowercase();
@@ -320,8 +318,6 @@ fn set_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
 
 fn remove_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
-    // Layout is now behind the tree. The next geometry read flushes.
-    ctx.mark_layout_dirty();
     let node_id = this_node_id(this)?;
     let name = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?
         .to_ascii_lowercase();
@@ -865,12 +861,10 @@ fn get_inner_html(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsRes
 
 fn set_inner_html(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
-    // Layout is now behind the tree. The next geometry read flushes.
-    ctx.mark_layout_dirty();
     let node_id = this_node_id(this)?;
     let html = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
 
-    let mut doc = ctx.doc.borrow_mut();
+    let mut doc = ctx.mutate_doc();
     let mut mutr = doc.mutate();
     // Detach (rather than drop) any existing children so that JS wrappers
     // referencing them remain valid.
@@ -897,14 +891,14 @@ fn get_outer_html(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsRes
 fn focus(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
-    ctx.doc.borrow_mut().set_focus_to(node_id);
+    ctx.mutate_doc().set_focus_to(node_id);
     Ok(JsValue::undefined())
 }
 
 fn blur(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let _ = this_node_id(this)?;
-    ctx.doc.borrow_mut().clear_focus();
+    ctx.mutate_doc().clear_focus();
     Ok(JsValue::undefined())
 }
 
@@ -967,6 +961,9 @@ fn set_scroll_axis(
     } else {
         0.0
     };
+    // Not `mutate_doc`: scrolling moves an offset, it does not move layout, and
+    // re-dirtying here would throw away the flush this function just paid for
+    // and force a full resolve on the next geometry read of every scroll.
     let mut doc = ctx.doc.borrow_mut();
     let current = doc
         .get_node(node_id)

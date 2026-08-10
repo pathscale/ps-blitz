@@ -224,8 +224,6 @@ fn text_content(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResul
 fn set_text_content(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let _t = crate::script_stats::Timed::new("dom:textContent=");
     let ctx = dom_ctx(context)?;
-    // Layout is now behind the tree. The next geometry read flushes.
-    ctx.mark_layout_dirty();
     let node_id = this_node_id(this)?;
     let text = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
 
@@ -237,7 +235,7 @@ fn set_text_content(this: &JsValue, args: &[JsValue], context: &mut Context) -> 
         )
     };
 
-    let mut doc = ctx.doc.borrow_mut();
+    let mut doc = ctx.mutate_doc();
     let mut mutr = doc.mutate();
     if is_text_like {
         mutr.set_node_text(node_id, &text);
@@ -270,7 +268,7 @@ fn set_node_value(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
     let text = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
-    let mut doc = ctx.doc.borrow_mut();
+    let mut doc = ctx.mutate_doc();
     doc.mutate().set_node_text(node_id, &text);
     Ok(JsValue::undefined())
 }
@@ -288,12 +286,10 @@ fn arg_node_id(args: &[JsValue], index: usize) -> JsResult<usize> {
 fn append_child(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let _t = crate::script_stats::Timed::new("dom:appendChild");
     let ctx = dom_ctx(context)?;
-    // Layout is now behind the tree. The next geometry read flushes.
-    ctx.mark_layout_dirty();
     let parent_id = this_node_id(this)?;
     let child_id = arg_node_id(args, 0)?;
 
-    let mut doc = ctx.doc.borrow_mut();
+    let mut doc = ctx.mutate_doc();
     let mut mutr = doc.mutate();
     // Detach from any current parent first. This also makes "move to end of
     // same parent" operations behave correctly.
@@ -310,8 +306,6 @@ fn append_child(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsRe
 fn insert_before(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let _t = crate::script_stats::Timed::new("dom:insertBefore");
     let ctx = dom_ctx(context)?;
-    // Layout is now behind the tree. The next geometry read flushes.
-    ctx.mark_layout_dirty();
     let parent_id = this_node_id(this)?;
     let new_id = arg_node_id(args, 0)?;
 
@@ -328,7 +322,7 @@ fn insert_before(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
         return Ok(args[0].clone());
     }
 
-    let mut doc = ctx.doc.borrow_mut();
+    let mut doc = ctx.mutate_doc();
     let mut mutr = doc.mutate();
     if mutr.node_has_parent(new_id) {
         mutr.remove_node(new_id);
@@ -344,12 +338,10 @@ fn insert_before(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
 
 fn remove_child(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
-    // Layout is now behind the tree. The next geometry read flushes.
-    ctx.mark_layout_dirty();
     let _parent_id = this_node_id(this)?;
     let child_id = arg_node_id(args, 0)?;
 
-    let mut doc = ctx.doc.borrow_mut();
+    let mut doc = ctx.mutate_doc();
     // Note: the node is detached rather than dropped so that JS wrappers
     // referencing it (or its descendants) remain valid.
     doc.mutate().remove_node(child_id);
@@ -358,14 +350,12 @@ fn remove_child(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsRe
 
 fn replace_child(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
-    // Layout is now behind the tree. The next geometry read flushes.
-    ctx.mark_layout_dirty();
     let _parent_id = this_node_id(this)?;
     let new_id = arg_node_id(args, 0)?;
     let old_id = arg_node_id(args, 1)?;
 
     if new_id != old_id {
-        let mut doc = ctx.doc.borrow_mut();
+        let mut doc = ctx.mutate_doc();
         let mut mutr = doc.mutate();
         if mutr.node_has_parent(new_id) {
             mutr.remove_node(new_id);
@@ -379,7 +369,7 @@ fn replace_child(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
 fn remove(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
-    let mut doc = ctx.doc.borrow_mut();
+    let mut doc = ctx.mutate_doc();
     let mut mutr = doc.mutate();
     if mutr.node_has_parent(node_id) {
         mutr.remove_node(node_id);

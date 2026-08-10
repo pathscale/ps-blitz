@@ -116,6 +116,24 @@ impl DomCtx {
         self.layout_dirty.set(true);
     }
 
+    /// Borrow the document for a mutation that can move layout.
+    ///
+    /// The dirty flag was originally set at each call site, and the call sites
+    /// it reached were the tree ones. Attribute writes through the reflected
+    /// properties (`className`, `id`), every inline style write, `nodeValue`
+    /// and `remove()` all mutated without setting it, so the stale-geometry
+    /// bug this flag exists to prevent was still reachable through them: set a
+    /// class, read `offsetHeight`, get the height from before the change.
+    ///
+    /// Going through here means a mutation cannot forget. Node *creation* is
+    /// deliberately not routed through it: a detached node changes no layout
+    /// until it is inserted, and marking there would flush on the next read
+    /// for nothing.
+    pub fn mutate_doc(&self) -> std::cell::RefMut<'_, BaseDocument> {
+        self.layout_dirty.set(true);
+        self.doc.borrow_mut()
+    }
+
     /// Bring layout up to date before script observes geometry.
     ///
     /// Only resolves when something actually changed: a reader that measures
