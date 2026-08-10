@@ -30,7 +30,7 @@ exclude = ["sites"]
 resolver = "2"
 
 [workspace.package]
-version = "0.3.0-beta.2"
+version = "0.3.0-beta.3"
 license = "MIT OR Apache-2.0"
 homepage = "https://github.com/pathscale/ps-blitz"
 repository = "https://github.com/pathscale/ps-blitz"
@@ -40,16 +40,16 @@ rust-version = "1.91.0"
 
 [workspace.dependencies]
 # Blitz dependencies(in-repo)
-blitz = { version = "=0.3.0-beta.2", path = "./packages/blitz" }
-blitz-dom = { package = "ps-blitz-dom", version = "=0.3.0-beta.2", path = "./packages/blitz-dom", default-features = false }
-blitz-debug-control = { package = "ps-blitz-debug-control", version = "=0.3.0-beta.2", path = "./packages/blitz-debug-control" }
-blitz-html = { package = "ps-blitz-html", version = "=0.3.0-beta.2", path = "./packages/blitz-html", default-features = false }
-blitz-net = { version = "=0.3.0-beta.2", path = "./packages/blitz-net", default-features = false }
-blitz-paint = { package = "ps-blitz-paint", version = "=0.3.0-beta.2", path = "./packages/blitz-paint", default-features = false }
-blitz-shell = { package = "ps-blitz-shell", version = "=0.3.0-beta.2", path = "./packages/blitz-shell", default-features = false }
-blitz-script = { package = "ps-blitz-script", version = "=0.3.0-beta.2", path = "./packages/blitz-script", default-features = false }
-blitz-traits = { package = "ps-blitz-traits", version = "=0.3.0-beta.2", path = "./packages/blitz-traits", default-features = false }
-stylo_taffy = { package = "ps-stylo-taffy", version = "=0.3.0-beta.2", path = "./packages/stylo_taffy", default-features = false }
+blitz = { version = "=0.3.0-beta.3", path = "./packages/blitz" }
+blitz-dom = { package = "ps-blitz-dom", version = "=0.3.0-beta.3", path = "./packages/blitz-dom", default-features = false }
+blitz-debug-control = { package = "ps-blitz-debug-control", version = "=0.3.0-beta.3", path = "./packages/blitz-debug-control" }
+blitz-html = { package = "ps-blitz-html", version = "=0.3.0-beta.3", path = "./packages/blitz-html", default-features = false }
+blitz-net = { version = "=0.3.0-beta.3", path = "./packages/blitz-net", default-features = false }
+blitz-paint = { package = "ps-blitz-paint", version = "=0.3.0-beta.3", path = "./packages/blitz-paint", default-features = false }
+blitz-shell = { package = "ps-blitz-shell", version = "=0.3.0-beta.3", path = "./packages/blitz-shell", default-features = false }
+blitz-script = { package = "ps-blitz-script", version = "=0.3.0-beta.3", path = "./packages/blitz-script", default-features = false }
+blitz-traits = { package = "ps-blitz-traits", version = "=0.3.0-beta.3", path = "./packages/blitz-traits", default-features = false }
+stylo_taffy = { package = "ps-stylo-taffy", version = "=0.3.0-beta.3", path = "./packages/stylo_taffy", default-features = false }
 dioxus-native = { version = "0.7.0", path = "./packages/dioxus-native", default-features = false }
 dioxus-native-dom = { version = "0.7.0", path = "./packages/dioxus-native-dom", default-features = false }
 debug_timer = { package = "ps-debug-timer", version = "0.1.3", path = "./packages/debug_timer" }
@@ -111,18 +111,18 @@ skrifa = { version = "0.42", default-features = false, features = [
 ] } # Should match parley and vello versions
 
 # AnyRender
-anyrender = { package = "ps-anyrender", git = "https://github.com/pathscale/ps-anyrender.git", rev = "7d0e61b3587a" }
+anyrender = { package = "ps-anyrender", version = "0.12.0" }
 anyrender_serialize = { version = "0.6.0" }
 anyrender_skia = { version = "0.10.0" }
-anyrender_vello = { package = "ps-anyrender-vello", git = "https://github.com/pathscale/ps-anyrender.git", rev = "7d0e61b3587a" }
-anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", git = "https://github.com/pathscale/ps-anyrender.git", rev = "7d0e61b3587a" }
+anyrender_vello = { package = "ps-anyrender-vello", version = "0.13.0" }
+anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", version = "0.15.0" }
 # The fork's copy of this crate carries the same name and version as the
 # upstream one, because the namespacing pass covered only the publishable
 # crates. `version = "0.9.0"` therefore resolves to upstream's, which depends on
 # the upstream `anyrender` rather than ps-anyrender, and the graph ends up with
 # two copies of WindowRenderer. Taken from the fork by git so there is one.
-anyrender_vello_hybrid = { git = "https://github.com/pathscale/ps-anyrender.git", rev = "7d0e61b3587a" }
-anyrender_svg = { package = "ps-anyrender-svg", git = "https://github.com/pathscale/ps-anyrender.git", rev = "7d0e61b3587a" }
+anyrender_vello_hybrid = { package = "ps-anyrender-vello-hybrid", version = "0.9.0" }
+anyrender_svg = { package = "ps-anyrender-svg", version = "0.13.0" }
 wgpu_context = { package = "ps-wgpu-context", version = "0.8.0" }
 
 # Linebender + Fontations + WGPU + SVG
