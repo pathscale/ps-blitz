@@ -322,7 +322,14 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             ..
         } = *node.final_layout();
         let box_position = Vec2::new(location.x as f64, location.y as f64) * self.scale;
-        let box_size = Size::new(size.width as f64, size.height as f64);
+        // Device pixels, like `box_position` and everything else derived here.
+        // This used to be the raw CSS-pixel layout size against a scaled
+        // origin, so `border_box` was half a rectangle in each unit and every
+        // reader had to know to rescale one of its dimensions.
+        let box_size = Size::new(
+            size.width as f64 * self.scale,
+            size.height as f64 * self.scale,
+        );
         let border_box = Rect::from_origin_size(box_position.to_point(), box_size);
         let scaled_pb = (padding + border).map(f64::from);
         let content_position = kurbo::Point {
@@ -358,12 +365,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         // `overflow` — node-local, device pixels — it is exactly the rect
         // `resolve_transforms` seeds the overflow with, so it keeps working as a
         // fallback and contributes nothing once the real value is in.
-        let local_border_box = Rect::new(
-            0.0,
-            0.0,
-            box_size.width * self.scale,
-            box_size.height * self.scale,
-        );
+        let local_border_box = Rect::new(0.0, 0.0, box_size.width, box_size.height);
         let screen_bbox = screen_transform.transform_rect_bbox(overflow.union(local_border_box));
 
         // Cull elements that fall entirely outside the current clip rectangle. In addition to
@@ -446,8 +448,8 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
 
             let fits = overflow_rect.x0 >= -0.01
                 && overflow_rect.y0 >= -0.01
-                && overflow_rect.x1 <= border_box.width() * self.scale + 0.01
-                && overflow_rect.y1 <= border_box.height() * self.scale + 0.01;
+                && overflow_rect.x1 <= border_box.width() + 0.01
+                && overflow_rect.y1 <= border_box.height() + 0.01;
 
             is_image || is_sub_doc || is_text_input || !square || !unscrolled || !fits
         };
