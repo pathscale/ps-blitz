@@ -276,3 +276,99 @@ fn report_frame_cost() {
         counts.max_depth,
     );
 }
+
+/// Paint `html` and return the pixel at (x, y) as RGB.
+fn pixel_at(html: &str, x: usize, y: usize) -> [u8; 3] {
+    let guard = PAINT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut doc = HtmlDocument::from_html(
+        html,
+        DocumentConfig {
+            viewport: Some(Viewport::new(WIDTH, HEIGHT, 1.0, ColorScheme::Light)),
+            html_parser_provider: Some(Arc::new(HtmlProvider) as _),
+            ..Default::default()
+        },
+    );
+    doc.resolve(0.0);
+    let buffer = render_to_buffer::<VelloCpuImageRenderer, _>(
+        |scene| paint_scene(scene, doc.as_mut(), 1.0, WIDTH, HEIGHT, 0, 0),
+        WIDTH,
+        HEIGHT,
+    );
+    drop(guard);
+    let idx = (y * WIDTH as usize + x) * 4;
+    [buffer[idx], buffer[idx + 1], buffer[idx + 2]]
+}
+
+/// The safety net for skipping clip layers that clip nothing.
+///
+/// The budgets above count layers, and a count cannot tell you whether the
+/// content was actually cut off. Skipping a layer that was doing real work
+/// draws the overflowing part in full, which is a visible defect that no
+/// layer count would report. These check the pixels.
+#[test]
+fn overflowing_content_is_still_clipped() {
+    // A 100x50 clipping box holding a 300x200 red child. Everything below and
+    // right of the box must stay white.
+    let html = "<html><body style='margin:0;background:#fff'>\
+                <div style='overflow:hidden;width:100px;height:50px'>\
+                <div style='width:300px;height:200px;background:#ff0000'></div>\
+                </div></body></html>";
+
+    assert_eq!(
+        pixel_at(html, 50, 25),
+        [255, 0, 0],
+        "inside the clip box should be the child's red"
+    );
+    assert_eq!(
+        pixel_at(html, 150, 25),
+        [255, 255, 255],
+        "content to the right of a clipping box was not clipped"
+    );
+    assert_eq!(
+        pixel_at(html, 50, 100),
+        [255, 255, 255],
+        "content below a clipping box was not clipped"
+    );
+}
+
+#[test]
+fn a_scrolled_container_still_clips() {
+    // Scrolled containers must still clip. Note this does not isolate the
+    // scroll guard in the skip condition: content tall enough to scroll also
+    // fails the fits-the-box test, so the layer is kept either way. The guard
+    // is there for the case a fits-the-box element still carries a stale
+    // offset — content shrinking under a scrolled container, which is what
+    // clamp_scroll_offsets exists to correct — and it is cheap defensiveness
+    // rather than something this test proves.
+    let html = "<html><body style='margin:0;background:#fff'>\
+                <div id='s' style='overflow:scroll;width:100px;height:50px'>\
+                <div style='width:80px;height:400px;background:#ff0000'></div>\
+                </div></body></html>";
+
+    assert_eq!(
+        pixel_at(html, 50, 100),
+        [255, 255, 255],
+        "content below a scroll container was not clipped"
+    );
+}
+
+#[test]
+fn a_rounded_clip_still_cuts_its_corners() {
+    // Content fits the rectangle exactly, so the rectangular test says the clip
+    // is unnecessary — but a rounded clip still has to cut the corners.
+    let html = "<html><body style='margin:0;background:#fff'>\
+                <div style='overflow:hidden;border-radius:40px;width:80px;height:80px'>\
+                <div style='width:80px;height:80px;background:#ff0000'></div>\
+                </div></body></html>";
+
+    assert_eq!(
+        pixel_at(html, 1, 1),
+        [255, 255, 255],
+        "the corner of a rounded clipping box was not cut"
+    );
+    assert_eq!(
+        pixel_at(html, 40, 40),
+        [255, 0, 0],
+        "the middle of a rounded clipping box should still be painted"
+    );
+}

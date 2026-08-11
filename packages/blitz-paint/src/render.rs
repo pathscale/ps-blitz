@@ -352,6 +352,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             return;
         }
 
+
         #[cfg(feature = "custom-widget")]
         let custom_widget_scene = self.custom_widget_scenes.get(&(self.dom.id(), node_id));
         #[cfg(not(feature = "custom-widget"))]
@@ -360,6 +361,63 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         // Apply CSS transform property (where transforms are 2d)
 
         let mut cx = self.element_cx(node, *node.final_layout(), transform, custom_widget_scene);
+
+        // A clip that clips nothing still costs a full layer.
+        //
+        // `should_clip` asks whether the box *may* clip — any `overflow` other
+        // than `visible` sets it — and Tailwind-shaped CSS puts `overflow-hidden`
+        // on wrappers defensively, so on a real page most of these boxes have
+        // nothing sticking out of them. Every one still pushed a layer, and a
+        // layer is the most expensive thing in a frame: a `render_to_texture`, a
+        // separate composite, and a region the rasteriser holds on its own. An
+        // audit of pathscale.com found 73 of 80 clipped nothing at all.
+        //
+        // The conditions are deliberately narrow, because getting this wrong
+        // draws content that should have been cut off — a visible defect, not a
+        // slow frame:
+        //
+        // - zero border width, so the padding box the clip uses is exactly the
+        //   border box `scrollable_overflow` is measured against. With a border
+        //   the two differ and the comparison is unsound, since
+        //   `scrollable_overflow` starts as the border box by construction and
+        //   so can never be shown to fit inside a smaller padding box.
+        // - no corner radius, since a rounded clip cuts the corners even when
+        //   the content fits the rectangle.
+        // - not an image, sub-document or text input: those clip for their own
+        //   reasons rather than because of `overflow`.
+        // - not scrolled, because a scroll offset moves content under the clip
+        //   without changing the overflow rect.
+        //
+        // `should_clip` itself is untouched: it still narrows `child_clip_rect`
+        // below, and that culling is free and must keep happening.
+        let needs_clip_layer = should_clip && {
+            let overflow_rect = *node.scrollable_overflow();
+            let bw = cx.frame.border_width;
+            let radii = cx.frame.border_radii;
+            let scroll = node.scroll_offset();
+
+            let square = bw.x0 == 0.0
+                && bw.x1 == 0.0
+                && bw.y0 == 0.0
+                && bw.y1 == 0.0
+                && radii.top_left.y == 0.0
+                && radii.top_left.x == 0.0
+                && radii.top_right.y == 0.0
+                && radii.top_right.x == 0.0
+                && radii.bottom_left.y == 0.0
+                && radii.bottom_left.x == 0.0
+                && radii.bottom_right.y == 0.0
+                && radii.bottom_right.x == 0.0;
+
+            let unscrolled = scroll.x == 0.0 && scroll.y == 0.0;
+
+            let fits = overflow_rect.x0 >= -0.01
+                && overflow_rect.y0 >= -0.01
+                && overflow_rect.x1 <= border_box.width() * self.scale + 0.01
+                && overflow_rect.y1 <= border_box.height() * self.scale + 0.01;
+
+            is_image || is_sub_doc || is_text_input || !square || !unscrolled || !fits
+        };
 
         // If this element clips its overflow it establishes a scrollport: narrow the clip
         // rectangle passed to descendants to the visible (clipped) region so that content
@@ -473,7 +531,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                         self.layer_manager.maybe_with_layer(
                             scene,
                             LayerSite::Overflow,
-                            should_clip,
+                            needs_clip_layer,
                             1.0, // opacity
                             cx.transform,
                             clip,
