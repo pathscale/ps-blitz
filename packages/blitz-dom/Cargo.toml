@@ -12,6 +12,7 @@ rust-version.workspace = true
 
 [features]
 default = [
+    "image-formats",
     "svg",
     "woff",
     "accessibility",
@@ -20,6 +21,18 @@ default = [
     "custom-widget"
 ]
 custom-widget = ["dep:anyrender", "accessibility"]
+# `image` is declared with default features off, so without these the decoder
+# it selects by sniffing the bytes does not exist and the element paints
+# nothing: a WebP downloads, decodes to an error, and looks like a missing
+# file. These are the formats a browser cannot do without.
+image-formats = [
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "image/bmp",
+    "image/ico",
+]
 # Shadow DOM and Custom Element support
 shadow-dom = []
 tracing = ["dep:tracing"]
