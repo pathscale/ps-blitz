@@ -75,7 +75,9 @@ pub(crate) fn node_wrapper(ctx: &DomCtx, node_id: NodeId, _context: &mut Context
             Some(NodeData::Element(_)) | Some(NodeData::AnonymousBlock(_)) => {
                 protos.element.clone()
             }
-            Some(NodeData::Text(_)) | Some(NodeData::Comment { .. }) => protos.character_data.clone(),
+            Some(NodeData::Text(_)) | Some(NodeData::Comment { .. }) => {
+                protos.character_data.clone()
+            }
             None => protos.node.clone(),
         }
     };
@@ -89,7 +91,11 @@ pub(crate) fn node_wrapper(ctx: &DomCtx, node_id: NodeId, _context: &mut Context
 }
 
 /// Convert an optional node id to a JS value (wrapper object or `null`)
-pub(crate) fn node_or_null(ctx: &DomCtx, node_id: Option<NodeId>, context: &mut Context) -> JsValue {
+pub(crate) fn node_or_null(
+    ctx: &DomCtx,
+    node_id: Option<NodeId>,
+    context: &mut Context,
+) -> JsValue {
     match node_id {
         Some(node_id) => node_wrapper(ctx, node_id, context).into(),
         None => JsValue::null(),

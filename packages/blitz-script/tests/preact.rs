@@ -1,6 +1,7 @@
 //! End-to-end test: run the vendored Preact TodoMVC example (examples/preact)
 //! headlessly and interact with it.
 
+use blitz_dom::NodeId;
 use std::path::PathBuf;
 
 use blitz_dom::{Document, DocumentConfig};
@@ -40,15 +41,15 @@ fn resolve(doc: &mut ScriptDocument) {
     doc.inner_mut().resolve(0.0);
 }
 
-fn query(doc: &ScriptDocument, selector: &str) -> Option<usize> {
+fn query(doc: &ScriptDocument, selector: &str) -> Option<NodeId> {
     doc.inner().query_selector(selector).unwrap()
 }
 
-fn query_all(doc: &ScriptDocument, selector: &str) -> Vec<usize> {
+fn query_all(doc: &ScriptDocument, selector: &str) -> Vec<NodeId> {
     doc.inner().query_selector_all(selector).unwrap().to_vec()
 }
 
-fn text_of(doc: &ScriptDocument, node_id: usize) -> String {
+fn text_of(doc: &ScriptDocument, node_id: NodeId) -> String {
     doc.inner().get_node(node_id).unwrap().text_content()
 }
 

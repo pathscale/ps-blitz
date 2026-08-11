@@ -1,5 +1,6 @@
 //! End-to-end probe for Solid's compiled DOM and delegated event paths.
 
+use blitz_dom::NodeId;
 use std::path::PathBuf;
 
 use anyrender::render_to_buffer;
@@ -48,11 +49,11 @@ fn load_probe() -> Option<ScriptDocument> {
     Some(doc)
 }
 
-fn query(doc: &ScriptDocument, selector: &str) -> Option<usize> {
+fn query(doc: &ScriptDocument, selector: &str) -> Option<NodeId> {
     doc.inner().query_selector(selector).unwrap()
 }
 
-fn query_all(doc: &ScriptDocument, selector: &str) -> Vec<usize> {
+fn query_all(doc: &ScriptDocument, selector: &str) -> Vec<NodeId> {
     doc.inner().query_selector_all(selector).unwrap().to_vec()
 }
 

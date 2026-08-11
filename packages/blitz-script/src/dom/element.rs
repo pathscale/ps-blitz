@@ -1018,7 +1018,9 @@ fn get_scroll_height(this: &JsValue, _: &[JsValue], context: &mut Context) -> Js
         .doc
         .borrow()
         .get_node(node_id)
-        .map(|node| f64::from(node.final_layout().size.height + node.final_layout().scroll_height()))
+        .map(|node| {
+            f64::from(node.final_layout().size.height + node.final_layout().scroll_height())
+        })
         .unwrap_or(0.0);
     Ok(JsValue::from(value))
 }

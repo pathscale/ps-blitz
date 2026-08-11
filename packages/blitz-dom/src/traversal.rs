@@ -132,6 +132,15 @@ impl BaseDocument {
         chain.extend(
             AncestorTraverser::new(self, node_id).filter(|id| self.nodes[*id].is_element()),
         );
+        // An event bubbles to the Document after the last element, so the
+        // document node belongs on the propagation chain even though it is not
+        // an element and the ancestor filter above drops it. Without this,
+        // a listener registered on `document` never fires and `composedPath`
+        // is short by one.
+        let document_id = self.root_node().id;
+        if chain.last().copied() != Some(document_id) {
+            chain.push(document_id);
+        }
         chain
     }
 

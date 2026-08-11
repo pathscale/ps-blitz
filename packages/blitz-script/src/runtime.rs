@@ -6,8 +6,8 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::LazyLock;
 
-use blitz_dom::NodeId;
 use blitz_dom::BaseDocument;
+use blitz_dom::NodeId;
 use blitz_traits::events::{BlitzPointerId, DomEvent, DomEventData, EventState};
 use boa_engine::object::{JsObject, ObjectInitializer};
 use boa_engine::property::Attribute;
