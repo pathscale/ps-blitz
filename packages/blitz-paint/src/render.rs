@@ -50,6 +50,13 @@ pub struct BlitzDomPainter<'dom, 'a> {
     pub(crate) scale: f64,
     pub(crate) width: u32,
     pub(crate) height: u32,
+    /// Origin of this document within the scene, in **device** pixels.
+    ///
+    /// Device, not logical: `render_element` and the viewport cull both use
+    /// these raw, and `draw_sub_document` derives them from a content box that
+    /// is already scaled. The root background rect used to multiply them by
+    /// `scale` as well, which put a sub-document's page background at twice its
+    /// offset while its contents painted correctly.
     pub(crate) initial_x: f64,
     pub(crate) initial_y: f64,
     /// The id of the document's root element (cached to avoid re-resolving it for every element)
@@ -125,8 +132,14 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             return;
         };
         let root_id = root_element.id;
-        let bg_width = (self.width as f32).max(root_element.final_layout().size.width);
-        let bg_height = (self.height as f32).max(root_element.final_layout().size.height);
+        // `width`/`height` are device pixels; the root element's layout is in CSS
+        // pixels. Taking the max of the two unscaled compared different units,
+        // so on a HiDPI display a document taller than the viewport had its
+        // page background stop half way down.
+        let layout_w = root_element.final_layout().size.width * self.scale as f32;
+        let layout_h = root_element.final_layout().size.height * self.scale as f32;
+        let bg_width = (self.width as f32).max(layout_w);
+        let bg_height = (self.height as f32).max(layout_h);
 
         let background_color = {
             let html_color = root_element
@@ -159,7 +172,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         if let Some(bg_color) = background_color {
             let bg_color = bg_color.as_srgb_color();
             let rect = Rect::from_origin_size(
-                (self.initial_x * self.scale, self.initial_y * self.scale),
+                (self.initial_x, self.initial_y),
                 (bg_width as f64, bg_height as f64),
             );
             scene.fill(Fill::NonZero, Affine::IDENTITY, bg_color, None, &rect);
