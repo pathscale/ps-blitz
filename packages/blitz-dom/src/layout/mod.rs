@@ -551,6 +551,18 @@ impl LayoutPartialTree for BaseDocument {
     }
 }
 
+/// Whether laying this node out would place inline element boxes.
+///
+/// Plain text needs none of this: a run of text owns no child boxes, so a
+/// cached layout for it is complete. Only an inline formatting context that
+/// actually contains inline *elements* has positions living outside the cached
+/// `LayoutOutput`.
+fn node_places_inline_boxes(node: &Node) -> bool {
+    node.element_data()
+        .and_then(|element| element.inline_layout_data.as_ref())
+        .is_some_and(|inline| !inline.layout.inline_boxes().is_empty())
+}
+
 impl taffy::CacheTree for BaseDocument {
     #[inline]
     fn cache_get(
@@ -558,7 +570,30 @@ impl taffy::CacheTree for BaseDocument {
         node_id: NodeId,
         inputs: &taffy::LayoutInput,
     ) -> Option<taffy::LayoutOutput> {
-        let found = self.node_from_id(node_id).cache().get(inputs);
+        // Laying out an inline formatting context writes the size and position
+        // of every inline *element* on its lines, as a side effect of the run.
+        // A cache hit returns the size and replays none of that, so those
+        // children keep the positions from whichever run last actually
+        // executed, which need not be the one whose answer is being reused.
+        //
+        // Measured on a live transcript: twelve boxes left up to 987px past the
+        // pane, an item-reference chip at x=1539 inside a block that had
+        // correctly resolved to 713px and correctly wrapped to three lines. The
+        // text rewrapped; the elements on it did not move. A probe inside the
+        // writing loop recorded no writes at all for those nodes during the
+        // session, which is what a cache hit looks like from the inside.
+        //
+        // Only `PerformLayout`, and only where there is an inline element to
+        // misplace. Measurement hits stay cached, and so does every block, flex
+        // and grid container, which is where the cache earns its keep.
+        let node = self.node_from_id(node_id);
+        if inputs.run_mode == taffy::RunMode::PerformLayout && node_places_inline_boxes(node) {
+            #[cfg(feature = "log-phase-times")]
+            layout_counters::note_lookup(false);
+            return None;
+        }
+
+        let found = node.cache().get(inputs);
         #[cfg(feature = "log-phase-times")]
         layout_counters::note_lookup(found.is_some());
         found
