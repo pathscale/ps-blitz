@@ -421,6 +421,15 @@ impl BaseDocument {
                 input.editor.set_scale(scale);
                 let mut font_ctx = font_ctx.lock().unwrap();
                 input.editor.refresh_layout(&mut font_ctx, layout_ctx);
+                // The placeholder is a second editor and needs the same scale.
+                // Left behind, it keeps whatever scale it was cloned at and its
+                // glyphs are painted at that size while everything around them
+                // is painted at the new one: on a retina display the
+                // placeholder comes out half size.
+                if let Some(placeholder) = input.placeholder_editor.as_mut() {
+                    placeholder.set_scale(scale);
+                    placeholder.refresh_layout(&mut font_ctx, layout_ctx);
+                }
                 node.insert_damage(ONLY_RELAYOUT);
             }
         }

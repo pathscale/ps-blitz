@@ -1397,6 +1397,16 @@ impl BaseDocument {
         !self.pending_critical_resources.is_empty()
     }
 
+    /// How many distinct image URLs are still being fetched.
+    ///
+    /// Images are deliberately not "critical" resources, so they never block
+    /// rendering. An embedder that needs a settled page (a screenshot, a test,
+    /// a print) has no other way to tell an image that is still in flight from
+    /// one that will never arrive.
+    pub fn pending_image_count(&self) -> usize {
+        self.pending_images.len()
+    }
+
     pub fn load_resource(&mut self, res: ResourceLoadResponse) {
         self.pending_critical_resources.remove(&res.request_id);
 
