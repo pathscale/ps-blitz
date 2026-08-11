@@ -874,9 +874,9 @@ dependencies = [
  "ps-anyrender-svg",
  "ps-blitz-dom",
  "ps-blitz-traits",
+ "ps-taffy",
  "smallvec",
  "stylo",
- "taffy",
  "tracing",
  "usvg",
 ]
@@ -6049,6 +6049,7 @@ dependencies = [
  "percent-encoding",
  "ps-anyrender",
  "ps-blitz-traits",
+ "ps-taffy",
  "rayon",
  "selectors",
  "skrifa 0.42.1",
@@ -6059,7 +6060,6 @@ dependencies = [
  "stylo_static_prefs",
  "stylo_taffy",
  "stylo_traits",
- "taffy",
  "thin-vec",
  "thread_local",
  "tracing",
@@ -6134,6 +6134,17 @@ dependencies = [
  "serde",
  "smol_str",
  "url",
+]
+
+[[package]]
+name = "ps-taffy"
+version = "0.13.0"
+source = "git+https://github.com/pathscale/ps-taffy.git?rev=079dc246c8edb80e2bbfe3d0fb68f8e07d9ad443#079dc246c8edb80e2bbfe3d0fb68f8e07d9ad443"
+dependencies = [
+ "arrayvec",
+ "serde",
+ "slotmap",
+ "smallvec",
 ]
 
 [[package]]
@@ -7571,9 +7582,9 @@ dependencies = [
 name = "stylo_taffy"
 version = "0.3.0-beta.3"
 dependencies = [
+ "ps-taffy",
  "stylo",
  "stylo_atoms",
- "taffy",
 ]
 
 [[package]]
@@ -7696,17 +7707,6 @@ dependencies = [
  "pkg-config",
  "toml",
  "version-compare",
-]
-
-[[package]]
-name = "taffy"
-version = "0.13.0"
-source = "git+https://github.com/DioxusLabs/taffy?rev=d4a2b3bf17ed268e4ea5fc1f5a7c76430ad9c499#d4a2b3bf17ed268e4ea5fc1f5a7c76430ad9c499"
-dependencies = [
- "arrayvec",
- "serde",
- "slotmap",
- "smallvec",
 ]
 
 [[package]]
@@ -9862,13 +9862,13 @@ dependencies = [
  "ps-anyrender-vello-cpu",
  "ps-blitz-dom",
  "ps-blitz-traits",
+ "ps-taffy",
  "rayon",
  "regex",
  "serde_json",
  "stylo",
  "stylo_traits",
  "supports-hyperlinks",
- "taffy",
  "terminal-link",
  "thread_local",
  "url",
