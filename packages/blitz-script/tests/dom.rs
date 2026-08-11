@@ -1345,3 +1345,48 @@ fn box_metrics_are_reported_in_unzoomed_css_pixels() {
         })
     );
 }
+
+#[test]
+fn repeated_resolves_do_not_grow_the_document() {
+    // The document must not get bigger just because it was laid out again.
+    //
+    // It did: box construction builds fresh anonymous blocks each pass and the
+    // previous ones were only ever referenced by the list being overwritten, so
+    // they stayed in the slab forever. One recorded session grew from 14 nodes
+    // to 22,353 at a steady +11 per resolve, and resolve time climbed past
+    // 80ms — which is what a window that grows slower the longer it is open,
+    // until its controls stop answering, looks like from the inside.
+    let mut doc = ScriptDocument::from_html(
+        r#"
+        <style>
+          .row { display: flex; align-items: center; gap: 8px }
+          .row::after { content: "!" }
+        </style>
+        <div class="row">text <b>bold</b> and <i>more</i> text</div>
+        <div class="row">second <span>row</span> of content</div>
+        "#,
+        DocumentConfig {
+            viewport: Some(Viewport::new(800, 600, 1.0, ColorScheme::Light)),
+            ..DocumentConfig::default()
+        },
+    );
+    doc.execute_scripts();
+
+    doc.inner_mut().resolve(0.0);
+    let settled = doc.inner().tree().len();
+
+    for _ in 0..20 {
+        // Damage the whole tree, as a non-incremental pass does.
+        doc.inner_mut()
+            .set_viewport(Viewport::new(800, 600, 1.0, ColorScheme::Light));
+        doc.inner_mut().resolve(0.0);
+    }
+
+    let after = doc.inner().tree().len();
+    assert_eq!(
+        after,
+        settled,
+        "twenty resolves added {} nodes; construction is leaking anonymous boxes",
+        after as i64 - settled as i64
+    );
+}
