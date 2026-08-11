@@ -77,12 +77,12 @@ mod accessibility;
 #[cfg(feature = "custom-widget")]
 pub use crate::node::Widget;
 
-pub use blitz_traits::node_id::NodeId;
 #[cfg(feature = "shadow-dom")]
 pub use crate::node::{
     CustomElement, CustomElementCtx, CustomElementDefinition, CustomElementRegistry,
     ShadowRootData, ShadowRootMode,
 };
+pub use blitz_traits::node_id::NodeId;
 pub use config::{DocumentConfig, StyleThreading};
 pub use document::{BaseDocument, DocGuard, DocGuardMut, Document, PlainDocument};
 pub use markup5ever::{

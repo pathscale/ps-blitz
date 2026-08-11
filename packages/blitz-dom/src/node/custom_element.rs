@@ -19,8 +19,8 @@ use std::collections::HashMap;
 use markup5ever::LocalName;
 
 use crate::DocumentMutator;
-use blitz_traits::node_id::NodeId;
 use crate::node::ShadowRootMode;
+use blitz_traits::node_id::NodeId;
 
 /// A factory function that produces a fresh custom element controller.
 pub type CustomElementFactory = Box<dyn Fn() -> Box<dyn CustomElement>>;

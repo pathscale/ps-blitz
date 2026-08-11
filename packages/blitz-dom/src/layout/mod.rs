@@ -27,6 +27,7 @@ use taffy::{
 /// Thread-local and read once per resolve, so the counting itself is free.
 #[cfg(feature = "log-phase-times")]
 pub(crate) mod layout_counters {
+    use blitz_traits::node_id::NodeId;
     use std::cell::Cell;
 
     thread_local! {
@@ -37,11 +38,11 @@ pub(crate) mod layout_counters {
         /// Distinct nodes recomputed, to tell "the whole tree once" apart from
         /// "a few nodes many times". Those have completely different fixes and
         /// the totals alone cannot distinguish them.
-        static DISTINCT: std::cell::RefCell<std::collections::HashMap<usize, u32>> =
+        static DISTINCT: std::cell::RefCell<std::collections::HashMap<NodeId, u32>> =
             std::cell::RefCell::new(std::collections::HashMap::new());
     }
 
-    pub(crate) fn note_computed(node_id: usize) {
+    pub(crate) fn note_computed(node_id: NodeId) {
         COMPUTED.with(|count| count.set(count.get() + 1));
         DISTINCT.with(|seen| {
             *seen.borrow_mut().entry(node_id).or_insert(0u32) += 1;
@@ -54,9 +55,9 @@ pub(crate) mod layout_counters {
     /// node recomputed a hundred times is either being measured under a hundred
     /// different constraints or sitting under a container that re-descends, and
     /// naming it is the difference between fixing that and guessing again.
-    pub(crate) fn worst_offenders(limit: usize) -> Vec<(usize, u32)> {
+    pub(crate) fn worst_offenders(limit: usize) -> Vec<(NodeId, u32)> {
         DISTINCT.with(|seen| {
-            let mut rows: Vec<(usize, u32)> = seen
+            let mut rows: Vec<(NodeId, u32)> = seen
                 .borrow()
                 .iter()
                 .map(|(id, count)| (*id, *count))
@@ -135,6 +136,12 @@ impl BaseDocument {
         inputs: taffy::tree::LayoutInput,
         block_ctx: Option<&mut BlockContext<'_>>,
     ) -> taffy::tree::LayoutOutput {
+        // Counted, not timed. The layout phase dominates a script-forced
+        // resolve, and the two explanations (a few nodes that are each slow, or
+        // the whole tree recomputing) call for opposite fixes. Only the blast
+        // radius separates them, and a cache hit never reaches this function.
+        #[cfg(feature = "log-phase-times")]
+        layout_counters::note_computed(dom_node_id(node_id));
         let node = &mut self.nodes[dom_node_id(node_id)];
 
         let font_styles = node.primary_styles().map(|style| {
@@ -481,7 +488,10 @@ impl taffy::CacheTree for BaseDocument {
         node_id: NodeId,
         inputs: &taffy::LayoutInput,
     ) -> Option<taffy::LayoutOutput> {
-        self.node_from_id(node_id).cache().get(inputs)
+        let found = self.node_from_id(node_id).cache().get(inputs);
+        #[cfg(feature = "log-phase-times")]
+        layout_counters::note_lookup(found.is_some());
+        found
     }
 
     #[inline]
