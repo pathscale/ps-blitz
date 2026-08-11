@@ -2137,6 +2137,13 @@ impl BaseDocument {
         self.stylist.device()
     }
 
+    /// The cursor to show, where `None` means `cursor: none` — hide it.
+    ///
+    /// `None` is an answer, not the absence of one. The shell hides the pointer
+    /// when it sees `None`, so every path that means "nothing to say here" must
+    /// return `Default` instead. Returning `None` from those made the pointer
+    /// vanish as it crossed into page content, which is the shape this used to
+    /// have: three `?`s that each meant "no opinion" and all read as "hide".
     pub fn get_cursor(&self) -> Option<CursorIcon> {
         // Prefer the precise hit node: `cursor` and `user-select` may be set on
         // a pseudo-element or resolved on an anonymous box, and text hits carry
@@ -2145,14 +2152,27 @@ impl BaseDocument {
         let node_id = self
             .hover_hit_node_id
             .filter(|&id| self.nodes.contains_key(id))
-            .or(self.get_hover_node_id())?;
+            .or(self.get_hover_node_id());
+        let Some(node_id) = node_id else {
+            return Some(CursorIcon::Default);
+        };
         let node = &self.nodes[node_id];
 
         if let Some(subdoc) = node.subdoc().map(|doc| doc.inner()) {
-            return subdoc.get_cursor();
+            // Only delegate when the sub-document has hover state of its own.
+            // Without this check an embedded document that has not been hovered
+            // yet answers `None` — meaning "I have no hover node" — and the
+            // pointer disappears the moment it enters the page area, which is
+            // every page in a browser built on sub-documents.
+            if subdoc.hover_hit_node_id.is_some() || subdoc.get_hover_node_id().is_some() {
+                return subdoc.get_cursor();
+            }
+            return Some(CursorIcon::Default);
         }
 
-        let style = node.primary_styles()?;
+        let Some(style) = node.primary_styles() else {
+            return Some(CursorIcon::Default);
+        };
         let user_select = style.clone_user_select();
         let keyword = style.clone_cursor().keyword;
 
