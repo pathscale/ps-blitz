@@ -226,7 +226,7 @@ opt-level = "z"
 opt-level = 3
 [profile.tiny.package.vello_cpu]
 opt-level = 3
-[profile.tiny.package.taffy]
+[profile.tiny.package.ps-taffy]
 opt-level = 3
 [profile.tiny.package.harfrust]
 opt-level = 3
