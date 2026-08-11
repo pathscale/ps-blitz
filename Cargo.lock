@@ -305,7 +305,8 @@ checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 [[package]]
 name = "anyrender"
 version = "0.12.0"
-source = "git+https://github.com/DioxusLabs/anyrender?branch=devin%2F1785858394-usvg-048#dcd219746ff13a5832beab552f3f7f494d1bd84d"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aea77d85ae0be665528618c97164c2b510dc635e80b805e9a9df9a9fe72da423"
 dependencies = [
  "kurbo",
  "peniko",
@@ -355,79 +356,10 @@ dependencies = [
  "objc2-quartz-core 0.3.2",
  "objc2-ui-kit",
  "peniko",
- "pixels_window_renderer",
+ "pixels_window_renderer 0.7.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "raw-window-handle",
  "skia-safe",
- "softbuffer_window_renderer",
-]
-
-[[package]]
-name = "anyrender_svg"
-version = "0.13.0"
-source = "git+https://github.com/DioxusLabs/anyrender?branch=devin%2F1785858394-usvg-048#dcd219746ff13a5832beab552f3f7f494d1bd84d"
-dependencies = [
- "anyrender",
- "image",
- "kurbo",
- "peniko",
- "usvg",
-]
-
-[[package]]
-name = "anyrender_vello"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5866f70e89d198c3ccc070bcada52863145d3de6ba54a5cbd1ccfb2a98118380"
-dependencies = [
- "anyrender",
- "debug_timer 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
- "futures-channel",
- "kurbo",
- "peniko",
- "pollster",
- "rustc-hash 2.1.3",
- "vello",
- "wasm-bindgen-futures",
- "wgpu",
- "wgpu_context",
-]
-
-[[package]]
-name = "anyrender_vello_cpu"
-version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb1f023da10af98c41042bb628bb7ff292d5d1058585a06fa54ccfcc592d3180"
-dependencies = [
- "anyrender",
- "debug_timer 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
- "glifo",
- "kurbo",
- "peniko",
- "pixels_window_renderer",
- "softbuffer_window_renderer",
- "vello_common",
- "vello_cpu",
-]
-
-[[package]]
-name = "anyrender_vello_hybrid"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2789c41d9e636dc601b325ebe27ce321b523a11a71a1bf15f4044a34966d1ed2"
-dependencies = [
- "anyrender",
- "debug_timer 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
- "futures-channel",
- "glifo",
- "kurbo",
- "peniko",
- "pollster",
- "rustc-hash 2.1.3",
- "vello_common",
- "vello_hybrid",
- "wasm-bindgen-futures",
- "wgpu",
- "wgpu_context",
+ "softbuffer_window_renderer 0.7.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -862,10 +794,10 @@ dependencies = [
 name = "blitz"
 version = "0.3.0-beta.3"
 dependencies = [
- "anyrender_vello",
  "blitz-html",
  "blitz-net",
  "blitz-paint",
+ "ps-anyrender-vello",
  "ps-blitz-dom",
  "ps-blitz-shell",
  "ps-blitz-traits",
@@ -878,10 +810,6 @@ dependencies = [
 name = "blitz-examples"
 version = "0.0.1"
 dependencies = [
- "anyrender",
- "anyrender_vello",
- "anyrender_vello_cpu",
- "anyrender_vello_hybrid",
  "blitz",
  "blitz-html",
  "blitz-net",
@@ -894,6 +822,10 @@ dependencies = [
  "image",
  "peniko",
  "png 0.18.1",
+ "ps-anyrender",
+ "ps-anyrender-vello",
+ "ps-anyrender-vello-cpu",
+ "ps-anyrender-vello-hybrid",
  "ps-blitz-dom",
  "ps-blitz-shell",
  "ps-blitz-traits",
@@ -933,13 +865,13 @@ dependencies = [
 name = "blitz-paint"
 version = "0.3.0-beta.3"
 dependencies = [
- "anyrender",
- "anyrender_svg",
  "color",
  "euclid",
  "kurbo",
  "parley",
  "peniko",
+ "ps-anyrender",
+ "ps-anyrender-svg",
  "ps-blitz-dom",
  "ps-blitz-traits",
  "smallvec",
@@ -967,8 +899,6 @@ name = "blitz-tests"
 version = "0.3.0-beta.3"
 dependencies = [
  "accesskit",
- "anyrender",
- "anyrender_vello_cpu",
  "blitz-html",
  "blitz-paint",
  "blitz-test-harness",
@@ -977,6 +907,8 @@ dependencies = [
  "dioxus-native-dom",
  "keyboard-types 0.7.0",
  "markup5ever",
+ "ps-anyrender",
+ "ps-anyrender-vello-cpu",
  "ps-blitz-dom",
  "ps-blitz-traits",
  "usvg",
@@ -1225,9 +1157,7 @@ name = "browser"
 version = "0.0.0"
 dependencies = [
  "android-activity",
- "anyrender",
  "anyrender_serialize",
- "anyrender_vello_cpu",
  "blitz-html",
  "blitz-net",
  "blitz-paint",
@@ -1239,6 +1169,8 @@ dependencies = [
  "nucleo",
  "peniko",
  "png 0.18.1",
+ "ps-anyrender",
+ "ps-anyrender-vello-cpu",
  "ps-blitz-dom",
  "ps-blitz-traits",
  "rfd",
@@ -2468,11 +2400,7 @@ name = "dioxus-native"
 version = "0.7.0"
 dependencies = [
  "android-activity",
- "anyrender",
  "anyrender_skia",
- "anyrender_vello",
- "anyrender_vello_cpu",
- "anyrender_vello_hybrid",
  "blitz-html",
  "blitz-net",
  "blitz-paint",
@@ -2493,6 +2421,10 @@ dependencies = [
  "keyboard-types 0.7.0",
  "manganis",
  "peniko",
+ "ps-anyrender",
+ "ps-anyrender-vello",
+ "ps-anyrender-vello-cpu",
+ "ps-anyrender-vello-hybrid",
  "ps-blitz-dom",
  "ps-blitz-shell",
  "ps-blitz-traits",
@@ -5807,6 +5739,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pixels_window_renderer"
+version = "0.7.0"
+source = "git+https://github.com/pathscale/ps-anyrender.git?rev=0e4122bff9220b85e4e462d1c3213c24beace3ea#0e4122bff9220b85e4e462d1c3213c24beace3ea"
+dependencies = [
+ "debug_timer 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "pixels",
+ "ps-anyrender",
+]
+
+[[package]]
 name = "pkg-config"
 version = "0.3.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5998,6 +5940,83 @@ dependencies = [
 ]
 
 [[package]]
+name = "ps-anyrender"
+version = "0.12.0"
+source = "git+https://github.com/pathscale/ps-anyrender.git?rev=0e4122bff9220b85e4e462d1c3213c24beace3ea#0e4122bff9220b85e4e462d1c3213c24beace3ea"
+dependencies = [
+ "kurbo",
+ "peniko",
+ "raw-window-handle",
+ "smallvec",
+]
+
+[[package]]
+name = "ps-anyrender-svg"
+version = "0.14.0"
+source = "git+https://github.com/pathscale/ps-anyrender.git?rev=0e4122bff9220b85e4e462d1c3213c24beace3ea#0e4122bff9220b85e4e462d1c3213c24beace3ea"
+dependencies = [
+ "image",
+ "kurbo",
+ "peniko",
+ "ps-anyrender",
+ "usvg",
+]
+
+[[package]]
+name = "ps-anyrender-vello"
+version = "0.13.0"
+source = "git+https://github.com/pathscale/ps-anyrender.git?rev=0e4122bff9220b85e4e462d1c3213c24beace3ea#0e4122bff9220b85e4e462d1c3213c24beace3ea"
+dependencies = [
+ "debug_timer 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "futures-channel",
+ "kurbo",
+ "peniko",
+ "pollster",
+ "ps-anyrender",
+ "ps-wgpu-context",
+ "rustc-hash 2.1.3",
+ "vello",
+ "wasm-bindgen-futures",
+ "wgpu",
+]
+
+[[package]]
+name = "ps-anyrender-vello-cpu"
+version = "0.15.0"
+source = "git+https://github.com/pathscale/ps-anyrender.git?rev=0e4122bff9220b85e4e462d1c3213c24beace3ea#0e4122bff9220b85e4e462d1c3213c24beace3ea"
+dependencies = [
+ "debug_timer 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "glifo",
+ "kurbo",
+ "peniko",
+ "pixels_window_renderer 0.7.0 (git+https://github.com/pathscale/ps-anyrender.git?rev=0e4122bff9220b85e4e462d1c3213c24beace3ea)",
+ "ps-anyrender",
+ "softbuffer_window_renderer 0.7.0 (git+https://github.com/pathscale/ps-anyrender.git?rev=0e4122bff9220b85e4e462d1c3213c24beace3ea)",
+ "vello_common",
+ "vello_cpu",
+]
+
+[[package]]
+name = "ps-anyrender-vello-hybrid"
+version = "0.9.0"
+source = "git+https://github.com/pathscale/ps-anyrender.git?rev=0e4122bff9220b85e4e462d1c3213c24beace3ea#0e4122bff9220b85e4e462d1c3213c24beace3ea"
+dependencies = [
+ "debug_timer 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "futures-channel",
+ "glifo",
+ "kurbo",
+ "peniko",
+ "pollster",
+ "ps-anyrender",
+ "ps-wgpu-context",
+ "rustc-hash 2.1.3",
+ "vello_common",
+ "vello_hybrid",
+ "wasm-bindgen-futures",
+ "wgpu",
+]
+
+[[package]]
 name = "ps-blitz-debug-control"
 version = "0.3.0-beta.3"
 dependencies = [
@@ -6011,7 +6030,6 @@ name = "ps-blitz-dom"
 version = "0.3.0-beta.3"
 dependencies = [
  "accesskit",
- "anyrender",
  "app_units",
  "atomic_refcell",
  "bitflags 2.13.0",
@@ -6029,6 +6047,7 @@ dependencies = [
  "objc2 0.6.4",
  "parley",
  "percent-encoding",
+ "ps-anyrender",
  "ps-blitz-traits",
  "rayon",
  "selectors",
@@ -6054,8 +6073,6 @@ dependencies = [
 name = "ps-blitz-script"
 version = "0.3.0-beta.3"
 dependencies = [
- "anyrender",
- "anyrender_vello_cpu",
  "base64 0.22.1",
  "blitz-html",
  "blitz-paint",
@@ -6067,6 +6084,8 @@ dependencies = [
  "image",
  "keyboard-types 0.7.0",
  "markup5ever",
+ "ps-anyrender",
+ "ps-anyrender-vello-cpu",
  "ps-blitz-debug-control",
  "ps-blitz-dom",
  "ps-blitz-traits",
@@ -6084,13 +6103,13 @@ dependencies = [
  "accesskit",
  "accesskit_xplat",
  "android-activity",
- "anyrender",
  "arboard",
  "atomic_refcell",
  "blitz-paint",
  "data-url",
  "futures-util",
  "keyboard-types 0.7.0",
+ "ps-anyrender",
  "ps-blitz-dom",
  "ps-blitz-script",
  "ps-blitz-traits",
@@ -6115,6 +6134,15 @@ dependencies = [
  "serde",
  "smol_str",
  "url",
+]
+
+[[package]]
+name = "ps-wgpu-context"
+version = "0.8.0"
+source = "git+https://github.com/pathscale/ps-anyrender.git?rev=0e4122bff9220b85e4e462d1c3213c24beace3ea#0e4122bff9220b85e4e462d1c3213c24beace3ea"
+dependencies = [
+ "futures-intrusive",
+ "wgpu",
 ]
 
 [[package]]
@@ -6350,15 +6378,15 @@ name = "rdme"
 version = "0.2.0"
 dependencies = [
  "anyrender_skia",
- "anyrender_vello",
- "anyrender_vello_cpu",
- "anyrender_vello_hybrid",
  "blitz-html",
  "blitz-net",
  "blitz-paint",
  "comrak",
  "image",
  "notify",
+ "ps-anyrender-vello",
+ "ps-anyrender-vello-cpu",
+ "ps-anyrender-vello-hybrid",
  "ps-blitz-dom",
  "ps-blitz-shell",
  "ps-blitz-traits",
@@ -6973,11 +7001,11 @@ dependencies = [
 name = "seven_guis"
 version = "0.1.0"
 dependencies = [
- "anyrender_vello_hybrid",
  "console_error_panic_hook",
  "dioxus-native",
  "futures-timer",
  "idna_adapter",
+ "ps-anyrender-vello-hybrid",
  "wasm-bindgen",
 ]
 
@@ -7308,6 +7336,18 @@ dependencies = [
  "debug_timer 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "kurbo",
  "peniko",
+ "softbuffer",
+]
+
+[[package]]
+name = "softbuffer_window_renderer"
+version = "0.7.0"
+source = "git+https://github.com/pathscale/ps-anyrender.git?rev=0e4122bff9220b85e4e462d1c3213c24beace3ea#0e4122bff9220b85e4e462d1c3213c24beace3ea"
+dependencies = [
+ "debug_timer 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "kurbo",
+ "peniko",
+ "ps-anyrender",
  "softbuffer",
 ]
 
@@ -7958,10 +7998,10 @@ name = "todomvc"
 version = "0.1.0"
 dependencies = [
  "android-activity",
- "anyrender_vello_hybrid",
  "console_error_panic_hook",
  "dioxus-native",
  "idna_adapter",
+ "ps-anyrender-vello-hybrid",
  "tracing-subscriber",
  "wasm-bindgen",
 ]
@@ -8754,10 +8794,10 @@ dependencies = [
 name = "wasm_hello"
 version = "0.0.0"
 dependencies = [
- "anyrender_vello_hybrid",
  "blitz-html",
  "console_error_panic_hook",
  "parley",
+ "ps-anyrender-vello-hybrid",
  "ps-blitz-dom",
  "ps-blitz-shell",
  "tracing",
@@ -9148,9 +9188,6 @@ dependencies = [
 name = "wgpu_texture"
 version = "0.0.0"
 dependencies = [
- "anyrender",
- "anyrender_vello",
- "anyrender_vello_hybrid",
  "blitz-html",
  "blitz-paint",
  "bytemuck",
@@ -9158,6 +9195,9 @@ dependencies = [
  "dioxus-native",
  "peniko",
  "pollster",
+ "ps-anyrender",
+ "ps-anyrender-vello",
+ "ps-anyrender-vello-hybrid",
  "ps-blitz-dom",
  "ps-blitz-shell",
  "ps-blitz-traits",
@@ -9800,9 +9840,6 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 name = "wpt"
 version = "0.1.0"
 dependencies = [
- "anyrender",
- "anyrender_vello",
- "anyrender_vello_cpu",
  "atomic_float",
  "bitflags 2.13.0",
  "blitz-html",
@@ -9820,6 +9857,9 @@ dependencies = [
  "peniko",
  "png 0.17.16",
  "pollster",
+ "ps-anyrender",
+ "ps-anyrender-vello",
+ "ps-anyrender-vello-cpu",
  "ps-blitz-dom",
  "ps-blitz-traits",
  "rayon",

@@ -121,13 +121,13 @@ skrifa = { version = "0.42", default-features = false, features = [
 ] } # Should match parley and vello versions
 
 # AnyRender
-anyrender = { version = "0.12.0" }
+anyrender = { package = "ps-anyrender", git = "https://github.com/pathscale/ps-anyrender.git", rev = "0e4122bff9220b85e4e462d1c3213c24beace3ea" }
 anyrender_serialize = { version = "0.6.0" }
 anyrender_skia = { version = "0.10.0" }
-anyrender_vello = { version = "0.13.0" }
-anyrender_vello_cpu = { version = "0.15.0" }
-anyrender_vello_hybrid = { version = "0.9.0" }
-anyrender_svg = { version = "0.13.0" }
+anyrender_vello = { package = "ps-anyrender-vello", git = "https://github.com/pathscale/ps-anyrender.git", rev = "0e4122bff9220b85e4e462d1c3213c24beace3ea" }
+anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", git = "https://github.com/pathscale/ps-anyrender.git", rev = "0e4122bff9220b85e4e462d1c3213c24beace3ea" }
+anyrender_vello_hybrid = { package = "ps-anyrender-vello-hybrid", git = "https://github.com/pathscale/ps-anyrender.git", rev = "0e4122bff9220b85e4e462d1c3213c24beace3ea" }
+anyrender_svg = { package = "ps-anyrender-svg", git = "https://github.com/pathscale/ps-anyrender.git", rev = "0e4122bff9220b85e4e462d1c3213c24beace3ea" }
 wgpu_context = { version = "0.8.0" }
 
 # Linebender + Fontations + WGPU + SVG
@@ -280,12 +280,12 @@ color = { workspace = true }
 env_logger = "0.11"
 tracing-subscriber = "0.3"
 
-# TODO: remove these patches once `usvg` (with `Tree::intrinsic_dimensions`) and
-# `anyrender_svg` (with the usvg 0.48 bump) are released.
+# TODO: remove this patch once `usvg` releases `Tree::intrinsic_dimensions`.
+# It exists on no published usvg, only on the resvg branch below. The patched
+# version is 0.48.1, which is why every crate in this graph has to ask for
+# ^0.48: a dependent still on ^0.46 silently gets a second usvg instead.
 [patch.crates-io]
 usvg = { git = "https://github.com/DioxusLabs/resvg", branch = "devin/1785858271-intrinsic-dimensions" }
-anyrender = { git = "https://github.com/DioxusLabs/anyrender", branch = "devin/1785858394-usvg-048" }
-anyrender_svg = { git = "https://github.com/DioxusLabs/anyrender", branch = "devin/1785858394-usvg-048" }
 
 # [patch.crates-io]
 # anyrender = { path = "../anyrender/crates/anyrender" }
