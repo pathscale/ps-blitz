@@ -102,25 +102,6 @@ impl DocumentMutator<'_> {
         }
     }
 
-    #[cfg(feature = "svg")]
-    fn mark_containing_svg_for_reconstruction(&mut self, node_id: NodeId) {
-        let mut current = Some(node_id);
-        while let Some(id) = current {
-            let node = &self.doc.nodes[id];
-            let is_svg_root = node.element_data().is_some_and(|element| {
-                element.name.ns == ns!(svg) && element.name.local == local_name!("svg")
-            });
-            let parent = node.parent;
-            if is_svg_root {
-                let svg = &mut self.doc.nodes[id];
-                svg.insert_damage(ALL_DAMAGE);
-                svg.mark_ancestors_dirty();
-                return;
-            }
-            current = parent;
-        }
-    }
-
     // Query methods
 
     pub fn node_has_parent(&self, node_id: NodeId) -> bool {
