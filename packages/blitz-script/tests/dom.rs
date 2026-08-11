@@ -1209,3 +1209,42 @@ fn parent_node_append_moves_a_subtree_and_takes_strings() {
         })
     );
 }
+/// A shell that records what script asked it to put on the clipboard.
+#[derive(Default)]
+struct RecordingClipboard {
+    written: Mutex<Vec<String>>,
+}
+
+impl blitz_traits::shell::ShellProvider for RecordingClipboard {
+    fn set_clipboard_text(&self, text: String) -> Result<(), blitz_traits::shell::ClipboardError> {
+        self.written.lock().unwrap().push(text);
+        Ok(())
+    }
+}
+
+#[test]
+fn navigator_clipboard_write_text_reaches_the_shell() {
+    // Every "copy" button in an embedding app goes through this one call. With
+    // no `navigator.clipboard` the property lookup threw, the usual try/catch
+    // swallowed it, and the button reported success while copying nothing.
+    let clipboard = Arc::new(RecordingClipboard::default());
+    let mut doc = ScriptDocument::from_html(
+        r#"<div id="out"></div>"#,
+        DocumentConfig {
+            viewport: Some(Viewport::new(400, 200, 1.0, ColorScheme::Light)),
+            ..DocumentConfig::default()
+        },
+    );
+    doc.inner_mut().set_shell_provider(clipboard.clone());
+    doc.execute_scripts();
+
+    doc.eval(
+        r#"navigator.clipboard
+             .writeText("session-4f21")
+             .then(() => { document.getElementById("out").textContent = "copied" });"#,
+    );
+    doc.poll(None);
+
+    assert_eq!(*clipboard.written.lock().unwrap(), vec!["session-4f21"]);
+    assert_eq!(text_of_selector(&doc, "#out"), "copied");
+}

@@ -9,6 +9,7 @@ use std::sync::LazyLock;
 use blitz_dom::BaseDocument;
 use blitz_dom::NodeId;
 use blitz_traits::events::{BlitzPointerId, DomEvent, DomEventData, EventState};
+use boa_engine::object::builtins::JsPromise;
 use boa_engine::object::{JsObject, ObjectInitializer};
 use boa_engine::property::Attribute;
 use boa_engine::value::JsValue;
@@ -223,13 +224,33 @@ impl ScriptRuntime {
         let location = build_location(base_url, &mut context);
         register_global(&mut context, "location", location);
 
-        // `navigator`
+        // `navigator`, including the async clipboard.
+        //
+        // Without `navigator.clipboard` every "copy" button in an embedding app
+        // fails silently: the usual shape is `navigator.clipboard.writeText(t)`
+        // inside a try/catch that falls back to `document.execCommand("copy")`,
+        // and neither existed here, so the catch swallowed a TypeError and the
+        // fallback returned nothing. The shell already speaks to the system
+        // clipboard for text selection; this is the same channel.
+        let clipboard = ObjectInitializer::new(&mut context)
+            .function(
+                NativeFunction::from_fn_ptr(clipboard_write_text),
+                js_string!("writeText"),
+                1,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(clipboard_read_text),
+                js_string!("readText"),
+                0,
+            )
+            .build();
         let navigator = ObjectInitializer::new(&mut context)
             .property(
                 js_string!("userAgent"),
                 js_string!("Mozilla/5.0 (compatible; Blitz)"),
                 Attribute::all(),
             )
+            .property(js_string!("clipboard"), clipboard, Attribute::all())
             .build();
         register_global(&mut context, "navigator", navigator.into());
 
@@ -975,6 +996,54 @@ fn ipc_post_message(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
         handler(body);
     }
     Ok(JsValue::undefined())
+}
+
+/// `navigator.clipboard.writeText(text)`.
+///
+/// The spec returns a promise, and callers await it, so a plain value would be
+/// awaited as an already-resolved one and hide a failed write. Resolve on a
+/// successful shell write and reject otherwise, which is what the API's own
+/// error path looks like.
+fn clipboard_write_text(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let text = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .to_string(context)?
+        .to_std_string_lossy();
+    let wrote = dom_ctx(context)?
+        .doc
+        .borrow()
+        .shell_provider
+        .set_clipboard_text(text)
+        .is_ok();
+    let promise = if wrote {
+        JsPromise::resolve(JsValue::undefined(), context)
+    } else {
+        JsPromise::reject(
+            JsNativeError::error().with_message("the clipboard is unavailable"),
+            context,
+        )
+    };
+    Ok(JsValue::from(promise?))
+}
+
+/// `navigator.clipboard.readText()`. Rejects when the shell has no clipboard,
+/// rather than resolving to "" — an empty clipboard and an absent one are
+/// different answers and callers branch on them differently.
+fn clipboard_read_text(_: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let read = dom_ctx(context)?
+        .doc
+        .borrow()
+        .shell_provider
+        .get_clipboard_text();
+    let promise = match read {
+        Ok(text) => JsPromise::resolve(JsValue::from(JsString::from(text)), context),
+        Err(_) => JsPromise::reject(
+            JsNativeError::error().with_message("the clipboard is unavailable"),
+            context,
+        ),
+    };
+    Ok(JsValue::from(promise?))
 }
 
 /// The spec's time origin is document creation. A first-use instant is close
