@@ -242,7 +242,11 @@ impl<Rend: WindowRenderer> ApplicationHandler for BlitzApplication<Rend> {
         // Left alone when nothing is animating: `ControlFlow::Wait` is already
         // the default, and overwriting it here would fight whatever else set
         // it.
-        let now = std::time::Instant::now();
+        // web_time, not std: on wasm they are genuinely distinct types, and
+        // both `poll_animation_frame` and winit's own `ControlFlow::WaitUntil`
+        // are in web_time's. On native web_time re-exports std's, which is why
+        // std compiled here and broke only the wasm job.
+        let now = web_time::Instant::now();
         let next_frame = self
             .windows
             .values()
