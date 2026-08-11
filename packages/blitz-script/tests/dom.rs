@@ -1526,3 +1526,74 @@ fn a_custom_element_created_after_define_is_upgraded_on_insertion() {
     );
     assert_eq!(result["count"].as_i64(), Some(2), "{result}");
 }
+
+#[test]
+fn a_scroller_does_not_stay_parked_past_content_that_shrank() {
+    // Scroll to the bottom, then remove content. The offset was clamped when
+    // the gesture happened and never re-checked, so it stayed beyond the new
+    // end and the view sat in space the content no longer reaches: dismiss a
+    // panel while scrolled down and its height is gone from under you, leaving
+    // a band of nothing above the edge.
+    let mut doc = ScriptDocument::from_html(
+        r#"
+        <style>
+          body { margin: 0 }
+          #pane { height: 100px; overflow-y: auto }
+          .block { height: 100px }
+        </style>
+        <div id="pane">
+          <div class="block">one</div>
+          <div class="block">two</div>
+          <div class="block" id="doomed">three</div>
+        </div>
+        "#,
+        DocumentConfig {
+            viewport: Some(Viewport::new(400, 300, 1.0, ColorScheme::Light)),
+            ..DocumentConfig::default()
+        },
+    );
+    doc.execute_scripts();
+    doc.inner_mut().resolve(0.0);
+
+    let scrolled = doc
+        .eval_json(
+            r#"
+            (() => {
+              const pane = document.getElementById("pane");
+              pane.scrollTop = 1000;
+              return { top: pane.scrollTop, height: pane.scrollHeight };
+            })()
+            "#,
+        )
+        .expect("scroll should evaluate");
+    assert_eq!(
+        scrolled["top"].as_f64(),
+        Some(200.0),
+        "parked at the end: {scrolled}"
+    );
+
+    doc.eval(r#"document.getElementById("doomed").remove();"#);
+    doc.inner_mut().resolve(0.0);
+
+    let after = doc
+        .eval_json(
+            r#"
+            (() => {
+              const pane = document.getElementById("pane");
+              return { top: pane.scrollTop, height: pane.scrollHeight };
+            })()
+            "#,
+        )
+        .expect("scroll should evaluate");
+
+    assert_eq!(
+        after["height"].as_f64(),
+        Some(200.0),
+        "the removed block's height should be gone: {after}"
+    );
+    assert_eq!(
+        after["top"].as_f64(),
+        Some(100.0),
+        "the offset must come back to the new end, not stay past it: {after}"
+    );
+}

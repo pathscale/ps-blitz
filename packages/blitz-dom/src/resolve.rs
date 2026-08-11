@@ -43,6 +43,40 @@ use crate::{
 };
 
 impl BaseDocument {
+    /// Pull every scroll offset back inside the content it scrolls.
+    ///
+    /// Scrolling clamps against the extent at the time of the gesture, and
+    /// nothing re-checked it afterwards. So any layout that made a scroller's
+    /// content *shorter* left the offset beyond the new end, and the view
+    /// stayed parked in space the content no longer reaches: dismiss a panel
+    /// while scrolled to the bottom and its height is simply gone from under
+    /// you, leaving a band of nothing between the last content and the edge.
+    /// Far enough past the end and there is nothing left to see at all.
+    ///
+    /// Done after layout, which is the only point at which the new extents are
+    /// known, and cheap: offsets are almost always zero.
+    fn clamp_scroll_offsets(&mut self) {
+        for (_, node) in self.nodes.iter_mut() {
+            // The accessor panics on node kinds that have no scroll offset, so
+            // ask the data first rather than every node in the tree.
+            let Some(offset) = node
+                .data
+                .downcast_element()
+                .map(|element| element.scroll_offset)
+            else {
+                continue;
+            };
+            if offset.x == 0.0 && offset.y == 0.0 {
+                continue;
+            }
+            let max_x = f64::from(node.final_layout().scroll_width()).max(0.0);
+            let max_y = f64::from(node.final_layout().scroll_height()).max(0.0);
+            let clamped = node.scroll_offset_mut();
+            clamped.x = offset.x.clamp(0.0, max_x);
+            clamped.y = offset.y.clamp(0.0, max_y);
+        }
+    }
+
     /// Restyle the tree and then relayout it
     pub fn resolve(&mut self, current_time_for_animations: f64) {
         if TDocument::as_node(&self.root_node())
@@ -107,6 +141,8 @@ impl BaseDocument {
         self.resolve_layout();
         self.correct_hoisted_fixed_positions();
         timer.record_time("layout");
+
+        self.clamp_scroll_offsets();
 
         // Resolve transforms
         self.resolve_transforms(root_node_id);
