@@ -1,0 +1,16 @@
+[package]
+name = "ps-blitz-debug-control"
+description = "Debug-only WebDriver-compatible control transport for Blitz"
+documentation = "https://docs.rs/ps-blitz-debug-control"
+version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+getrandom = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }

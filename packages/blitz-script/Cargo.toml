@@ -1,0 +1,76 @@
+[package]
+name = "ps-blitz-script"
+description = "JavaScript execution for Blitz using the Boa engine"
+documentation = "https://docs.rs/ps-blitz-script"
+version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "solid-debug-harness"
+path = "src/bin/solid_debug_harness.rs"
+required-features = ["debug-control"]
+
+[features]
+default = []
+# Per-DOM-call timing. Off by default: a shipping build has no reader for it
+# and the clock reads are a measurable share of a mount. See `script_stats`.
+dom-stats = []
+debug-control = [
+    "dom-stats",
+    "dep:anyrender",
+    "dep:anyrender_vello_cpu",
+    "dep:base64",
+    "dep:blitz-debug-control",
+    "dep:blitz-paint",
+    "dep:image",
+    "blitz-dom/svg",
+]
+system-fonts = ["blitz-dom/system-fonts"]
+tracing = ["dep:tracing", "blitz-dom/tracing"]
+
+[lib]
+name = "blitz_script"
+
+[dependencies]
+# Blitz dependencies
+blitz-dom = { workspace = true, features = ["autofocus"] }
+blitz-debug-control = { workspace = true, optional = true }
+blitz-paint = { workspace = true, optional = true }
+blitz-html = { workspace = true }
+blitz-traits = { workspace = true }
+
+# Boa (JavaScript engine)
+boa_engine = { workspace = true }
+boa_runtime = { workspace = true }
+boa_gc = { workspace = true }
+
+# Servo dependencies
+markup5ever = { workspace = true }
+rustc-hash = { workspace = true }
+
+# Other dependencies
+keyboard-types = { workspace = true }
+url = { workspace = true }
+data-url = { workspace = true }
+web-time = { workspace = true }
+tracing = { workspace = true, optional = true }
+serde_json = { workspace = true }
+getrandom = { workspace = true }
+anyrender = { workspace = true, optional = true }
+anyrender_vello_cpu = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+image = { workspace = true, features = ["png"], optional = true }
+
+[dev-dependencies]
+anyrender = { workspace = true }
+anyrender_vello_cpu = { workspace = true }
+blitz-paint = { workspace = true }
+blitz-traits = { workspace = true }
+image = { workspace = true, features = ["png"] }
+keyboard-types = { workspace = true }
+url = { workspace = true }

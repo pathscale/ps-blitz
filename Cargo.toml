@@ -5,6 +5,8 @@ members = [
     "packages/blitz-traits",
     "packages/blitz-dom",
     "packages/blitz-html",
+    "packages/blitz-script",
+    "packages/blitz-debug-control",
     "packages/blitz-net",
     "packages/blitz-paint",
     "packages/blitz-shell",
@@ -43,6 +45,7 @@ rust-version = "1.89.0"
 blitz = { version = "=0.3.0-beta.1", path = "./packages/blitz" }
 blitz-dom = { version = "=0.3.0-beta.1", path = "./packages/blitz-dom", default-features = false }
 blitz-html = { version = "=0.3.0-beta.1", path = "./packages/blitz-html", default-features = false }
+blitz-script = { version = "=0.3.0-beta.1", path = "./packages/blitz-script", default-features = false }
 blitz-net = { version = "=0.3.0-beta.1", path = "./packages/blitz-net", default-features = false }
 blitz-paint = { version = "=0.3.0-beta.1", path = "./packages/blitz-paint", default-features = false }
 blitz-shell = { version = "=0.3.0-beta.1", path = "./packages/blitz-shell", default-features = false }
@@ -62,6 +65,13 @@ style_atoms = { version = "0.20.0", package = "stylo_atoms" }
 style_config = { version = "0.20.0", package = "stylo_static_prefs" }
 style_dom = { version = "0.20.0", package = "stylo_dom" }
 selectors = { version = "0.40.0", package = "selectors" }
+boa_engine = { git = "https://github.com/boa-dev/boa.git", rev = "8a1e8fe07f626f7a067afc2c9885d5d87de4bb5d" }
+boa_runtime = { git = "https://github.com/boa-dev/boa.git", rev = "8a1e8fe07f626f7a067afc2c9885d5d87de4bb5d" }
+boa_gc = { git = "https://github.com/boa-dev/boa.git", rev = "8a1e8fe07f626f7a067afc2c9885d5d87de4bb5d" }
+base64 = "0.22"
+blitz-debug-control = { package = "ps-blitz-debug-control", version = "=0.3.0-beta.1", path = "./packages/blitz-debug-control" }
+getrandom = "0.4"
+serde_json = "1"
 cssparser = { version = "0.37.0" }
 
 # HTML5ever dependencies
