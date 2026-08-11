@@ -13,7 +13,7 @@ use crate::color::{Color, ToColorColor};
 use crate::debug_overlay::render_debug_overlay;
 use crate::filters::convert_filters;
 use crate::kurbo_css::NonUniformRoundedRectRadii;
-use crate::layers::LayerManager;
+use crate::layers::{LayerManager, LayerSite};
 use crate::sizing::compute_object_fit;
 use crate::{CustomWidgetSceneMap, SELECTION_COLOR};
 use anyrender::{PaintScene, Scene};
@@ -222,6 +222,11 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                 );
             }
         }
+
+        // Every layer this scene wanted has now been asked for, so the counts
+        // are final. Published here rather than on drop so a painter kept alive
+        // past the scene does not delay the reading.
+        self.layer_manager.publish();
     }
 
     /// Renders a node, but is guaranteed that the node is an element
@@ -399,6 +404,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         // clip-path clip ayer
         self.layer_manager.maybe_with_layer(
             scene,
+            LayerSite::ClipPath,
             has_clip_path,
             1.0,
             cx.transform,
@@ -441,6 +447,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                 // Clipped to border-box as it needs to include the background and borders.
                 self.layer_manager.maybe_with_layer(
                     scene,
+                    LayerSite::Effect,
                     has_opacity || filter.is_some() || backdrop_filter.is_some(),
                     opacity,
                     cx.transform,
@@ -465,6 +472,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                         // Clip layer if box requires clipping. Opacity set to 1.0
                         self.layer_manager.maybe_with_layer(
                             scene,
+                            LayerSite::Overflow,
                             should_clip,
                             1.0, // opacity
                             cx.transform,

@@ -14,6 +14,7 @@
 //! The mask image layers themselves are positioned/sized/repeated using the same
 //! code as `background-image` layers (see `background.rs`), as the `mask-*` and
 //! `background-*` properties share computed value types.
+use crate::layers::LayerSite;
 use crate::render::background::get_cyclic;
 
 use super::ElementCx;
@@ -55,6 +56,7 @@ impl ElementCx<'_, '_> {
 
         // Content outside of the mask painting area (at largest the border box) has
         // a mask alpha of 0, so we can clip the isolation layer to the border box.
+        self.context.layer_manager.note_unmanaged(LayerSite::Mask);
         scene.push_layer(
             Mix::Normal,
             ALMOST_OPAQUE,
@@ -74,6 +76,7 @@ impl ElementCx<'_, '_> {
             return;
         }
 
+        self.context.layer_manager.note_unmanaged(LayerSite::Mask);
         scene.push_layer(
             BlendMode::new(Mix::Normal, Compose::DestIn),
             1.0,
@@ -126,6 +129,7 @@ impl ElementCx<'_, '_> {
             // The layer is pushed unconditionally (even for `mask-image: none` layers,
             // which draw nothing) as compositing a transparent black layer with e.g.
             // `intersect` clears the mask built up so far.
+            self.context.layer_manager.note_unmanaged(LayerSite::Mask);
             scene.push_layer(
                 BlendMode::new(Mix::Normal, compose),
                 1.0,

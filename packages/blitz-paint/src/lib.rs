@@ -10,6 +10,8 @@ mod gradient;
 mod kurbo_css;
 mod layers;
 mod render;
+
+pub use layers::{LayerSite, SceneLayerCounts, latest_scene_layers};
 mod sizing;
 mod text;
 
