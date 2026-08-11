@@ -247,6 +247,20 @@ impl TextInputData {
             // document, which typing does on every keystroke.
             self.apply_layout_width();
             self.editor.driver(font_ctx, layout_ctx).refresh_layout();
+            // Put the caret at the end, where the value setter is specified to
+            // leave it.
+            //
+            // `PlainEditor::set_text` rebuilds the buffer and leaves the
+            // selection collapsed at offset 0. HTML says assigning `value`
+            // must "move the text entry cursor position to the end of the text
+            // control", so without this any page that writes back to an input
+            // while someone is typing throws their caret to the front of the
+            // field. An address bar that rewrites `example.com` as
+            // `https://example.com` on submit is the case that found it.
+            //
+            // After `refresh_layout`, not before: the cursor is resolved
+            // against the layout that call rebuilds.
+            self.editor.driver(font_ctx, layout_ctx).move_to_text_end();
         }
     }
 
