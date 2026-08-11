@@ -777,6 +777,30 @@ impl BaseDocument {
                             y: inset.top.or(inset.bottom.map(|x| -x)).unwrap_or(0.0),
                         };
 
+                        // Temporary probe for the transcript spill: an inline
+                        // element left at an x from a wider line. Says what
+                        // width the line was actually broken at, which is the
+                        // one number the outside cannot see.
+                        static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                        // `var_os` per inline box per layout would be a real
+                        // cost on a hot path, and a diagnostic that slows the
+                        // thing it is measuring is worse than none.
+                        if *TRACE.get_or_init(|| std::env::var_os("BLITZ_TRACE_INLINE").is_some()) {
+                            let x = (ibox.x / scale) + margin.left + container_pb.left;
+                            if x + size.width > (width / scale) + 1.0 {
+                                eprintln!(
+                                    "inline-spill node={:?} box_x={x:.1} box_w={:.1} \
+                                     line_width={:.1} known={:?} avail={:?} run={:?}",
+                                    ibox.id,
+                                    size.width,
+                                    width / scale,
+                                    inputs.known_dimensions,
+                                    inputs.available_space,
+                                    inputs.run_mode,
+                                );
+                            }
+                        }
+
                         let layout = node.unrounded_layout_mut();
                         layout.size = size;
                         layout.location.x =
