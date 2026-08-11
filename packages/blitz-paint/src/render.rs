@@ -37,7 +37,7 @@ use style::{
     },
 };
 
-use kurbo::{self, Affine, Insets, Point, Rect, Shape, Size, Stroke, Vec2};
+use kurbo::{self, Affine, Insets, Point, Rect, Size, Stroke, Vec2};
 use peniko::{self, Fill, ImageData, ImageSampler};
 use style::values::generics::color::GenericColor;
 use taffy::Layout;
@@ -361,22 +361,37 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         // scrolled out of view is culled rather than drawn and clipped away. The box used
         // here matches the clip applied to the content below.
         let child_clip_rect = if should_clip {
+            // The rect, not the path. Only the bounding box was ever wanted
+            // here, and a rounded box's bounding box is exactly this rect, so
+            // building the bezier and throwing away everything but its extent
+            // allocated a path per clipping element per frame for nothing.
             let clip_box = if is_text_input {
-                cx.frame.content_box_path()
+                cx.frame.content_box
             } else {
-                cx.frame.padding_box_path()
+                cx.frame.padding_box
             };
-            clip_rect.intersect(screen_transform.transform_rect_bbox(clip_box.bounding_box()))
+            clip_rect.intersect(screen_transform.transform_rect_bbox(clip_box))
         } else {
             clip_rect
         };
 
-        // Compute clip-path (if any) and wrap all rendering in a clip layer
+        // Compute clip-path (if any) and wrap all rendering in a clip layer.
+        //
+        // The shape is only read when the layer is actually pushed, and the
+        // layer is only pushed when the element has a `clip-path`. Building the
+        // border box unconditionally as a fallback therefore allocated a
+        // `BezPath`, transformed it, and handed it to a function that returns
+        // before looking at it — once per element, every frame, for the
+        // overwhelming majority of elements, which have no `clip-path` at all.
+        //
+        // `BezPath::new` wraps `Vec::new`, so the unused branch does not
+        // allocate.
         let clip_path_shape = cx.clip_path_shape();
         let has_clip_path = clip_path_shape.is_some();
-        let default_clip = cx.frame.border_box_path();
-        let mut clip_path_for_layer = clip_path_shape.unwrap_or(default_clip);
-        clip_path_for_layer.apply_affine(Affine::scale(self.scale));
+        let mut clip_path_for_layer = clip_path_shape.unwrap_or_default();
+        if has_clip_path {
+            clip_path_for_layer.apply_affine(Affine::scale(self.scale));
+        }
 
         cx.draw_outline(scene);
         cx.draw_outset_box_shadow(scene);
@@ -414,7 +429,9 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                     .map(|f| f.expansion_rect())
                     .unwrap_or(Rect::ZERO);
 
-                let mut effect_layer_clip = cx.frame.border_box_path().bounding_box();
+                // Same again: the bounding box of the border-box path is the
+                // border box.
+                let mut effect_layer_clip = cx.frame.border_box;
                 effect_layer_clip.x0 += filter_expansion_area.x0;
                 effect_layer_clip.y0 += filter_expansion_area.y0;
                 effect_layer_clip.x1 += filter_expansion_area.x1;
