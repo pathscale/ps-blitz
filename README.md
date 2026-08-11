@@ -5,8 +5,10 @@
 > diagnostics, textarea and placeholder handling, macOS input, pointer capture,
 > unzoomed box metrics), and upstream pull requests that have not landed (#549
 > `position: fixed`). We pull from upstream and push here; nothing goes back.
-> Outstanding: shadow DOM and custom elements, the SVG sprite/`use` support, and the
-> rest of `ps-blitz-render`.
+> It also carries shadow DOM and custom elements, ported from upstream's unmerged
+> `devin/1782520416-shadow-dom-custom-elements` branch, behind `feature = "shadow-dom"`
+> and off by default. Outstanding: the SVG sprite/`use` support, and the rest of
+> `ps-blitz-render`.
 >
 > **`ps-blitz-render`** is the sibling fork: `pathscale/master` plus 59 commits, so 74
 > behind `main` on the pre-SlotMap node tree. Nothing cherry-picks from it cleanly —
