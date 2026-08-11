@@ -6,6 +6,7 @@
 //! node id. Native functions look the document up via the [`DomCtx`] stored as
 //! host-defined data on the Boa [`Context`].
 
+pub(crate) mod custom_elements;
 pub(crate) mod document;
 pub(crate) mod element;
 pub(crate) mod event;

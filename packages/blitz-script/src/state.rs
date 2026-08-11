@@ -69,6 +69,12 @@ pub(crate) struct RuntimeState {
     pub ipc_handler: Option<IpcHandler>,
     /// Pending timers (`setTimeout`/`setInterval`/`requestAnimationFrame`)
     pub timers: TimerQueue,
+    /// Constructors registered through `customElements.define`, by tag name.
+    ///
+    /// Separate from `blitz-dom`'s own custom element registry, which holds
+    /// Rust `Box<dyn CustomElement>` definitions an embedder supplies. This one
+    /// is what a page can reach.
+    pub custom_element_definitions: FxHashMap<String, JsObject>,
 }
 
 impl RuntimeState {

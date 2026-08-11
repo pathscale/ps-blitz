@@ -1390,3 +1390,135 @@ fn repeated_resolves_do_not_grow_the_document() {
         after as i64 - settled as i64
     );
 }
+
+#[test]
+fn custom_elements_define_upgrades_existing_elements() {
+    // Before this, `customElements` did not exist at all, so
+    // `customElements.define(...)` threw a ReferenceError out of whatever
+    // module ran it. A framework that registers its components at import time
+    // loses that entire module, and the page renders as unstyled markup.
+    let mut doc = ScriptDocument::from_html(
+        r#"<div id="host"><my-card id="a"></my-card><my-card id="b"></my-card></div>"#,
+        DocumentConfig::default(),
+    );
+    doc.execute_scripts();
+
+    let result = doc
+        .eval_json(
+            r#"
+            let connected = 0;
+            class MyCard extends HTMLElement {
+              connectedCallback() { connected += 1; this.setAttribute("upgraded", "yes"); }
+              label() { return "card:" + this.id; }
+            }
+            customElements.define("my-card", MyCard);
+
+            const a = document.getElementById("a");
+            ({
+              // The class's methods reach the element.
+              label: a.label(),
+              // connectedCallback ran once per existing element.
+              connected,
+              // and it could touch the DOM.
+              attr: a.getAttribute("upgraded"),
+              // the registry answers lookups both ways
+              got: customElements.get("my-card") === MyCard,
+              name: customElements.getName(MyCard),
+              missing: customElements.get("not-defined") === undefined,
+            })
+            "#,
+        )
+        .expect("customElements.define should evaluate");
+
+    assert_eq!(
+        result["label"].as_str(),
+        Some("card:a"),
+        "the class's methods must reach the element: {result}"
+    );
+    assert_eq!(
+        result["connected"].as_i64(),
+        Some(2),
+        "connectedCallback must run once per existing element: {result}"
+    );
+    assert_eq!(
+        result["attr"].as_str(),
+        Some("yes"),
+        "connectedCallback must be able to mutate the element: {result}"
+    );
+    assert_eq!(result["got"].as_bool(), Some(true), "get: {result}");
+    assert_eq!(result["name"].as_str(), Some("my-card"), "getName: {result}");
+    assert_eq!(result["missing"].as_bool(), Some(true), "get: {result}");
+}
+
+#[test]
+fn custom_elements_rejects_a_name_without_a_dash() {
+    // The dash is what keeps the custom element namespace disjoint from HTML's,
+    // so a name without one is a TypeError rather than a silent no-op.
+    let mut doc = ScriptDocument::from_html("<div></div>", DocumentConfig::default());
+    doc.execute_scripts();
+
+    let result = doc
+        .eval_json(
+            r#"
+            const attempt = (name) => {
+              try { customElements.define(name, class extends HTMLElement {}); return "ok"; }
+              catch (e) { return e.constructor.name; }
+            };
+            ({ bare: attempt("card"), dashed: attempt("my-card"),
+               twice: attempt("my-card") })
+            "#,
+        )
+        .expect("should evaluate");
+
+    assert_eq!(result["bare"].as_str(), Some("TypeError"), "{result}");
+    assert_eq!(result["dashed"].as_str(), Some("ok"), "{result}");
+    assert_eq!(
+        result["twice"].as_str(),
+        Some("TypeError"),
+        "defining the same name twice must throw: {result}"
+    );
+}
+
+#[test]
+fn a_custom_element_created_after_define_is_upgraded_on_insertion() {
+    // The other half of upgrading. Frameworks define their components at import
+    // time and create the elements later, so an upgrade pass that only visited
+    // what was already in the document would miss every element that matters.
+    let mut doc = ScriptDocument::from_html(r#"<div id="host"></div>"#, DocumentConfig::default());
+    doc.execute_scripts();
+
+    let result = doc
+        .eval_json(
+            r#"
+            const seen = [];
+            class MyChip extends HTMLElement {
+              connectedCallback() { seen.push(this.getAttribute("label")); }
+            }
+            customElements.define("my-chip", MyChip);
+
+            const host = document.getElementById("host");
+            const first = document.createElement("my-chip");
+            first.setAttribute("label", "one");
+            host.appendChild(first);
+
+            const second = document.createElement("my-chip");
+            second.setAttribute("label", "two");
+            host.append(second);
+
+            ({ seen, isInstance: first instanceof MyChip, count: host.children.length })
+            "#,
+        )
+        .expect("should evaluate");
+
+    assert_eq!(
+        result["seen"],
+        serde_json::json!(["one", "two"]),
+        "connectedCallback must run on insertion, for appendChild and append: {result}"
+    );
+    assert_eq!(
+        result["isInstance"].as_bool(),
+        Some(true),
+        "an upgraded element must be an instance of its class: {result}"
+    );
+    assert_eq!(result["count"].as_i64(), Some(2), "{result}");
+}
