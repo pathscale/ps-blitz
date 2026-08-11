@@ -101,12 +101,28 @@ fn widest_overhang(doc: &HtmlDocument) -> Option<(f32, f64, f64)> {
     let pane = doc.get_node(pane_id).unwrap().final_layout();
     let right_edge = pane.location.x + pane.size.width;
 
+    // Descendants of the pane only. `<body>` and the shell are legitimately
+    // wider than the transcript, and counting them reported an 1800px overhang
+    // that was just the viewport.
+    let descends_from_pane = |mut id: blitz_dom::NodeId| {
+        for _ in 0..64 {
+            if id == pane_id {
+                return true;
+            }
+            match doc.get_node(id).and_then(|node| node.parent) {
+                Some(parent) => id = parent,
+                None => return false,
+            }
+        }
+        false
+    };
+
     let mut worst: Option<(f32, f64, f64)> = None;
     for (id, _) in doc.tree().iter() {
         let Some(node) = doc.get_node(id) else {
             continue;
         };
-        if node.element_data().is_none() {
+        if node.element_data().is_none() || id == pane_id || !descends_from_pane(id) {
             continue;
         }
         let Some(rect) = doc.get_client_bounding_rect(id) else {
@@ -143,6 +159,51 @@ fn the_same_mount_without_incremental_layout() {
         widest_overhang(&doc),
         None,
         "a box hangs past the transcript with incremental layout off, so this is not invalidation"
+    );
+}
+
+/// Narrowing the pane after it has been laid out, which is what showing the
+/// project sidebar does.
+///
+/// This is the sequence the live diagnostics caught: the block's own box was
+/// correct at 713x85 and the inline elements on its lines were still at the x
+/// they had when the pane was wider, up to 1009px past the transcript's edge.
+#[test]
+fn inline_elements_follow_the_pane_when_it_narrows() {
+    let css = include_str!("../fixtures/app.css");
+    let markup = include_str!("../fixtures/transcript.html");
+    let html = format!(
+        r#"<html><head><style>{css}</style></head>
+           <body class="bg-base-100" style="margin:0">
+             <div id="shell" style="display:flex; flex-direction:column; width:1800px; height:{HEIGHT}px;">
+               {markup}
+             </div>
+           </body></html>"#
+    );
+    let mut doc = HtmlDocument::from_html(
+        &html,
+        DocumentConfig {
+            viewport: Some(Viewport::new(1800, HEIGHT, 1.0, ColorScheme::Dark)),
+            html_parser_provider: Some(Arc::new(HtmlProvider) as _),
+            ..Default::default()
+        },
+    );
+    doc.set_incremental_layout(true);
+    doc.resolve(0.0);
+    assert_eq!(widest_overhang(&doc), None, "wrong before the pane narrowed");
+
+    let shell = doc.query_selector("#shell").unwrap().expect("no shell");
+    doc.mutate().set_attribute(
+        shell,
+        blitz_dom::qual_name!("style"),
+        &format!("display:flex; flex-direction:column; width:910px; height:{HEIGHT}px;"),
+    );
+    doc.resolve(0.0);
+
+    assert_eq!(
+        widest_overhang(&doc),
+        None,
+        "a box is left behind at its old x after the pane narrowed"
     );
 }
 
