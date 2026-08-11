@@ -1,5 +1,6 @@
 use super::ElementCx;
 use crate::color::{Color, ToColorColor as _};
+use crate::layers::LayerSite;
 use anyrender::PaintScene;
 use kurbo::Vec2;
 use peniko::{Compose, Fill, Mix};
@@ -46,6 +47,7 @@ impl ElementCx<'_, '_> {
 
         self.context.layer_manager.maybe_with_layer(
             scene,
+            LayerSite::OutsetShadow,
             needs_clip,
             1.0,
             self.transform,
@@ -113,6 +115,14 @@ impl ElementCx<'_, '_> {
                 x: shadow.base.horizontal.px() as f64,
                 y: shadow.base.vertical.px() as f64,
             });
+
+            // Two layers per inset shadow, neither through the manager.
+            self.context
+                .layer_manager
+                .note_unmanaged(LayerSite::InsetShadow);
+            self.context
+                .layer_manager
+                .note_unmanaged(LayerSite::InsetShadow);
 
             scene.push_layer(Mix::Normal, 1.0, self.transform, &padding_box, None, None);
             scene.fill(

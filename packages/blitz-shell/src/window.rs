@@ -183,7 +183,9 @@ fn animation_frame_interval() -> Duration {
         // asking for every refresh is what it would already be doing.
         return Duration::from_secs_f64(1.0 / refresh_hz);
     }
-    let every_nth = (refresh_hz / f64::from(ANIMATION_TARGET_FPS)).round().max(1.0);
+    let every_nth = (refresh_hz / f64::from(ANIMATION_TARGET_FPS))
+        .round()
+        .max(1.0);
     Duration::from_secs_f64(every_nth / refresh_hz)
 }
 
@@ -981,6 +983,10 @@ struct FrameStats {
     resolve_total: Duration,
     paint_total: Duration,
     renderer_total: Duration,
+    /// Worst scene in the sample window, not the last one. A per-second line
+    /// that averaged layer counts would hide the one dense frame that decides
+    /// what the rasteriser has to composite.
+    layers: blitz_paint::SceneLayerCounts,
 }
 
 impl FrameStats {
@@ -1044,6 +1050,7 @@ impl FrameStats {
             resolve_total: Duration::ZERO,
             paint_total: Duration::ZERO,
             renderer_total: Duration::ZERO,
+            layers: blitz_paint::SceneLayerCounts::default(),
         }
     }
 
@@ -1083,6 +1090,16 @@ impl FrameStats {
             }
         }
 
+        // The scene for this frame has already been painted by the time a frame
+        // is recorded, so these counts describe it.
+        let layers = blitz_paint::latest_scene_layers();
+        self.layers.wanted = self.layers.wanted.max(layers.wanted);
+        self.layers.used = self.layers.used.max(layers.used);
+        self.layers.max_depth = self.layers.max_depth.max(layers.max_depth);
+        for (worst, seen) in self.layers.by_site.iter_mut().zip(layers.by_site) {
+            *worst = (*worst).max(seen);
+        }
+
         self.frames += 1;
         self.resolve_total += resolve;
         self.paint_total += paint;
@@ -1099,8 +1116,16 @@ impl FrameStats {
             f64::from(self.active_intervals) / self.interval_total.as_secs_f64()
         };
         let frames = f64::from(self.frames);
+        // Per-site counts include the sites that bypass the layer manager, so
+        // this sum is larger than `layers_used_max` rather than a split of it.
+        let by_site = blitz_paint::LayerSite::ALL
+            .iter()
+            .zip(self.layers.by_site)
+            .map(|(site, count)| format!("{}:{count}", site.name()))
+            .collect::<Vec<_>>()
+            .join(",");
         let message = format!(
-            "[blitz-frame] active_fps={active_fps:.1} frames={} active_intervals={} missed_refreshes={} max_interval_ms={:.2} resolve_avg_ms={:.2} paint_avg_ms={:.2} renderer_avg_ms={:.2}",
+            "[blitz-frame] active_fps={active_fps:.1} frames={} active_intervals={} missed_refreshes={} max_interval_ms={:.2} resolve_avg_ms={:.2} paint_avg_ms={:.2} renderer_avg_ms={:.2} layers_wanted_max={} layers_used_max={} layer_depth_max={} layers_by_site={by_site}",
             self.frames,
             self.active_intervals,
             self.missed_refreshes,
@@ -1108,6 +1133,9 @@ impl FrameStats {
             self.resolve_total.as_secs_f64() * 1000.0 / frames,
             self.paint_total.as_secs_f64() * 1000.0 / frames,
             self.renderer_total.as_secs_f64() * 1000.0 / frames,
+            self.layers.wanted,
+            self.layers.used,
+            self.layers.max_depth,
         );
         Self::emit(self.output_path.as_ref(), &message);
 
@@ -1120,5 +1148,6 @@ impl FrameStats {
         self.resolve_total = Duration::ZERO;
         self.paint_total = Duration::ZERO;
         self.renderer_total = Duration::ZERO;
+        self.layers = blitz_paint::SceneLayerCounts::default();
     }
 }
