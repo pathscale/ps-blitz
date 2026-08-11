@@ -2442,12 +2442,58 @@ impl BaseDocument {
 
     /// Scroll the viewport so that the given node is aligned with the top of the viewport.
     pub fn scroll_to_node(&mut self, node_id: NodeId) {
-        let Some(node) = self.nodes.get(node_id) else {
-            return;
-        };
+        // Every scroll container between the node and the root, innermost
+        // first. Scrolling only the viewport is not `scrollIntoView`: it does
+        // nothing at all for a node inside a nested scroller, which is what an
+        // application's own scrolling panes are.
+        //
+        // This was not academic. A transcript pane held its "Show 12 earlier
+        // messages" button at y=-9463 and neither wheel events, Page Up nor
+        // this call moved it by a single pixel, so a layout bug that only
+        // appears further up the thread could not be reached from outside the
+        // app at all. Every measurement of it had to come from a human
+        // scrolling by hand and saying "now".
+        let mut chain = Vec::new();
+        let mut current = self.nodes.get(node_id).and_then(|node| node.parent);
+        while let Some(id) = current {
+            let Some(node) = self.nodes.get(id) else {
+                break;
+            };
+            let scrolls = node.style().overflow.x.is_scroll_container()
+                || node.style().overflow.y.is_scroll_container();
+            if scrolls {
+                chain.push(id);
+            }
+            current = node.parent;
+        }
+
+        // Innermost first: scrolling an outer container moves the inner one, so
+        // the inner offsets have to be settled before the outer ones are
+        // measured, and each step re-reads the node's position.
+        for container in chain {
+            let Some(node) = self.nodes.get(node_id) else {
+                return;
+            };
+            let target = node.absolute_position(0.0, 0.0);
+            let Some(scroller) = self.nodes.get(container) else {
+                continue;
+            };
+            let box_ = scroller.absolute_position(0.0, 0.0);
+            let layout = scroller.final_layout();
+            // Land the node at the top-left of the scrollport. `scroll_node_by`
+            // takes a delta and subtracts it, so the sign here matches
+            // `scroll_viewport_by` below.
+            let dx = f64::from(box_.x - target.x);
+            let dy = f64::from(box_.y - target.y);
+            let _ = layout;
+            self.scroll_node_by(container, dx, dy, |_| {});
+        }
 
         // `absolute_position` gives the node's position in document space (it does not
         // account for the viewport scroll), so it is the scroll offset we want to land on.
+        let Some(node) = self.nodes.get(node_id) else {
+            return;
+        };
         let target = node.absolute_position(0.0, 0.0);
         let current = self.viewport_scroll;
 
