@@ -6,10 +6,12 @@ mod pointer;
 
 use crate::util::Point;
 use blitz_traits::events::{DomEvent, DomEventData, PointerCoords, UiEvent};
+use blitz_traits::node_id::NodeId;
 pub use driver::{EventDriver, EventHandler, NoopEventHandler};
 use focus::generate_focus_events;
 pub(crate) use ime::handle_ime_event;
 use keyboard::{KeyboardOrTextInputEvent, handle_key_or_input_event};
+use keyboard_types::Key;
 pub(crate) use pointer::{DragMode, ScrollAnimationState};
 use pointer::{handle_click, handle_pointerdown, handle_pointermove, handle_pointerup};
 
@@ -209,6 +211,22 @@ pub(crate) fn handle_dom_event<F: FnMut(DomEvent)>(
             handle_click(doc, target_node_id, event, &mut dispatch_event);
         }
         DomEventData::KeyDown(event) => {
+            // Keyboard scrolling, before the text-input handling below claims
+            // the key. Page Up, Page Down, Home, End and the arrows scroll the
+            // nearest scroll container at or above the target, which is what
+            // every browser does and what a keyboard-only reader needs: without
+            // it a long settings page or a transcript can only be moved with a
+            // pointer.
+            //
+            // Skipped whenever the target can take the key as text, so typing
+            // in a composer still moves the caret rather than the page.
+            if !scroll_key_is_claimed_by(doc, target_node_id, &event.key) {
+                if let Some((dx, dy)) = scroll_delta_for_key(doc, target_node_id, &event.key) {
+                    doc.scroll_nearest_container_by(target_node_id, dx, dy);
+                    return;
+                }
+            }
+
             handle_key_or_input_event(
                 doc,
                 target_node_id,
@@ -305,5 +323,42 @@ pub(crate) fn handle_dom_event<F: FnMut(DomEvent)>(
         if let Some(focus_id) = doc.focus_node_id {
             doc.clamp_text_input_scroll(focus_id);
         }
+    }
+}
+
+/// Whether the key should go to the target as text rather than scroll the page.
+///
+/// A text input owns the arrows, Home and End for caret movement, and a
+/// `contenteditable` does the same. Page Up and Page Down are not claimed:
+/// browsers scroll on those even inside a field.
+fn scroll_key_is_claimed_by(doc: &BaseDocument, node_id: NodeId, key: &Key) -> bool {
+    // Page Up and Page Down are never claimed: browsers scroll on those even
+    // with the caret in a field, which is what makes a long page usable while
+    // typing into a filter box at the top of it.
+    if matches!(key, Key::PageUp | Key::PageDown) {
+        return false;
+    }
+    doc.get_node(node_id)
+        .and_then(|node| node.element_data())
+        .is_some_and(|element| element.text_input_data().is_some())
+}
+
+/// The scroll a key asks for, in CSS pixels, or `None` if it asks for none.
+///
+/// A page is most of the scrollport rather than all of it: browsers overlap by
+/// a couple of lines so the reader keeps their place.
+fn scroll_delta_for_key(doc: &BaseDocument, node_id: NodeId, key: &Key) -> Option<(f64, f64)> {
+    const LINE: f64 = 40.0;
+    let viewport_height = f64::from(doc.viewport().window_size.1) / doc.viewport().scale_f64();
+    let page = (viewport_height - 2.0 * LINE).max(LINE);
+    let _ = node_id;
+    match key {
+        Key::PageDown => Some((0.0, -page)),
+        Key::PageUp => Some((0.0, page)),
+        Key::ArrowDown => Some((0.0, -LINE)),
+        Key::ArrowUp => Some((0.0, LINE)),
+        Key::Home => Some((0.0, 1.0e7)),
+        Key::End => Some((0.0, -1.0e7)),
+        _ => None,
     }
 }

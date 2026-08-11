@@ -2441,6 +2441,33 @@ impl BaseDocument {
     }
 
     /// Scroll the viewport so that the given node is aligned with the top of the viewport.
+    /// Scroll the nearest scroll container at or above `node_id`.
+    ///
+    /// "Scroll this panel" is the operation callers actually want, and
+    /// `scroll_node_by` only moves the node itself, so naming any inner element
+    /// silently did nothing. Wheel events are no help either: they are
+    /// delivered to whatever the document last saw hovered, which an injected
+    /// pointer move does not set, so an automated caller had no way to scroll
+    /// anything at all.
+    pub fn scroll_nearest_container_by(&mut self, node_id: NodeId, x: f64, y: f64) -> bool {
+        let mut current = Some(node_id);
+        for _ in 0..64 {
+            let Some(id) = current else { break };
+            let Some(node) = self.nodes.get(id) else {
+                break;
+            };
+            let scrolls = node.style().overflow.x.is_scroll_container()
+                || node.style().overflow.y.is_scroll_container();
+            if scrolls {
+                self.scroll_node_by(id, x, y, |_| {});
+                return true;
+            }
+            current = node.parent;
+        }
+        self.scroll_viewport_by(x, y);
+        false
+    }
+
     pub fn scroll_to_node(&mut self, node_id: NodeId) {
         // Every scroll container between the node and the root, innermost
         // first. Scrolling only the viewport is not `scrollIntoView`: it does

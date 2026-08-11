@@ -752,7 +752,13 @@ impl BaseDocument {
         }
 
         if inputs.run_mode == taffy::RunMode::PerformLayout {
-            inline_layout.laid_out_at = Some(width);
+            // Only a real width. A layout pass can legitimately run at zero
+            // (a flex item being measured at its automatic minimum), and
+            // recording that would have every later measuring pass re-break
+            // the text to nothing, collapsing whole panels to 0x0.
+            if width > 0.0 {
+                inline_layout.laid_out_at = Some(width);
+            }
             for line in inline_layout.layout.lines() {
                 for item in line.items() {
                     if let parley::layout::PositionedLayoutItem::InlineBox(ibox) = item {
@@ -900,7 +906,7 @@ impl BaseDocument {
         // next to shaping.
         if inputs.run_mode != taffy::RunMode::PerformLayout {
             if let Some(previous) = inline_layout.laid_out_at {
-                if (previous - width).abs() > 0.5 {
+                if previous > 0.0 && (previous - width).abs() > 0.5 {
                     inline_layout.layout.break_all_lines(Some(previous));
                     inline_layout.layout.align(
                         alignment,

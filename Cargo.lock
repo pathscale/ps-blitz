@@ -1186,6 +1186,7 @@ dependencies = [
  "ps-anyrender",
  "ps-anyrender-vello-cpu",
  "ps-blitz-dom",
+ "ps-blitz-script",
  "ps-blitz-traits",
  "rfd",
  "tokio",
