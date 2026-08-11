@@ -1,7 +1,8 @@
-> **This checkout is `mega-blitz`, an assembly rather than a fork.** It collects
-> `DioxusLabs/blitz` `main`, the unmerged JavaScript engine from PR #491, the
-> `pathscale/ps-blitz` fork, and queued upstream PRs into one tree.
-> See [README-MEGA.md](README-MEGA.md) for what comes from where.
+> **This fork is a collection.** On top of `DioxusLabs/blitz` `main` it carries: the
+> JavaScript engine from upstream's unmerged draft PR #491 (`blitz-script`), Pathscale's
+> own work on top of it (the DOM APIs real pages call, inline SVG fixes, macOS input,
+> frame diagnostics), and upstream pull requests that have not landed yet (#549
+> `position: fixed`, shadow DOM). We pull from upstream and push here; nothing goes back.
 
 <p>
 <picture >
