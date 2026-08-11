@@ -2090,12 +2090,68 @@ impl BaseDocument {
         #[cfg(not(feature = "custom-widget"))]
         let custom_widget_is_animating = false;
 
-        self.has_canvas
+        let animating = self.has_canvas
             | self.has_active_animations
             | self.subdoc_is_animating
             | custom_widget_is_animating
             | (self.scroll_animation != ScrollAnimationState::None)
-            | self.scrollbars_animating()
+            | self.scrollbars_animating();
+
+        if animating && crate::debug::animation_reasons_enabled() {
+            crate::debug::report_animation_reasons(
+                self.id(),
+                self.has_canvas,
+                self.has_active_animations,
+                self.subdoc_is_animating,
+                custom_widget_is_animating,
+                self.scroll_animation != ScrollAnimationState::None,
+                self.scrollbars_animating(),
+                self.animating_node_names().as_deref(),
+            );
+        }
+
+        animating
+    }
+
+    /// Which elements Stylo currently holds animations or transitions for.
+    ///
+    /// Only built when the diagnostic is switched on: a frame loop that will
+    /// not settle is otherwise very hard to attribute, because
+    /// `has_active_animations` is one bool for the whole document and says
+    /// nothing about which element is keeping it true.
+    fn animating_node_names(&self) -> Option<String> {
+        if !self.has_active_animations {
+            return None;
+        }
+        let sets = self.animations.sets.read();
+        let mut described: Vec<String> = sets
+            .iter()
+            .filter(|(_, state)| state.needs_animation_ticks())
+            .filter_map(|(key, state)| {
+                let node_id = NodeId::from_u64(key.node.id() as u64);
+                let node = self.nodes.get(node_id)?;
+                let element = node.element_data()?;
+                let name = element
+                    .attr(local_name!("id"))
+                    .map(|id| format!("#{id}"))
+                    .or_else(|| {
+                        element
+                            .attr(local_name!("class"))
+                            .and_then(|c| c.split_ascii_whitespace().next())
+                            .map(|c| format!(".{c}"))
+                    })
+                    .unwrap_or_else(|| element.name.local.to_string());
+                Some(format!(
+                    "{name}(anim={},trans={},in_doc={})",
+                    state.animations.len(),
+                    state.transitions.len(),
+                    node.flags.is_in_document(),
+                ))
+            })
+            .collect();
+        described.sort();
+        described.truncate(12);
+        Some(described.join(" "))
     }
 
     /// Update the device and reset the stylist to process the new size
