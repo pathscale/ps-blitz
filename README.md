@@ -6,18 +6,12 @@
 > unzoomed box metrics), and upstream pull requests that have not landed (#549
 > `position: fixed`). We pull from upstream and push here; nothing goes back.
 > Outstanding: shadow DOM and custom elements, the SVG sprite/`use` support, and the
-> rest of `ps-blitz-render` (below), all of which need porting rather than merging.
+> rest of `ps-blitz-render`.
 >
-> **`ps-blitz-render` is the sibling fork, and the other half of this collection.** It
-> shares merge-base `60d840176` with `pathscale/master` and is that branch plus 59
-> commits, which puts it 74 behind `DioxusLabs/blitz` `main` on the pre-SlotMap node
-> tree. So it is not a source you can cherry-pick from: every commit taken from it needs
-> the `usize`→`NodeId` port first. Seven are in so far. What is left is the textarea
-> cluster, the paint-side perf work, `bce783420` "Fix five defects that stop a modern
-> page rendering", and the layout-invalidation fixes. One commit there,
-> `daccd9093`, should stay out: it prints a counter that exists only in the unpublished
-> `ps-taffy`, and taking it means a `path = "../ps-taffy"` dependency that its own author
-> labelled "do not commit".
+> **`ps-blitz-render`** is the sibling fork: `pathscale/master` plus 59 commits, so 74
+> behind `main` on the pre-SlotMap node tree. Nothing cherry-picks from it cleanly —
+> every commit needs the `usize`→`NodeId` port. Seven are in; the textarea cluster and
+> the paint perf work are not.
 
 <p>
 <picture >
