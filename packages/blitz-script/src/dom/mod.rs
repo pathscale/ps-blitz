@@ -78,6 +78,10 @@ pub(crate) fn node_wrapper(ctx: &DomCtx, node_id: NodeId, _context: &mut Context
             Some(NodeData::Text(_)) | Some(NodeData::Comment { .. }) => {
                 protos.character_data.clone()
             }
+            // A shadow root is not exposed through any of the specific
+            // prototypes: script reaches it only via `element.shadowRoot`,
+            // which is not implemented, so the plain Node prototype is right.
+            Some(NodeData::ShadowRoot(_)) => protos.node.clone(),
             None => protos.node.clone(),
         }
     };

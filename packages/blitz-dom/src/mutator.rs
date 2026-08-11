@@ -42,6 +42,10 @@ enum SpecialOp {
     UnloadSubDocument(NodeId),
     #[cfg(feature = "custom-widget")]
     UnloadCustomWidget(NodeId),
+    #[cfg(feature = "shadow-dom")]
+    UpgradeCustomElement(NodeId),
+    #[cfg(feature = "shadow-dom")]
+    DisconnectCustomElement(NodeId),
 }
 
 pub struct DocumentMutator<'doc> {
@@ -61,6 +65,11 @@ pub struct DocumentMutator<'doc> {
 
     /// Whether any mutation that affects rendered output has been performed
     mutations_occurred: bool,
+
+    /// Deferred custom-element attribute-change notifications: (host_id, attr
+    /// name, old value, new value). Drained and dispatched on flush.
+    #[cfg(feature = "shadow-dom")]
+    custom_element_attr_changes: Vec<(NodeId, QualName, Option<String>, Option<String>)>,
 
     /// The (latest) node which has been mounted in and had autofocus=true, if any
     #[cfg(feature = "autofocus")]
@@ -86,6 +95,8 @@ impl DocumentMutator<'_> {
             form_nodes: HashSet::new(),
             recompute_is_animating: false,
             mutations_occurred: false,
+            #[cfg(feature = "shadow-dom")]
+            custom_element_attr_changes: Vec::new(),
             #[cfg(feature = "autofocus")]
             node_to_autofocus: None,
         }
@@ -310,6 +321,23 @@ impl DocumentMutator<'_> {
                 .attribute_changed(&name.local, old_value, Some(value));
         }
 
+        // If element is a CustomElement, defer an attribute_changed notification
+        // (it needs mutable document access, so it can't run inline here).
+        #[cfg(feature = "shadow-dom")]
+        if element.custom_element_data().is_some() {
+            let old_value = element
+                .attrs
+                .get(&name)
+                .as_ref()
+                .map(|attr| attr.value.to_string());
+            self.custom_element_attr_changes.push((
+                node_id,
+                name.clone(),
+                old_value,
+                Some(value.to_string()),
+            ));
+        }
+
         element.attrs.set(name.clone(), value);
 
         // Focusability is cached on the element and comes from these
@@ -422,6 +450,14 @@ impl DocumentMutator<'_> {
                 .attribute_changed(&name.local, old_value, None);
         }
 
+        // If element is a CustomElement, defer an attribute_changed notification.
+        #[cfg(feature = "shadow-dom")]
+        if element.custom_element_data().is_some() {
+            let old_value = removed_attr.as_ref().map(|attr| attr.value.to_string());
+            self.custom_element_attr_changes
+                .push((node_id, name.clone(), old_value, None));
+        }
+
         if name.local == local_name!("id") {
             element.id = None;
         }
@@ -503,6 +539,176 @@ impl DocumentMutator<'_> {
         let node_is_in_document = self.doc.nodes[node_id].flags.is_in_document();
         self.doc.remove_custom_widget(node_id);
         self.mutations_occurred |= node_is_in_document;
+    }
+
+    /// Attach a shadow root to the given host element, returning the shadow
+    /// root's node id.
+    #[cfg(feature = "shadow-dom")]
+    pub fn attach_shadow(&mut self, host_id: NodeId, mode: crate::node::ShadowRootMode) -> NodeId {
+        self.doc.attach_shadow(host_id, mode)
+    }
+
+    /// Attach a custom element controller to the given node and run its
+    /// `connected` lifecycle callback (attaching a shadow root if needed).
+    #[cfg(feature = "shadow-dom")]
+    pub fn set_custom_element(
+        &mut self,
+        node_id: NodeId,
+        controller: Box<dyn crate::node::CustomElement>,
+    ) {
+        self.doc.set_custom_element(node_id, controller);
+        self.upgrade_custom_element(node_id);
+    }
+
+    /// Remove the custom element controller from the given node, running its
+    /// `disconnected` callback first.
+    #[cfg(feature = "shadow-dom")]
+    pub fn remove_custom_element(&mut self, node_id: NodeId) {
+        self.disconnect_custom_element(node_id);
+        let _ = self.doc.take_custom_element(node_id);
+    }
+
+    /// Upgrade an element into a custom element: instantiate a controller from
+    /// the registry (if the node does not already have one), attach a shadow
+    /// root, and run the `connected` lifecycle callback. No-op if the element is
+    /// already upgraded or has no matching definition / controller.
+    #[cfg(feature = "shadow-dom")]
+    pub(crate) fn upgrade_custom_element(&mut self, node_id: NodeId) {
+        use crate::node::{CustomElementData, ShadowRootMode, SpecialElementData};
+
+        let Some(node) = self.doc.get_node(node_id) else {
+            return;
+        };
+        let Some(element) = node.element_data() else {
+            return;
+        };
+
+        // Determine whether a controller is already attached, and if not, look
+        // up a matching registry definition to instantiate one.
+        let already_has_controller =
+            matches!(element.special_data, SpecialElementData::CustomElement(_));
+
+        let mode = if already_has_controller {
+            // Already attached (e.g. via set_custom_element). Default mode.
+            ShadowRootMode::Open
+        } else {
+            let tag = element.name.local.clone();
+            let Some(definition) = self.doc.custom_element_registry.get(&tag) else {
+                return;
+            };
+            let mode = definition.mode;
+            let controller = (definition.factory)();
+            self.doc.nodes[node_id]
+                .element_data_mut()
+                .unwrap()
+                .special_data =
+                SpecialElementData::CustomElement(CustomElementData::new(controller));
+            self.doc.custom_element_nodes.insert(node_id);
+            mode
+        };
+
+        // Bail out if already upgraded.
+        let is_upgraded = self.doc.nodes[node_id]
+            .element_data()
+            .and_then(|el| el.custom_element_data())
+            .map(|data| data.upgraded)
+            .unwrap_or(true);
+        if is_upgraded {
+            return;
+        }
+
+        // Ensure a shadow root is attached.
+        let shadow_root_id = self.doc.attach_shadow(node_id, mode);
+
+        // Take the controller out so we can pass `&mut self` (the mutator) to it.
+        let Some(mut controller) = self.take_controller(node_id) else {
+            return;
+        };
+
+        {
+            let mut ctx = crate::node::CustomElementCtx {
+                mutator: self,
+                host_id: node_id,
+                shadow_root_id,
+            };
+            controller.connected(&mut ctx);
+        }
+
+        self.restore_controller(node_id, controller, true);
+    }
+
+    /// Run the `disconnected` callback for a custom element node.
+    #[cfg(feature = "shadow-dom")]
+    pub(crate) fn disconnect_custom_element(&mut self, node_id: NodeId) {
+        let Some(shadow_root_id) = self
+            .doc
+            .get_node(node_id)
+            .and_then(|node| node.shadow_root_id())
+        else {
+            // No shadow root: still run disconnected if a controller exists.
+            if let Some(mut controller) = self.take_controller(node_id) {
+                // Use the host id as a stand-in shadow root id; controllers
+                // should guard against missing shadow trees.
+                {
+                    let mut ctx = crate::node::CustomElementCtx {
+                        mutator: self,
+                        host_id: node_id,
+                        shadow_root_id: node_id,
+                    };
+                    controller.disconnected(&mut ctx);
+                }
+                self.restore_controller(node_id, controller, false);
+            }
+            return;
+        };
+
+        if let Some(mut controller) = self.take_controller(node_id) {
+            {
+                let mut ctx = crate::node::CustomElementCtx {
+                    mutator: self,
+                    host_id: node_id,
+                    shadow_root_id,
+                };
+                controller.disconnected(&mut ctx);
+            }
+            self.restore_controller(node_id, controller, false);
+        }
+    }
+
+    /// Take the custom element controller out of a node, leaving the
+    /// `CustomElementData` in place (with `controller == None`).
+    #[cfg(feature = "shadow-dom")]
+    fn take_controller(&mut self, node_id: NodeId) -> Option<Box<dyn crate::node::CustomElement>> {
+        self.doc
+            .nodes
+            .get_mut(node_id)?
+            .element_data_mut()?
+            .custom_element_data_mut()?
+            .controller
+            .take()
+    }
+
+    /// Put a controller back into a node's `CustomElementData`, optionally
+    /// marking it as upgraded.
+    #[cfg(feature = "shadow-dom")]
+    fn restore_controller(
+        &mut self,
+        node_id: NodeId,
+        controller: Box<dyn crate::node::CustomElement>,
+        upgraded: bool,
+    ) {
+        if let Some(data) = self
+            .doc
+            .nodes
+            .get_mut(node_id)
+            .and_then(|node| node.element_data_mut())
+            .and_then(|el| el.custom_element_data_mut())
+        {
+            data.controller = Some(controller);
+            if upgraded {
+                data.upgraded = true;
+            }
+        }
     }
 
     /// Remove the node from it's parent but don't drop it
@@ -752,6 +958,61 @@ impl<'doc> DocumentMutator<'doc> {
                 self.doc.set_focus_to(node_id);
             }
         }
+
+        #[cfg(feature = "shadow-dom")]
+        self.dispatch_custom_element_attr_changes();
+    }
+
+    /// Dispatch all deferred custom-element `attribute_changed` callbacks.
+    #[cfg(feature = "shadow-dom")]
+    fn dispatch_custom_element_attr_changes(&mut self) {
+        if self.custom_element_attr_changes.is_empty() {
+            return;
+        }
+        let changes = mem::take(&mut self.custom_element_attr_changes);
+        for (node_id, name, old_value, new_value) in changes {
+            // Skip if the registered definition observes a restricted set that
+            // excludes this attribute. Manually-attached controllers (no
+            // definition) observe all attributes.
+            let tag = self
+                .doc
+                .get_node(node_id)
+                .and_then(|node| node.element_data())
+                .map(|el| el.name.local.clone());
+            let observed = tag
+                .as_ref()
+                .and_then(|tag| self.doc.custom_element_registry.get(tag))
+                .map(|def| def.observes(&name.local))
+                .unwrap_or(true);
+            if !observed {
+                continue;
+            }
+
+            let Some(shadow_root_id) = self
+                .doc
+                .get_node(node_id)
+                .and_then(|node| node.shadow_root_id())
+            else {
+                continue;
+            };
+            let Some(mut controller) = self.take_controller(node_id) else {
+                continue;
+            };
+            {
+                let mut ctx = crate::node::CustomElementCtx {
+                    mutator: self,
+                    host_id: node_id,
+                    shadow_root_id,
+                };
+                controller.attribute_changed(
+                    &mut ctx,
+                    &name.local,
+                    old_value.as_deref(),
+                    new_value.as_deref(),
+                );
+            }
+            self.restore_controller(node_id, controller, false);
+        }
     }
 
     pub fn set_inner_html(&mut self, node_id: NodeId, html: &str) {
@@ -775,6 +1036,12 @@ impl<'doc> DocumentMutator<'doc> {
                 SpecialOp::UnloadSubDocument(node_id) => self.remove_sub_document(node_id),
                 #[cfg(feature = "custom-widget")]
                 SpecialOp::UnloadCustomWidget(node_id) => self.remove_custom_widget(node_id),
+                #[cfg(feature = "shadow-dom")]
+                SpecialOp::UpgradeCustomElement(node_id) => self.upgrade_custom_element(node_id),
+                #[cfg(feature = "shadow-dom")]
+                SpecialOp::DisconnectCustomElement(node_id) => {
+                    self.disconnect_custom_element(node_id)
+                }
             }
         }
 
@@ -817,6 +1084,19 @@ impl<'doc> DocumentMutator<'doc> {
                     self.form_nodes.insert(node_id);
                 }
                 _ => {}
+            }
+
+            // If the element's tag name matches a registered custom element
+            // definition (and it hasn't already been upgraded), queue it for
+            // upgrade.
+            #[cfg(feature = "shadow-dom")]
+            {
+                let needs_upgrade = doc.custom_element_registry.contains(&element.name.local)
+                    && element.custom_element_data().is_none();
+                if needs_upgrade {
+                    self.eager_op_queue
+                        .push(SpecialOp::UpgradeCustomElement(node_id));
+                }
             }
 
             #[cfg(feature = "autofocus")]
@@ -905,6 +1185,11 @@ impl<'doc> DocumentMutator<'doc> {
                 SpecialElementData::CustomWidget(_) => {
                     self.eager_op_queue
                         .push(SpecialOp::UnloadCustomWidget(node_id));
+                }
+                #[cfg(feature = "shadow-dom")]
+                SpecialElementData::CustomElement(_) => {
+                    self.eager_op_queue
+                        .push(SpecialOp::DisconnectCustomElement(node_id));
                 }
                 SpecialElementData::Stylesheet(_) => self
                     .eager_op_queue
