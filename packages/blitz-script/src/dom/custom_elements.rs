@@ -39,7 +39,9 @@ pub(crate) fn define(_: &JsValue, args: &[JsValue], context: &mut Context) -> Js
     };
     if !is_valid_name(&name) {
         return Err(JsNativeError::typ()
-            .with_message(format!("customElements.define: '{name}' is not a valid name"))
+            .with_message(format!(
+                "customElements.define: '{name}' is not a valid name"
+            ))
             .into());
     }
 
@@ -51,7 +53,9 @@ pub(crate) fn define(_: &JsValue, args: &[JsValue], context: &mut Context) -> Js
         .contains_key(&name);
     if already_defined {
         return Err(JsNativeError::typ()
-            .with_message(format!("customElements.define: '{name}' is already defined"))
+            .with_message(format!(
+                "customElements.define: '{name}' is already defined"
+            ))
             .into());
     }
     ctx.state

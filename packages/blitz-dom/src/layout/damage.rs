@@ -682,7 +682,6 @@ impl BaseDocument {
 
             // Put children back
             *self.nodes[node_id].layout_children.borrow_mut() = Some(children);
-
         }
 
         // Outside the block above, so the borrow on paint_children has ended:
