@@ -2,10 +2,11 @@
 
 use blitz_dom::NodeId;
 use blitz_dom::local_name;
-use boa_engine::object::JsObject;
 use boa_engine::object::builtins::JsArray;
+use boa_engine::object::{JsObject, ObjectInitializer};
+use boa_engine::property::Attribute;
 use boa_engine::value::JsValue;
-use boa_engine::{Context, JsResult};
+use boa_engine::{Context, JsResult, JsString, NativeFunction, js_string};
 
 use super::{
     define_accessor, define_method, dom_ctx, node_or_null, node_wrapper, qual_name, qual_name_ns,
@@ -29,6 +30,7 @@ pub(crate) fn init_document_proto(proto: &JsObject, context: &mut Context) {
     define_method(proto, "createElement", 1, create_element, context);
     define_method(proto, "createElementNS", 2, create_element_ns, context);
     define_method(proto, "createTextNode", 1, create_text_node, context);
+    define_method(proto, "getSelection", 0, get_selection, context);
     define_method(proto, "createComment", 1, create_comment, context);
     define_method(proto, "getElementById", 1, get_element_by_id, context);
     define_method(proto, "querySelector", 1, query_selector, context);
@@ -121,6 +123,74 @@ fn create_element_ns(this: &JsValue, args: &[JsValue], context: &mut Context) ->
             .create_element(qual_name_ns(&tag, &ns), Vec::new())
     };
     Ok(node_wrapper(&ctx, node_id, context).into())
+}
+
+/// `document.getSelection()`.
+///
+/// Enough of `Selection` for the idioms that reach for it: reading the
+/// highlighted string, and the save/restore-the-range dance around a temporary
+/// off-screen textarea. Without it the property is `undefined` and the *call*
+/// throws, so `document.getSelection()?.toString()` blows up rather than
+/// yielding `undefined` — which is how a missing method takes an entire keydown
+/// or copy handler down with it.
+///
+/// Ranges are not modelled, so `rangeCount` is 0 whenever the selection is
+/// empty and `getRangeAt` returns null. Callers guard on `rangeCount` (all of
+/// them, in practice) and then skip the restore rather than mis-restoring.
+fn get_selection(_: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let text = ctx.doc.borrow().get_selected_text().unwrap_or_default();
+    let range_count = i32::from(!text.is_empty());
+    let selection = ObjectInitializer::new(context)
+        .function(
+            NativeFunction::from_fn_ptr(selection_to_string),
+            js_string!("toString"),
+            0,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(selection_get_range_at),
+            js_string!("getRangeAt"),
+            1,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(selection_remove_all_ranges),
+            js_string!("removeAllRanges"),
+            0,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(selection_add_range),
+            js_string!("addRange"),
+            1,
+        )
+        .property(js_string!("rangeCount"), range_count, Attribute::all())
+        .property(js_string!("isCollapsed"), text.is_empty(), Attribute::all())
+        .build();
+    Ok(selection.into())
+}
+
+fn selection_to_string(_: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let text = ctx.doc.borrow().get_selected_text().unwrap_or_default();
+    Ok(JsValue::from(JsString::from(text)))
+}
+
+fn selection_get_range_at(_: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+    Ok(JsValue::null())
+}
+
+fn selection_remove_all_ranges(
+    _: &JsValue,
+    _: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    dom_ctx(context)?.doc.borrow_mut().clear_text_selection();
+    Ok(JsValue::undefined())
+}
+
+/// Ranges are not modelled, so there is nothing to put back. Present and inert
+/// rather than absent, because absent is what throws.
+fn selection_add_range(_: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+    Ok(JsValue::undefined())
 }
 
 fn create_text_node(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {

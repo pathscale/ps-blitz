@@ -1248,3 +1248,50 @@ fn navigator_clipboard_write_text_reaches_the_shell() {
     assert_eq!(*clipboard.written.lock().unwrap(), vec!["session-4f21"]);
     assert_eq!(text_of_selector(&doc, "#out"), "copied");
 }
+#[test]
+fn document_get_selection_is_callable_when_nothing_is_selected() {
+    // The failure this guards is not a wrong value, it is a thrown TypeError:
+    // `document.getSelection` was undefined, so calling it aborted whichever
+    // copy or keydown handler reached for it, and the visible symptom was a
+    // button that did nothing at all.
+    let mut doc = ScriptDocument::from_html(
+        r#"<p id="body">some text</p>"#,
+        DocumentConfig {
+            viewport: Some(Viewport::new(400, 200, 1.0, ColorScheme::Light)),
+            ..DocumentConfig::default()
+        },
+    );
+    doc.execute_scripts();
+    doc.inner_mut().resolve(0.0);
+
+    let state = doc
+        .eval_json(
+            r#"
+            const selection = document.getSelection();
+            ({
+                text: selection.toString(),
+                rangeCount: selection.rangeCount,
+                collapsed: selection.isCollapsed,
+                optionalChain: document.getSelection()?.toString() ?? "",
+                restoreIsSafe: (() => {
+                    const previous = selection.rangeCount ? selection.getRangeAt(0) : null;
+                    selection.removeAllRanges();
+                    if (previous) selection.addRange(previous);
+                    return true;
+                })(),
+            })
+            "#,
+        )
+        .expect("getSelection should evaluate");
+
+    assert_eq!(
+        state,
+        serde_json::json!({
+            "text": "",
+            "rangeCount": 0,
+            "collapsed": true,
+            "optionalChain": "",
+            "restoreIsSafe": true,
+        })
+    );
+}
