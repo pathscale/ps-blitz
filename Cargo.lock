@@ -839,11 +839,13 @@ dependencies = [
  "ps-anyrender-vello-cpu",
  "ps-anyrender-vello-hybrid",
  "ps-blitz-dom",
+ "ps-blitz-script",
  "ps-blitz-shell",
  "ps-blitz-traits",
  "reqwest",
  "tokio",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

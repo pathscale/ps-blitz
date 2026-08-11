@@ -252,6 +252,8 @@ log-frame-times = ["dioxus-native/log-frame-times"]
 log-phase-times = ["dioxus-native/log-phase-times"]
 
 [dev-dependencies]
+blitz-script = { workspace = true }
+url = { workspace = true }
 anyrender = { workspace = true }
 anyrender_vello = { workspace = true }
 anyrender_vello_cpu = { workspace = true, features = ["multithreading"] }
