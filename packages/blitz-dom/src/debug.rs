@@ -144,3 +144,68 @@ impl BaseDocument {
         // taffy::print_tree(&self.dom, node_id.into());
     }
 }
+
+/// Report why the frame loop will not settle.
+///
+/// `is_animating()` is a single bool built from six independent sources, and
+/// when it is stuck true the app renders continuously and burns CPU on a page
+/// that looks idle. One bool cannot say which source is responsible, and the
+/// sources have very different meanings: a running CSS animation is correct
+/// and expected, a `<canvas>` is permanent by design, and a set of animations
+/// belonging to elements no longer in the document is a leak.
+///
+/// `BLITZ_ANIMATION_DEBUG=1` prints the breakdown, rate-limited to once a
+/// second so it can be left on while watching a real page.
+pub(crate) fn animation_reasons_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("BLITZ_ANIMATION_DEBUG").ok().as_deref(),
+            Some("1") | Some("true")
+        )
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn report_animation_reasons(
+    doc_id: usize,
+    canvas: bool,
+    css_animations: bool,
+    subdoc: bool,
+    custom_widget: bool,
+    scroll: bool,
+    scrollbars: bool,
+    nodes: Option<&str>,
+) {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    static LAST: Mutex<Option<Instant>> = Mutex::new(None);
+    let mut last = LAST.lock().unwrap();
+    let now = Instant::now();
+    if last.is_some_and(|t| now.duration_since(t) < Duration::from_secs(1)) {
+        return;
+    }
+    *last = Some(now);
+    drop(last);
+
+    let mut reasons: Vec<&str> = Vec::new();
+    for (flag, name) in [
+        (canvas, "canvas"),
+        (css_animations, "css-animations"),
+        (subdoc, "subdocument"),
+        (custom_widget, "custom-widget"),
+        (scroll, "scroll-animation"),
+        (scrollbars, "scrollbar-fade"),
+    ] {
+        if flag {
+            reasons.push(name);
+        }
+    }
+
+    eprintln!(
+        "[animating] doc={doc_id} {}{}",
+        reasons.join(","),
+        nodes.map(|n| format!("  {n}")).unwrap_or_default()
+    );
+}
