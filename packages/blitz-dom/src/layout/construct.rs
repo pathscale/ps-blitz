@@ -918,14 +918,45 @@ fn create_text_editor(doc: &mut BaseDocument, input_element_id: NodeId, is_multi
         unreachable!();
     };
 
+    // Clearing the wrap width here means the next measure has to set it again,
+    // so the remembered width has to be cleared with it. Leaving it behind made
+    // `sync_multiline_width` believe the editor was already laid out for that
+    // width and skip the call, and the editor stayed unwrapped for the rest of
+    // its life: a long line ran off the side of a textarea and out of sight.
+    text_input_data.layout_width = None;
+
     let editor = &mut text_input_data.editor;
     editor.set_scale(doc.viewport.scale_f64() as f32);
     editor.set_width(None);
 
     let styles = editor.edit_styles();
     styles.retain(|_| false);
+    // The whole resolved text style, not just size and colour.
+    //
+    // The wrapping properties are the load-bearing ones: without WordBreak and
+    // OverflowWrap the editor cannot break a long unbroken run of characters,
+    // so `overflow-wrap: anywhere` in a stylesheet has nothing to act on and
+    // the text runs off the side of the box no matter what width it is given.
+    // A composer that autosizes on `scrollHeight` then never grows, because the
+    // text is always exactly one line tall.
+    //
+    // The font properties matter for the same reason a measurement does: the
+    // editor lays out with whatever it was told, so a family or weight left
+    // behind here is a field that measures a different size than it paints.
+    styles.insert(StyleProperty::FontFamily(parley_style.font_family));
     styles.insert(StyleProperty::FontSize(parley_style.font_size));
+    styles.insert(StyleProperty::FontWidth(parley_style.font_width));
+    styles.insert(StyleProperty::FontStyle(parley_style.font_style));
+    styles.insert(StyleProperty::FontWeight(parley_style.font_weight));
+    styles.insert(StyleProperty::FontVariations(parley_style.font_variations));
+    styles.insert(StyleProperty::FontFeatures(parley_style.font_features));
+    styles.insert(StyleProperty::Locale(parley_style.locale));
     styles.insert(StyleProperty::LineHeight(parley_style.line_height));
+    styles.insert(StyleProperty::WordSpacing(parley_style.word_spacing));
+    styles.insert(StyleProperty::LetterSpacing(parley_style.letter_spacing));
+    styles.insert(StyleProperty::WordBreak(parley_style.word_break));
+    styles.insert(StyleProperty::OverflowWrap(parley_style.overflow_wrap));
+    styles.insert(StyleProperty::TextWrapMode(parley_style.text_wrap_mode));
     styles.insert(StyleProperty::Brush(parley_style.brush));
 
     editor.refresh_layout(&mut doc.font_ctx.lock().unwrap(), &mut doc.layout_ctx);
