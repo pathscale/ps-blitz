@@ -1006,3 +1006,72 @@ fn embedder_poll_hook_runs_after_document_scripts() {
     assert!(doc.poll(None));
     assert_eq!(text_of_selector(&doc, "#out"), "ready from hook");
 }
+
+#[test]
+fn assigning_a_style_property_reaches_the_document() {
+    // `element.style.height = "70px"` was a no-op.
+    //
+    // `CSSStyleDeclaration` in a browser carries a named accessor for every CSS
+    // property. This binding defined only `cssText`, `setProperty`,
+    // `removeProperty` and `getPropertyValue`, and `element.style` returned a
+    // fresh object per access, so the assignment set a plain JS property on a
+    // throwaway object and was discarded without a word.
+    //
+    // What it cost: the composer measures its content and writes its own
+    // height, so an autosizing prompt grew its container and never grew the
+    // field inside it. The text went to a second line that could not be seen.
+    let mut doc = ScriptDocument::from_html(
+        r#"<div id="box" style="color: red">text</div>"#,
+        DocumentConfig::default(),
+    );
+    doc.execute_scripts();
+
+    let result = doc
+        .eval_json(
+            r#"
+            const box = document.getElementById("box");
+            box.style.height = "70px";
+            box.style.maxHeight = "120px";
+            const before = box.getAttribute("style");
+            box.style.height = "";
+            ({
+              attr: before,
+              readBack: box.style.maxHeight,
+              afterClear: box.getAttribute("style"),
+              apiStillWorks: (() => {
+                box.style.setProperty("width", "40px");
+                return box.style.getPropertyValue("width");
+              })(),
+            })
+            "#,
+        )
+        .expect("style assignment should evaluate");
+
+    let attr = result["attr"].as_str().unwrap_or_default();
+    assert!(
+        attr.contains("height: 70px"),
+        "height must reach the style attribute: {result}"
+    );
+    // camelCase becomes kebab-case, or the declaration is not CSS.
+    assert!(
+        attr.contains("max-height: 120px"),
+        "maxHeight must be written as max-height: {result}"
+    );
+    assert_eq!(
+        result["readBack"].as_str(),
+        Some("120px"),
+        "a property must read back: {result}"
+    );
+    assert!(
+        !result["afterClear"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("height: 70px"),
+        "assigning an empty string must remove the declaration: {result}"
+    );
+    assert_eq!(
+        result["apiStillWorks"].as_str(),
+        Some("40px"),
+        "setProperty and getPropertyValue must not be shadowed by the proxy: {result}"
+    );
+}

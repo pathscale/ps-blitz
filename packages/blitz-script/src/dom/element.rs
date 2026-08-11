@@ -826,7 +826,7 @@ fn get_style(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<J
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
     let proto = ctx.state.borrow().protos().style.clone();
-    Ok(JsObject::from_proto_and_data(Some(proto), super::NodeRef { node_id }).into())
+    super::style::make_style_object(proto, node_id, context)
 }
 
 // === innerHTML / outerHTML ===
