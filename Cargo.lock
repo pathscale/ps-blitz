@@ -852,15 +852,10 @@ dependencies = [
 name = "blitz-html"
 version = "0.3.0-beta.3"
 dependencies = [
- "blitz-paint",
  "html5ever",
- "markup5ever",
- "ps-anyrender",
- "ps-anyrender-vello-cpu",
  "ps-blitz-dom",
  "ps-blitz-traits",
  "tracing",
- "usvg",
  "xml5ever",
 ]
 
