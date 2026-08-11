@@ -19,6 +19,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use style::Atom;
+use style::computed_values::isolation::T as Isolation;
 use style::invalidation::element::restyle_hints::RestyleHint;
 use style::properties::ComputedValues;
 use style::properties::generated::longhands::position::computed_value::T as Position;
@@ -1253,11 +1254,18 @@ impl Node {
             return true;
         }
 
+        // `isolation: isolate` exists precisely to create a stacking context
+        // without any other visual effect. Ignoring it lets a negative z-index
+        // descendant escape to an ancestor context, where it is painted before
+        // (and so underneath) the backgrounds of the boxes in between.
+        if style.get_box().isolation == Isolation::Isolate {
+            return true;
+        }
+
         // TODO: mix-blend-mode
         // TODO: filter
         // TODO: clip-path
         // TODO: mask
-        // TODO: isolation
         // TODO: contain
 
         false
