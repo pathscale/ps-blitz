@@ -555,32 +555,63 @@ impl BaseDocument {
         let incremental = self.incremental_layout;
         let display = {
             let node = self.nodes.get_mut(node_id).unwrap();
-            let _damage = node.damage().unwrap_or(ALL_DAMAGE);
+            let damage = node.damage().unwrap_or(ALL_DAMAGE);
 
-            // Compute the owned taffy style and display in an inner scope so the
-            // immutable borrow of `node` (held by the stylo element data guard)
-            // is released before we mutably access `node` below.
-            let (mut taffy_style, display_constructed_as) = {
-                let stylo_element_data = node.stylo_element_data_opt().and_then(|s| s.get());
-                let primary_styles = stylo_element_data
-                    .as_ref()
-                    .and_then(|data| data.styles.get_primary());
+            // Only rebuild the taffy style when something asked for it.
+            //
+            // `propagate_damage_flags` stores the union of a node's own damage
+            // and its whole subtree's, so an empty value here means nothing
+            // under this node changed and last pass's taffy style is still
+            // correct. Recomputing it anyway is what made a steady-state frame
+            // — one where the page is laid out and only an animation is
+            // running — cost a full `to_taffy_style` for every node in the
+            // document, thirty times a second.
+            //
+            // Only in incremental mode. Without it `propagate_damage_flags`
+            // never runs, so the damage read above is whatever was last left
+            // on the node, and gating on it would skip real work.
+            //
+            // The recursion below is deliberately *not* gated. A node that
+            // contributes hoisted children to an ancestor's stacking context
+            // has to walk even when unchanged, because the ancestor rebuilds
+            // that list from scratch and would otherwise lose them.
+            let needs_style_flush =
+                !incremental || damage.intersects(RestyleDamage::RELAYOUT | CONSTRUCT_BOX);
 
-                let Some(style) = primary_styles else {
-                    return;
+            if needs_style_flush {
+                // Compute the owned taffy style and display in an inner scope so the
+                // immutable borrow of `node` (held by the stylo element data guard)
+                // is released before we mutably access `node` below.
+                let (mut taffy_style, display_constructed_as) = {
+                    let stylo_element_data = node.stylo_element_data_opt().and_then(|s| s.get());
+                    let primary_styles = stylo_element_data
+                        .as_ref()
+                        .and_then(|data| data.styles.get_primary());
+
+                    let Some(style) = primary_styles else {
+                        return;
+                    };
+
+                    (stylo_taffy::to_taffy_style(style), style.clone_display())
                 };
+                taffy_style.item_is_replaced =
+                    node.data.downcast_element().is_some_and(|el| {
+                        crate::layout::replaced::is_replaced_element(&el.name.local)
+                    });
 
-                (stylo_taffy::to_taffy_style(style), style.clone_display())
-            };
-            taffy_style.item_is_replaced = node
-                .data
-                .downcast_element()
-                .is_some_and(|el| crate::layout::replaced::is_replaced_element(&el.name.local));
-
-            // if damage.intersects(RestyleDamage::RELAYOUT | CONSTRUCT_BOX) {
-            *node.style_mut() = taffy_style;
-            *node.display_constructed_as_mut() = display_constructed_as;
-            // }
+                *node.style_mut() = taffy_style;
+                *node.display_constructed_as_mut() = display_constructed_as;
+            } else if node
+                .stylo_element_data_opt()
+                .and_then(|s| s.get())
+                .as_ref()
+                .and_then(|data| data.styles.get_primary())
+                .is_none()
+            {
+                // Preserved from the ungated form: a node with no primary style
+                // is not laid out and its subtree is not walked.
+                return;
+            }
 
             // In non-incremental mode we unconditionally clear the Taffy cache.
             // In incremental mode this is handled as part of damage propagation.
