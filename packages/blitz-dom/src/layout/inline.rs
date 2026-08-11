@@ -498,7 +498,18 @@ impl BaseDocument {
             let mut has_active_floats = initial_slot.segment_id.is_some();
             let state = breaker.state_mut();
             state.set_layout_max_advance(width);
-            state.set_line_max_advance(initial_slot.width * scale);
+            // A float slot can never entitle a line to be wider than the
+            // containing block's own content width. `find_content_slot` returns
+            // the space between the floats at a given y, and when the block
+            // formatting context has no width of its own (this node is not the
+            // BFC root, so it inherited one) that comes back effectively
+            // unbounded and the whole paragraph is laid out on one line.
+            //
+            // Measured on a live transcript: blocks 713px wide holding a single
+            // parley line 1,715px wide, with the inline elements on it sitting
+            // up to 987px past the pane. `broke_at` said 713 the whole time,
+            // because `set_layout_max_advance` was correct and this was not.
+            state.set_line_max_advance((initial_slot.width * scale).min(width));
             state.set_line_x(initial_slot.x * scale);
             state.set_line_y((initial_slot.y * scale) as f64);
 
@@ -523,7 +534,7 @@ impl BaseDocument {
                                 block_ctx.find_content_slot(min_y as f32, Clear::None, None);
                             has_active_floats = next_slot.segment_id.is_some();
 
-                            state.set_line_max_advance(next_slot.width * scale);
+                            state.set_line_max_advance((next_slot.width * scale).min(width));
                             state.set_line_x(next_slot.x * scale);
                             state.set_line_y((next_slot.y * scale) as f64);
                         } else {
@@ -576,7 +587,7 @@ impl BaseDocument {
                             block_ctx.find_content_slot(min_y as f32, Clear::None, None);
                         has_active_floats = next_slot.segment_id.is_some();
 
-                        state.set_line_max_advance(next_slot.width * scale);
+                        state.set_line_max_advance((next_slot.width * scale).min(width));
                         state.set_line_x(next_slot.x * scale);
                         state.set_line_y((next_slot.y * scale) as f64);
 
@@ -718,7 +729,7 @@ impl BaseDocument {
             && inputs.run_mode == taffy::RunMode::PerformLayout
         {
             let boxes = inline_layout.layout.inline_boxes().len();
-            if boxes > 0 {
+            {
                 eprintln!(
                     "inline-layout node={:?} boxes={boxes} broke_at={:.1} known={:?} avail={:?} final={:.1}",
                     node_id,

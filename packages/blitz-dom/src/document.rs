@@ -2582,6 +2582,73 @@ impl BaseDocument {
     /// Computes per-line-box fragment rects for a non-atomic inline element by walking
     /// the containing inline root's text layout. Returns `None` for nodes that have
     /// their own layout box (which should use `get_client_bounding_rect` instead).
+    /// Report inline elements whose fragment rects lie outside the inline root
+    /// that owns them. `BLITZ_TRACE_INLINE=1`, once per resolve.
+    ///
+    /// A non-atomic inline element has no layout box of its own: its geometry
+    /// is read back out of the containing inline root's text layout on demand.
+    /// So "the chip is 900px to the right of its block" is a statement about
+    /// that text layout, and the only way to see it is from in here, with both
+    /// the fragment and the root in hand. Every earlier attempt to chase this
+    /// from outside was reading a number the engine computes on the fly and
+    /// could not say where it came from.
+    pub(crate) fn trace_escaped_inline_fragments(&self) {
+        static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if !*TRACE.get_or_init(|| std::env::var_os("BLITZ_TRACE_INLINE").is_some()) {
+            return;
+        }
+        let mut reported = 0;
+        for (id, node) in self.nodes.iter() {
+            if !node.is_element() {
+                continue;
+            }
+            let Some(rects) = self.inline_fragment_rects(id) else {
+                continue;
+            };
+            let Some(root) = node.inline_root_ancestor() else {
+                continue;
+            };
+            let root_layout = root.final_layout();
+            let root_pos = root.absolute_position(0.0, 0.0);
+            let root_right =
+                root_pos.x as f64 + root_layout.size.width as f64 - self.viewport_scroll.x;
+            for rect in &rects {
+                if rect.x + rect.width > root_right + 1.0 {
+                    reported += 1;
+                    if reported <= 12 {
+                        eprintln!(
+                            "escaped-fragment node={id:?} rect=[{:.1},{:.1} {:.1}x{:.1}] \
+root={:?} root_right={root_right:.1} root_w={:.1} lines={} layout_scale={:.2} vp_scale={:.2} layout_w={:.1}",
+                            rect.x,
+                            rect.y,
+                            rect.width,
+                            rect.height,
+                            root.id,
+                            root_layout.size.width,
+                            root.element_data()
+                                .and_then(|e| e.inline_layout_data.as_ref())
+                                .map(|i| i.layout.len())
+                                .unwrap_or(0),
+                            root.element_data()
+                                .and_then(|e| e.inline_layout_data.as_ref())
+                                .map(|i| i.layout.scale())
+                                .unwrap_or(0.0),
+                            self.viewport.scale(),
+                            root.element_data()
+                                .and_then(|e| e.inline_layout_data.as_ref())
+                                .map(|i| i.layout.width())
+                                .unwrap_or(0.0),
+                        );
+                    }
+                    break;
+                }
+            }
+        }
+        if reported > 0 {
+            eprintln!("escaped-fragment total={reported}");
+        }
+    }
+
     pub fn inline_fragment_rects(&self, node_id: NodeId) -> Option<Vec<BoundingRect>> {
         use parley::PositionedLayoutItem;
 

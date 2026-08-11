@@ -143,6 +143,7 @@ impl BaseDocument {
         timer.record_time("layout");
 
         self.clamp_scroll_offsets();
+        self.trace_escaped_inline_fragments();
 
         // Resolve transforms
         self.resolve_transforms(root_node_id);
