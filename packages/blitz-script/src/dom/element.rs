@@ -1039,6 +1039,51 @@ fn get_scroll_width(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsR
 }
 
 fn get_scroll_height(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    // A text input answers from its own editor, without flushing layout.
+    //
+    // This one read dominated typing. An autosizing composer measures
+    // `scrollHeight` on every keystroke, every geometry read flushes so the
+    // answer accounts for pending mutations, and that flush is a full
+    // `doc.resolve`: measured at 19.16ms of a 21.55ms keystroke, 89% of the
+    // cost of typing a character.
+    //
+    // It buys nothing here. The height of a text input is the height its parley
+    // editor laid out, and `TextInputData::set_text` re-applies the wrap width
+    // and refreshes that layout as the text changes, so it is already current.
+    // Resolving the document cannot change the answer; it only pays for it.
+    //
+    // The editor's height alone, not `max(box, editor)`. The spec's floor of
+    // the padding box is a ratchet here: an autosizing field writes this number
+    // back into its own height, so a measurement that can never report less
+    // than the current box means it can never shrink again. Deleting text left
+    // the box at its high-water mark.
+    //
+    // The width the editor wrapped at can go stale, since a window resize
+    // changes it, but a resize lays out on its own and re-syncs the editor, so
+    // that lasts until the next frame rather than indefinitely.
+    // `layout_width` being set is the check that it has been laid out at a real
+    // width at least once.
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    {
+        let doc = ctx.doc.borrow();
+        if let Some(node) = doc.get_node(node_id) {
+            let measured = node
+                .data
+                .downcast_element()
+                .and_then(|el| el.text_input_data())
+                .filter(|input| input.layout_width.is_some())
+                .and_then(|input| input.content_height());
+            if let Some(measured) = measured {
+                let value = match node.primary_styles() {
+                    Some(styles) => styles.effective_zoom.unzoom(measured),
+                    None => measured,
+                };
+                return Ok(JsValue::from(f64::from(value)));
+            }
+        }
+    }
+
     box_metric(this, context, |node| {
         node.final_layout().size.height + node.final_layout().scroll_height()
     })

@@ -171,6 +171,36 @@ impl TextInputData {
         }
     }
 
+    /// The height of the laid out text, in CSS (unscaled) pixels.
+    ///
+    /// Parley lays out at the editor's scale, so `Layout::height` is device
+    /// pixels. Everything outside this type speaks CSS pixels, so the division
+    /// belongs here rather than at each call site: two of them forgot it, and
+    /// the result was a textarea that measured four times too tall on a retina
+    /// display.
+    pub fn content_height(&self) -> Option<f32> {
+        self.editor
+            .try_layout()
+            .map(|layout| layout.height() / layout.scale())
+    }
+
+    /// Push [`Self::layout_width`] into the editors, converting to their space.
+    ///
+    /// The remembered width is CSS pixels, because that is what layout hands
+    /// in. Parley wraps against its own scaled layout, so a width passed
+    /// straight through wraps at `width / scale`: on a 2x display a textarea
+    /// broke its text at half the box, and an autosizing composer grew to a
+    /// second line after half a line of typing.
+    fn apply_layout_width(&mut self) {
+        let Some(width) = self.layout_width else {
+            return;
+        };
+        self.editor.set_width(Some(width * self.editor.get_scale()));
+        if let Some(placeholder) = self.placeholder_editor.as_mut() {
+            placeholder.set_width(Some(width * placeholder.get_scale()));
+        }
+    }
+
     pub fn sync_multiline_width(
         &mut self,
         font_ctx: &mut FontContext,
@@ -187,10 +217,9 @@ impl TextInputData {
             return;
         }
         self.layout_width = Some(width);
-        self.editor.set_width(Some(width));
+        self.apply_layout_width();
         self.editor.driver(font_ctx, layout_ctx).refresh_layout();
         if let Some(placeholder) = self.placeholder_editor.as_mut() {
-            placeholder.set_width(Some(width));
             placeholder.driver(font_ctx, layout_ctx).refresh_layout();
         }
     }
@@ -203,6 +232,20 @@ impl TextInputData {
     ) {
         if self.editor.text() != text {
             self.editor.set_text(text);
+            // Put the wrap width back before re-laying out.
+            //
+            // `PlainEditor::set_text` rebuilds the layout without a width, so
+            // new text would otherwise be laid out on one endless line and walk
+            // out of the box. `sync_multiline_width` would normally restore it,
+            // but it returns early when the width it remembers already matches
+            // the one being asked for, and it does match: only the text
+            // changed. The remembered width is a claim about the *layout*, so
+            // it has to be re-applied whenever the layout is thrown away.
+            //
+            // Re-applying here rather than waiting for the next measure is also
+            // what lets `scrollHeight` be answered without resolving the whole
+            // document, which typing does on every keystroke.
+            self.apply_layout_width();
             self.editor.driver(font_ctx, layout_ctx).refresh_layout();
         }
     }
