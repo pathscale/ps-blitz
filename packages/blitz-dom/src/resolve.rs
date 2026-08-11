@@ -179,9 +179,9 @@ impl BaseDocument {
                         let display = self
                             .nodes
                             .get(*id)
-                            .map(|node| format!("{:?}", node.style.display))
+                            .map(|node| format!("{:?}", node.style().display))
                             .unwrap_or_default();
-                        format!("{id}:{tag}({display})x{count}")
+                        format!("{id:?}:{tag}({display})x{count}")
                     })
                     .collect();
                 println!("  layout hotspots: {}", described.join(" "));

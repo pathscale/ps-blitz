@@ -91,6 +91,8 @@ impl BaseDocument {
         // If the node or any of it's children have been mutated or their layout styles
         // have changed, then we should clear it's layout cache.
         if damage.intersects(ONLY_RELAYOUT | CONSTRUCT_BOX) {
+            #[cfg(feature = "log-phase-times")]
+            crate::layout::layout_counters::note_cache_cleared();
             node.cache_mut().clear();
             if let Some(inline_layout) = node
                 .data
