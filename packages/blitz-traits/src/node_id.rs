@@ -60,6 +60,25 @@ impl PartialOrd for NodeId {
     }
 }
 
+/// Serialized as the raw `u64`, so it round-trips through
+/// [`NodeId::from_u64`] and stays an integer on the wire.
+///
+/// It is deliberately not the slot index: a reference handed to an out-of-
+/// process client and echoed back later has to fail rather than resolve to
+/// whatever node took over the slot, and the version bits are what make that
+/// possible.
+impl serde::Serialize for NodeId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u64(self.0)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for NodeId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        <u64 as serde::Deserialize>::deserialize(deserializer).map(Self)
+    }
+}
+
 impl std::fmt::Debug for NodeId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "NodeId({}v{})", self.index(), self.version())
