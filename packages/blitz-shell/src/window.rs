@@ -403,7 +403,12 @@ impl<Rend: WindowRenderer> View<Rend> {
         inner.resolve(animation_time);
         let (width, height) = inner.viewport().window_size;
         let scale = inner.viewport().scale_f64();
-        let insets = self.safe_area_insets.to_logical(scale);
+        // Device pixels: `paint_scene`'s initial_x/initial_y are the document's
+        // origin in the scene, and everything downstream of them — the viewport
+        // cull, the root element's translate, and `draw_sub_document` for an
+        // embedded document — is already scaled. Passing the logical value here
+        // halved the offset on a HiDPI display.
+        let insets = self.safe_area_insets;
 
         #[cfg(feature = "custom-widget")]
         inner.can_create_surfaces(&mut self.renderer as _);
@@ -492,7 +497,12 @@ impl<Rend: WindowRenderer> View<Rend> {
         let scale = inner.viewport().scale_f64();
         let is_animating = inner.is_animating();
         let is_blocked = inner.has_pending_critical_resources();
-        let insets = self.safe_area_insets.to_logical(scale);
+        // Device pixels: `paint_scene`'s initial_x/initial_y are the document's
+        // origin in the scene, and everything downstream of them — the viewport
+        // cull, the root element's translate, and `draw_sub_document` for an
+        // embedded document — is already scaled. Passing the logical value here
+        // halved the offset on a HiDPI display.
+        let insets = self.safe_area_insets;
 
         let mut paint_time = Duration::ZERO;
         let render_started = Instant::now();
