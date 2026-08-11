@@ -1,3 +1,8 @@
+> **This checkout is `mega-blitz`, an assembly rather than a fork.** It collects
+> `DioxusLabs/blitz` `main`, the unmerged JavaScript engine from PR #491, the
+> `pathscale/ps-blitz` fork, and queued upstream PRs into one tree.
+> See [README-MEGA.md](README-MEGA.md) for what comes from where.
+
 <p>
 <picture >
   <source media="(prefers-color-scheme: dark)" srcset="https://blitz-website.fly.dev/static/blitz-logo-with-text3-white.svg">
