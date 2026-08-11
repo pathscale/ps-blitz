@@ -13,8 +13,8 @@ use style::Atom;
 use style::values::computed::CSSPixelLength;
 use style::values::computed::length_percentage::CalcLengthPercentage;
 use taffy::{
-    BlockContext, CollapsibleMarginSet, FlexDirection, LayoutPartialTree, NodeId, ResolveOrZero,
-    RoundTree, Style, TraversePartialTree, TraverseTree, compute_block_layout,
+    BlockContext, CollapsibleMarginSet, FlexDirection, LayoutPartialTree, MaybeResolve, NodeId,
+    ResolveOrZero, RoundTree, Style, TraversePartialTree, TraverseTree, compute_block_layout,
     compute_cached_layout, compute_flexbox_layout, compute_grid_layout, compute_leaf_layout,
     prelude::*,
 };
@@ -205,7 +205,74 @@ impl BaseDocument {
                         .attr(local_name!("cols"))
                         .and_then(|val| val.parse::<f32>().ok());
 
-                    return compute_leaf_layout(
+                    let intrinsic_height = resolved_line_height.unwrap_or(16.0) * rows;
+
+                    // Give the editor the width it has to lay out within, so a
+                    // long line wraps instead of running off the side. Without
+                    // this the editor is built with `set_width(None)` and never
+                    // told otherwise: `wrap="soft"` and `overflow-wrap` in the
+                    // stylesheet have nothing to act on, and typing past the
+                    // right edge walks the text out of the box and out of sight.
+                    //
+                    // The node's own `width` comes first. `known_dimensions` is
+                    // what the parent has decided so far and does not yet
+                    // include this element's style size, so reading only that
+                    // hands the editor the parent's width and it wraps, when it
+                    // wraps at all, to the wrong measure.
+                    let content_width = node
+                        .style()
+                        .size
+                        .width
+                        .maybe_resolve(inputs.parent_size.width, resolve_calc_value)
+                        .or(inputs.known_dimensions.width)
+                        .or(match inputs.available_space.width {
+                            taffy::AvailableSpace::Definite(width) => Some(width),
+                            _ => None,
+                        })
+                        .map(|width| {
+                            let inset = node
+                                .style()
+                                .padding
+                                .resolve_or_zero(inputs.parent_size, resolve_calc_value)
+                                .horizontal_components()
+                                .sum()
+                                + node
+                                    .style()
+                                    .border
+                                    .resolve_or_zero(inputs.parent_size, resolve_calc_value)
+                                    .horizontal_components()
+                                    .sum();
+                            (width - inset).max(0.0)
+                        });
+
+                    // The wrapped text may be taller than the box. That excess
+                    // is exactly what `scrollHeight` reports and what an
+                    // autosizing composer grows by, so it has to reach Taffy as
+                    // content size rather than be rounded away into the box
+                    // height.
+                    let mut content_height = intrinsic_height;
+                    if let Some(width) = content_width.filter(|width| *width > 0.0) {
+                        let font_ctx = self.font_ctx.clone();
+                        let layout_ctx = &mut self.layout_ctx;
+                        let node = &mut self.nodes[dom_node_id(node_id)];
+                        if let Some(input) = node
+                            .data
+                            .downcast_element_mut()
+                            .and_then(|el| el.text_input_data_mut())
+                        {
+                            input.sync_multiline_width(
+                                &mut font_ctx.lock().unwrap(),
+                                layout_ctx,
+                                width,
+                            );
+                            if let Some(layout) = input.editor.try_layout() {
+                                content_height = content_height.max(layout.height());
+                            }
+                        }
+                    }
+
+                    let node = &mut self.nodes[dom_node_id(node_id)];
+                    let mut output = compute_leaf_layout(
                         inputs,
                         node.style(),
                         resolve_calc_value,
@@ -213,9 +280,12 @@ impl BaseDocument {
                             width: cols
                                 .map(|cols| cols * font_size.unwrap_or(16.0) * 0.6)
                                 .unwrap_or(300.0),
-                            height: resolved_line_height.unwrap_or(16.0) * rows,
+                            height: intrinsic_height,
                         },
                     );
+                    output.content_size.height = output.content_size.height.max(content_height);
+                    output.content_size.width = output.content_size.width.max(output.size.width);
+                    return output;
                 }
 
                 if *element_data.name.local == *"input" {
