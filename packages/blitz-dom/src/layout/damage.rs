@@ -596,6 +596,10 @@ impl BaseDocument {
             node.style().display
         };
 
+        // Hoisted fixed nodes, held back until the borrow on paint_children is
+        // released so their real stacking context can be reached.
+        let mut deferred_fixed: Vec<(NodeId, i32, NodeId)> = Vec::new();
+
         // If the node has children, then take those children and...
         let children = self.nodes[node_id].layout_children.borrow_mut().take();
         if let Some(mut children) = children {
@@ -646,11 +650,21 @@ impl BaseDocument {
                 // z-index applies to static flex/grid items too
                 // (css-flexbox-1 §painting, css-grid-1 §z-order).
                 if z_index != 0 && (position != Position::Static || is_flex_or_grid) {
-                    stacking_context.children.push(HoistedPaintChild {
-                        node_id: child_id,
-                        z_index,
-                        position: taffy::Point::ZERO,
-                    })
+                    // A hoisted fixed node paints in the stacking context its
+                    // box tree gives it, not the one the hoist moved it to.
+                    // `hoist_fixed_position_nodes` reparents it onto the root
+                    // element so its insets resolve against the viewport, which
+                    // is what CSS asks for; the stacking context is a separate
+                    // question and follows the original ancestors.
+                    if let Some(&origin) = self.hoisted_fixed_parents.get(&child_id) {
+                        deferred_fixed.push((child_id, z_index, origin));
+                    } else {
+                        stacking_context.children.push(HoistedPaintChild {
+                            node_id: child_id,
+                            z_index,
+                            position: taffy::Point::ZERO,
+                        })
+                    }
                 } else {
                     paint_children.push(child_id);
                 }
@@ -666,6 +680,13 @@ impl BaseDocument {
 
             // Put children back
             *self.nodes[node_id].layout_children.borrow_mut() = Some(children);
+
+        }
+
+        // Outside the block above, so the borrow on paint_children has ended:
+        // reaching another node's stacking context needs `self` mutably.
+        for (child_id, z_index, origin) in deferred_fixed {
+            self.place_hoisted_fixed(child_id, z_index, origin, node_id, stacking_context);
         }
 
         if let Some(parent_stacking_context) = parent_stacking_context {
@@ -683,6 +704,94 @@ impl BaseDocument {
             stacking_context.compute_content_size(self);
             self.nodes[node_id].stacking_context = Some(Box::new(new_stacking_context));
         }
+    }
+}
+
+impl BaseDocument {
+    /// Put a hoisted `position: fixed` node into the stacking context its box
+    /// tree gives it, rather than the root's.
+    ///
+    /// `origin` is the layout parent the node was taken from. Walking up from
+    /// there finds the nearest ancestor that establishes a stacking context,
+    /// which is where CSS says the node paints. When that ancestor is the node
+    /// we are already building a context for, the caller's context is it and
+    /// nothing special is needed.
+    ///
+    /// Descendants are flushed before their parent's hoisting pass, so an
+    /// ancestor's context is already built and sorted by the time this runs.
+    /// Pushing into it means sorting it again.
+    ///
+    /// The offset that compensates for the move is filled in later, by
+    /// `correct_hoisted_fixed_positions`, because layout does not exist yet
+    /// when this runs.
+    fn place_hoisted_fixed(
+        &mut self,
+        child_id: NodeId,
+        z_index: i32,
+        origin: NodeId,
+        current: NodeId,
+        current_context: &mut HoistedPaintChildren,
+    ) {
+        let host = self.nearest_stacking_context_ancestor(origin);
+
+        if host == Some(current) || host.is_none() {
+            current_context.children.push(HoistedPaintChild {
+                node_id: child_id,
+                z_index,
+                position: taffy::Point::ZERO,
+            });
+            return;
+        }
+        let host = host.unwrap();
+
+        // The offset cannot be computed here: this runs before taffy has laid
+        // anything out, so every absolute position is still zero. It is filled
+        // in by `correct_hoisted_fixed_positions` once layout exists.
+        let position = taffy::Point::ZERO;
+
+        let Some(context) = self.nodes[host].stacking_context.as_mut() else {
+            // No context to join. Falling back to the caller's keeps the node
+            // painted rather than dropping it.
+            current_context.children.push(HoistedPaintChild {
+                node_id: child_id,
+                z_index,
+                position: taffy::Point::ZERO,
+            });
+            return;
+        };
+        context.children.push(HoistedPaintChild {
+            node_id: child_id,
+            z_index,
+            position,
+        });
+        let mut context = self.nodes[host].stacking_context.take().unwrap();
+        context.sort();
+        context.compute_content_size(self);
+        self.nodes[host].stacking_context = Some(context);
+    }
+
+    /// The nearest ancestor of `node_id`, inclusive, that establishes a
+    /// stacking context.
+    pub(crate) fn nearest_stacking_context_ancestor(&self, node_id: NodeId) -> Option<NodeId> {
+        let mut current = Some(node_id);
+        while let Some(id) = current {
+            let node = self.nodes.get(id)?;
+            let is_flex_or_grid_item = node
+                .layout_parent
+                .get()
+                .and_then(|parent| self.nodes.get(parent))
+                .is_some_and(|parent| {
+                    matches!(
+                        parent.style().display,
+                        taffy::Display::Flex | taffy::Display::Grid
+                    )
+                });
+            if node.is_stacking_context_root(is_flex_or_grid_item) {
+                return Some(id);
+            }
+            current = node.layout_parent.get();
+        }
+        None
     }
 }
 

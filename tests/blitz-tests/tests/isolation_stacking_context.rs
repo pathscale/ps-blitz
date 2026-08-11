@@ -78,25 +78,18 @@ fn without_isolate_the_descendant_escapes_to_an_ancestor() {
 }
 
 #[test]
-#[ignore = "fixed descendants are reparented out of the isolate; see the comment"]
 fn isolate_holds_a_fixed_negative_z_descendant() {
-    // The pattern this whole file exists for, and the one still broken:
+    // The pattern this whole file exists for, and the one 24x.ai uses:
     // `isolation: isolate` + `position: fixed` + `z-index: -10` is the standard
-    // way to mount a full-bleed background, and it is what 24x.ai uses.
+    // way to mount a full-bleed background, and it renders in every shipping
+    // browser.
     //
-    // The isolation half is fixed — `#root` reports `is_stacking_context_root`
-    // and owns a stacking context. The fixed half is not. Upstream's
-    // `collect_fixed` reparents fixed descendants out to their real containing
-    // block so they resolve against the viewport, which is correct for layout,
-    // but it also removes them from the ancestor's `layout_children`, and
-    // hoisting into a stacking context reads that list. So `#root`'s
-    // `layout_children` comes back empty and the background never joins the
-    // context that `isolate` established for it.
-    //
-    // Per spec these are independent: `isolation` does not make an element a
-    // containing block for fixed descendants, but paint order follows the box
-    // tree, not the containing block. Separating the two is engine work beyond
-    // the isolation property itself.
+    // It needs the containing block and the stacking context to be decided
+    // separately. `hoist_fixed_position_nodes` reparents a fixed node onto the
+    // root element so its insets resolve against the viewport, which CSS asks
+    // for. Letting that also decide where it paints put the layer in the root's
+    // stacking context, underneath every background between it and the isolate,
+    // so the page came up blank.
     let doc = document(
         r#"<html><body style="margin:0">
             <div id="root" style="position:relative;isolation:isolate;min-height:600px">
@@ -108,5 +101,50 @@ fn isolate_holds_a_fixed_negative_z_descendant() {
     assert!(
         hoists_negative_z(&doc, "#root"),
         "a fixed negative z-index descendant must stay in the isolate's context"
+    );
+}
+
+#[test]
+fn a_held_fixed_layer_still_covers_the_viewport() {
+    // Putting the layer in the right stacking context is only half of it. Paint
+    // draws a hoisted child at its stacking context root's origin plus the
+    // recorded offset plus the node's own layout location, and that location is
+    // relative to the root element because the hoist made the root its layout
+    // parent. So the offset has to carry the difference between the two
+    // origins, or the background lands wherever the isolate happens to be.
+    //
+    // The isolate is pushed down the page here precisely so that a missing
+    // compensation shows up as a 200px error rather than as zero.
+    let doc = document(
+        r#"<html><body style="margin:0">
+            <div style="height:200px"></div>
+            <div id="root" style="position:relative;isolation:isolate;min-height:600px">
+                <div id="bg" style="position:fixed;inset:0;z-index:-10"></div>
+            </div>
+        </body></html>"#,
+    );
+
+    let root_id = doc.query_selector("#root").unwrap().unwrap();
+    let bg_id = doc.query_selector("#bg").unwrap().unwrap();
+
+    let host = doc.get_node(root_id).unwrap();
+    let context = host
+        .stacking_context
+        .as_ref()
+        .expect("the isolate must own a stacking context");
+    let hoisted = context
+        .neg_z_hoisted_children()
+        .find(|child| child.node_id == bg_id)
+        .expect("the fixed layer must be held by the isolate");
+
+    let host_origin = host.absolute_position(0.0, 0.0);
+    let bg_layout = doc.get_node(bg_id).unwrap().final_layout().location;
+    let painted_x = host_origin.x + hoisted.position.x + bg_layout.x;
+    let painted_y = host_origin.y + hoisted.position.y + bg_layout.y;
+
+    assert_eq!(
+        (painted_x, painted_y),
+        (0.0, 0.0),
+        "`inset: 0` must paint at the viewport origin, not at the isolate's"
     );
 }

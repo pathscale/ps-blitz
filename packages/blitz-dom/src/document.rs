@@ -225,6 +225,17 @@ pub struct BaseDocument {
     /// The id of the root node (a Document node)
     pub(crate) root_node_id: NodeId,
 
+    /// For each `position: fixed` node reparented onto the root element, the
+    /// layout parent it was taken from.
+    ///
+    /// Hoisting gives a fixed node the viewport as its containing block, which
+    /// is what CSS asks for. It must not also decide which stacking context the
+    /// node paints in: that follows the box tree, and the two are independent.
+    /// Without this record the node joins the root's stacking context, so a
+    /// negative z-index fixed layer inside an `isolation: isolate` ancestor
+    /// paints beneath every background between them and disappears.
+    pub(crate) hoisted_fixed_parents: HashMap<NodeId, NodeId>,
+
     // Stylo
     /// The Stylo engine
     pub(crate) stylist: Stylist,
@@ -469,6 +480,7 @@ impl BaseDocument {
         let (tx, rx) = channel();
 
         let mut doc = Self {
+            hoisted_fixed_parents: HashMap::new(),
             id,
             tx,
             rx: Some(rx),

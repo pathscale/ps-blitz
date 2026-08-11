@@ -105,6 +105,7 @@ impl BaseDocument {
 
         // Next we resolve layout with the data resolved by stlist
         self.resolve_layout();
+        self.correct_hoisted_fixed_positions();
         timer.record_time("layout");
 
         // Resolve transforms
@@ -397,6 +398,10 @@ impl BaseDocument {
         let mut hoisted: Vec<NodeId> = Vec::new();
         collect_fixed(self, root_id, false, &mut hoisted);
 
+        // Rebuilt every pass: the tree may have changed, and a node that is no
+        // longer fixed must stop being attributed to an old parent.
+        self.hoisted_fixed_parents.clear();
+
         for node_id in hoisted {
             let Some(parent_id) = self.nodes[node_id].layout_parent.get() else {
                 continue;
@@ -404,6 +409,11 @@ impl BaseDocument {
             if parent_id == root_id {
                 continue;
             }
+
+            // Remember where it came from. The hoist decides the containing
+            // block; the box tree still decides the stacking context, and
+            // `flush_styles_to_layout` reads this to keep them apart.
+            self.hoisted_fixed_parents.insert(node_id, parent_id);
 
             if let Some(children) = self.nodes[parent_id].layout_children.borrow_mut().as_mut() {
                 children.retain(|id| *id != node_id);
@@ -456,6 +466,50 @@ impl BaseDocument {
                 || !matches!(box_styles.translate, Translate::None)
                 || !matches!(box_styles.rotate, Rotate::None)
                 || !matches!(box_styles.scale, Scale::None)
+        }
+    }
+
+    /// Give each held fixed layer the offset that cancels its hoist.
+    ///
+    /// Paint draws a hoisted child at its stacking context root's origin, plus
+    /// the recorded offset, plus the node's own layout location — and that
+    /// location is relative to the root element, because the hoist made the
+    /// root its layout parent. So the offset has to carry the difference
+    /// between the two origins, or a background mounted with `inset: 0` lands
+    /// wherever its isolate happens to sit rather than over the viewport.
+    ///
+    /// Separate from `flush_styles_to_layout`, which decides *which* context
+    /// holds the layer: that runs before taffy, when every absolute position is
+    /// still zero.
+    pub(crate) fn correct_hoisted_fixed_positions(&mut self) {
+        if self.hoisted_fixed_parents.is_empty() {
+            return;
+        }
+        let root_id = self.root_element().id;
+        let root_abs = self.nodes[root_id].absolute_position(0.0, 0.0);
+
+        let placements: Vec<(NodeId, NodeId)> = self
+            .hoisted_fixed_parents
+            .iter()
+            .filter_map(|(&node_id, &origin)| {
+                let host = self.nearest_stacking_context_ancestor(origin)?;
+                (host != root_id).then_some((node_id, host))
+            })
+            .collect();
+
+        for (node_id, host) in placements {
+            let host_abs = self.nodes[host].absolute_position(0.0, 0.0);
+            let Some(context) = self.nodes[host].stacking_context.as_mut() else {
+                continue;
+            };
+            for child in context.children.iter_mut() {
+                if child.node_id == node_id {
+                    child.position = taffy::Point {
+                        x: root_abs.x - host_abs.x,
+                        y: root_abs.y - host_abs.y,
+                    };
+                }
+            }
         }
     }
 
