@@ -24,7 +24,7 @@ permissions:
 jobs:
   wpt:
     name: "Run WPT Tests"
-    runs-on: ubuntu-latest
+    runs-on: ubicloud-standard-8
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
@@ -92,7 +92,7 @@ jobs:
   trigger-archive:
     name: "Trigger Archive Job"
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubicloud-standard-8
     needs: wpt
     environment: WPT
     steps:
