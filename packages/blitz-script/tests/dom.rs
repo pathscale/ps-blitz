@@ -1075,3 +1075,137 @@ fn assigning_a_style_property_reaches_the_document() {
         "setProperty and getPropertyValue must not be shadowed by the proxy: {result}"
     );
 }
+
+#[test]
+fn a_fixed_overlay_appended_by_script_covers_the_viewport() {
+    // How every modal in an embedding app is opened: build the backdrop, move
+    // it under `body`, let `position: fixed; inset: 0` size it. If the append
+    // does not re-run layout against the viewport the backdrop keeps whatever
+    // box it was measured with while detached, and the dialog paints as a strip
+    // across the top of the window instead of covering it.
+    let mut doc = ScriptDocument::from_html(
+        r#"
+        <style>
+          html, body { height: 100%; margin: 0 }
+          .overlay { position: fixed; top: 0; right: 0; bottom: 0; left: 0 }
+        </style>
+        <div id="app" style="height: 40px"></div>
+        "#,
+        DocumentConfig {
+            viewport: Some(Viewport::new(800, 600, 1.0, ColorScheme::Light)),
+            ..DocumentConfig::default()
+        },
+    );
+    doc.execute_scripts();
+    doc.inner_mut().resolve(0.0);
+
+    let rect = doc
+        .eval_json(
+            r#"
+            const overlay = document.createElement("div");
+            overlay.className = "overlay";
+            document.body.appendChild(overlay);
+            const box = overlay.getBoundingClientRect();
+            ({ width: box.width, height: box.height, top: box.top, left: box.left })
+            "#,
+        )
+        .expect("overlay geometry should evaluate");
+
+    assert_eq!(
+        rect,
+        serde_json::json!({ "width": 800.0, "height": 600.0, "top": 0.0, "left": 0.0 })
+    );
+}
+
+#[test]
+fn appending_an_attached_node_moves_it_rather_than_sharing_it() {
+    // `appendChild` on a node that already has a parent is a *move*: the DOM
+    // detaches it first. A modal that relocates its own subtree under `body` to
+    // escape a containing block relies on exactly that. Leaving the node in both
+    // child lists lays it out twice, once in flow where it came from, which is
+    // how a full-screen backdrop paints as a strip across the old parent.
+    let mut doc = ScriptDocument::from_html(
+        r#"<div id="host"><div id="panel">panel</div></div>"#,
+        DocumentConfig {
+            viewport: Some(Viewport::new(800, 600, 1.0, ColorScheme::Light)),
+            ..DocumentConfig::default()
+        },
+    );
+    doc.execute_scripts();
+    doc.inner_mut().resolve(0.0);
+
+    let moved = doc
+        .eval_json(
+            r#"
+            const panel = document.getElementById("panel");
+            document.body.appendChild(panel);
+            ({
+                hostChildren: document.getElementById("host").children.length,
+                parentIsBody: panel.parentNode === document.body,
+                bodyHasPanelOnce:
+                    Array.prototype.filter.call(document.body.children, (c) => c.id === "panel").length,
+            })
+            "#,
+        )
+        .expect("reparent should evaluate");
+
+    assert_eq!(
+        moved,
+        serde_json::json!({
+            "hostChildren": 0,
+            "parentIsBody": true,
+            "bodyHasPanelOnce": 1,
+        })
+    );
+}
+
+#[test]
+fn parent_node_append_moves_a_subtree_and_takes_strings() {
+    // `document.body.append(node)` is how a dialog escapes an ancestor that
+    // would otherwise be the containing block for its `position: fixed`
+    // backdrop. Without `append` the call threw, the lifecycle hook that made
+    // it unwound, and the dialog stayed where it was built — the backdrop then
+    // painted inside that ancestor as a strip rather than over the window.
+    let mut doc = ScriptDocument::from_html(
+        r#"<div id="host"><div id="panel">panel</div></div><div id="sink"></div>"#,
+        DocumentConfig {
+            viewport: Some(Viewport::new(800, 600, 1.0, ColorScheme::Light)),
+            ..DocumentConfig::default()
+        },
+    );
+    doc.execute_scripts();
+    doc.inner_mut().resolve(0.0);
+
+    let result = doc
+        .eval_json(
+            r#"
+            const panel = document.getElementById("panel");
+            const sink = document.getElementById("sink");
+            sink.append(panel, " tail");
+            const list = document.createElement("div");
+            list.append("b", "c");
+            list.prepend("a");
+            document.body.append(list);
+            const wiped = document.createElement("div");
+            wiped.append("gone");
+            wiped.replaceChildren("kept");
+            ({
+                hostChildren: document.getElementById("host").children.length,
+                sinkText: sink.textContent,
+                listText: list.textContent,
+                wipedText: wiped.textContent,
+            })
+            "#,
+        )
+        .expect("append should evaluate");
+
+    assert_eq!(
+        result,
+        serde_json::json!({
+            "hostChildren": 0,
+            "sinkText": "panel tail",
+            "listText": "abc",
+            "wipedText": "kept",
+        })
+    );
+}

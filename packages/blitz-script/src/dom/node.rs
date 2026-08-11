@@ -49,6 +49,16 @@ pub(crate) fn init_node_proto(proto: &JsObject, context: &mut Context) {
     );
 
     define_method(proto, "appendChild", 1, append_child, context);
+    // The `ParentNode` trio. `append` is the one modern code actually reaches
+    // for, and its absence is invisible in the worst way: the call throws a
+    // TypeError from inside whatever effect or lifecycle hook made it, that
+    // frame unwinds, and the surrounding UI is left half-built with nothing
+    // logged at the DOM layer. A dialog that relocates its own subtree under
+    // `body` to escape a containing block simply stays where it was, and its
+    // full-screen backdrop paints inside that ancestor instead.
+    define_method(proto, "append", 1, append, context);
+    define_method(proto, "prepend", 1, prepend, context);
+    define_method(proto, "replaceChildren", 0, replace_children, context);
     define_method(proto, "insertBefore", 2, insert_before, context);
     define_method(proto, "removeChild", 1, remove_child, context);
     define_method(proto, "replaceChild", 2, replace_child, context);
@@ -302,6 +312,83 @@ fn append_child(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsRe
     drop(doc);
 
     Ok(args[0].clone())
+}
+
+/// Resolve one `append`/`prepend` argument to a node id, creating a text node
+/// for a bare string as the spec requires.
+fn arg_node_or_text(
+    ctx: &crate::state::DomCtx,
+    value: &JsValue,
+    context: &mut Context,
+) -> JsResult<NodeId> {
+    if let Some(node_id) = node_id_of_value(value) {
+        return Ok(node_id);
+    }
+    let text = value.to_string(context)?.to_std_string_lossy();
+    let mut doc = ctx.mutate_doc();
+    let id = doc.mutate().create_text_node(&text);
+    Ok(id)
+}
+
+/// `ParentNode.append(...nodes)`: nodes or strings, appended in order.
+fn append(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let _t = crate::script_stats::Timed::new("dom:append");
+    let parent_id = this_node_id(this)?;
+    for arg in args {
+        let ctx = dom_ctx(context)?;
+        let child_id = arg_node_or_text(&ctx, arg, context)?;
+        let ctx = dom_ctx(context)?;
+        let mut doc = ctx.mutate_doc();
+        let mut mutr = doc.mutate();
+        // Same detach-first rule as `appendChild`: appending an attached node
+        // is a move, not a second parent.
+        if mutr.node_has_parent(child_id) {
+            mutr.remove_node(child_id);
+        }
+        mutr.append_children(parent_id, &[child_id]);
+    }
+    Ok(JsValue::undefined())
+}
+
+/// `ParentNode.prepend(...nodes)`: the same, inserted before the first child.
+fn prepend(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let _t = crate::script_stats::Timed::new("dom:prepend");
+    let parent_id = this_node_id(this)?;
+    for (offset, arg) in args.iter().enumerate() {
+        let ctx = dom_ctx(context)?;
+        let child_id = arg_node_or_text(&ctx, arg, context)?;
+        let ctx = dom_ctx(context)?;
+        let mut doc = ctx.mutate_doc();
+        let mut mutr = doc.mutate();
+        if mutr.node_has_parent(child_id) {
+            mutr.remove_node(child_id);
+        }
+        // Keep the arguments in their given order: the first goes to the front,
+        // each later one directly after the one before it.
+        let reference = mutr.child_ids(parent_id).get(offset).copied();
+        match reference {
+            Some(reference) => mutr.insert_nodes_before(reference, &[child_id]),
+            None => mutr.append_children(parent_id, &[child_id]),
+        }
+    }
+    Ok(JsValue::undefined())
+}
+
+/// `ParentNode.replaceChildren(...nodes)`: empty the parent, then append.
+fn replace_children(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let _t = crate::script_stats::Timed::new("dom:replaceChildren");
+    let parent_id = this_node_id(this)?;
+    {
+        let ctx = dom_ctx(context)?;
+        let mut doc = ctx.mutate_doc();
+        let mut mutr = doc.mutate();
+        for child in mutr.child_ids(parent_id) {
+            mutr.remove_node(child);
+        }
+    }
+    append(this, args, context)?;
+    let _ = parent_id;
+    Ok(JsValue::undefined())
 }
 
 fn insert_before(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
