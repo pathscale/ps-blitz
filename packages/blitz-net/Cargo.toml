@@ -13,6 +13,10 @@ rust-version.workspace = true
 [features]
 http2 = ["reqwest/http2"]
 cookies = ["reqwest/cookies"]
+# Servers send gzip or brotli by default. reqwest only sends Accept-Encoding
+# for the codecs it was built with, so without these every response arrives
+# uncompressed and every page costs more bytes than it should.
+compression = ["reqwest/brotli", "reqwest/gzip", "reqwest/deflate", "reqwest/zstd"]
 multipart = ["reqwest/multipart", "reqwest/stream"]
 cache = ["dep:reqwest-middleware", "dep:http-cache-reqwest", "dep:directories", "dep:http-cache"]
 tracing = ["dep:tracing"]
