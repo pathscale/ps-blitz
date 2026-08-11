@@ -1,8 +1,10 @@
 > **This fork is a collection.** On top of `DioxusLabs/blitz` `main` it carries: the
 > JavaScript engine from upstream's unmerged draft PR #491 (`blitz-script`), Pathscale's
-> own work on top of it (the DOM APIs real pages call, inline SVG fixes, macOS input,
-> frame diagnostics), and upstream pull requests that have not landed yet (#549
-> `position: fixed`, shadow DOM). We pull from upstream and push here; nothing goes back.
+> own work on top of it (the DOM APIs real pages call, frame diagnostics, textarea and
+> placeholder handling, macOS input, pointer capture), and upstream pull requests that
+> have not landed (#549 `position: fixed`). We pull from upstream and push here; nothing
+> goes back. Outstanding: shadow DOM and custom elements, and the SVG sprite/`use`
+> support, both of which need porting rather than merging.
 
 <p>
 <picture >
