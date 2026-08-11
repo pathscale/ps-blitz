@@ -907,6 +907,7 @@ fn create_text_editor(doc: &mut BaseDocument, input_element_id: NodeId, is_multi
         .unwrap_or_default();
 
     let element = &mut node.data.downcast_element_mut().unwrap();
+    let placeholder = element.attr(local_name!("placeholder")).map(str::to_owned);
     if !matches!(element.special_data, SpecialElementData::TextInput(_)) {
         let mut text_input_data = TextInputData::new(is_multiline);
         let editor = &mut text_input_data.editor;
@@ -960,6 +961,17 @@ fn create_text_editor(doc: &mut BaseDocument, input_element_id: NodeId, is_multi
     styles.insert(StyleProperty::Brush(parley_style.brush));
 
     editor.refresh_layout(&mut doc.font_ctx.lock().unwrap(), &mut doc.layout_ctx);
+
+    // Cloned from the value editor so it inherits the styles just applied.
+    // Kept as its own editor rather than shown by swapping the value's text,
+    // which is how this was first written and why an empty field could report
+    // its placeholder as its value.
+    text_input_data.placeholder_editor = placeholder.filter(|text| !text.is_empty()).map(|text| {
+        let mut placeholder_editor = text_input_data.editor.clone();
+        placeholder_editor.set_text(&text);
+        placeholder_editor.refresh_layout(&mut doc.font_ctx.lock().unwrap(), &mut doc.layout_ctx);
+        placeholder_editor
+    });
 }
 
 fn create_checkbox_input(doc: &mut BaseDocument, input_element_id: NodeId) {
