@@ -860,7 +860,7 @@ dependencies = [
 
 [[package]]
 name = "blitz"
-version = "0.3.0-beta.1"
+version = "0.3.0-beta.3"
 dependencies = [
  "anyrender_vello",
  "blitz-html",
@@ -904,7 +904,7 @@ dependencies = [
 
 [[package]]
 name = "blitz-html"
-version = "0.3.0-beta.1"
+version = "0.3.0-beta.3"
 dependencies = [
  "html5ever",
  "ps-blitz-dom",
@@ -915,7 +915,7 @@ dependencies = [
 
 [[package]]
 name = "blitz-net"
-version = "0.3.0-beta.1"
+version = "0.3.0-beta.3"
 dependencies = [
  "data-url",
  "directories",
@@ -931,7 +931,7 @@ dependencies = [
 
 [[package]]
 name = "blitz-paint"
-version = "0.3.0-beta.1"
+version = "0.3.0-beta.3"
 dependencies = [
  "anyrender",
  "anyrender_svg",
@@ -951,7 +951,7 @@ dependencies = [
 
 [[package]]
 name = "blitz-test-harness"
-version = "0.3.0-beta.1"
+version = "0.3.0-beta.3"
 dependencies = [
  "blitz-html",
  "dioxus-core",
@@ -964,7 +964,7 @@ dependencies = [
 
 [[package]]
 name = "blitz-tests"
-version = "0.3.0-beta.1"
+version = "0.3.0-beta.3"
 dependencies = [
  "accesskit",
  "anyrender",
@@ -5999,7 +5999,7 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-debug-control"
-version = "0.3.0-beta.1"
+version = "0.3.0-beta.3"
 dependencies = [
  "getrandom 0.4.3",
  "serde",
@@ -6008,7 +6008,7 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-dom"
-version = "0.3.0-beta.1"
+version = "0.3.0-beta.3"
 dependencies = [
  "accesskit",
  "anyrender",
@@ -6052,7 +6052,7 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-script"
-version = "0.3.0-beta.1"
+version = "0.3.0-beta.3"
 dependencies = [
  "anyrender",
  "anyrender_vello_cpu",
@@ -6079,7 +6079,7 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-shell"
-version = "0.3.0-beta.1"
+version = "0.3.0-beta.3"
 dependencies = [
  "accesskit",
  "accesskit_xplat",
@@ -6103,7 +6103,7 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-traits"
-version = "0.3.0-beta.1"
+version = "0.3.0-beta.3"
 dependencies = [
  "atomic_refcell",
  "bitflags 2.13.0",
@@ -7528,7 +7528,7 @@ dependencies = [
 
 [[package]]
 name = "stylo_taffy"
-version = "0.3.0-beta.1"
+version = "0.3.0-beta.3"
 dependencies = [
  "stylo",
  "stylo_atoms",
