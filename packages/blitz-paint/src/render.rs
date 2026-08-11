@@ -168,7 +168,18 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         // The root clip rectangle is the viewport (in screen coordinates, with the
         // initial offset already subtracted). Elements outside of this are culled, and
         // scrollports narrow this rectangle further for their descendants.
-        let viewport_clip_rect = Rect::new(0.0, 0.0, self.width as f64, self.height as f64);
+        //
+        // `width`/`height` are physical pixels, while the boxes tested against
+        // this rectangle are laid out in CSS pixels and then scaled. Building
+        // the rectangle from the unscaled numbers culls everything past
+        // `width / scale`, which on a HiDPI display silently drops the right
+        // and bottom of the page.
+        let viewport_clip_rect = Rect::new(
+            0.0,
+            0.0,
+            self.width as f64 * self.scale,
+            self.height as f64 * self.scale,
+        );
 
         self.render_element(
             scene,
@@ -606,9 +617,9 @@ impl ElementCx<'_, '_> {
     /// Paint overlay scrollbar thumbs for scroll containers: `overflow:
     /// scroll`, or `auto` when the content overflows (never `hidden`/`clip`,
     /// which scroll only programmatically). Thumbs appear on scroll and fade
-    /// out after a delay ([`BaseDocument::scrollbar_opacity`]); never-scrolled
-    /// containers paint nothing, keeping thumbs out of static reftest
-    /// screenshots.
+    /// out after a delay ([`BaseDocument::scrollbar_opacity`]). Newly
+    /// overflowing containers remain visible until their first interaction so
+    /// the user can discover that more content is available.
     ///
     /// Geometry comes from [`Node::scrollbar_thumb`], shared with the
     /// thumb-drag hit testing in blitz-dom.
@@ -824,13 +835,27 @@ impl ElementCx<'_, '_> {
                 };
             }
 
-            // Render text
-            crate::text::stroke_text(
+            // Render the editable value, or its placeholder while empty. The
+            // placeholder uses the inherited input color at reduced opacity;
+            // dedicated ::placeholder styling can refine this later without
+            // conflating placeholder text with the form value.
+            let placeholder = input_data.editor.text() == "";
+            let layout = if placeholder {
+                input_data
+                    .placeholder_editor
+                    .as_ref()
+                    .and_then(|editor| editor.try_layout())
+                    .unwrap_or_else(|| input_data.editor.try_layout().unwrap())
+            } else {
+                input_data.editor.try_layout().unwrap()
+            };
+            crate::text::stroke_text_with_alpha(
                 scene,
-                input_data.editor.try_layout().unwrap().lines(),
+                layout.lines(),
                 self.context.dom,
                 transform,
                 self.scale,
+                if placeholder { 0.55 } else { 1.0 },
             );
         }
     }
@@ -971,8 +996,8 @@ impl ElementCx<'_, '_> {
 
         let transform = self
             .transform
-            .pre_scale_non_uniform(x_scale, y_scale)
-            .then_translate(Vec2 { x, y });
+            .pre_translate(Vec2 { x, y })
+            .pre_scale_non_uniform(x_scale, y_scale);
 
         anyrender_svg::render_svg_tree(scene, svg, transform);
     }

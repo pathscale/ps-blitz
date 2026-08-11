@@ -26,7 +26,7 @@ use blitz_traits::node_id::NodeId;
 use blitz_traits::shell::{ColorScheme, DummyShellProvider, ShellProvider, Viewport};
 use cursor_icon::CursorIcon;
 use linebender_resource_handle::Blob;
-use markup5ever::local_name;
+use markup5ever::{local_name, ns};
 use parley::{FontContext, PlainEditorDriver};
 use selectors::{Element, matching::QuirksMode};
 use smallvec::SmallVec;
@@ -39,7 +39,7 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLockReadGuard, RwLockWriteGuard};
-use std::task::Context as TaskContext;
+use std::task::{Context as TaskContext, Waker};
 use style::Atom;
 use style::animation::DocumentAnimationSet;
 use style::attr::{AttrIdentifier, AttrValue};
@@ -371,6 +371,22 @@ pub(crate) fn make_device(
         PointerCapabilities::default(),
         PointerCapabilities::default(),
     )
+}
+
+/// Whether layout reuses its caches, and how that can be overridden at runtime.
+///
+/// Compiled default comes from the `incremental` feature. The environment
+/// override exists so a single build can be measured both ways: with the flag
+/// off every `resolve` clears the Taffy cache and re-shapes every inline root
+/// from scratch, so comparing the two in separate binaries would also compare
+/// two different compilations. `BLITZ_INCREMENTAL=0` forces the old behaviour,
+/// `=1` forces the new one.
+fn incremental_layout_default() -> bool {
+    match std::env::var("BLITZ_INCREMENTAL").ok().as_deref() {
+        Some("0" | "false" | "off") => false,
+        Some(_) => true,
+        None => cfg!(feature = "incremental"),
+    }
 }
 
 impl BaseDocument {
@@ -761,6 +777,28 @@ impl BaseDocument {
         if let Some(load) = self.iframe_loads.remove(&node_id) {
             load.abort_controller.abort();
         }
+    }
+
+    /// Poll all sub-documents (see [`Document::poll`]), allowing them to make progress
+    /// on any pending async operations (e.g. JavaScript timers). Hosts which poll a
+    /// wrapper around a [`BaseDocument`] should call this from their `poll` implementation.
+    ///
+    /// Returns `true` if any sub-document reported changes.
+    pub fn poll_subdocuments(&mut self, waker: Option<&Waker>) -> bool {
+        let mut has_changes = false;
+        let node_ids: Vec<NodeId> = self.sub_document_nodes.iter().copied().collect();
+        for node_id in node_ids {
+            let Some(sub_doc) = self
+                .nodes
+                .get_mut(node_id)
+                .and_then(|node| node.subdoc_mut())
+            else {
+                continue;
+            };
+            let task_context = waker.map(TaskContext::from_waker);
+            has_changes |= sub_doc.poll(task_context);
+        }
+        has_changes
     }
 
     #[cfg(feature = "custom-widget")]
@@ -1602,7 +1640,7 @@ impl BaseDocument {
         {
             return 1.0;
         }
-        self.scrollbar_activity.get(&node_id).map_or(0.0, |last| {
+        self.scrollbar_activity.get(&node_id).map_or(1.0, |last| {
             crate::node::scrollbar::opacity_at(last.elapsed())
         })
     }
@@ -2430,9 +2468,19 @@ impl BaseDocument {
     pub fn find_title_node(&self) -> Option<&Node> {
         TreeTraverser::new(self)
             .find(|node_id| {
-                self.nodes[*node_id]
-                    .data
-                    .is_element_with_tag_name(&local_name!("title"))
+                let node = &self.nodes[*node_id];
+                let Some(element) = node.element_data() else {
+                    return false;
+                };
+                if element.name.ns != ns!(html) || element.name.local != local_name!("title") {
+                    return false;
+                }
+                node.parent
+                    .and_then(|parent_id| self.nodes.get(parent_id))
+                    .and_then(Node::element_data)
+                    .is_some_and(|parent| {
+                        parent.name.ns == ns!(html) && parent.name.local == local_name!("head")
+                    })
             })
             .map(|node_id| &self.nodes[node_id])
     }
@@ -2662,6 +2710,17 @@ impl BaseDocument {
             Some(id) => id,
             None => return Vec::new(),
         };
+
+        // Guard against stale selection endpoints: nodes may have been removed from
+        // the document (e.g. by script) since the selection was made.
+        let node_is_in_doc = |node_id: NodeId| {
+            self.nodes
+                .get(node_id)
+                .is_some_and(|node| node.flags.is_in_document())
+        };
+        if !node_is_in_doc(anchor_node) || !node_is_in_doc(focus_node) {
+            return Vec::new();
+        }
 
         // Single node selection
         if anchor_node == focus_node {

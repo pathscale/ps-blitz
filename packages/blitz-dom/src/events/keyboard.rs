@@ -1,4 +1,6 @@
-use crate::{BaseDocument, node::GeneratedTextInputEvent, util::ACTION_MOD};
+use crate::{
+    BaseDocument, node::GeneratedTextInputEvent, util::ACTION_MOD, util::has_clipboard_modifier,
+};
 use blitz_traits::node_id::NodeId;
 use blitz_traits::{
     SmolStr,
@@ -30,8 +32,7 @@ pub(crate) fn handle_key_or_input_event<F: FnMut(DomEvent)>(
 
         // Handle copy (Ctrl+C/Cmd+C) for text selection when no text input is focused
         if event.state.is_pressed() {
-            let action_mod = event.modifiers.contains(ACTION_MOD);
-            if action_mod {
+            if has_clipboard_modifier(event.modifiers) {
                 if let Key::Character(c) = &event.key {
                     if c.to_lowercase() == "c" {
                         // Check if we have a text selection (and no focused text input)

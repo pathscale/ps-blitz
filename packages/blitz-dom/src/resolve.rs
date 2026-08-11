@@ -59,13 +59,12 @@ impl BaseDocument {
 
         self.resolve_scroll_animation();
 
-        // Drop scrollbar-activity entries whose fade-out has finished (also
-        // sheds entries for removed nodes).
-        {
-            use crate::node::scrollbar::{FADE_DELAY, FADE_DURATION};
-            self.scrollbar_activity
-                .retain(|_, last| last.elapsed() < FADE_DELAY + FADE_DURATION);
-        }
+        // Retain completed activity entries so an initially visible scrollbar
+        // stays faded after its first interaction. Only removed nodes need to
+        // shed their entry.
+        let nodes = &self.nodes;
+        self.scrollbar_activity
+            .retain(|node_id, _| nodes.contains_key(*node_id));
 
         let root_node_id = self.root_element().id;
         debug_timer!(timer, feature = "log-phase-times");
@@ -147,6 +146,54 @@ impl BaseDocument {
         self.subdoc_is_animating = subdoc_is_animating;
         timer.record_time("subdocs");
 
+        // Printed with the phases so a single line says both how long layout
+        // took and how much of the tree it touched. Without the counts the
+        // timings cannot distinguish a few slow nodes from a cache miss across
+        // the document, and those need opposite fixes.
+        #[cfg(feature = "log-phase-times")]
+        {
+            // Named before the counters are drained, and only when the pass was
+            // expensive enough to be worth looking at.
+            let offenders = crate::layout::layout_counters::worst_offenders(6);
+            if offenders.first().is_some_and(|(_, count)| *count > 8) {
+                let described: Vec<String> = offenders
+                    .iter()
+                    .map(|(id, count)| {
+                        let tag = self
+                            .nodes
+                            .get(*id)
+                            .and_then(|node| node.element_data())
+                            .map(|element| element.name.local.to_string())
+                            .unwrap_or_else(|| "?".to_string());
+                        let display = self
+                            .nodes
+                            .get(*id)
+                            .map(|node| format!("{:?}", node.style.display))
+                            .unwrap_or_default();
+                        format!("{id}:{tag}({display})x{count}")
+                    })
+                    .collect();
+                println!("  layout hotspots: {}", described.join(" "));
+            }
+            let counts = crate::layout::layout_counters::take();
+            let total_nodes = self.nodes.len();
+            let hit_rate = if counts.lookups > 0 {
+                (counts.hits as f64 / counts.lookups as f64) * 100.0
+            } else {
+                0.0
+            };
+            timer.print_times(&format!(
+                "Resolve({}) [computed {} over {} distinct of {total_nodes} nodes, \
+                 cache {}/{} hits {hit_rate:.0}%, {} cleared]: ",
+                self.id(),
+                counts.computed,
+                counts.distinct,
+                counts.hits,
+                counts.lookups,
+                counts.caches_cleared,
+            ));
+        }
+        #[cfg(not(feature = "log-phase-times"))]
         timer.print_times(&format!("Resolve({}): ", self.id()));
     }
 
@@ -499,6 +546,32 @@ impl BaseDocument {
 
         taffy::compute_root_layout(self, root_element_id, available_space);
         taffy::round_layout(self, root_element_id);
+
+        // Taffy currently maps CSS `position: fixed` to absolute positioning,
+        // which leaves the box relative to its DOM layout parent. A portal
+        // mounted after a full-height application root therefore starts one
+        // viewport below the window even with `top: 0`. Cancel the layout
+        // parent's document-space offset so fixed boxes use the viewport as
+        // their containing block, as CSS requires.
+        let fixed_nodes = self
+            .nodes
+            .iter()
+            .filter_map(|(node_id, node)| {
+                let is_fixed = node
+                    .primary_styles()
+                    .is_some_and(|style| style.clone_position() == Position::Fixed);
+                is_fixed.then_some((node_id, node.layout_parent.get()))
+            })
+            .collect::<Vec<_>>();
+
+        for (node_id, parent_id) in fixed_nodes {
+            let Some(parent_id) = parent_id else {
+                continue;
+            };
+            let parent_position = self.nodes[parent_id].absolute_position(0.0, 0.0);
+            self.nodes[node_id].final_layout_mut().location.x -= parent_position.x;
+            self.nodes[node_id].final_layout_mut().location.y -= parent_position.y;
+        }
 
         // println!("\n\n");
         // taffy::print_tree(self, root_node_id)

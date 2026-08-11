@@ -69,6 +69,17 @@ pub(crate) fn stroke_text<'a>(
     transform: Affine,
     scale: f64,
 ) {
+    stroke_text_with_alpha(scene, lines, doc, transform, scale, 1.0);
+}
+
+pub(crate) fn stroke_text_with_alpha<'a>(
+    scene: &mut impl PaintScene,
+    lines: impl Iterator<Item = Line<'a, TextBrush>>,
+    doc: &BaseDocument,
+    transform: Affine,
+    scale: f64,
+    alpha: f32,
+) {
     for line in lines {
         for item in line.items() {
             if let PositionedLayoutItem::GlyphRun(glyph_run) = item {
@@ -117,7 +128,7 @@ pub(crate) fn stroke_text<'a>(
                     embolden,
                     Fill::NonZero,
                     &anyrender::Paint::from(text_color),
-                    1.0, // alpha
+                    alpha,
                     transform,
                     glyph_xform,
                     glyph_run.positioned_glyphs().map(|glyph| anyrender::Glyph {

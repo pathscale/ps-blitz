@@ -17,7 +17,7 @@ use std::cell::{Cell, RefCell};
 use std::fmt::Write;
 use std::ops::Deref;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use style::Atom;
 use style::invalidation::element::restyle_hints::RestyleHint;
 use style::properties::ComputedValues;
@@ -334,6 +334,30 @@ impl Node {
 
     pub(crate) fn display_style(&self) -> Option<StyloDisplay> {
         Some(self.primary_styles().as_ref()?.clone_display())
+    }
+
+    /// A compact computed-style view for renderer diagnostics.
+    pub fn diagnostic_computed_style(&self) -> Option<Vec<(&'static str, String)>> {
+        let style = self.primary_styles()?;
+        Some(vec![
+            ("display", style.clone_display().to_css_string()),
+            ("color", style.clone_color().to_css_string()),
+            (
+                "background-color",
+                style.clone_background_color().to_css_string(),
+            ),
+            (
+                "font-size",
+                format!("{}px", style.clone_font_size().computed_size().px()),
+            ),
+            ("width", style.clone_width().to_css_string()),
+        ])
+    }
+
+    /// Whether computed style removes this node from layout.
+    pub fn is_display_none(&self) -> bool {
+        self.display_style()
+            .is_some_and(|display| display.is_none())
     }
 
     pub fn is_or_contains_block(&self) -> bool {
@@ -929,20 +953,39 @@ impl Node {
     }
 
     pub fn write_outer_html(&self, writer: &mut String) {
-        self.write_outer_html_in_style(writer, OutputStyle::Normal, 0);
+        self.write_outer_html_in_style(writer, OutputStyle::Normal, 0, None);
+    }
+
+    #[cfg(feature = "svg")]
+    pub(crate) fn write_outer_html_with_current_color(
+        &self,
+        writer: &mut String,
+        current_color: &str,
+    ) {
+        self.write_outer_html_in_style(writer, OutputStyle::Normal, 0, Some(current_color));
     }
 
     pub fn write_outer_html_pretty(&self, writer: &mut String) {
-        self.write_outer_html_in_style(writer, OutputStyle::Pretty, 0);
+        self.write_outer_html_in_style(writer, OutputStyle::Pretty, 0, None);
     }
 
-    fn write_outer_html_in_style(&self, writer: &mut String, style: OutputStyle, nesting: usize) {
+    fn write_outer_html_in_style(
+        &self,
+        writer: &mut String,
+        style: OutputStyle,
+        nesting: usize,
+        current_color_override: Option<&str>,
+    ) {
         const INDENT: &str = "  ";
         let has_children = !self.children.is_empty();
-        let current_color = self
-            .primary_styles()
-            .map(|style| style.clone_color())
-            .map(|color| color.to_css_string());
+        let computed_current_color = || {
+            self.primary_styles()
+                .map(|style| style.clone_color())
+                .map(|color| crate::util::absolute_color_to_svg_css(&color))
+        };
+        let current_color = current_color_override
+            .map(ToOwned::to_owned)
+            .or_else(computed_current_color);
 
         match &self.data {
             NodeData::Document(_) => {}
@@ -994,7 +1037,12 @@ impl Node {
 
                 if has_children {
                     for &child_id in &self.children {
-                        self.tree()[child_id].write_outer_html_in_style(writer, style, nesting + 1);
+                        self.tree()[child_id].write_outer_html_in_style(
+                            writer,
+                            style,
+                            nesting + 1,
+                            current_color_override,
+                        );
                     }
 
                     if matches!(style, OutputStyle::Pretty) {

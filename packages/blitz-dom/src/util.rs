@@ -9,6 +9,28 @@ pub(crate) const ACTION_MOD: Modifiers = Modifiers::SUPER;
 #[cfg(not(target_os = "macos"))]
 pub(crate) const ACTION_MOD: Modifiers = Modifiers::CONTROL;
 
+/// Clipboard shortcuts accept Control as well as the platform action modifier.
+///
+/// macOS normally uses Command, but applications may expose Control+C/X/V as
+/// explicit shortcuts and Blitz must not drop those when a text control owns
+/// focus. Cursor movement continues to use `ACTION_MOD`, preserving the native
+/// macOS Control-key editing bindings.
+pub(crate) fn has_clipboard_modifier(modifiers: Modifiers) -> bool {
+    modifiers.contains(ACTION_MOD) || modifiers.contains(Modifiers::CONTROL)
+}
+
+#[cfg(test)]
+mod shortcut_tests {
+    use super::*;
+
+    #[test]
+    fn clipboard_accepts_control_and_the_platform_action_modifier() {
+        assert!(has_clipboard_modifier(Modifiers::CONTROL));
+        assert!(has_clipboard_modifier(ACTION_MOD));
+        assert!(!has_clipboard_modifier(Modifiers::SHIFT));
+    }
+}
+
 pub type Color = AlphaColor<Srgb>;
 
 /// Decode raw font bytes, decompressing WOFF/WOFF2 if the `woff` feature is enabled.
@@ -180,6 +202,21 @@ impl ToColorColor for AbsoluteColor {
     }
 }
 
+/// Serialize a computed CSS color in the legacy sRGB syntax accepted by SVG
+/// preprocessors such as usvg. Stylo preserves modern author color spaces such
+/// as `oklab()`, but those must not leak into the self-contained SVG source.
+pub(crate) fn absolute_color_to_svg_css(color: &AbsoluteColor) -> String {
+    let [red, green, blue, alpha] = color.as_color_color().components;
+    let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+    format!(
+        "rgba({}, {}, {}, {})",
+        channel(red),
+        channel(green),
+        channel(blue),
+        alpha.clamp(0.0, 1.0)
+    )
+}
+
 #[cfg(all(test, feature = "svg"))]
 mod svg_tests {
     use super::parse_svg_image;
@@ -250,4 +287,124 @@ macro_rules! qual_name {
             local: $crate::local_name!($local),
         }
     };
+}
+
+/// Restore the camelCase spelling of SVG attributes.
+///
+/// The HTML serialiser lowercases attribute names, which is right for HTML but
+/// wrong for SVG: its attributes are case-sensitive, so `viewBox` written as
+/// `viewbox` is simply ignored. usvg then falls back to the bounding box of the
+/// path geometry, producing an intrinsic size with the wrong aspect ratio, and
+/// `width: auto` resolves against it.
+#[cfg(feature = "svg")]
+pub(crate) fn restore_svg_attribute_case(markup: &str) -> String {
+    // The SVG 1.1/2 attributes whose names carry capitals. Anything not listed
+    // is genuinely lowercase in the spec.
+    const CAMEL_CASED: &[&str] = &[
+        "viewBox",
+        "preserveAspectRatio",
+        "baseProfile",
+        "clipPath",
+        "clipPathUnits",
+        "diffuseConstant",
+        "edgeMode",
+        "filterUnits",
+        "glyphRef",
+        "gradientTransform",
+        "gradientUnits",
+        "kernelMatrix",
+        "kernelUnitLength",
+        "keyPoints",
+        "keySplines",
+        "keyTimes",
+        "lengthAdjust",
+        "limitingConeAngle",
+        "markerHeight",
+        "markerUnits",
+        "markerWidth",
+        "maskContentUnits",
+        "maskUnits",
+        "numOctaves",
+        "pathLength",
+        "patternContentUnits",
+        "patternTransform",
+        "patternUnits",
+        "pointsAtX",
+        "pointsAtY",
+        "pointsAtZ",
+        "primitiveUnits",
+        "refX",
+        "refY",
+        "repeatCount",
+        "repeatDur",
+        "requiredExtensions",
+        "requiredFeatures",
+        "specularConstant",
+        "specularExponent",
+        "spreadMethod",
+        "startOffset",
+        "stdDeviation",
+        "stitchTiles",
+        "surfaceScale",
+        "systemLanguage",
+        "tableValues",
+        "targetX",
+        "targetY",
+        "textLength",
+        "xChannelSelector",
+        "yChannelSelector",
+        "zoomAndPan",
+    ];
+
+    let mut output = markup.to_owned();
+    for name in CAMEL_CASED {
+        let lowered = name.to_ascii_lowercase();
+        if lowered == *name {
+            continue;
+        }
+        // Only rewrite what is unambiguously an attribute position: a space
+        // before the name and an `=` after it, so element text is untouched.
+        let needle = format!(" {lowered}=");
+        if output.contains(&needle) {
+            output = output.replace(&needle, &format!(" {name}="));
+        }
+    }
+    output
+}
+
+#[cfg(all(test, feature = "svg"))]
+mod svg_attribute_case_tests {
+    use super::{parse_svg_image, restore_svg_attribute_case};
+
+    /// The HTML serialiser lowercases attribute names. For SVG that silently
+    /// changes the geometry, because the attributes are case sensitive.
+    #[test]
+    fn a_lowercased_view_box_loses_the_declared_aspect_ratio() {
+        let lowered = r#"<svg viewbox="0 0 744 221" xmlns="http://www.w3.org/2000/svg"><path d="M0 0h10v10H0z"/></svg>"#;
+        let parsed = parse_svg_image(lowered.as_bytes()).unwrap();
+        let ratio = parsed.tree.size().width() / parsed.tree.size().height();
+        assert!(
+            (ratio - 3.367).abs() > 0.1,
+            "lowercased viewbox unexpectedly honoured: {ratio}"
+        );
+    }
+
+    #[test]
+    fn restoring_the_case_recovers_the_view_box() {
+        let lowered = r#"<svg viewbox="0 0 744 221" preserveaspectratio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg"><path d="M0 0h10v10H0z"/></svg>"#;
+        let restored = restore_svg_attribute_case(lowered);
+        assert!(restored.contains("viewBox="));
+        assert!(restored.contains("preserveAspectRatio="));
+
+        let parsed = parse_svg_image(restored.as_bytes()).unwrap();
+        let size = parsed.tree.size();
+        assert_eq!(size.width().round(), 744.0);
+        assert_eq!(size.height().round(), 221.0);
+    }
+
+    #[test]
+    fn attribute_names_without_capitals_are_left_alone() {
+        let markup = r#"<svg width="10" height="10" xmlns="http://www.w3.org/2000/svg"/>"#;
+        assert_eq!(restore_svg_attribute_case(markup), markup);
+    }
 }

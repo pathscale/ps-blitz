@@ -1,7 +1,6 @@
-//! Scroll containers paint overlay scrollbars when scrolled, fading them
-//! out after a delay: for overflow: scroll and overflowing overflow: auto,
-//! never for overflow: hidden. At rest nothing is painted, like other
-//! overlay scrollbar UIs.
+//! Scroll containers paint overlay scrollbars initially and when scrolled,
+//! fading them after interaction: for overflow: scroll and overflowing
+//! overflow: auto, never for overflow: hidden.
 
 use anyrender::render_to_buffer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
@@ -60,9 +59,9 @@ fn scrolled_auto_scroller_paints_a_thumb() {
 }
 
 #[test]
-fn unscrolled_unhovered_scroller_paints_no_thumb() {
+fn initially_overflowing_scroller_paints_a_thumb() {
     let px = pixel(&scroller("auto", 1000), (0.0, 0.0), 97, 4);
-    assert_eq!(px, BLUE, "overlay scrollbars are hidden at rest");
+    assert_ne!(px, BLUE, "initial overflow must remain discoverable");
 }
 
 #[test]
@@ -81,11 +80,9 @@ fn hidden_scroller_paints_no_thumb() {
 }
 
 #[test]
-fn stale_scroll_offset_alone_paints_no_thumb() {
-    // Overlay scrollbar visibility follows scroll *activity*, not scroll
-    // position: an offset applied outside the scroll API (no activity)
-    // paints nothing, like a scrolled-then-idle container after its
-    // scrollbars have faded out.
+fn initial_programmatic_scroll_offset_keeps_the_thumb_visible() {
+    // Before the first real interaction, a programmatic offset must not hide
+    // the only indication that the container has more content.
     let mut doc = HtmlDocument::from_html(
         &scroller("auto", 1000),
         DocumentConfig {
@@ -104,7 +101,7 @@ fn stale_scroll_offset_alone_paints_no_thumb() {
     );
     let idx = (10 * 100 + 97) * 4;
     let px = [buffer[idx], buffer[idx + 1], buffer[idx + 2]];
-    assert_eq!(px, BLUE, "no scrollbar without scroll activity");
+    assert_ne!(px, BLUE, "initial overflow must paint a scrollbar");
 }
 
 #[test]
@@ -179,7 +176,7 @@ fn scrollbar_width_none_hides_the_scrollbar() {
 
 #[test]
 #[ignore = "scrollbar-color is hardcoded to auto until stylo exposes it to the servo engine (servo/stylo#413)"]
-fn author_styled_scrollbar_still_hides_at_rest() {
+fn author_styled_scrollbar_is_visible_before_first_interaction() {
     // scrollbar-color doesn't affect overlay visibility (matches how
     // Firefox/WebKit render the property).
     let px = pixel(
@@ -192,7 +189,7 @@ fn author_styled_scrollbar_still_hides_at_rest() {
         97,
         4,
     );
-    assert_eq!(px, BLUE, "styled overlay scrollbars still hide at rest");
+    assert_ne!(px, BLUE, "styled initial overflow remains discoverable");
 }
 
 #[test]

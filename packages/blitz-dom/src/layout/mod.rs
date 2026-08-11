@@ -19,6 +19,90 @@ use taffy::{
     prelude::*,
 };
 
+/// How much of the tree a single resolve actually recomputed.
+///
+/// Phase timings say layout is expensive; they cannot say whether that is a
+/// handful of slow nodes or the whole tree missing its cache. These counters
+/// answer that, and a wrong answer sends the fix to the wrong place entirely.
+/// Thread-local and read once per resolve, so the counting itself is free.
+#[cfg(feature = "log-phase-times")]
+pub(crate) mod layout_counters {
+    use std::cell::Cell;
+
+    thread_local! {
+        static COMPUTED: Cell<u64> = const { Cell::new(0) };
+        static CACHES_CLEARED: Cell<u64> = const { Cell::new(0) };
+        static LOOKUPS: Cell<u64> = const { Cell::new(0) };
+        static HITS: Cell<u64> = const { Cell::new(0) };
+        /// Distinct nodes recomputed, to tell "the whole tree once" apart from
+        /// "a few nodes many times". Those have completely different fixes and
+        /// the totals alone cannot distinguish them.
+        static DISTINCT: std::cell::RefCell<std::collections::HashMap<usize, u32>> =
+            std::cell::RefCell::new(std::collections::HashMap::new());
+    }
+
+    pub(crate) fn note_computed(node_id: usize) {
+        COMPUTED.with(|count| count.set(count.get() + 1));
+        DISTINCT.with(|seen| {
+            *seen.borrow_mut().entry(node_id).or_insert(0u32) += 1;
+        });
+    }
+
+    /// The nodes recomputed most often, worst first.
+    ///
+    /// Totals say the work is concentrated; only the identities say where. A
+    /// node recomputed a hundred times is either being measured under a hundred
+    /// different constraints or sitting under a container that re-descends, and
+    /// naming it is the difference between fixing that and guessing again.
+    pub(crate) fn worst_offenders(limit: usize) -> Vec<(usize, u32)> {
+        DISTINCT.with(|seen| {
+            let mut rows: Vec<(usize, u32)> = seen
+                .borrow()
+                .iter()
+                .map(|(id, count)| (*id, *count))
+                .collect();
+            rows.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+            rows.truncate(limit);
+            rows
+        })
+    }
+
+    pub(crate) fn note_cache_cleared() {
+        CACHES_CLEARED.with(|count| count.set(count.get() + 1));
+    }
+
+    pub(crate) fn note_lookup(hit: bool) {
+        LOOKUPS.with(|count| count.set(count.get() + 1));
+        if hit {
+            HITS.with(|count| count.set(count.get() + 1));
+        }
+    }
+
+    pub(crate) struct LayoutCounts {
+        pub computed: u64,
+        pub distinct: usize,
+        pub caches_cleared: u64,
+        pub lookups: u64,
+        pub hits: u64,
+    }
+
+    /// Counts since the last call, then reset.
+    pub(crate) fn take() -> LayoutCounts {
+        LayoutCounts {
+            computed: COMPUTED.with(|count| count.replace(0)),
+            distinct: DISTINCT.with(|seen| {
+                let mut seen = seen.borrow_mut();
+                let len = seen.len();
+                seen.clear();
+                len
+            }),
+            caches_cleared: CACHES_CLEARED.with(|count| count.replace(0)),
+            lookups: LOOKUPS.with(|count| count.replace(0)),
+            hits: HITS.with(|count| count.replace(0)),
+        }
+    }
+}
+
 pub(crate) mod construct;
 pub(crate) mod damage;
 pub(crate) mod inline;

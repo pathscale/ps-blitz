@@ -12,6 +12,7 @@ use crate::{
     Attribute, BaseDocument, Document, ElementData, Node, NodeData, QualName, local_name, qual_name,
 };
 use blitz_traits::shell::Viewport;
+use markup5ever::ns;
 use style::Atom;
 use style::invalidation::element::restyle_hints::RestyleHint;
 use style::stylesheets::OriginSet;
@@ -87,6 +88,25 @@ impl DocumentMutator<'_> {
             mutations_occurred: false,
             #[cfg(feature = "autofocus")]
             node_to_autofocus: None,
+        }
+    }
+
+    #[cfg(feature = "svg")]
+    fn mark_containing_svg_for_reconstruction(&mut self, node_id: NodeId) {
+        let mut current = Some(node_id);
+        while let Some(id) = current {
+            let node = &self.doc.nodes[id];
+            let is_svg_root = node.element_data().is_some_and(|element| {
+                element.name.ns == ns!(svg) && element.name.local == local_name!("svg")
+            });
+            let parent = node.parent;
+            if is_svg_root {
+                let svg = &mut self.doc.nodes[id];
+                svg.insert_damage(ALL_DAMAGE);
+                svg.mark_ancestors_dirty();
+                return;
+            }
+            current = parent;
         }
     }
 
@@ -781,7 +801,7 @@ impl<'doc> DocumentMutator<'doc> {
             // Custom post-processing by element tag name
             let tag = element.name.local.as_ref();
             match tag {
-                "title" => self.title_node = Some(node_id),
+                "title" if element.name.ns == ns!(html) => self.title_node = Some(node_id),
                 "link" => self.eager_op_queue.push(SpecialOp::LoadStylesheet(node_id)),
                 "img" => self.eager_op_queue.push(SpecialOp::LoadImage(node_id)),
                 "iframe" => self.eager_op_queue.push(SpecialOp::LoadIframe(node_id)),
@@ -826,6 +846,14 @@ impl<'doc> DocumentMutator<'doc> {
             doc.clear_interaction_state_for_removed_node(node_id);
 
             let node = &mut doc.nodes[node_id];
+
+            // Clear the text selection if one of its endpoints references this node.
+            // This prevents stale selection endpoint references.
+            if doc.text_selection.anchor.node_or_parent == Some(node_id)
+                || doc.text_selection.focus.node_or_parent == Some(node_id)
+            {
+                doc.text_selection.clear();
+            }
 
             // Remove any snapshot for this node to prevent stale snapshot references
             // during style invalidation.
@@ -879,16 +907,12 @@ impl<'doc> DocumentMutator<'doc> {
             return;
         };
 
-        let Some(tag_name) = self.doc.nodes[node_id]
-            .data
-            .downcast_element()
-            .map(|elem| &elem.name.local)
-        else {
+        let Some(element) = self.doc.nodes[node_id].data.downcast_element() else {
             return;
         };
 
-        match tag_name.as_ref() {
-            "title" => self.title_node = Some(node_id),
+        match element.name.local.as_ref() {
+            "title" if element.name.ns == ns!(html) => self.title_node = Some(node_id),
             "style" => {
                 self.style_nodes.insert(node_id);
             }

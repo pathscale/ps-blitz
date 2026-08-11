@@ -337,12 +337,14 @@ impl BaseDocument {
             .width
             .map(|w| (w * scale) - pbw)
             .unwrap_or_else(|| {
-                // TODO: Cache content widths.
-                //
-                // This is a little tricky as the size of the inline boxes may depend on whether we are sizing under
-                // and a min-content or max-content constraint. So if we want to compute both widths in one pass then
-                // we need to store both a min-content and max-content size on each box.
-                let content_sizes = inline_layout.layout.calculate_content_widths();
+                // The inline boxes were re-measured under the current constraint just above,
+                // so this is the point at which the cache key (their widths) is up to date.
+                // `TextLayout::content_widths` reuses the previous result only when those
+                // widths are unchanged, which handles the tricky part of caching here: an
+                // inline box may measure differently under a min-content constraint than
+                // under a max-content one, so a single cached pair is not valid for every
+                // constraint once inline boxes are involved.
+                let content_sizes = inline_layout.content_widths();
                 let min_content_width = content_sizes.min;
                 let max_content_width = content_sizes.max;
 
