@@ -110,6 +110,81 @@ fn event_constructor(_: &JsValue, args: &[JsValue], context: &mut Context) -> Js
     Ok(event.into())
 }
 
+/// `CustomEvent`, which pages use to talk to themselves.
+///
+/// It has to be a real `Event` rather than a script-level shim: `dispatchEvent`
+/// downcasts its argument to [`EventRef`] and rejects anything else, so an
+/// object shaped like an event but built in JavaScript is a `TypeError` at the
+/// point of dispatch rather than at the point of construction.
+///
+/// The constructor shares `Event.prototype` instead of introducing one that
+/// inherits from it. The visible consequence is that `event instanceof
+/// CustomEvent` is true for any event, which no page has been observed to test;
+/// what pages do test is `event.detail`, and that is carried faithfully.
+pub(crate) fn register_custom_event_constructor(proto: &JsObject, context: &mut Context) {
+    context
+        .register_global_callable(
+            boa_engine::js_string!("CustomEvent"),
+            1,
+            NativeFunction::from_fn_ptr(custom_event_constructor),
+        )
+        .expect("failed to register CustomEvent constructor");
+    let global = context.global_object().clone();
+    let constructor = global
+        .get(boa_engine::js_string!("CustomEvent"), context)
+        .expect("CustomEvent constructor missing")
+        .as_object()
+        .expect("CustomEvent is not an object");
+    constructor
+        .set(
+            boa_engine::js_string!("prototype"),
+            proto.clone(),
+            true,
+            context,
+        )
+        .expect("failed to set CustomEvent prototype");
+}
+
+fn custom_event_constructor(
+    _: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let event_type = args.first().ok_or_else(|| {
+        JsNativeError::typ().with_message("CustomEvent constructor requires a type")
+    })?;
+    let event_type = to_rust_string(event_type, context)?;
+    let init = args.get(1).and_then(JsValue::as_object);
+    let (bubbles, cancelable, composed, detail) = match &init {
+        Some(init) => (
+            init.get(boa_engine::js_string!("bubbles"), context)?
+                .to_boolean(),
+            init.get(boa_engine::js_string!("cancelable"), context)?
+                .to_boolean(),
+            init.get(boa_engine::js_string!("composed"), context)?
+                .to_boolean(),
+            init.get(boa_engine::js_string!("detail"), context)?,
+        ),
+        None => (false, false, false, JsValue::null()),
+    };
+    let ctx = dom_ctx(context)?;
+    let event = create_event(
+        &ctx,
+        &event_type,
+        bubbles,
+        cancelable,
+        &JsValue::null(),
+        context,
+    );
+    define_value(&event, "composed", JsValue::from(composed), context);
+    define_value(&event, "isTrusted", JsValue::from(false), context);
+    define_value(&event, "eventPhase", JsValue::from(0), context);
+    // `detail` defaults to null rather than undefined, which is what a page
+    // reading `event.detail ?? fallback` expects.
+    define_value(&event, "detail", detail, context);
+    Ok(event.into())
+}
+
 fn event_ref<T>(this: &JsValue, f: impl FnOnce(&EventRef) -> T) -> Option<T> {
     this.as_object()
         .and_then(|obj| obj.downcast_ref::<EventRef>().map(|event| f(&event)))

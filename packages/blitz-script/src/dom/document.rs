@@ -205,6 +205,55 @@ fn create_text_node(this: &JsValue, args: &[JsValue], context: &mut Context) -> 
     Ok(node_wrapper(&ctx, node_id, context).into())
 }
 
+/// `new Text("...")`, the constructor form of `document.createTextNode`.
+///
+/// Rarely called directly, but frameworks reference the global to test node
+/// types, and a missing global is a `ReferenceError` at module scope: the whole
+/// bundle dies before it renders, which looks exactly like a blank page rather
+/// than like a missing API.
+/// The prototype has to be attached, not just the callable. `register_global_callable`
+/// alone produces a function with no `prototype` property, and `class X extends
+/// Text` then fails with "superclass prototype must be an object or null",
+/// which is how pathscale.com's bundle died after `Text` itself existed.
+pub(crate) fn register_text_constructor(proto: &JsObject, context: &mut Context) {
+    context
+        .register_global_callable(
+            boa_engine::js_string!("Text"),
+            1,
+            boa_engine::NativeFunction::from_fn_ptr(text_constructor),
+        )
+        .expect("failed to register Text constructor");
+    let global = context.global_object().clone();
+    let constructor = global
+        .get(boa_engine::js_string!("Text"), context)
+        .expect("Text constructor missing")
+        .as_object()
+        .expect("Text is not an object");
+    constructor
+        .set(
+            boa_engine::js_string!("prototype"),
+            proto.clone(),
+            true,
+            context,
+        )
+        .expect("failed to set Text prototype");
+}
+
+fn text_constructor(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    // An omitted argument makes an empty text node, per the DOM spec, rather
+    // than the string "undefined".
+    let text = match args.first() {
+        Some(value) if !value.is_undefined() => to_rust_string(value, context)?,
+        _ => String::new(),
+    };
+    let node_id = {
+        let mut doc = ctx.doc.borrow_mut();
+        doc.mutate().create_text_node(&text)
+    };
+    Ok(node_wrapper(&ctx, node_id, context).into())
+}
+
 fn create_comment(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let _ = this_node_id(this)?;
