@@ -141,6 +141,27 @@ impl ElementCx<'_, '_> {
 
         for idx in (0..layer_count).rev() {
             let layer = ImageLayerStyles::from_background(bg_styles, image_data, idx);
+
+            // `background-image: none` is still a layer as far as CSS is
+            // concerned, and every element has at least one, so this loop runs
+            // for the whole document. Drawing it does nothing (see the `None`
+            // arm of `draw_image_layer`), but clipping it cost a path
+            // allocation and a clip layer each: 314 of the 351 layers in a
+            // measured scene were these, drawing nothing.
+            //
+            // Masks push unconditionally for a real reason, documented at that
+            // call site: compositing an empty layer with `intersect` clears the
+            // mask built so far. Background layers composite source-over, so a
+            // layer that draws nothing contributes nothing and can be skipped.
+            //
+            // Only `None` is skipped. The other arms that currently draw
+            // nothing are unimplemented rather than empty and will draw once
+            // they are, so leaving them alone keeps this from quietly becoming
+            // wrong later.
+            if matches!(layer.stylo_image, GenericImage::None) {
+                continue;
+            }
+
             let background_clip_path = self.box_path(layer.clip);
 
             self.context.layer_manager.maybe_with_layer(
