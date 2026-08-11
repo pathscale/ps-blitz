@@ -847,6 +847,29 @@ impl<'doc> DocumentMutator<'doc> {
 
             let node = &mut doc.nodes[node_id];
 
+            // Same for focus and for the node the last press landed on.
+            //
+            // These two were missed, and they are the two most likely to point
+            // at a node that is being removed: dismissing a panel is a click on
+            // a control *inside* it, so that control is both the focused node
+            // and the mousedown node at the moment its subtree goes away.
+            //
+            // A stale id here is not inert. The next click calls `set_focus_to`,
+            // which blurs the old node by indexing it, and indexing a dropped
+            // id panics inside the event handler. The window then stops
+            // responding to clicks until something forces a full rebuild.
+            //
+            // The upstream fix carried a second failure mode, the blur landing
+            // on whatever node had taken the recycled slot. That one cannot
+            // happen here: `NodeId` is versioned, so a dropped id resolves to
+            // nothing rather than aliasing its successor.
+            if doc.focus_node_id == Some(node_id) {
+                doc.focus_node_id = None;
+            }
+            if doc.mousedown_node_id == Some(node_id) {
+                doc.mousedown_node_id = None;
+            }
+
             // Clear the text selection if one of its endpoints references this node.
             // This prevents stale selection endpoint references.
             if doc.text_selection.anchor.node_or_parent == Some(node_id)
@@ -1238,6 +1261,44 @@ mod test {
         document.set_media_type(MediaType::print());
         assert_eq!(*document.media_type(), MediaType::print());
         assert_eq!(document.stylist_device().media_type(), MediaType::print());
+    }
+
+    #[test]
+    fn removing_a_node_forgets_it_as_focused_and_pressed() {
+        // Dismissing a panel is a click on a control inside it, so at that
+        // moment the control is both the focused node and the mousedown node,
+        // and then its subtree goes away. Removal used to clear hover, active
+        // and the selection endpoints but leave these two, and the next click
+        // indexed a dropped id and panicked inside the event handler.
+        let mut document = BaseDocument::new(DocumentConfig::default());
+        let button = document.create_node(NodeData::Element(Box::new(ElementData::new(
+            qual_name!("button"),
+            Vec::new(),
+        ))));
+        let root = document.root_node().id;
+
+        let mut mutator = document.mutate();
+        mutator.append_children(root, &[button]);
+        drop(mutator);
+
+        document.set_focus_to(button);
+        document.set_mousedown_node_id(Some(button));
+        assert_eq!(document.get_focussed_node_id(), Some(button));
+        assert_eq!(document.mousedown_node_id, Some(button));
+
+        let mut mutator = document.mutate();
+        mutator.remove_node(button);
+        drop(mutator);
+
+        assert_eq!(
+            document.get_focussed_node_id(),
+            None,
+            "a removed node must not stay focused"
+        );
+        assert_eq!(
+            document.mousedown_node_id, None,
+            "a removed node must not stay the pressed node"
+        );
     }
 
     #[test]

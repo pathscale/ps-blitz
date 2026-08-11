@@ -1478,7 +1478,16 @@ impl BaseDocument {
         }
     }
 
+    /// Snapshot a node and act on it, if it is still there.
+    ///
+    /// Tolerant of a node that has gone, because the ids reaching this are
+    /// remembered across events — focus, hover, the last press — and the node
+    /// they name can be removed between one event and the next. Indexing
+    /// directly turned that ordinary case into a panic inside an event handler.
     pub fn snapshot_node_and(&mut self, node_id: NodeId, cb: impl FnOnce(&mut Node)) {
+        if !self.nodes.contains_key(node_id) {
+            return;
+        }
         self.snapshot_node(node_id);
         cb(&mut self.nodes[node_id]);
     }
