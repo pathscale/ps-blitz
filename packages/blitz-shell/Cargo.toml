@@ -19,16 +19,22 @@ accessibility = [
 ]
 clipboard = ["dep:arboard"]
 tracing = ["dep:tracing", "blitz-dom/tracing"]
+debug-control = ["dep:blitz-script", "blitz-script/debug-control"]
+svg = ["blitz-paint/svg"]
 file-dialog = ["dep:rfd"]
 # Enables a data-uri-only NetProvider. Only needed if you aren't using the regular NetProvider
 data-uri = ["dep:data-url"]
 custom-widget = ["blitz-dom/custom-widget"]
+
+[lib]
+name = "blitz_shell"
 
 [dependencies]
 # Blitz dependencies
 blitz-traits = { workspace = true }
 blitz-dom = { workspace = true }
 blitz-paint = { workspace = true }
+blitz-script = { workspace = true, optional = true }
 anyrender = { workspace = true }
 
 # Windowing & Input

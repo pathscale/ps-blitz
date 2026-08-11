@@ -39,6 +39,9 @@ scrollbars = []
 parallel-construct = []
 log-phase-times = ["debug_timer/enable"]
 
+[lib]
+name = "blitz_dom"
+
 [dependencies]
 # Blitz dependencies
 blitz-traits = { workspace = true }

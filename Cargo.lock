@@ -6092,6 +6092,7 @@ dependencies = [
  "futures-util",
  "keyboard-types 0.7.0",
  "ps-blitz-dom",
+ "ps-blitz-script",
  "ps-blitz-traits",
  "rfd",
  "tracing",
