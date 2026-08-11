@@ -617,12 +617,52 @@ impl BaseDocument {
         for result in results {
             match result.data {
                 ConstructionTaskResultData::InlineLayout(layout) => {
-                    self.nodes[result.node_id].cache_mut().clear();
+                    // The node and every layout ancestor. The shaped layout
+                    // that lands here has not been broken into lines yet, and
+                    // an ancestor still holding a cached layout never descends,
+                    // so clearing this node alone leaves the fresh unbroken
+                    // layout in place with nothing to break it. Non-atomic
+                    // inline elements then report geometry from a single line
+                    // as wide as the whole paragraph.
+                    //
+                    // `layout_parent`, not `parent`: taffy walks the layout
+                    // tree, and anonymous blocks make the two chains differ.
+                    let mut current = Some(result.node_id);
+                    while let Some(id) = current {
+                        let Some(node) = self.nodes.get_mut(id) else {
+                            break;
+                        };
+                        node.cache_mut().clear();
+                        current = node.layout_parent.get().or(node.parent);
+                    }
                     self.nodes[result.node_id]
                         .element_data_mut()
                         .unwrap()
                         .inline_layout_data = Some(layout);
                 }
+            }
+        }
+
+        // A rebuilt inline layout has not been broken into lines: it is one
+        // line as wide as its content until a layout pass runs over it, and
+        // non-atomic inline elements read their geometry straight out of it.
+        //
+        // Measured: the layout pass itself is correct every time it runs
+        // (`ws=Collapse wrap=Wrap layout_w=700.7 lines=3` inside a 713px
+        // block). What went wrong is that a later resolve rebuilt the layout
+        // and no pass ran over the new one, leaving a block four lines tall
+        // over a text layout that was one line 1,742px wide, with its `<code>`
+        // and `<strong>` boxes up to 987px outside the pane.
+        //
+        // Clearing the caches on the rebuilt nodes and their ancestors was not
+        // enough, so this drops every layout cache for the resolve that
+        // rebuilt anything. That is what non-incremental mode does on every
+        // resolve, and the spill does not happen there. It costs a full layout
+        // on resolves that reconstruct, which are rare next to the ones that
+        // do not.
+        if !self.deferred_construction_nodes.is_empty() {
+            for (_, node) in self.nodes.iter_mut() {
+                node.cache_mut().clear();
             }
         }
 

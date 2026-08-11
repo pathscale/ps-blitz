@@ -64,6 +64,21 @@ pub struct TextLayout {
     pub text: String,
     pub content_widths: Option<CachedContentWidths>,
     pub layout: parley::layout::Layout<TextBrush>,
+    /// The width the lines were last broken at *by a layout pass*, in device
+    /// pixels.
+    ///
+    /// Measuring re-breaks the same layout at trial widths and stores the
+    /// result back on the node, so the state left behind belongs to whichever
+    /// pass ran last, and that is often a max-content measurement rather than
+    /// the layout. Non-atomic inline elements read their geometry straight out
+    /// of this layout, so they then report boxes from a line that is not on
+    /// screen: measured on a live transcript as a block 713px wide and three
+    /// lines tall sitting over a single line 1,742px wide, with its `<code>`
+    /// and `<strong>` boxes up to 987px outside the pane.
+    ///
+    /// Recording it lets a measuring pass put the lines back where layout left
+    /// them.
+    pub laid_out_at: Option<f32>,
 }
 
 impl TextLayout {

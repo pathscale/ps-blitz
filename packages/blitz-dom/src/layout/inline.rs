@@ -730,18 +730,29 @@ impl BaseDocument {
         {
             let boxes = inline_layout.layout.inline_boxes().len();
             {
+                let ws = self.nodes[node_id]
+                    .primary_styles()
+                    .map(|s| format!("{:?}", s.get_inherited_text().clone_white_space_collapse()))
+                    .unwrap_or_default();
+                let wrap = self.nodes[node_id]
+                    .primary_styles()
+                    .map(|s| format!("{:?}", s.get_inherited_text().clone_text_wrap_mode()))
+                    .unwrap_or_default();
                 eprintln!(
-                    "inline-layout node={:?} boxes={boxes} broke_at={:.1} known={:?} avail={:?} final={:.1}",
+                    "inline-layout node={:?} boxes={boxes} broke_at={:.1} known={:?} avail={:?} final={:.1} ws={ws} wrap={wrap} layout_w={:.1} lines={}",
                     node_id,
                     width / scale,
                     inputs.known_dimensions.width,
                     inputs.available_space.width,
                     final_size.width,
+                    inline_layout.layout.width() / scale,
+                    inline_layout.layout.len(),
                 );
             }
         }
 
         if inputs.run_mode == taffy::RunMode::PerformLayout {
+            inline_layout.laid_out_at = Some(width);
             for line in inline_layout.layout.lines() {
                 for item in line.items() {
                     if let parley::layout::PositionedLayoutItem::InlineBox(ibox) = item {
@@ -871,6 +882,35 @@ impl BaseDocument {
             .lines()
             .next()
             .map(|line| (line.metrics().baseline / scale) + container_pb.top);
+
+        // A measuring pass must not leave the lines broken at a trial width.
+        //
+        // `ComputeSize` on the vertical axis falls through the early return
+        // above and re-breaks the same layout to answer "how tall would this be
+        // at width W", which for a max-content trial is the whole paragraph on
+        // one line. That result is then stored back on the node, and whichever
+        // pass ran last wins. Non-atomic inline elements read their geometry
+        // straight out of this layout, so a `<code>` or an item chip ends up
+        // reported on a line that is not the one on screen: measured on a live
+        // transcript as a block 713px wide and three lines tall over a single
+        // line 1,742px wide, with boxes up to 987px past the pane.
+        //
+        // So put them back where the last layout pass left them. The shaped
+        // runs are unchanged, only the line breaks, and re-breaking is cheap
+        // next to shaping.
+        if inputs.run_mode != taffy::RunMode::PerformLayout {
+            if let Some(previous) = inline_layout.laid_out_at {
+                if (previous - width).abs() > 0.5 {
+                    inline_layout.layout.break_all_lines(Some(previous));
+                    inline_layout.layout.align(
+                        alignment,
+                        AlignmentOptions {
+                            align_when_overflowing: false,
+                        },
+                    );
+                }
+            }
+        }
 
         // Put layout back
         self.nodes[node_id]
