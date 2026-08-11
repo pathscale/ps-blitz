@@ -254,6 +254,53 @@ pub fn latest_script_stats() -> Option<ScriptStatsSnapshot> {
     })
 }
 
+/// Times a scope and attributes it on drop.
+///
+/// Every early return and `?` in a DOM binding is an exit path, and a manual
+/// stopwatch would miss most of them. This cannot.
+///
+/// Compiled out unless the `dom-stats` feature is on. The clock reads alone are
+/// two `mach_absolute_time` calls per DOM operation, which a release build has
+/// no reader for and should not pay. `debug-control` turns it on, so inspector
+/// builds keep the attribution; it can also be enabled by itself to profile a
+/// build shaped like the shipping one.
+#[cfg(feature = "dom-stats")]
+pub struct Timed {
+    label: &'static str,
+    started: std::time::Instant,
+}
+
+#[cfg(feature = "dom-stats")]
+impl Timed {
+    #[must_use]
+    pub fn new(label: &'static str) -> Self {
+        Self {
+            label,
+            started: std::time::Instant::now(),
+        }
+    }
+}
+
+#[cfg(feature = "dom-stats")]
+impl Drop for Timed {
+    fn drop(&mut self) {
+        record_static(self.label, self.started.elapsed());
+    }
+}
+
+/// The zero-cost stand-in. Same call sites, no clock, no bucket, no drop glue.
+#[cfg(not(feature = "dom-stats"))]
+pub struct Timed;
+
+#[cfg(not(feature = "dom-stats"))]
+impl Timed {
+    #[must_use]
+    #[inline(always)]
+    pub fn new(_label: &'static str) -> Self {
+        Self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,52 +388,5 @@ mod tests {
         assert_eq!(stats.window_polls, 1);
         assert_eq!(stats.total_polls, 11);
         assert_eq!(stats.productive_polls, 1);
-    }
-}
-
-/// Times a scope and attributes it on drop.
-///
-/// Every early return and `?` in a DOM binding is an exit path, and a manual
-/// stopwatch would miss most of them. This cannot.
-///
-/// Compiled out unless the `dom-stats` feature is on. The clock reads alone are
-/// two `mach_absolute_time` calls per DOM operation, which a release build has
-/// no reader for and should not pay. `debug-control` turns it on, so inspector
-/// builds keep the attribution; it can also be enabled by itself to profile a
-/// build shaped like the shipping one.
-#[cfg(feature = "dom-stats")]
-pub struct Timed {
-    label: &'static str,
-    started: std::time::Instant,
-}
-
-#[cfg(feature = "dom-stats")]
-impl Timed {
-    #[must_use]
-    pub fn new(label: &'static str) -> Self {
-        Self {
-            label,
-            started: std::time::Instant::now(),
-        }
-    }
-}
-
-#[cfg(feature = "dom-stats")]
-impl Drop for Timed {
-    fn drop(&mut self) {
-        record_static(self.label, self.started.elapsed());
-    }
-}
-
-/// The zero-cost stand-in. Same call sites, no clock, no bucket, no drop glue.
-#[cfg(not(feature = "dom-stats"))]
-pub struct Timed;
-
-#[cfg(not(feature = "dom-stats"))]
-impl Timed {
-    #[must_use]
-    #[inline(always)]
-    pub fn new(_label: &'static str) -> Self {
-        Self
     }
 }

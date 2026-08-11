@@ -1,6 +1,4 @@
-use crate::{
-    BaseDocument, node::GeneratedTextInputEvent, util::ACTION_MOD, util::has_clipboard_modifier,
-};
+use crate::{BaseDocument, node::GeneratedTextInputEvent, util::has_clipboard_modifier};
 use blitz_traits::node_id::NodeId;
 use blitz_traits::{
     SmolStr,

@@ -17,7 +17,7 @@ use std::cell::{Cell, RefCell};
 use std::fmt::Write;
 use std::ops::Deref;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use style::Atom;
 use style::computed_values::isolation::T as Isolation;
 use style::invalidation::element::restyle_hints::RestyleHint;
