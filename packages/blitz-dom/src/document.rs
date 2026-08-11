@@ -396,17 +396,22 @@ pub(crate) fn make_device(
 
 /// Whether layout reuses its caches, and how that can be overridden at runtime.
 ///
-/// Compiled default comes from the `incremental` feature. The environment
-/// override exists so a single build can be measured both ways: with the flag
-/// off every `resolve` clears the Taffy cache and re-shapes every inline root
-/// from scratch, so comparing the two in separate binaries would also compare
-/// two different compilations. `BLITZ_INCREMENTAL=0` forces the old behaviour,
-/// `=1` forces the new one.
+/// Incremental layout is on unless a caller or the environment turns it off.
+///
+/// The environment override exists so a single build can be measured both ways:
+/// with it off every `resolve` clears the Taffy cache and re-shapes every inline
+/// root from scratch, so comparing the two in separate binaries would also
+/// compare two different compilations. `BLITZ_INCREMENTAL=0` forces the old
+/// behaviour, `=1` forces the new one.
+///
+/// This used to fall back to `cfg!(feature = "incremental")`. That feature is
+/// gone, replaced by `DocumentConfig::incremental`, and for a while afterwards
+/// this function was never called at all: the config read
+/// `unwrap_or(true)` directly, so `BLITZ_INCREMENTAL` was accepted and ignored.
 fn incremental_layout_default() -> bool {
     match std::env::var("BLITZ_INCREMENTAL").ok().as_deref() {
         Some("0" | "false" | "off") => false,
-        Some(_) => true,
-        None => cfg!(feature = "incremental"),
+        _ => true,
     }
 }
 
@@ -495,7 +500,9 @@ impl BaseDocument {
             viewport,
             media_type,
             style_threading: config.style_threading,
-            incremental_layout: config.incremental.unwrap_or(true),
+            incremental_layout: config
+                .incremental
+                .unwrap_or_else(incremental_layout_default),
             subdocument_depth: config.subdocument_depth,
             devtool_settings: DevtoolSettings::default(),
             viewport_scroll: crate::Point::ZERO,
