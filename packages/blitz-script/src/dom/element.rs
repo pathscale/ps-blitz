@@ -993,66 +993,63 @@ fn set_scroll_axis(
     Ok(JsValue::undefined())
 }
 
-fn get_scroll_width(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+/// Read one of the box-metric properties, in the units the DOM promises.
+///
+/// `scrollWidth`, `scrollHeight`, `clientWidth` and `clientHeight` are defined
+/// in *unzoomed* CSS pixels, while layout stores the zoomed result. Returning
+/// the zoomed number quietly breaks the commonest autosizing idiom there is:
+///
+///   el.style.height = "auto";
+///   el.style.height = `${el.scrollHeight}px`;
+///
+/// The measurement comes back zoomed, is written into a declaration that Stylo
+/// zooms again, and the element grows by the zoom factor on every pass. Under
+/// the composer's 1.08 UI scale that is 8% per keystroke: the prompt box drifts
+/// away from its own text and pushes the controls down until it hits its
+/// max-height. `getBoundingClientRect` is the deliberate exception, and stays
+/// zoomed — it reports viewport coordinates, not CSS box metrics.
+fn box_metric(
+    this: &JsValue,
+    context: &mut Context,
+    measure: impl Fn(&blitz_dom::Node) -> f32,
+) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     // Geometry is only meaningful after layout has caught up with the
     // mutations script already made. See DomCtx::flush_layout.
     ctx.flush_layout();
     let node_id = this_node_id(this)?;
-    let value = ctx
-        .doc
-        .borrow()
+    let doc = ctx.doc.borrow();
+    let value = doc
         .get_node(node_id)
-        .map(|node| f64::from(node.final_layout().size.width + node.final_layout().scroll_width()))
+        .map(|node| {
+            let measured = measure(node);
+            match node.primary_styles() {
+                Some(styles) => styles.effective_zoom.unzoom(measured),
+                None => measured,
+            }
+        })
         .unwrap_or(0.0);
-    Ok(JsValue::from(value))
+    Ok(JsValue::from(f64::from(value)))
+}
+
+fn get_scroll_width(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    box_metric(this, context, |node| {
+        node.final_layout().size.width + node.final_layout().scroll_width()
+    })
 }
 
 fn get_scroll_height(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let ctx = dom_ctx(context)?;
-    // Geometry is only meaningful after layout has caught up with the
-    // mutations script already made. See DomCtx::flush_layout.
-    ctx.flush_layout();
-    let node_id = this_node_id(this)?;
-    let value = ctx
-        .doc
-        .borrow()
-        .get_node(node_id)
-        .map(|node| {
-            f64::from(node.final_layout().size.height + node.final_layout().scroll_height())
-        })
-        .unwrap_or(0.0);
-    Ok(JsValue::from(value))
+    box_metric(this, context, |node| {
+        node.final_layout().size.height + node.final_layout().scroll_height()
+    })
 }
 
 fn get_client_width(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let ctx = dom_ctx(context)?;
-    // Geometry is only meaningful after layout has caught up with the
-    // mutations script already made. See DomCtx::flush_layout.
-    ctx.flush_layout();
-    let node_id = this_node_id(this)?;
-    let value = ctx
-        .doc
-        .borrow()
-        .get_node(node_id)
-        .map(|node| f64::from(node.final_layout().size.width))
-        .unwrap_or(0.0);
-    Ok(JsValue::from(value))
+    box_metric(this, context, |node| node.final_layout().size.width)
 }
 
 fn get_client_height(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let ctx = dom_ctx(context)?;
-    // Geometry is only meaningful after layout has caught up with the
-    // mutations script already made. See DomCtx::flush_layout.
-    ctx.flush_layout();
-    let node_id = this_node_id(this)?;
-    let value = ctx
-        .doc
-        .borrow()
-        .get_node(node_id)
-        .map(|node| f64::from(node.final_layout().size.height))
-        .unwrap_or(0.0);
-    Ok(JsValue::from(value))
+    box_metric(this, context, |node| node.final_layout().size.height)
 }
 
 fn get_bounding_client_rect(

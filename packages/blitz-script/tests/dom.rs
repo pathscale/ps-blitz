@@ -1295,3 +1295,53 @@ fn document_get_selection_is_callable_when_nothing_is_selected() {
         })
     );
 }
+#[test]
+fn box_metrics_are_reported_in_unzoomed_css_pixels() {
+    // `scrollHeight` is defined in CSS pixels, so a zoomed element must report
+    // the same number an unzoomed one would. Returning the zoomed layout height
+    // breaks the standard autosize idiom — measure `scrollHeight`, write it back
+    // into `style.height` — because the write is zoomed a second time and the
+    // element grows by the zoom factor on every pass. `getBoundingClientRect`
+    // is the exception and stays in zoomed viewport coordinates.
+    let mut doc = ScriptDocument::from_html(
+        r#"
+        <div id="root" style="zoom: 2">
+            <div id="box" style="width: 100px; height: 50px; overflow: auto">
+                <div style="width: 300px; height: 150px"></div>
+            </div>
+        </div>
+        "#,
+        DocumentConfig {
+            viewport: Some(Viewport::new(2000, 1000, 1.0, ColorScheme::Light)),
+            ..DocumentConfig::default()
+        },
+    );
+    doc.execute_scripts();
+    doc.inner_mut().resolve(0.0);
+
+    let metrics = doc
+        .eval_json(
+            r#"
+            const box = document.getElementById("box");
+            ({
+                clientWidth: box.clientWidth,
+                clientHeight: box.clientHeight,
+                scrollWidth: box.scrollWidth,
+                scrollHeight: box.scrollHeight,
+                rectHeight: box.getBoundingClientRect().height,
+            })
+            "#,
+        )
+        .expect("zoomed box metrics should evaluate");
+
+    assert_eq!(
+        metrics,
+        serde_json::json!({
+            "clientWidth": 100.0,
+            "clientHeight": 50.0,
+            "scrollWidth": 300.0,
+            "scrollHeight": 150.0,
+            "rectHeight": 100.0,
+        })
+    );
+}
