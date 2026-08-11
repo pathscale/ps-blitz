@@ -314,6 +314,11 @@ fn append_child(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsRe
     drop(mutr);
     drop(doc);
 
+    // An element created after its class was defined is upgraded on insertion,
+    // which is also when `connectedCallback` is due. Without this only the
+    // elements present when `define` ran would ever get the class.
+    super::custom_elements::upgrade_if_defined(&ctx, child_id, context)?;
+
     Ok(args[0].clone())
 }
 
@@ -349,6 +354,9 @@ fn append(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<J
             mutr.remove_node(child_id);
         }
         mutr.append_children(parent_id, &[child_id]);
+        drop(mutr);
+        drop(doc);
+        super::custom_elements::upgrade_if_defined(&ctx, child_id, context)?;
     }
     Ok(JsValue::undefined())
 }

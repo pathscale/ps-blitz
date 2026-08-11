@@ -254,6 +254,31 @@ impl ScriptRuntime {
             .build();
         register_global(&mut context, "navigator", navigator.into());
 
+        // `customElements`
+        //
+        // Absent entirely before this, so `customElements.define(...)` threw a
+        // ReferenceError out of whatever module ran it. A framework that
+        // registers its components at import time loses that whole module, and
+        // the page renders as unstyled markup or not at all.
+        let custom_elements = ObjectInitializer::new(&mut context)
+            .function(
+                NativeFunction::from_fn_ptr(crate::dom::custom_elements::define),
+                js_string!("define"),
+                2,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(crate::dom::custom_elements::get),
+                js_string!("get"),
+                1,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(crate::dom::custom_elements::get_name),
+                js_string!("getName"),
+                1,
+            )
+            .build();
+        register_global(&mut context, "customElements", custom_elements.into());
+
         // `performance`
         let performance = ObjectInitializer::new(&mut context)
             .function(
