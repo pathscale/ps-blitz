@@ -1973,3 +1973,69 @@ fn removing_the_focused_node_does_not_poison_later_focus() {
         .expect("the other button exists");
     assert_eq!(doc.inner().get_focussed_node_id(), Some(other));
 }
+
+#[test]
+fn editing_an_existing_text_node_relays_out_its_container() {
+    // The streaming path, which nothing else here covers.
+    //
+    // Solid does not replace a text node per token; it writes the new string
+    // into the one already there, so `element.textContent = ...` is the wrong
+    // route to test with. That takes the branch which removes children and
+    // creates a fresh node. Writing `.data` on the text node itself is what a
+    // streaming reply actually does, and it is the only thing that reaches
+    // `BaseDocument::set_node_text`.
+    //
+    // Worth stating plainly because it was measured: before this test, that
+    // function had zero coverage across the DOM suite, while carrying the
+    // damage decision for every token the agent writes.
+    let mut doc = ScriptDocument::from_html(
+        r#"
+        <style>
+          body { margin: 0; width: 900px; font: 16px monospace }
+          #column { display: flex; flex-direction: column }
+          #bubble { display: flex; flex-direction: column; align-self: flex-start; max-width: 88% }
+        </style>
+        <div style="width: 900px"><div id="column"><div id="bubble">short</div></div></div>
+        "#,
+        DocumentConfig {
+            viewport: Some(Viewport::new(900, 600, 1.0, ColorScheme::Light)),
+            ..DocumentConfig::default()
+        },
+    );
+    doc.execute_scripts();
+    doc.inner_mut().resolve(0.0);
+
+    let sizes = doc
+        .eval_json(
+            r#"
+            const bubble = document.getElementById("bubble");
+            const node = bubble.firstChild;
+            const before = bubble.clientWidth;
+            const kind = node.nodeType;
+            node.data = "short and then a good deal more text arrived here";
+            ({ before, kind, width: bubble.clientWidth, scroll: bubble.scrollWidth })
+            "#,
+        )
+        .expect("bubble geometry should evaluate");
+
+    assert_eq!(
+        sizes["kind"].as_f64(),
+        Some(3.0),
+        "the edit must land on a text node, or it takes a different path: {sizes}"
+    );
+    let before = sizes["before"].as_f64().expect("before");
+    let width = sizes["width"].as_f64().expect("width");
+    let scroll = sizes["scroll"].as_f64().expect("scroll");
+    assert!(
+        before > 0.0,
+        "the box sizes itself to its first text: {sizes}"
+    );
+    assert!(
+        width > before,
+        "editing the text node in place must relay out its container: {sizes}"
+    );
+    assert!(
+        scroll <= width + 0.5,
+        "text must not overflow the box that sizes itself to it: {sizes}"
+    );
+}
