@@ -372,3 +372,60 @@ fn a_rounded_clip_still_cuts_its_corners() {
         "the middle of a rounded clipping box should still be painted"
     );
 }
+
+/// Cost of painting a long page scrolled near its end.
+///
+/// This is the case the viewport cull exists for and the one the frame budget
+/// above cannot see: everything above the viewport should be discarded before
+/// it is encoded. Run with the same command as `report_frame_cost`.
+#[test]
+#[ignore = "timing, run explicitly"]
+fn report_scrolled_frame_cost() {
+    use std::time::Instant;
+
+    let mut html = String::from("<html><body style='margin:0'>");
+    for i in 0..300 {
+        html.push_str(&format!(
+            "<section style='padding:8px;height:60px'><h2>Heading {i}</h2>\
+             <p>Some paragraph text that wraps across a couple of lines.</p>\
+             </section>"
+        ));
+    }
+    html.push_str("</body></html>");
+
+    let guard = PAINT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut doc = HtmlDocument::from_html(
+        &html,
+        DocumentConfig {
+            viewport: Some(Viewport::new(WIDTH, HEIGHT, 1.0, ColorScheme::Light)),
+            html_parser_provider: Some(Arc::new(HtmlProvider) as _),
+            ..Default::default()
+        },
+    );
+    doc.resolve(0.0);
+    // Near the bottom, so almost the whole document is above the viewport.
+    doc.set_viewport_scroll(blitz_dom::Point { x: 0.0, y: 20000.0 });
+    doc.resolve(0.0);
+
+    const ITERATIONS: u32 = 20;
+    let mut paint_total = std::time::Duration::ZERO;
+    for _ in 0..ITERATIONS {
+        let started = Instant::now();
+        let _ = render_to_buffer::<VelloCpuImageRenderer, _>(
+            |scene| paint_scene(scene, doc.as_mut(), 1.0, WIDTH, HEIGHT, 0, 0),
+            WIDTH,
+            HEIGHT,
+        );
+        paint_total += started.elapsed();
+    }
+    drop(guard);
+
+    // Measured with temporary counters at the cull site: 17 elements painted,
+    // 297 culled. Culling is healthy, so this number is not off-screen content
+    // being drawn — it is the CPU rasteriser, which is why the paint figure here
+    // is only ever a relative signal.
+    println!(
+        "\nscrolled to the bottom of 300 sections:\n  paint+encode {:.3}ms\n",
+        paint_total.as_secs_f64() * 1000.0 / f64::from(ITERATIONS),
+    );
+}
