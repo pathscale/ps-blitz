@@ -267,8 +267,8 @@ impl DebugController {
                         "kind": "svg",
                         "width": svg.tree.size().width(),
                         "height": svg.tree.size().height(),
-                        "intrinsicWidth": svg.intrinsic_width,
-                        "intrinsicHeight": svg.intrinsic_height,
+                        "intrinsicWidth": svg.intrinsic_width(),
+                        "intrinsicHeight": svg.intrinsic_height(),
                         "rootChildren": svg.tree.root().children().len(),
                         "contentBounds": {
                             "x": svg.tree.root().layer_bounding_box().x(),
@@ -493,19 +493,13 @@ impl DebugController {
         if many {
             match inner.query_selector_all(selector) {
                 Ok(ids) => success(Value::Array(
-                    ids.iter()
-                        .map(|id| {
-                            self.element_reference(*id, inner.get_node(*id).unwrap().instance_id)
-                        })
-                        .collect(),
+                    ids.iter().map(|id| self.element_reference(*id)).collect(),
                 )),
                 Err(error) => invalid(format!("invalid CSS selector: {error:?}")),
             }
         } else {
             match inner.query_selector(selector) {
-                Ok(Some(id)) => {
-                    success(self.element_reference(id, inner.get_node(id).unwrap().instance_id))
-                }
+                Ok(Some(id)) => success(self.element_reference(id)),
                 Ok(None) => error(
                     "no such element",
                     format!("no element matches {selector:?}"),
@@ -515,8 +509,13 @@ impl DebugController {
         }
     }
 
-    fn element_reference(&self, node_id: NodeId, instance_id: u64) -> Value {
-        json!({ELEMENT_KEY: format!("{}:{node_id}:{instance_id}", self.document_generation)})
+    /// A reference a client can hold across requests.
+    ///
+    /// This used to carry a separate `instance_id` because a node id was a bare
+    /// slot index that a later node could reuse. `NodeId` is versioned now and
+    /// carries that itself, so the raw `u64` is the whole reference.
+    fn element_reference(&self, node_id: NodeId) -> Value {
+        json!({ELEMENT_KEY: format!("{}:{}", self.document_generation, node_id.as_u64())})
     }
 
     fn element_command(
@@ -647,19 +646,19 @@ impl DebugController {
         let mut parts = reference.split(':');
         let generation = parts.next()?;
         let node_id = parts.next()?;
-        let instance_id = parts.next()?;
         if parts.next().is_some() {
             return None;
         }
         if generation.parse::<u64>().ok()? != self.document_generation {
             return None;
         }
-        let node_id = node_id.parse::<usize>().ok()?;
-        let instance_id = instance_id.parse::<u64>().ok()?;
+        // A stale id fails here rather than resolving: the version bits no
+        // longer match whatever node now holds the slot.
+        let node_id = NodeId::from_u64(node_id.parse::<u64>().ok()?);
         document
             .inner()
             .get_node(node_id)
-            .filter(|node| node.instance_id == instance_id && node.flags.is_in_document())
+            .filter(|node| node.flags.is_in_document())
             .map(|_| node_id)
     }
 
@@ -836,7 +835,7 @@ impl DebugController {
                 json!({
                     "nodeId": id,
                     "parentId": node.parent,
-                    "children": node.children,
+                    "children": node.children.iter().copied().collect::<Vec<_>>(),
                     "tagName": element.map(|value| value.name.local.to_string()),
                     "attributes": attributes,
                     "text": node.text_content(),
