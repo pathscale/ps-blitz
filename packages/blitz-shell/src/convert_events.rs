@@ -152,19 +152,6 @@ pub(crate) fn winit_key_location_to_kbt_location(location: WinitKeyLocation) -> 
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn macos_command_is_exposed_as_dom_meta_and_native_super() {
-        let modifiers = winit_modifiers_to_kbt_modifiers(WinitModifiers::META);
-
-        assert!(modifiers.contains(Modifiers::META));
-        assert!(modifiers.contains(Modifiers::SUPER));
-    }
-}
-
 #[allow(deprecated)] // Should cover all variants for conversion
 pub(crate) fn winit_physical_key_to_kbt_code(physical_key: &WinitPhysicalKey) -> Code {
     match physical_key {
@@ -709,5 +696,18 @@ pub(crate) fn winit_key_to_kbt_key(winit_key: &WinitKey) -> Key {
 
             _ => Key::Unidentified,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn macos_command_is_exposed_as_dom_meta_and_native_super() {
+        let modifiers = winit_modifiers_to_kbt_modifiers(WinitModifiers::META);
+
+        assert!(modifiers.contains(Modifiers::META));
+        assert!(modifiers.contains(Modifiers::SUPER));
     }
 }

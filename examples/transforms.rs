@@ -64,7 +64,6 @@ fn app() -> Element {
         {
             active_pointer.set(true);
             last.set([coords.x as f32, coords.y as f32]);
-            return;
         }
     };
     let onpointerup = move |_: Event<PointerData>| {

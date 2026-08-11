@@ -30,8 +30,7 @@ fn pixel(background: &str, x: usize, y: usize) -> [u8; 3] {
     let box_id = doc.query_selector("#box").unwrap().expect("#box");
     {
         // 200x100 solid red RGBA
-        let data: Vec<u8> = std::iter::repeat([255u8, 0, 0, 255])
-            .take(200 * 100)
+        let data: Vec<u8> = std::iter::repeat_n([255u8, 0, 0, 255], 200 * 100)
             .flatten()
             .collect();
         let node = doc.get_node_mut(box_id).unwrap();

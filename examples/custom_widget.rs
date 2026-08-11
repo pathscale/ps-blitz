@@ -116,14 +116,11 @@ impl Widget for DemoWidget {
     }
 
     fn handle_event(&mut self, event: &UiEvent) {
-        match event {
-            UiEvent::PointerMove(evt) => {
-                self.pos = Some(Point {
-                    x: evt.coords.page_x as f64,
-                    y: evt.coords.page_y as f64,
-                })
-            }
-            _ => {}
+        if let UiEvent::PointerMove(evt) = event {
+            self.pos = Some(Point {
+                x: evt.coords.page_x as f64,
+                y: evt.coords.page_y as f64,
+            })
         }
     }
 
@@ -160,7 +157,7 @@ impl Widget for DemoWidget {
         scene.fill(
             Fill::NonZero,
             rotation,
-            self.color.clone(),
+            self.color,
             None,
             &Rect::from_origin_size((0.0, 0.0), (w, h)),
         );

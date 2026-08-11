@@ -409,10 +409,10 @@ pub(crate) fn make_device(
 /// this function was never called at all: the config read
 /// `unwrap_or(true)` directly, so `BLITZ_INCREMENTAL` was accepted and ignored.
 fn incremental_layout_default() -> bool {
-    match std::env::var("BLITZ_INCREMENTAL").ok().as_deref() {
-        Some("0" | "false" | "off") => false,
-        _ => true,
-    }
+    !matches!(
+        std::env::var("BLITZ_INCREMENTAL").ok().as_deref(),
+        Some("0" | "false" | "off")
+    )
 }
 
 impl BaseDocument {

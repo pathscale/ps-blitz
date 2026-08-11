@@ -102,7 +102,7 @@ fn style_get_trap(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsRes
         {
             let bind = function.get(boa_engine::js_string!("bind"), context)?;
             if let Some(bind) = bind.as_object() {
-                return bind.call(&value, &[target.clone()], context);
+                return bind.call(&value, std::slice::from_ref(&target), context);
             }
         }
         return Ok(value);
