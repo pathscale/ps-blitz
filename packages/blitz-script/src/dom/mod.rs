@@ -285,10 +285,12 @@ pub(crate) fn init_protos(ctx: &DomCtx, context: &mut Context) {
     ctx.state.borrow_mut().protos = Some(DomProtos {
         node: node_proto,
         element: element_proto,
-        character_data: character_data_proto,
+        character_data: character_data_proto.clone(),
         document: document_proto,
         event: event_proto.clone(),
         style: style_proto,
     });
     event::register_event_constructor(&event_proto, context);
+    event::register_custom_event_constructor(&event_proto, context);
+    document::register_text_constructor(&character_data_proto, context);
 }

@@ -137,6 +137,54 @@ pub struct View<Rend: WindowRenderer> {
     // See https://github.com/rust-windowing/winit/issues/3406
     #[cfg(target_os = "ios")]
     pub ios_request_redraw: std::cell::Cell<bool>,
+
+    /// When the next animation-only frame is due, if one is.
+    ///
+    /// An animation drives frames by asking for the next redraw at the end of
+    /// the last one, which runs it at the display's rate. Set this instead of
+    /// asking immediately, and `about_to_wait` turns it into a
+    /// `ControlFlow::WaitUntil`, so the loop sleeps in between rather than
+    /// spinning. `None` means nothing is animating and the loop can wait
+    /// indefinitely for input.
+    pub animation_frame_due: std::cell::Cell<Option<Instant>>,
+}
+
+/// Frames per second to aim for on animation-only frames.
+///
+/// A browser cannot negotiate with the pages it renders: an arbitrary site's
+/// `animation: fade 2s infinite` otherwise pins the process at the display's
+/// refresh rate, repainting the whole window each time, for as long as the tab
+/// is open. 30fps is indistinguishable on the decorative animations this is
+/// aimed at.
+///
+/// This governs *animation-only* frames. Input, resize, navigation and every
+/// other event still redraw immediately, so nothing this clamps is something a
+/// user is waiting on.
+const ANIMATION_TARGET_FPS: u32 = 30;
+
+/// Used only when the display will not say what its refresh rate is.
+const ANIMATION_FALLBACK_INTERVAL: Duration = Duration::from_millis(33);
+
+/// The gap between animation-only frames, as a whole number of the display's
+/// own refresh intervals.
+///
+/// Rounding to a multiple of the refresh rate rather than picking a wall-clock
+/// constant: a fixed 33ms against an 8.3ms refresh is a period the display
+/// cannot hit, so frames land one refresh late at an irregular beat, and the
+/// clamp reads as jitter rather than as a lower frame rate. On a 120Hz display
+/// this is every 4th refresh, on 60Hz every 2nd, and both are exactly 30fps.
+fn animation_frame_interval() -> Duration {
+    let Some(millihertz) = crate::frame_stats::display_refresh_millihertz() else {
+        return ANIMATION_FALLBACK_INTERVAL;
+    };
+    let refresh_hz = f64::from(millihertz) / 1000.0;
+    if refresh_hz <= f64::from(ANIMATION_TARGET_FPS) {
+        // A display slower than the target cannot be clamped toward it, and
+        // asking for every refresh is what it would already be doing.
+        return Duration::from_secs_f64(1.0 / refresh_hz);
+    }
+    let every_nth = (refresh_hz / f64::from(ANIMATION_TARGET_FPS)).round().max(1.0);
+    Duration::from_secs_f64(every_nth / refresh_hz)
 }
 
 impl<Rend: WindowRenderer> Drop for View<Rend> {
@@ -250,6 +298,8 @@ impl<Rend: WindowRenderer> View<Rend> {
 
             #[cfg(target_os = "ios")]
             ios_request_redraw: std::cell::Cell::new(false),
+
+            animation_frame_due: std::cell::Cell::new(None),
         }
     }
 
@@ -467,7 +517,35 @@ impl<Rend: WindowRenderer> View<Rend> {
             .record(frame_started, resolve_time, paint_time, renderer_time);
 
         if !is_blocked && is_visible && is_animating {
+            // Due rather than requested. Requesting here is what runs an
+            // animation at the display's rate; `about_to_wait` waits out the
+            // remainder of the interval and asks then.
+            //
+            // Measured from when this frame *started*, not from now, so the
+            // interval covers the frame's own cost instead of following it. The
+            // other way round, a 6ms frame plus a 33ms wait is a 39ms cadence,
+            // and the clamp silently runs slower than it claims: 24fps measured
+            // where 30 was asked for.
+            self.animation_frame_due
+                .set(Some(frame_started + animation_frame_interval()));
+        } else {
+            self.animation_frame_due.set(None);
+        }
+    }
+
+    /// Ask for the pending animation frame if it is due, and report when the
+    /// next one falls due so the event loop can sleep until then.
+    ///
+    /// Returns `None` when nothing is animating, which lets the loop wait for
+    /// input instead of on a clock.
+    pub fn poll_animation_frame(&self, now: Instant) -> Option<Instant> {
+        let due = self.animation_frame_due.get()?;
+        if now >= due {
+            self.animation_frame_due.set(None);
             self.request_redraw();
+            None
+        } else {
+            Some(due)
         }
     }
 

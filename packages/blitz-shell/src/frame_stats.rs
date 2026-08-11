@@ -126,6 +126,15 @@ pub(crate) fn set_display_refresh_millihertz(rate: Option<u32>) {
     }
 }
 
+/// The display's refresh rate, when the platform reported one.
+///
+/// Read by the animation pacing in `window.rs`, so that the gap between
+/// animation-only frames is a whole number of the display's own refresh
+/// intervals rather than a wall-clock constant it cannot land on.
+pub(crate) fn display_refresh_millihertz() -> Option<u32> {
+    FRAME_LOG.lock().ok().and_then(|log| log.refresh_millihertz)
+}
+
 /// Record one presented frame. Called from `View::redraw` for every frame.
 pub(crate) fn record_frame(
     started: Instant,

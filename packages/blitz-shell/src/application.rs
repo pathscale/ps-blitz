@@ -6,7 +6,6 @@ use std::sync::mpsc::Receiver;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
-#[cfg(feature = "debug-control")]
 use winit::event_loop::ControlFlow;
 use winit::window::WindowId;
 
@@ -233,6 +232,24 @@ impl<Rend: WindowRenderer> ApplicationHandler for BlitzApplication<Rend> {
             if view.ios_request_redraw.get() {
                 view.window.request_redraw();
             }
+        }
+
+        // Animation frames are paced here rather than requested at the end of
+        // the last one, which is what would run them at the display's rate. The
+        // earliest deadline across every window becomes the wait, so a window
+        // that is animating does not stop the others sleeping.
+        //
+        // Left alone when nothing is animating: `ControlFlow::Wait` is already
+        // the default, and overwriting it here would fight whatever else set
+        // it.
+        let now = std::time::Instant::now();
+        let next_frame = self
+            .windows
+            .values()
+            .filter_map(|view| view.poll_animation_frame(now))
+            .min();
+        if let Some(deadline) = next_frame {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
         }
     }
 }
