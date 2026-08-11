@@ -135,17 +135,14 @@ jobs:
     runs-on: ${{ matrix.platform.os }}
     env:
       RUST_CARGO_COMMAND: ${{ matrix.platform.cross == true && 'cross' || 'cargo' }}
-      RUSTFLAGS: ${{ matrix.platform.name == 'ios' && '-Clink-arg=-target -Clink-arg=arm64-apple-ios18.4 -Clink-arg=-miphoneos-version-min=18.4' || '' }}  
     strategy:
       fail-fast: false
       matrix:
         platform:
-          # Windows and macOS test entries are deliberately absent: the paid
-          # runners are not worth it when Linux validates the same code and
-          # macOS is tested locally on the machine this is developed on.
-          #
-          # The ios entry below still needs a macOS runner, because nothing
-          # else can build that target.
+          # Windows, macOS and iOS entries are deliberately absent: the paid
+          # runners are not worth it when Linux validates the same code, and
+          # Apple targets are built and tested locally on the machine this is
+          # developed on. Nothing here needs a macOS runner any more.
           - {
               name: linux,
               target: x86_64-unknown-linux-gnu,
@@ -153,14 +150,6 @@ jobs:
               cross: false,
               command: "test",
               args: "--all --tests",
-            }
-          - {
-              name: ios,
-              target: aarch64-apple-ios,
-              os: macos-latest,
-              cross: false,
-              command: "build",
-              args: "--all",
             }
           - {
               name: android,
