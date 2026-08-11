@@ -1446,7 +1446,11 @@ fn custom_elements_define_upgrades_existing_elements() {
         "connectedCallback must be able to mutate the element: {result}"
     );
     assert_eq!(result["got"].as_bool(), Some(true), "get: {result}");
-    assert_eq!(result["name"].as_str(), Some("my-card"), "getName: {result}");
+    assert_eq!(
+        result["name"].as_str(),
+        Some("my-card"),
+        "getName: {result}"
+    );
     assert_eq!(result["missing"].as_bool(), Some(true), "get: {result}");
 }
 
