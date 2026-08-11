@@ -1,10 +1,23 @@
 > **This fork is a collection.** On top of `DioxusLabs/blitz` `main` it carries: the
 > JavaScript engine from upstream's unmerged draft PR #491 (`blitz-script`), Pathscale's
-> own work on top of it (the DOM APIs real pages call, frame diagnostics, textarea and
-> placeholder handling, macOS input, pointer capture), and upstream pull requests that
-> have not landed (#549 `position: fixed`). We pull from upstream and push here; nothing
-> goes back. Outstanding: shadow DOM and custom elements, and the SVG sprite/`use`
-> support, both of which need porting rather than merging.
+> own work on top of it (the DOM APIs real pages call — `ParentNode` insertion,
+> `getSelection`, `navigator.clipboard`, a real `CSSStyleDeclaration` — frame
+> diagnostics, textarea and placeholder handling, macOS input, pointer capture,
+> unzoomed box metrics), and upstream pull requests that have not landed (#549
+> `position: fixed`). We pull from upstream and push here; nothing goes back.
+> Outstanding: shadow DOM and custom elements, the SVG sprite/`use` support, and the
+> rest of `ps-blitz-render` (below), all of which need porting rather than merging.
+>
+> **`ps-blitz-render` is the sibling fork, and the other half of this collection.** It
+> shares merge-base `60d840176` with `pathscale/master` and is that branch plus 59
+> commits, which puts it 74 behind `DioxusLabs/blitz` `main` on the pre-SlotMap node
+> tree. So it is not a source you can cherry-pick from: every commit taken from it needs
+> the `usize`→`NodeId` port first. Seven are in so far. What is left is the textarea
+> cluster, the paint-side perf work, `bce783420` "Fix five defects that stop a modern
+> page rendering", and the layout-invalidation fixes. One commit there,
+> `daccd9093`, should stay out: it prints a counter that exists only in the unpublished
+> `ps-taffy`, and taking it means a `path = "../ps-taffy"` dependency that its own author
+> labelled "do not commit".
 
 <p>
 <picture >
