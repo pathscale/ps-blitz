@@ -331,7 +331,27 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             x: -self.initial_x,
             y: -self.initial_y,
         }) * transform;
-        let screen_bbox = screen_transform.transform_rect_bbox(overflow.union(border_box));
+        // `border_box` cannot be union'd in as-is: it sits at `box_position` in
+        // the parent's coordinates, while `overflow` is node-local starting at
+        // the origin and `screen_transform` already carries `box_position`.
+        // Union'ing the two mixes coordinate spaces, and the transform then adds
+        // the node's position a second time — inflating the bounding box toward
+        // twice the node's offset, so elements far down a page never satisfy the
+        // cull test and get painted while entirely off screen.
+        //
+        // Its purpose is only to be a floor for a node whose overflow has not
+        // been resolved yet (`scrollable_overflow` starts at ZERO, and culling
+        // on that would drop the node entirely). Expressed in the same space as
+        // `overflow` — node-local, device pixels — it is exactly the rect
+        // `resolve_transforms` seeds the overflow with, so it keeps working as a
+        // fallback and contributes nothing once the real value is in.
+        let local_border_box = Rect::new(
+            0.0,
+            0.0,
+            box_size.width * self.scale,
+            box_size.height * self.scale,
+        );
+        let screen_bbox = screen_transform.transform_rect_bbox(overflow.union(local_border_box));
 
         // Cull elements that fall entirely outside the current clip rectangle. In addition to
         // the viewport, `clip_rect` is narrowed by any ancestor scrollport (see below), so this
