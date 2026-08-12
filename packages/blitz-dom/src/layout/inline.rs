@@ -641,6 +641,18 @@ impl BaseDocument {
             },
         );
 
+        // Remember the width these lines were broken at.
+        //
+        // Taffy performs layout under a min-content constraint while sizing,
+        // and that pass breaks the same parley layout the screen reads from.
+        // If the real layout then hits the taffy cache, this function is never
+        // called again and the min-content break is what gets painted: measured
+        // on a live transcript as a paragraph broken at 164px inside a 1,426px
+        // box, 39 lines of one or two words each. `repair_inline_line_breaks`
+        // compares this against the box layout settled on and re-breaks the
+        // ones that disagree.
+        inline_layout.laid_out_at = Some(width);
+
         #[allow(unused_mut)]
         let mut height = inline_layout.layout.height();
 

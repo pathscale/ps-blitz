@@ -78,6 +78,89 @@ impl BaseDocument {
         }
     }
 
+    /// Re-break any inline layout whose lines belong to a pass other than the
+    /// one that decided its box.
+    ///
+    /// Taffy performs layout under min-content and max-content constraints
+    /// while sizing a box, and every one of those passes breaks the same parley
+    /// layout the screen reads from. Whichever ran last is what gets painted.
+    /// That is usually the real layout, and when the final pass is answered
+    /// from the taffy cache it is not: `compute_inline_layout` never runs
+    /// again, and the trial break stays. Reported as "1st load is fucked" and
+    /// measured on a live transcript as paragraphs broken at 164px inside a
+    /// 1,426px box, 39 lines of one or two words each.
+    ///
+    /// Cheap by construction: it compares two floats per inline root and
+    /// re-breaks only the ones that disagree, which in a settled document is
+    /// none of them.
+    fn repair_inline_line_breaks(&mut self) {
+        let scale = self.viewport.scale();
+
+        let mut wrong = Vec::new();
+        for (node_id, node) in self.nodes.iter() {
+            let Some(inline) = node
+                .data
+                .downcast_element()
+                .and_then(|element| element.inline_layout_data.as_ref())
+            else {
+                continue;
+            };
+            let layout = node.final_layout();
+            let content_width = (layout.size.width
+                - layout.padding.left
+                - layout.padding.right
+                - layout.border.left
+                - layout.border.right)
+                .max(0.0)
+                * scale;
+            // Half a device pixel: below that the break is identical and
+            // re-running it would cost a frame to change nothing.
+            if inline
+                .laid_out_at
+                .is_none_or(|broken_at| (broken_at - content_width).abs() > 0.5)
+            {
+                wrong.push((node_id, content_width));
+            }
+        }
+
+        for (node_id, content_width) in wrong {
+            // Breaking discards the alignment the layout pass applied, so it
+            // has to go back on: without it every centred or right-aligned
+            // paragraph this touches would silently come back left-aligned.
+            let alignment = self.nodes[node_id]
+                .primary_styles()
+                .map(|style| {
+                    use parley::layout::Alignment;
+                    use style::values::specified::TextAlignKeyword;
+                    match style.clone_text_align() {
+                        TextAlignKeyword::Start => Alignment::Start,
+                        TextAlignKeyword::Left | TextAlignKeyword::MozLeft => Alignment::Left,
+                        TextAlignKeyword::Right | TextAlignKeyword::MozRight => Alignment::Right,
+                        TextAlignKeyword::Center | TextAlignKeyword::MozCenter => Alignment::Center,
+                        TextAlignKeyword::Justify => Alignment::Justify,
+                        TextAlignKeyword::End => Alignment::End,
+                    }
+                })
+                .unwrap_or(parley::layout::Alignment::Start);
+
+            let Some(inline) = self.nodes[node_id]
+                .data
+                .downcast_element_mut()
+                .and_then(|element| element.inline_layout_data.as_mut())
+            else {
+                continue;
+            };
+            inline.layout.break_all_lines(Some(content_width));
+            inline.layout.align(
+                alignment,
+                parley::layout::AlignmentOptions {
+                    align_when_overflowing: false,
+                },
+            );
+            inline.laid_out_at = Some(content_width);
+        }
+    }
+
     /// Restyle the tree and then relayout it
     pub fn resolve(&mut self, current_time_for_animations: f64) {
         if TDocument::as_node(&self.root_node())
@@ -171,6 +254,7 @@ impl BaseDocument {
         self.correct_hoisted_fixed_positions();
         timer.record_time("layout");
 
+        self.repair_inline_line_breaks();
         self.clamp_scroll_offsets();
         self.trace_escaped_inline_fragments();
 
