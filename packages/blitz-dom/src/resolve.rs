@@ -139,6 +139,34 @@ impl BaseDocument {
         timer.record_time("flush");
 
         // Next we resolve layout with the data resolved by stlist
+        //
+        // Caught, under `BLITZ_TRACE_LAYOUT_PANIC=1` only, so the markup that
+        // killed layout can be printed before the process goes. The panic hook
+        // that names the element runs without the document and can only give an
+        // id and a class list; the id is worthless once the process is gone,
+        // and a class list is not markup you can put in a test. This is the one
+        // place that still holds `&mut self` when layout fails, so it is the
+        // only place the subtree can be serialized. The panic is resumed
+        // immediately: nothing here makes a failed layout survivable.
+        #[cfg(not(target_arch = "wasm32"))]
+        if crate::layout::layout_panic_probe::enabled() {
+            let attempt =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.resolve_layout()));
+            if let Err(payload) = attempt {
+                if let Some(node_id) = crate::layout::layout_panic_probe::innermost_node() {
+                    if let Some(node) = self.nodes.get(node_id) {
+                        eprintln!(
+                            "[blitz-layout-panic] markup of node {node_id}:\n{}",
+                            node.outer_html_pretty()
+                        );
+                    }
+                }
+                std::panic::resume_unwind(payload);
+            }
+        } else {
+            self.resolve_layout();
+        }
+        #[cfg(target_arch = "wasm32")]
         self.resolve_layout();
         self.correct_hoisted_fixed_positions();
         timer.record_time("layout");

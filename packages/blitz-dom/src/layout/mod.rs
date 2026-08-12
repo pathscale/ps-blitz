@@ -19,6 +19,105 @@ use taffy::{
     prelude::*,
 };
 
+/// Name the element a layout panic happened on. `BLITZ_TRACE_LAYOUT_PANIC=1`.
+///
+/// Layout runs percentages, `calc()` and every length through stylo, and when
+/// stylo gives up it does so with `unreachable!()` deep inside its own value
+/// types. The message names a line in a registry crate and not one frame of
+/// ours, and a release backtrace is 78 frames of `__mh_execute_header`, so the
+/// log says a value was impossible without saying which value, on which
+/// element, in which document. AgencyZero 0.6.1 aborted two seconds after boot
+/// on exactly that and the log could not narrow it past "stylo".
+///
+/// This keeps a stack of one-line element descriptions for the nodes currently
+/// being laid out and prints the innermost few from a panic hook. Off unless
+/// the variable is set: it formats a string per node, which is far too much for
+/// a shipping build and nothing at all for a debugging run.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod layout_panic_probe {
+    use std::cell::RefCell;
+    use std::sync::OnceLock;
+
+    thread_local! {
+        static IN_FLIGHT: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+        /// Deepest node entered, kept past the unwind on purpose: `pop` only
+        /// runs on the way out, so after a panic this still names the culprit.
+        static INNERMOST: std::cell::Cell<Option<blitz_traits::node_id::NodeId>> =
+            const { std::cell::Cell::new(None) };
+    }
+
+    pub(crate) fn enabled() -> bool {
+        static ENABLED: OnceLock<bool> = OnceLock::new();
+        *ENABLED.get_or_init(|| {
+            let on = std::env::var_os("BLITZ_TRACE_LAYOUT_PANIC").is_some();
+            if on {
+                install_hook();
+            }
+            on
+        })
+    }
+
+    /// Chained, never replacing: the hook already installed is what writes the
+    /// panic to the application's log file, and an app whose stderr goes
+    /// nowhere loses the message entirely if this takes that job over.
+    fn install_hook() {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            IN_FLIGHT.with(|stack| {
+                let stack = stack.borrow();
+                if stack.is_empty() {
+                    eprintln!("[blitz-layout-panic] no layout in flight on this thread");
+                } else {
+                    eprintln!("[blitz-layout-panic] innermost first:");
+                    for entry in stack.iter().rev().take(12) {
+                        eprintln!("[blitz-layout-panic]   {entry}");
+                    }
+                    eprintln!("[blitz-layout-panic] ({} deep)", stack.len());
+                }
+            });
+            previous(info);
+        }));
+    }
+
+    /// Deeper than any real document nests. A page that reaches this is
+    /// recursing, not laying out.
+    const RUNAWAY_DEPTH: usize = 512;
+
+    /// The node whose layout was in flight when everything stopped, so the
+    /// caller that still holds the document can serialize its markup.
+    pub(crate) fn innermost_node() -> Option<blitz_traits::node_id::NodeId> {
+        INNERMOST.with(std::cell::Cell::get)
+    }
+
+    pub(crate) fn push(node_id: blitz_traits::node_id::NodeId, description: String) {
+        INNERMOST.with(|cell| cell.set(Some(node_id)));
+        IN_FLIGHT.with(|stack| {
+            let mut stack = stack.borrow_mut();
+            stack.push(description);
+            if stack.len() == RUNAWAY_DEPTH {
+                // Reported here rather than left to the panic hook, because
+                // runaway layout does not reliably panic: it exhausts the
+                // stack, and what comes back is a `SIGSEGV` on the guard page
+                // or "fatal runtime error: stack overflow", neither of which
+                // runs a hook or leaves a line in the log. This is the last
+                // moment the evidence still exists.
+                eprintln!(
+                    "[blitz-layout-panic] runaway: {RUNAWAY_DEPTH} nested layouts, innermost first:"
+                );
+                for entry in stack.iter().rev().take(24) {
+                    eprintln!("[blitz-layout-panic]   {entry}");
+                }
+            }
+        });
+    }
+
+    pub(crate) fn pop() {
+        IN_FLIGHT.with(|stack| {
+            stack.borrow_mut().pop();
+        });
+    }
+}
+
 /// How much of the tree a single resolve actually recomputed.
 ///
 /// Phase timings say layout is expensive; they cannot say whether that is a
@@ -126,6 +225,47 @@ impl BaseDocument {
     }
     fn node_from_id_mut(&mut self, node_id: taffy::prelude::NodeId) -> &mut Node {
         &mut self.nodes[dom_node_id(node_id)]
+    }
+
+    /// One line naming an element well enough to find it in the source that
+    /// produced it: the tag, its `id`, its classes, and the sizes that were
+    /// being resolved when layout entered it. See [`layout_panic_probe`].
+    #[cfg(not(target_arch = "wasm32"))]
+    fn describe_node_for_panic(
+        &self,
+        node_id: blitz_traits::node_id::NodeId,
+        inputs: &taffy::LayoutInput,
+    ) -> String {
+        let Some(node) = self.nodes.get(node_id) else {
+            return format!("node {node_id} (gone)");
+        };
+        let Some(element) = node.data.downcast_element() else {
+            return format!("node {node_id} <{:?}>", node.data.kind());
+        };
+        let attr = |name: &str| -> Option<&str> {
+            element
+                .attrs
+                .iter()
+                .find(|a| a.name.local.as_ref() == name)
+                .map(|a| a.value.as_ref())
+        };
+        // Not the computed style's own width and height: `CompactLength`'s
+        // `Debug` is a tagged pointer, which reads as noise. What the resolve
+        // was actually given is what matters here anyway.
+        format!(
+            "node {node_id} <{}{}{}> known={:?}x{:?} avail={:?}x{:?} mode={:?}/{:?}",
+            element.name.local,
+            attr("id").map(|v| format!(" id={v}")).unwrap_or_default(),
+            attr("class")
+                .map(|v| format!(" class=\"{}\"", &v[..v.len().min(160)]))
+                .unwrap_or_default(),
+            inputs.known_dimensions.width,
+            inputs.known_dimensions.height,
+            inputs.available_space.width,
+            inputs.available_space.height,
+            inputs.run_mode,
+            inputs.axis,
+        )
     }
 }
 
@@ -545,9 +685,27 @@ impl LayoutPartialTree for BaseDocument {
         node_id: NodeId,
         inputs: taffy::LayoutInput,
     ) -> taffy::LayoutOutput {
-        compute_cached_layout(self, node_id, inputs, |tree, node_id, inputs| {
+        #[cfg(not(target_arch = "wasm32"))]
+        let probing = layout_panic_probe::enabled();
+        #[cfg(not(target_arch = "wasm32"))]
+        if probing {
+            layout_panic_probe::push(
+                dom_node_id(node_id),
+                self.describe_node_for_panic(dom_node_id(node_id), &inputs),
+            );
+        }
+
+        let output = compute_cached_layout(self, node_id, inputs, |tree, node_id, inputs| {
             tree.compute_child_layout_internal(node_id, inputs, None)
-        })
+        });
+
+        // Only on the way out, so a panic leaves the stack standing for the
+        // hook to read. Nothing here runs after an abort.
+        #[cfg(not(target_arch = "wasm32"))]
+        if probing {
+            layout_panic_probe::pop();
+        }
+        output
     }
 }
 
