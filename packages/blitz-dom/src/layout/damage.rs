@@ -740,6 +740,23 @@ impl BaseDocument {
             node.style().display
         };
 
+        // A hidden subtree is not walked.
+        //
+        // Its taffy style is flushed above, which is what lets paint stop at
+        // this node — but only for children it reaches *through* this node. A
+        // positioned child with a z-index is hoisted into an ancestor's
+        // stacking context and painted from there, so it never passes this
+        // node's display check at all. Walking a hidden subtree therefore
+        // publishes its raised children into the visible tab's paint list: the
+        // application's panel-edge chevron is `absolute left-full z-20`, and
+        // one ghost chevron appeared per retained tab.
+        //
+        // This walk could not reach a hidden subtree before, because hiding a
+        // pane emptied its layout children and stylo discarded its styles.
+        if matches!(display, taffy::Display::None) {
+            return;
+        }
+
         // Hoisted fixed nodes, held back until the borrow on paint_children is
         // released so their real stacking context can be reached.
         let mut deferred_fixed: Vec<(NodeId, i32, NodeId)> = Vec::new();
