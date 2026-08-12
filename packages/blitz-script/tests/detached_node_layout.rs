@@ -54,7 +54,7 @@ fn a_removed_child_stops_occupying_space() {
         .expect("no splash");
     assert!(area_of(&doc, splash) > 0.0, "the fixture never laid it out");
 
-    doc.run_script(
+    doc.eval(
         "var host = document.getElementById('host');\
          host.removeChild(document.getElementById('splash'));",
     );
