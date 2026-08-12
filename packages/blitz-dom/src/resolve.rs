@@ -3,6 +3,7 @@
 use blitz_traits::node_id::NodeId;
 use std::{
     cell::RefCell,
+    collections::HashSet,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -434,9 +435,22 @@ impl BaseDocument {
         let mut hoisted: Vec<NodeId> = Vec::new();
         collect_fixed(self, root_id, false, &mut hoisted);
 
-        // Rebuilt every pass: the tree may have changed, and a node that is no
-        // longer fixed must stop being attributed to an old parent.
-        self.hoisted_fixed_parents.clear();
+        // Drop nodes that are no longer fixed, and keep the rest.
+        //
+        // This used to `clear()` and rebuild, which worked exactly once. The
+        // loop below reads `layout_parent` to learn where a node came from, but
+        // the hoist itself sets that to the root, so on the second pass every
+        // already-hoisted node takes the `parent_id == root_id` branch and is
+        // never re-recorded. Combined with the clear, the map came back empty
+        // and `flush_styles_to_layout` put the layer in the root's stacking
+        // context instead of the one its box tree gives it.
+        //
+        // The symptom was a full-bleed background that painted correctly on the
+        // first frame and disappeared on the next relayout, which on a real
+        // page means as soon as an image finishes loading.
+        let still_fixed: HashSet<NodeId> = hoisted.iter().copied().collect();
+        self.hoisted_fixed_parents
+            .retain(|node_id, _| still_fixed.contains(node_id));
 
         for node_id in hoisted {
             let Some(parent_id) = self.nodes[node_id].layout_parent.get() else {
