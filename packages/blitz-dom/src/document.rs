@@ -2525,6 +2525,22 @@ impl BaseDocument {
     /// delivered to whatever the document last saw hovered, which an injected
     /// pointer move does not set, so an automated caller had no way to scroll
     /// anything at all.
+    /// The nearest scroll container at or above `node_id`, if there is one.
+    pub fn nearest_scroll_container(&self, node_id: NodeId) -> Option<NodeId> {
+        let mut current = Some(node_id);
+        for _ in 0..64 {
+            let id = current?;
+            let node = self.nodes.get(id)?;
+            if node.style().overflow.x.is_scroll_container()
+                || node.style().overflow.y.is_scroll_container()
+            {
+                return Some(id);
+            }
+            current = node.parent;
+        }
+        None
+    }
+
     pub fn scroll_nearest_container_by(&mut self, node_id: NodeId, x: f64, y: f64) -> bool {
         let mut current = Some(node_id);
         for _ in 0..64 {
