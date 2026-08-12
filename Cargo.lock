@@ -916,6 +916,7 @@ dependencies = [
  "blitz-html",
  "blitz-paint",
  "blitz-test-harness",
+ "cursor-icon",
  "dioxus",
  "dioxus-core",
  "dioxus-native-dom",
