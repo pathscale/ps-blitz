@@ -222,7 +222,26 @@ pub(crate) fn handle_dom_event<F: FnMut(DomEvent)>(
             // in a composer still moves the caret rather than the page.
             if !scroll_key_is_claimed_by(doc, target_node_id, &event.key) {
                 if let Some((dx, dy)) = scroll_delta_for_key(doc, target_node_id, &event.key) {
-                    doc.scroll_nearest_container_by(target_node_id, dx, dy);
+                    // Focus first, then the pointer. A key event targets the
+                    // focused node, and clicking a panel's background focuses
+                    // nothing, so keying off focus alone means Page Down does
+                    // nothing until the reader happens to have tabbed into the
+                    // panel. Falling back to what the pointer is over matches
+                    // what people expect from every other application, and
+                    // makes the keys work the moment the pointer is in the
+                    // panel.
+                    let target = doc
+                        .nearest_scroll_container(target_node_id)
+                        .or_else(|| {
+                            doc.get_hover_node_id()
+                                .and_then(|hovered| doc.nearest_scroll_container(hovered))
+                        });
+                    match target {
+                        Some(container) => {
+                            doc.scroll_node_by(container, dx, dy, |_| {});
+                        }
+                        None => doc.scroll_viewport_by(dx, dy),
+                    }
                     return;
                 }
             }
