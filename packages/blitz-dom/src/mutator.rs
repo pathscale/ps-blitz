@@ -13,6 +13,7 @@ use crate::{
 };
 use blitz_traits::shell::Viewport;
 use markup5ever::ns;
+use selectors::matching::ElementSelectorFlags;
 use style::Atom;
 use style::invalidation::element::restyle_hints::RestyleHint;
 use style::stylesheets::OriginSet;
@@ -256,15 +257,42 @@ impl DocumentMutator<'_> {
                 data.damage.insert(ALL_DAMAGE);
             }
 
-            // TODO: make this fine grained / conditional based on ElementSelectorFlags
+            // The parent is restyled only when a selector says it depends on
+            // its children.
+            //
+            // It used to be restyled unconditionally, which meant a class
+            // toggle on one row restyled every sibling of that row: on a
+            // 40-row list, a colour-only change cost 773us of style against
+            // 15us for a frame that changed nothing, while layout recomputed
+            // four nodes. Style was half of the whole resolve, for one
+            // element's colour.
+            //
+            // The flags say exactly when the wide hint is needed, because
+            // `apply_selector_flags` deposits them on the parent while matching:
+            // `:empty` and `:only-child` on the parent, `:nth-child` and the
+            // sibling combinators on the siblings, `:has()` through the
+            // relative-selector directions. A parent carrying none of them has
+            // no rule whose match can change because a child's attribute did.
             let parent = node.parent;
             if let Some(parent_id) = parent {
-                let parent = &mut self.doc.nodes[parent_id];
-                if let Some(mut data) = parent
-                    .stylo_element_data_opt_mut()
-                    .and_then(|s| s.get_mut())
-                {
-                    data.hint |= RestyleHint::restyle_subtree();
+                let parent = &self.doc.nodes[parent_id];
+                let flags = parent.selector_flags().get();
+                let child_dependent = ElementSelectorFlags::HAS_SLOW_SELECTOR
+                    | ElementSelectorFlags::HAS_SLOW_SELECTOR_LATER_SIBLINGS
+                    | ElementSelectorFlags::HAS_EDGE_CHILD_SELECTOR
+                    | ElementSelectorFlags::HAS_EMPTY_SELECTOR
+                    | ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_ANCESTOR
+                    | ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_SIBLING
+                    | ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_ANCESTOR_SIBLING;
+
+                if flags.intersects(child_dependent) {
+                    let parent = &mut self.doc.nodes[parent_id];
+                    if let Some(mut data) = parent
+                        .stylo_element_data_opt_mut()
+                        .and_then(|s| s.get_mut())
+                    {
+                        data.hint |= RestyleHint::restyle_subtree();
+                    }
                 }
             }
 
