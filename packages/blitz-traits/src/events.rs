@@ -518,6 +518,39 @@ pub struct BlitzPointerEvent {
 }
 
 impl BlitzPointerEvent {
+    /// A synthetic primary-mouse event at a viewport coordinate.
+    ///
+    /// For callers driving a document programmatically (a test, a debug
+    /// control surface, an agent) rather than translating a real device event.
+    /// The twelve-field literal this replaces is currently hand-rolled in
+    /// `blitz-shell`, `blitz-script` and `dioxus-native-dom`, each with its own
+    /// idea of the defaults.
+    ///
+    /// `screen`, `page` and `client` all take the same value: a synthetic event
+    /// has no window offset or scroll origin to distinguish them. `element` is
+    /// left at the origin because the offset within the target is only known
+    /// after hit-testing, which the document does when the event is dispatched.
+    pub fn at(x: f32, y: f32, buttons: MouseEventButtons) -> Self {
+        Self {
+            id: BlitzPointerId::Mouse,
+            is_primary: true,
+            coords: PointerCoords {
+                page_x: x,
+                page_y: y,
+                screen_x: x,
+                screen_y: y,
+                client_x: x,
+                client_y: y,
+            },
+            button: MouseEventButton::Main,
+            buttons,
+            mods: Modifiers::empty(),
+            details: PointerDetails::default(),
+            element: Point::default(),
+            active_pointers: Default::default(),
+        }
+    }
+
     #[inline(always)]
     pub fn is_mouse(&self) -> bool {
         matches!(self.id, BlitzPointerId::Mouse)
