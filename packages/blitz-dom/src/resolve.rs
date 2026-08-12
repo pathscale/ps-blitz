@@ -105,7 +105,11 @@ impl BaseDocument {
             else {
                 continue;
             };
-            let layout = node.final_layout();
+            // The *unrounded* layout, which is the width the layout pass
+            // broke at. `final_layout` is rounded to whole pixels, and half a
+            // pixel of rounding-down is enough to wrap a label that exactly
+            // fit: "125.1k / 200.0k ctx · 63%" came back on two lines.
+            let layout = node.unrounded_layout();
             let content_width = (layout.size.width
                 - layout.padding.left
                 - layout.padding.right
