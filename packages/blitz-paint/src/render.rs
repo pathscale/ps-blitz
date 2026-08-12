@@ -387,7 +387,6 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             return;
         }
 
-
         #[cfg(feature = "custom-widget")]
         let custom_widget_scene = self.custom_widget_scenes.get(&(self.dom.id(), node_id));
         #[cfg(not(feature = "custom-widget"))]
