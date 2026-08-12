@@ -321,7 +321,7 @@ impl BaseDocument {
         // if the hovered node actually changes.
         self.refresh_hover();
 
-        let mut subdoc_is_animating = false;
+        let mut subdoc_animation_pacing = crate::document::AnimationPacing::Idle;
         for &node_id in &self.sub_document_nodes {
             let node = &mut self.nodes[node_id];
             let size = node.final_layout().size;
@@ -342,10 +342,10 @@ impl BaseDocument {
 
                 sub_doc.resolve(current_time_for_animations);
 
-                subdoc_is_animating |= sub_doc.is_animating();
+                subdoc_animation_pacing = subdoc_animation_pacing.max(sub_doc.animation_pacing());
             }
         }
-        self.subdoc_is_animating = subdoc_is_animating;
+        self.subdoc_animation_pacing = subdoc_animation_pacing;
         timer.record_time("subdocs");
 
         // Printed with the phases so a single line says both how long layout

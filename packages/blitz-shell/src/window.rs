@@ -149,21 +149,27 @@ pub struct View<Rend: WindowRenderer> {
     pub animation_frame_due: std::cell::Cell<Option<Instant>>,
 }
 
-/// Frames per second to aim for on animation-only frames.
+/// Frames per second to aim for on CSS-only animation frames.
 ///
 /// A browser cannot negotiate with the pages it renders: an arbitrary site's
 /// `animation: fade 2s infinite` otherwise pins the process at the display's
 /// refresh rate, repainting the whole window each time, for as long as the tab
-/// is open. 30fps is indistinguishable on the decorative animations this is
-/// aimed at.
+/// is open. 15fps is sufficient for the slow decorative animations this is
+/// aimed at, and halves the full-window paint and render work compared with
+/// 30fps.
 ///
 /// This governs *animation-only* frames. Input, resize, navigation and every
 /// other event still redraw immediately, so nothing this clamps is something a
 /// user is waiting on.
-const ANIMATION_TARGET_FPS: u32 = 30;
+const CSS_ANIMATION_TARGET_FPS: u32 = 15;
+
+/// Canvas, scrolling, custom widgets and other interactive animation sources
+/// keep the previous animation-only cadence.
+const INTERACTIVE_ANIMATION_TARGET_FPS: u32 = 30;
 
 /// Used only when the display will not say what its refresh rate is.
-const ANIMATION_FALLBACK_INTERVAL: Duration = Duration::from_millis(33);
+const CSS_ANIMATION_FALLBACK_INTERVAL: Duration = Duration::from_millis(67);
+const INTERACTIVE_ANIMATION_FALLBACK_INTERVAL: Duration = Duration::from_millis(33);
 
 /// The gap between animation-only frames, as a whole number of the display's
 /// own refresh intervals.
@@ -172,21 +178,75 @@ const ANIMATION_FALLBACK_INTERVAL: Duration = Duration::from_millis(33);
 /// constant: a fixed 33ms against an 8.3ms refresh is a period the display
 /// cannot hit, so frames land one refresh late at an irregular beat, and the
 /// clamp reads as jitter rather than as a lower frame rate. On a 120Hz display
-/// this is every 4th refresh, on 60Hz every 2nd, and both are exactly 30fps.
-fn animation_frame_interval() -> Duration {
-    let Some(millihertz) = crate::frame_stats::display_refresh_millihertz() else {
-        return ANIMATION_FALLBACK_INTERVAL;
+/// this is every 8th refresh, on 60Hz every 4th, and both are exactly 15fps.
+fn animation_frame_interval(pacing: blitz_dom::AnimationPacing) -> Duration {
+    animation_frame_interval_for_refresh(pacing, crate::frame_stats::display_refresh_millihertz())
+}
+
+fn animation_frame_interval_for_refresh(
+    pacing: blitz_dom::AnimationPacing,
+    millihertz: Option<u32>,
+) -> Duration {
+    let (target_fps, fallback_interval) = match pacing {
+        blitz_dom::AnimationPacing::Idle => return Duration::ZERO,
+        blitz_dom::AnimationPacing::SlowCss => {
+            (CSS_ANIMATION_TARGET_FPS, CSS_ANIMATION_FALLBACK_INTERVAL)
+        }
+        blitz_dom::AnimationPacing::Interactive => (
+            INTERACTIVE_ANIMATION_TARGET_FPS,
+            INTERACTIVE_ANIMATION_FALLBACK_INTERVAL,
+        ),
+    };
+    let Some(millihertz) = millihertz else {
+        return fallback_interval;
     };
     let refresh_hz = f64::from(millihertz) / 1000.0;
-    if refresh_hz <= f64::from(ANIMATION_TARGET_FPS) {
+    if refresh_hz <= f64::from(target_fps) {
         // A display slower than the target cannot be clamped toward it, and
         // asking for every refresh is what it would already be doing.
         return Duration::from_secs_f64(1.0 / refresh_hz);
     }
-    let every_nth = (refresh_hz / f64::from(ANIMATION_TARGET_FPS))
-        .round()
-        .max(1.0);
+    let every_nth = (refresh_hz / f64::from(target_fps)).round().max(1.0);
     Duration::from_secs_f64(every_nth / refresh_hz)
+}
+
+#[cfg(test)]
+mod animation_pacing_tests {
+    use super::*;
+
+    #[test]
+    fn css_animation_frames_are_limited_to_fifteen_fps() {
+        assert_eq!(
+            animation_frame_interval_for_refresh(
+                blitz_dom::AnimationPacing::SlowCss,
+                Some(120_000),
+            ),
+            Duration::from_secs_f64(1.0 / 15.0),
+        );
+        assert_eq!(
+            animation_frame_interval_for_refresh(blitz_dom::AnimationPacing::SlowCss, Some(60_000),),
+            Duration::from_secs_f64(1.0 / 15.0),
+        );
+        assert_eq!(
+            animation_frame_interval_for_refresh(blitz_dom::AnimationPacing::SlowCss, None),
+            Duration::from_millis(67),
+        );
+    }
+
+    #[test]
+    fn interactive_animation_frames_remain_at_thirty_fps() {
+        assert_eq!(
+            animation_frame_interval_for_refresh(
+                blitz_dom::AnimationPacing::Interactive,
+                Some(120_000),
+            ),
+            Duration::from_secs_f64(1.0 / 30.0),
+        );
+        assert_eq!(
+            animation_frame_interval_for_refresh(blitz_dom::AnimationPacing::Interactive, None),
+            Duration::from_millis(33),
+        );
+    }
 }
 
 impl<Rend: WindowRenderer> Drop for View<Rend> {
@@ -495,7 +555,8 @@ impl<Rend: WindowRenderer> View<Rend> {
 
         let (width, height) = inner.viewport().window_size;
         let scale = inner.viewport().scale_f64();
-        let is_animating = inner.is_animating();
+        let animation_pacing = inner.animation_pacing();
+        let is_animating = animation_pacing != blitz_dom::AnimationPacing::Idle;
         let is_blocked = inner.has_pending_critical_resources();
         // Device pixels: `paint_scene`'s initial_x/initial_y are the document's
         // origin in the scene, and everything downstream of them — the viewport
@@ -538,8 +599,9 @@ impl<Rend: WindowRenderer> View<Rend> {
             // other way round, a 6ms frame plus a 33ms wait is a 39ms cadence,
             // and the clamp silently runs slower than it claims: 24fps measured
             // where 30 was asked for.
-            self.animation_frame_due
-                .set(Some(frame_started + animation_frame_interval()));
+            self.animation_frame_due.set(Some(
+                frame_started + animation_frame_interval(animation_pacing),
+            ));
         } else {
             self.animation_frame_due.set(None);
         }

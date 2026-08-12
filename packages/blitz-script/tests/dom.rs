@@ -1323,11 +1323,15 @@ fn box_metrics_are_reported_in_unzoomed_css_pixels() {
         .eval_json(
             r#"
             const box = document.getElementById("box");
+            box.scrollLeft = 80;
+            box.scrollTop = 30;
             ({
                 clientWidth: box.clientWidth,
                 clientHeight: box.clientHeight,
                 scrollWidth: box.scrollWidth,
                 scrollHeight: box.scrollHeight,
+                scrollLeft: box.scrollLeft,
+                scrollTop: box.scrollTop,
                 rectHeight: box.getBoundingClientRect().height,
             })
             "#,
@@ -1341,6 +1345,8 @@ fn box_metrics_are_reported_in_unzoomed_css_pixels() {
             "clientHeight": 50.0,
             "scrollWidth": 300.0,
             "scrollHeight": 150.0,
+            "scrollLeft": 80.0,
+            "scrollTop": 30.0,
             "rectHeight": 100.0,
         })
     );

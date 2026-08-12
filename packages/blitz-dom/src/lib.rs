@@ -84,7 +84,7 @@ pub use crate::node::{
 };
 pub use blitz_traits::node_id::NodeId;
 pub use config::{DocumentConfig, StyleThreading};
-pub use document::{BaseDocument, DocGuard, DocGuardMut, Document, PlainDocument};
+pub use document::{AnimationPacing, BaseDocument, DocGuard, DocGuardMut, Document, PlainDocument};
 /// Per-resolve layout counters. Present only with `log-phase-times`, which is
 /// the same feature that pays for the counting.
 #[cfg(feature = "log-phase-times")]
