@@ -33,6 +33,19 @@ pub(crate) const ONLY_RELAYOUT: RestyleDamage =
 pub(crate) const ALL_DAMAGE: RestyleDamage =
     RestyleDamage::from_bits_retain(0b_0000_0000_0111_1111);
 
+/// `BLITZ_SUBTREE_SKIP=0` restores the unconditional walk.
+///
+/// The skip below is the sharpest correctness edge in this file: a subtree
+/// that is quietly not flushed lays out from a stale taffy style, and the
+/// symptom is a pane of wrong geometry rather than a crash. One binary that
+/// can be run both ways settles "is it the skip?" in two launches instead of
+/// a rebuild, which is what it was worth the day tab switching felt wrong —
+/// the answer then was no, and having the answer cheaply was the point.
+fn subtree_skip_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("BLITZ_SUBTREE_SKIP").as_deref() != Ok("0"))
+}
+
 impl BaseDocument {
     pub(crate) fn propagate_damage_flags(
         &mut self,
@@ -570,6 +583,7 @@ impl BaseDocument {
         // that recomputes nothing still spent 3.5ms here, walking the tree to
         // discover it had nothing to do.
         if incremental
+            && subtree_skip_enabled()
             && self
                 .nodes
                 .get(node_id)
