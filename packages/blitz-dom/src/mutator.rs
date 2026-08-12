@@ -251,10 +251,35 @@ impl DocumentMutator<'_> {
         if node_is_in_document {
             self.doc.snapshot_node(node_id);
 
+            // Damage is asserted only where an attribute can change what the
+            // element renders without changing a computed value.
+            //
+            // For everything else Stylo calls `compute_layout_damage` with the
+            // old and new values during the restyle the hint above asks for,
+            // and that answer is the accurate one. Asserting `ALL_DAMAGE`
+            // first can only OR it back up to everything, which is what made a
+            // colour-only class toggle reconstruct a box: 842us against 295us,
+            // and four nodes recomputed where the correct answer is none.
+            //
+            // The exceptions are real. `<use href>` names a sprite symbol and
+            // no computed value moves when it changes, so the cached SVG has to
+            // be rebuilt by damage or not at all
+            // (`setting_a_use_href_later_rebuilds_the_cached_svg`). Replaced
+            // elements are the same story for `src`, `width` and `height`.
+            let renders_from_attributes = self.doc.nodes[node_id]
+                .data
+                .downcast_element()
+                .is_some_and(|el| {
+                    el.name.ns == ns!(svg)
+                        || crate::layout::replaced::is_replaced_element(&el.name.local)
+                });
+
             let node = &mut self.doc.nodes[node_id];
             if let Some(mut data) = node.stylo_element_data_opt_mut().and_then(|s| s.get_mut()) {
                 data.hint |= RestyleHint::restyle_subtree();
-                data.damage.insert(ALL_DAMAGE);
+                if renders_from_attributes {
+                    data.damage.insert(ALL_DAMAGE);
+                }
             }
 
             // The parent is restyled only when a selector says it depends on
