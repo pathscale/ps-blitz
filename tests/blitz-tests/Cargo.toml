@@ -40,6 +40,7 @@ cursor-icon = { workspace = true }
 markup5ever = { workspace = true }
 keyboard-types = { workspace = true }
 usvg = { workspace = true }
+taffy = { workspace = true }
 
 [lib]
 path = "lib.rs"

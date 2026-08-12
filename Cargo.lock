@@ -926,6 +926,7 @@ dependencies = [
  "ps-anyrender-vello-cpu",
  "ps-blitz-dom",
  "ps-blitz-traits",
+ "ps-taffy",
  "usvg",
 ]
 
