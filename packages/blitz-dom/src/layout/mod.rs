@@ -125,7 +125,7 @@ pub(crate) mod layout_panic_probe {
 /// answer that, and a wrong answer sends the fix to the wrong place entirely.
 /// Thread-local and read once per resolve, so the counting itself is free.
 #[cfg(feature = "log-phase-times")]
-pub(crate) mod layout_counters {
+pub mod layout_counters {
     use blitz_traits::node_id::NodeId;
     use std::cell::Cell;
 
@@ -178,7 +178,11 @@ pub(crate) mod layout_counters {
         }
     }
 
-    pub(crate) struct LayoutCounts {
+    /// Public so a test or a harness can read what a single resolve cost without
+    /// scraping the per-frame stdout line. Feature-gated with the counting itself,
+    /// so a release build has neither.
+    #[derive(Clone, Copy)]
+    pub struct LayoutCounts {
         pub computed: u64,
         pub distinct: usize,
         pub caches_cleared: u64,
@@ -186,9 +190,32 @@ pub(crate) mod layout_counters {
         pub hits: u64,
     }
 
+    impl LayoutCounts {
+        const ZERO: Self = Self {
+            computed: 0,
+            distinct: 0,
+            caches_cleared: 0,
+            lookups: 0,
+            hits: 0,
+        };
+    }
+
+    thread_local! {
+        /// A copy of the most recent `take`, because the per-frame printer
+        /// takes them at the end of every resolve: without this, anything else
+        /// reading them always sees zero.
+        static LAST: Cell<LayoutCounts> = const { Cell::new(LayoutCounts::ZERO) };
+    }
+
+    /// The counts from the most recent `take`, without resetting anything.
+    #[must_use]
+    pub fn last() -> LayoutCounts {
+        LAST.with(Cell::get)
+    }
+
     /// Counts since the last call, then reset.
-    pub(crate) fn take() -> LayoutCounts {
-        LayoutCounts {
+    pub fn take() -> LayoutCounts {
+        let counts = LayoutCounts {
             computed: COMPUTED.with(|count| count.replace(0)),
             distinct: DISTINCT.with(|seen| {
                 let mut seen = seen.borrow_mut();
@@ -199,7 +226,9 @@ pub(crate) mod layout_counters {
             caches_cleared: CACHES_CLEARED.with(|count| count.replace(0)),
             lookups: LOOKUPS.with(|count| count.replace(0)),
             hits: HITS.with(|count| count.replace(0)),
-        }
+        };
+        LAST.with(|last| last.set(counts));
+        counts
     }
 }
 
