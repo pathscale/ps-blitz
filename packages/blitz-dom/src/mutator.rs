@@ -1887,6 +1887,72 @@ mod test {
         );
     }
 
+    /// A `calc()` does not reach taffy as a value. `stylo_taffy` hands it over
+    /// as a raw pointer into the node's `ComputedValues`, and layout
+    /// dereferences that pointer on every resolve, so the cached taffy style
+    /// must never outlive the arc it was built from.
+    ///
+    /// A restyle that lands no relayout damage still replaces those computed
+    /// values. Colour is the cheapest example and it is the real one: a slow
+    /// command's response restyled the project header two seconds after boot,
+    /// the header's absolutely positioned chip carries
+    /// `max-width: calc(100% - 24px)`, and 0.6.x experimental died there in
+    /// three different ways depending on what had taken the freed allocation.
+    #[test]
+    fn a_paint_only_restyle_refreshes_the_calc_the_taffy_style_points_at() {
+        use style::servo_arc::Arc as ServoArc;
+
+        let mut document = BaseDocument::new(DocumentConfig {
+            viewport: Some(Viewport::new(800, 600, 1.0, ColorScheme::Light)),
+            ..Default::default()
+        });
+        let root_id = document.root_node().id;
+
+        let (header_id, chip_id) = {
+            let mut mutator = document.mutate();
+            let header_id = mutator.create_element(qual_name!("div"), vec![]);
+            let chip_id = mutator.create_element(qual_name!("span"), vec![]);
+            mutator.set_style_property(header_id, "position", "relative");
+            mutator.set_style_property(header_id, "width", "800px");
+            mutator.set_style_property(header_id, "height", "60px");
+            mutator.set_style_property(chip_id, "position", "absolute");
+            mutator.set_style_property(chip_id, "max-width", "calc(100% - 24px)");
+            mutator.set_style_property(chip_id, "color", "rgb(1, 2, 3)");
+            mutator.append_children(header_id, &[chip_id]);
+            mutator.append_children(root_id, &[header_id]);
+            (header_id, chip_id)
+        };
+
+        document.resolve(0.0);
+
+        // Restyled through inheritance, not directly: the chip's own mutation
+        // damage would force a rebuild and hide the hazard. Recolouring the
+        // parent recomputes the child's values — a new arc — while the child's
+        // own damage stays repaint-only, which is exactly the gap the gate left
+        // open.
+        {
+            let mut mutator = document.mutate();
+            mutator.set_style_property(header_id, "color", "rgb(4, 5, 6)");
+        }
+        document.resolve(0.0);
+
+        let node = document.get_node(chip_id).unwrap();
+        let stylo_data = node.stylo_element_data_opt().and_then(|data| data.get());
+        let primary = stylo_data
+            .as_ref()
+            .and_then(|data| data.styles.get_primary())
+            .expect("the chip is styled");
+        let source = node
+            .style_source_opt()
+            .expect("a styled node records the computed values its taffy style was built from");
+
+        assert!(
+            ServoArc::ptr_eq(primary, source),
+            "the cached taffy style still points into computed values that a restyle replaced, \
+             so every calc() in it is a dangling pointer",
+        );
+    }
+
     #[test]
     fn style_property_updates_nested_layout() {
         let mut document = BaseDocument::new(DocumentConfig {
