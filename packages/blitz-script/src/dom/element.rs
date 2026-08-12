@@ -918,7 +918,10 @@ fn get_scroll_left(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsRe
         .doc
         .borrow()
         .get_node(node_id)
-        .map(|node| node.scroll_offset().x)
+        .map(|node| match node.primary_styles() {
+            Some(styles) => styles.effective_zoom.unzoom(node.scroll_offset().x as f32) as f64,
+            None => node.scroll_offset().x,
+        })
         .unwrap_or(0.0);
     Ok(JsValue::from(value))
 }
@@ -937,7 +940,10 @@ fn get_scroll_top(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsRes
         .doc
         .borrow()
         .get_node(node_id)
-        .map(|node| node.scroll_offset().y)
+        .map(|node| match node.primary_styles() {
+            Some(styles) => styles.effective_zoom.unzoom(node.scroll_offset().y as f32) as f64,
+            None => node.scroll_offset().y,
+        })
         .unwrap_or(0.0);
     Ok(JsValue::from(value))
 }
@@ -963,7 +969,7 @@ fn set_scroll_axis(
         .first()
         .unwrap_or(&JsValue::undefined())
         .to_number(context)?;
-    let target = if requested.is_finite() {
+    let target_css = if requested.is_finite() {
         requested.max(0.0)
     } else {
         0.0
@@ -972,6 +978,11 @@ fn set_scroll_axis(
     // re-dirtying here would throw away the flush this function just paid for
     // and force a full resolve on the next geometry read of every scroll.
     let mut doc = ctx.doc.borrow_mut();
+    let target = doc
+        .get_node(node_id)
+        .and_then(|node| node.primary_styles())
+        .map(|styles| f64::from(styles.effective_zoom.zoom(target_css as f32)))
+        .unwrap_or(target_css);
     let current = doc
         .get_node(node_id)
         .map(|node| {

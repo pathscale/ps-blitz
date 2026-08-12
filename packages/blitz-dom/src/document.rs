@@ -41,7 +41,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLockReadGuard, RwLockWriteGuard};
 use std::task::{Context as TaskContext, Waker};
 use style::Atom;
-use style::animation::DocumentAnimationSet;
+use style::animation::{AnimationState, DocumentAnimationSet};
 use style::attr::{AttrIdentifier, AttrValue};
 use style::data::{ElementData as StyloElementData, ElementStyles};
 use style::media_queries::MediaType;
@@ -188,6 +188,14 @@ pub enum DocumentEvent {
     },
 }
 
+/// How urgently a document needs another animation frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AnimationPacing {
+    Idle,
+    SlowCss,
+    Interactive,
+}
+
 pub struct BaseDocument {
     /// ID of the document
     id: usize,
@@ -296,8 +304,8 @@ pub struct BaseDocument {
     pub(crate) has_active_animations: bool,
     /// Whether there is a `<canvas>` element in the DOM (so we should re-render every frame)
     pub(crate) has_canvas: bool,
-    /// Whether there are subdocuments that are animating (so we should re-render every frame)
-    pub(crate) subdoc_is_animating: bool,
+    /// The most urgent animation cadence required by any subdocument.
+    pub(crate) subdoc_animation_pacing: AnimationPacing,
 
     /// Map of id attribute values to node IDs for fast lookups.
     /// May contain multiple nodes for the same id: `get_element_by_id`
@@ -522,7 +530,7 @@ impl BaseDocument {
             active_node_id: None,
             mousedown_node_id: None,
             has_active_animations: false,
-            subdoc_is_animating: false,
+            subdoc_animation_pacing: AnimationPacing::Idle,
             has_canvas: false,
             sub_document_nodes: HashSet::new(),
             iframe_loads: HashMap::new(),
@@ -2092,7 +2100,7 @@ impl BaseDocument {
 
         let animating = self.has_canvas
             | self.has_active_animations
-            | self.subdoc_is_animating
+            | (self.subdoc_animation_pacing != AnimationPacing::Idle)
             | custom_widget_is_animating
             | (self.scroll_animation != ScrollAnimationState::None)
             | self.scrollbars_animating();
@@ -2102,7 +2110,7 @@ impl BaseDocument {
                 self.id(),
                 self.has_canvas,
                 self.has_active_animations,
-                self.subdoc_is_animating,
+                self.subdoc_animation_pacing != AnimationPacing::Idle,
                 custom_widget_is_animating,
                 self.scroll_animation != ScrollAnimationState::None,
                 self.scrollbars_animating(),
@@ -2111,6 +2119,55 @@ impl BaseDocument {
         }
 
         animating
+    }
+
+    /// Return the cadence class for the next animation-only frame.
+    ///
+    /// CSS animations are commonly decorative and can use a lower cadence.
+    /// Canvas, scrolling and custom widgets remain at the interactive cadence.
+    pub fn animation_pacing(&self) -> AnimationPacing {
+        #[cfg(feature = "custom-widget")]
+        let custom_widget_is_animating = self.custom_widget_nodes.iter().any(|&node_id| {
+            self.nodes[node_id]
+                .element_data()
+                .and_then(|el| el.custom_widget_data())
+                .is_some_and(|data| data.widget.requires_redraw())
+        });
+        #[cfg(not(feature = "custom-widget"))]
+        let custom_widget_is_animating = false;
+
+        if self.has_canvas
+            || custom_widget_is_animating
+            || self.scroll_animation != ScrollAnimationState::None
+            || self.scrollbars_animating()
+        {
+            AnimationPacing::Interactive
+        } else if self.has_active_animations {
+            const SLOW_ANIMATION_SECONDS: f64 = 2.0;
+            let sets = self.animations.sets.read();
+            let has_fast_animation_or_transition = sets.values().any(|set| {
+                set.transitions.iter().any(|transition| {
+                    matches!(
+                        transition.state,
+                        AnimationState::Pending | AnimationState::Running
+                    )
+                }) || set.animations.iter().any(|animation| {
+                    matches!(
+                        animation.state,
+                        AnimationState::Pending | AnimationState::Running
+                    ) && animation.duration < SLOW_ANIMATION_SECONDS
+                })
+            });
+            if has_fast_animation_or_transition {
+                AnimationPacing::Interactive
+            } else {
+                AnimationPacing::SlowCss
+            }
+        } else if self.subdoc_animation_pacing != AnimationPacing::Idle {
+            self.subdoc_animation_pacing
+        } else {
+            AnimationPacing::Idle
+        }
     }
 
     /// Which elements Stylo currently holds animations or transitions for.
