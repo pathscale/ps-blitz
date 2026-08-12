@@ -133,6 +133,61 @@ impl HtmlEventConverter for NativeConverter {
     }
 }
 
+/// Focus requests that arrived while the document was borrowed.
+///
+/// A thread-local rather than a field on [`NodeHandle`], because the handle is
+/// constructed in several places and threading a queue through all of them buys
+/// nothing here: everything in this crate is `Rc`/`RefCell` and already confined
+/// to the main thread, so the queue has exactly the same reach as the documents
+/// it names.
+///
+/// Each entry keeps its own document handle. Sub-documents are separate
+/// `BaseDocument`s, so a single shared queue must record *which* document a
+/// request belongs to rather than assume the outermost one.
+thread_local! {
+    static PENDING_FOCUS: RefCell<Vec<(Rc<RefCell<BaseDocument>>, NodeId, bool)>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+fn apply_focus(doc: &mut BaseDocument, node_id: NodeId, focus: bool) {
+    if focus {
+        doc.set_focus_to(node_id);
+    } else if doc.get_focussed_node_id() == Some(node_id) {
+        doc.clear_focus();
+    }
+}
+
+fn queue_focus(doc: Rc<RefCell<BaseDocument>>, node_id: NodeId, focus: bool) {
+    PENDING_FOCUS.with(|queue| queue.borrow_mut().push((doc, node_id, focus)));
+}
+
+/// Apply focus requests that could not be applied when they were made.
+///
+/// Call this only where the document is known not to be borrowed. Requests are
+/// taken out of the queue before any is applied, so a handler that queues
+/// another one does not extend this pass into an unbounded loop.
+pub(crate) fn flush_pending_focus() {
+    let queued = PENDING_FOCUS.with(|queue| std::mem::take(&mut *queue.borrow_mut()));
+    for (doc, node_id, focus) in queued {
+        // Still fallible: a caller may hold the borrow for reasons of its own.
+        // Dropping the request is wrong, so it goes back on the queue for the
+        // next flush rather than panicking or being lost.
+        //
+        // The result is settled before `doc` is touched again, so the borrow
+        // ends before the re-queue moves it.
+        let applied = match doc.try_borrow_mut() {
+            Ok(mut doc_ref) => {
+                apply_focus(&mut doc_ref, node_id, focus);
+                true
+            }
+            Err(_) => false,
+        };
+        if !applied {
+            queue_focus(doc, node_id, focus);
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct NodeHandle {
     pub(crate) doc: Rc<RefCell<BaseDocument>>,
@@ -241,14 +296,24 @@ impl RenderedElementBacking for NodeHandle {
     }
 
     fn set_focus(&self, focus: bool) -> Pin<Box<dyn Future<Output = MountedResult<()>>>> {
-        let mut doc = self.doc_mut();
-        if focus {
-            // TODO: queue focus events somehow
-            doc.set_focus_to(self.node_id);
-        } else if doc.get_focussed_node_id() == Some(self.node_id) {
-            // Q: Should this only clear focus if the node is focussed?
-            // TODO: queue blur events somehow
-            doc.clear_focus();
+        // Deliberately not `doc_mut()`. This is reached from a spawned task, and
+        // `DioxusDocument::poll` drives task wakeups *while it holds the
+        // document borrow*, so taking it here panics with `RefCell already
+        // borrowed`:
+        //
+        //     DioxusDocument::poll
+        //       -> Runtime::handle_task_wakeup
+        //         -> the component's focus task
+        //           -> doc_mut()   panic
+        //
+        // Deferring the request further does not avoid it, because every later
+        // tick is inside a poll too. So a request that cannot be applied now is
+        // recorded and applied by `flush_pending_focus` once the borrow is
+        // released. This is the queue the `TODO: queue focus events somehow`
+        // that used to sit here was asking for.
+        match self.doc.try_borrow_mut() {
+            Ok(mut doc) => apply_focus(&mut doc, self.node_id, focus),
+            Err(_) => queue_focus(Rc::clone(&self.doc), self.node_id, focus),
         }
 
         Box::pin(async { Ok(()) })
@@ -675,6 +740,66 @@ mod tests {
         let changed = data.touches_changed();
         let changed_coords = changed[0].client_coordinates();
         assert_eq!((changed_coords.x, changed_coords.y), (30.0, 40.0));
+    }
+
+    /// A focus request made while the document is borrowed must survive rather
+    /// than panic.
+    ///
+    /// This is not hypothetical: `DioxusDocument::poll` drives task wakeups
+    /// while holding the document borrow, so a component that asks for focus
+    /// from a spawned task lands here every time. Before the queue, this test
+    /// panicked with `RefCell already borrowed` on the `set_focus` line.
+    ///
+    /// The borrow below stands in for the one `poll` is holding — what matters
+    /// is only that the document is borrowed when the request is made.
+    #[test]
+    fn focus_requested_while_the_document_is_borrowed_is_applied_later() {
+        use blitz_dom::DocumentConfig;
+
+        let doc = Rc::new(RefCell::new(BaseDocument::new(DocumentConfig::default())));
+        let root_id = doc.borrow().root_node().id;
+        let handle = NodeHandle {
+            doc: Rc::clone(&doc),
+            node_id: root_id,
+        };
+
+        {
+            let _held = doc.borrow_mut();
+            // Must not panic, and must not apply yet: the borrow is held.
+            let _ = handle.set_focus(true);
+        }
+
+        assert_eq!(
+            doc.borrow().get_focussed_node_id(),
+            None,
+            "the request cannot have been applied while the document was borrowed"
+        );
+
+        flush_pending_focus();
+
+        assert_eq!(
+            doc.borrow().get_focussed_node_id(),
+            Some(root_id),
+            "the queued request should be applied once the borrow is released"
+        );
+    }
+
+    /// The uncontended path must not be made lazy by the queue: with nothing
+    /// holding the borrow, focus applies immediately and needs no flush.
+    #[test]
+    fn focus_applies_immediately_when_the_document_is_free() {
+        use blitz_dom::DocumentConfig;
+
+        let doc = Rc::new(RefCell::new(BaseDocument::new(DocumentConfig::default())));
+        let root_id = doc.borrow().root_node().id;
+        let handle = NodeHandle {
+            doc: Rc::clone(&doc),
+            node_id: root_id,
+        };
+
+        let _ = handle.set_focus(true);
+
+        assert_eq!(doc.borrow().get_focussed_node_id(), Some(root_id));
     }
 
     #[test]
