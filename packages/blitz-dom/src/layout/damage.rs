@@ -10,6 +10,7 @@ use crate::{
 use style::properties::ComputedValues;
 use style::properties::generated::longhands::position::computed_value::T as Position;
 use style::selector_parser::RestyleDamage;
+use style::servo_arc::Arc as ServoArc;
 use style::url::ComputedUrl;
 use style::values::computed::Float;
 use style::values::generics::image::Image as StyloImage;
@@ -575,14 +576,44 @@ impl BaseDocument {
             // contributes hoisted children to an ancestor's stacking context
             // has to walk even when unchanged, because the ancestor rebuilds
             // that list from scratch and would otherwise lose them.
-            let needs_style_flush =
-                !incremental || damage.intersects(RestyleDamage::RELAYOUT | CONSTRUCT_BOX);
+            // Damage alone is not a safe gate, because the taffy style borrows
+            // from the computed values rather than owning them: a `calc()`
+            // reaches taffy as a raw pointer into the stylo
+            // `CalcLengthPercentage` (see `stylo_taffy::convert`). A restyle
+            // that lands no relayout damage — a colour change, or one that
+            // computes to the same values — still replaces the primary
+            // `ComputedValues`, and if that drops the last reference the cached
+            // pointer is dangling. Layout then resolves freed memory, which is
+            // a segfault when the page is unmapped and a nonsense calc node
+            // when it is not: 0.6.x experimental died both ways, seconds after
+            // boot, whenever a slow command's response restyled the header.
+            //
+            // So rebuild whenever the arc is not the one the cached style was
+            // built from. Identity, not equality: a fresh arc means fresh
+            // allocations behind every pointer in the old style. The steady
+            // state this gate exists for is unaffected, because a frame that
+            // restyles nothing hands back the same arc.
+            let style_changed = {
+                let stylo_element_data = node.stylo_element_data_opt().and_then(|s| s.get());
+                let primary = stylo_element_data
+                    .as_ref()
+                    .and_then(|data| data.styles.get_primary());
+                match (primary, node.style_source_opt()) {
+                    (Some(current), Some(cached)) => !ServoArc::ptr_eq(current, cached),
+                    (None, None) => false,
+                    _ => true,
+                }
+            };
+
+            let needs_style_flush = !incremental
+                || style_changed
+                || damage.intersects(RestyleDamage::RELAYOUT | CONSTRUCT_BOX);
 
             if needs_style_flush {
                 // Compute the owned taffy style and display in an inner scope so the
                 // immutable borrow of `node` (held by the stylo element data guard)
                 // is released before we mutably access `node` below.
-                let (mut taffy_style, display_constructed_as) = {
+                let (mut taffy_style, display_constructed_as, style_source) = {
                     let stylo_element_data = node.stylo_element_data_opt().and_then(|s| s.get());
                     let primary_styles = stylo_element_data
                         .as_ref()
@@ -592,15 +623,43 @@ impl BaseDocument {
                         return;
                     };
 
-                    (stylo_taffy::to_taffy_style(style), style.clone_display())
+                    (
+                        stylo_taffy::to_taffy_style(style),
+                        style.clone_display(),
+                        style.clone(),
+                    )
                 };
-                taffy_style.item_is_replaced =
-                    node.data.downcast_element().is_some_and(|el| {
-                        crate::layout::replaced::is_replaced_element(&el.name.local)
-                    });
+                taffy_style.item_is_replaced = node
+                    .data
+                    .downcast_element()
+                    .is_some_and(|el| crate::layout::replaced::is_replaced_element(&el.name.local));
 
+                // A rebuilt style and a retained layout cache have to agree.
+                // The cache is cleared by `propagate_damage_flags` only for
+                // relayout damage, so a style refreshed for any other reason
+                // leaves this node answering from a cache computed against the
+                // values it just replaced, while its parent lays out against
+                // the new ones. Comparing is cheap next to laying out, and
+                // equal styles are the common case: a recolour rebuilds an
+                // identical taffy style and keeps its cache.
+                let layout_inputs_changed = *node.style() != taffy_style;
                 *node.style_mut() = taffy_style;
                 *node.display_constructed_as_mut() = display_constructed_as;
+                if layout_inputs_changed {
+                    node.cache_mut().clear();
+                    if let Some(inline_layout) = node
+                        .data
+                        .downcast_element_mut()
+                        .and_then(|el| el.inline_layout_data.as_mut())
+                    {
+                        inline_layout.content_widths = None;
+                    }
+                }
+                // Stored last, and only on the path that rebuilt the style, so
+                // the arc held here is always the one the pointers in
+                // `node.style()` point into. It keeps those allocations alive
+                // for as long as the style that borrows them.
+                *node.style_source_mut() = Some(style_source);
             } else if node
                 .stylo_element_data_opt()
                 .and_then(|s| s.get())

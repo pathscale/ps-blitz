@@ -169,6 +169,7 @@ macro_rules! universal_accessors {
 universal_accessors! {
     stylo_element_data / stylo_element_data_mut: StyloData,
     style / style_mut: Style<Atom>,
+    style_source / style_source_mut: Option<ServoArc<ComputedValues>>,
     cache / cache_mut: Cache,
     unrounded_layout / unrounded_layout_mut: Layout,
     final_layout / final_layout_mut: Layout,
@@ -189,6 +190,18 @@ universal_accessors! {
 impl Node {
     /// Style data from stylo, if this node kind carries it (element or document
     /// nodes). Returns `None` for text/comment nodes.
+    /// The computed values the cached taffy style was built from, for node
+    /// kinds that carry one. `None` for text and comment nodes, which are never
+    /// styled, so a caller can ask without knowing the kind.
+    #[inline]
+    pub fn style_source_opt(&self) -> Option<&ServoArc<ComputedValues>> {
+        match &self.data {
+            NodeData::Element(data) | NodeData::AnonymousBlock(data) => data.style_source.as_ref(),
+            NodeData::Document(data) => data.style_source.as_ref(),
+            _ => None,
+        }
+    }
+
     #[inline]
     pub fn stylo_element_data_opt(&self) -> Option<&StyloData> {
         match &self.data {

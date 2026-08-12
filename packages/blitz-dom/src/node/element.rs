@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use style::Atom;
 use style::parser::ParserContext;
+use style::properties::ComputedValues;
 use style::properties::{Importance, PropertyDeclaration, PropertyId, SourcePropertyDeclaration};
 use style::stylesheets::{DocumentStyleSheet, Origin, UrlExtraData};
 use style::values::computed::Display as StyloDisplay;
@@ -119,6 +120,15 @@ pub struct ElementData {
 
     // Taffy layout data:
     pub style: Style<Atom>,
+    /// The computed values [`style`](Self::style) was built from, held alive.
+    ///
+    /// A taffy `Style` does not own its `calc()` values. `stylo_taffy` stores a
+    /// raw pointer to the stylo `CalcLengthPercentage`, and that value lives
+    /// inside these `ComputedValues`. Drop them while the taffy style survives
+    /// and the next layout dereferences freed memory. Keeping the arc here
+    /// keeps the pointee alive, and comparing its identity is how a restyle is
+    /// told apart from a no-op. See `flush_styles_to_layout_impl`.
+    pub style_source: Option<ServoArc<ComputedValues>>,
     pub display_constructed_as: StyloDisplay,
     pub cache: Cache,
     pub unrounded_layout: Layout,
@@ -147,6 +157,9 @@ pub struct DocumentData {
     pub has_snapshot: bool,
     pub snapshot_handled: AtomicBool,
     pub style: Style<Atom>,
+    /// See [`ElementData::style_source`]. The document node is styled and laid
+    /// out like an element, so it carries the same hazard.
+    pub style_source: Option<ServoArc<ComputedValues>>,
     pub display_constructed_as: StyloDisplay,
     pub cache: Cache,
     pub unrounded_layout: Layout,
@@ -190,6 +203,7 @@ impl DocumentData {
             has_snapshot: false,
             snapshot_handled: AtomicBool::new(false),
             style: Default::default(),
+            style_source: None,
             display_constructed_as: StyloDisplay::Block,
             cache: Cache::new(),
             unrounded_layout: Layout::new(),
@@ -276,6 +290,7 @@ impl Clone for ElementData {
             after: None,
             detailed_grid_info: None,
             style: Default::default(),
+            style_source: None,
             display_constructed_as: StyloDisplay::Block,
             cache: Cache::new(),
             unrounded_layout: Layout::new(),
@@ -394,6 +409,7 @@ impl ElementData {
             after: None,
             detailed_grid_info: None,
             style: Default::default(),
+            style_source: None,
             display_constructed_as: StyloDisplay::Block,
             cache: Cache::new(),
             unrounded_layout: Layout::new(),
