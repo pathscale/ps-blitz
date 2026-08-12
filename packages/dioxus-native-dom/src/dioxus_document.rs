@@ -234,7 +234,16 @@ impl Document for DioxusDocument {
             let mut pinned_fut = pin!(fut);
 
             let mut cx = TaskContext::from_waker(&waker);
-            match pinned_fut.as_mut().poll(&mut cx) {
+            let ready = pinned_fut.as_mut().poll(&mut cx);
+            // Tasks woken above may have asked for focus. `set_focus` cannot take
+            // the document while a poll holds it, so it records the request
+            // instead; this is the first point where the borrow is free again.
+            //
+            // Applied on the pending path too, and before the early return:
+            // a request made on an otherwise idle frame would otherwise wait for
+            // whatever happens to poll next, which on a static page is nothing.
+            crate::events::flush_pending_focus();
+            match ready {
                 std::task::Poll::Ready(_) => {}
                 std::task::Poll::Pending => return subdoc_changes,
             }
@@ -246,6 +255,9 @@ impl Document for DioxusDocument {
         drop(writer);
         drop(inner);
         self.flush_queued_mounted_events();
+        // Again after the render: a `mounted` handler is the usual place an
+        // element asks for focus as soon as it exists, and those run above.
+        crate::events::flush_pending_focus();
 
         true
     }
