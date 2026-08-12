@@ -93,7 +93,9 @@ impl BaseDocument {
     /// Cheap by construction: it compares two floats per inline root and
     /// re-breaks only the ones that disagree, which in a settled document is
     /// none of them.
-    fn repair_inline_line_breaks(&mut self) {
+    /// Returns whether any repair changed a layout's height, which means the
+    /// boxes taffy sized are now wrong and layout has to run again.
+    fn repair_inline_line_breaks(&mut self) -> bool {
         let scale = self.viewport.scale();
 
         let mut wrong = Vec::new();
@@ -127,6 +129,7 @@ impl BaseDocument {
             }
         }
 
+        let mut changed_height = false;
         for (node_id, content_width) in wrong {
             // Breaking discards the alignment the layout pass applied, so it
             // has to go back on: without it every centred or right-aligned
@@ -162,7 +165,21 @@ impl BaseDocument {
                 },
             );
             inline.laid_out_at = Some(content_width);
+
+            // Any repair at all invalidates the boxes around it, not just one
+            // whose parley height moved. The box was sized by a pass that broke
+            // these lines differently, and its height was accumulated into
+            // every ancestor's content size on the way up. Comparing parley
+            // heights before and after missed that: the layout being repaired
+            // is not the one the box was sized from, so it can come out the
+            // same height while the box is still wrong. Measured live as a
+            // transcript whose content ran 1,062px past the extent it reported,
+            // so it could not scroll to its own last message.
+            changed_height = true;
+            self.nodes[node_id].insert_damage(RestyleDamage::RELAYOUT);
         }
+
+        changed_height
     }
 
     /// Restyle the tree and then relayout it
@@ -258,7 +275,27 @@ impl BaseDocument {
         self.correct_hoisted_fixed_positions();
         timer.record_time("layout");
 
-        self.repair_inline_line_breaks();
+        // One extra pass, only when a repair moved a box. Bounded deliberately:
+        // the second layout runs against lines that already agree with their
+        // widths, so a third could not find anything new, and an unbounded loop
+        // here would be a hang rather than a slow frame.
+        if self.repair_inline_line_breaks() {
+            // Damage first. The repair marks the nodes it touched, but a box's
+            // height is accumulated into every ancestor's content size on the
+            // way up, and those ancestors answer from the taffy cache until
+            // damage propagation clears it. Without this the second pass runs
+            // and changes nothing: measured live as a scroller still reporting
+            // an extent 1,062px short of its own content.
+            if self.incremental_layout {
+                self.propagate_damage_flags(root_node_id, RestyleDamage::empty());
+            }
+            self.flush_styles_to_layout(root_node_id);
+            self.resolve_layout();
+            self.correct_hoisted_fixed_positions();
+            self.repair_inline_line_breaks();
+            self.resolve_transforms(root_node_id);
+        }
+
         self.clamp_scroll_offsets();
         self.trace_escaped_inline_fragments();
 
