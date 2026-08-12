@@ -1,4 +1,4 @@
-use blitz_dom::DocumentConfig;
+use blitz_dom::{AnimationPacing, DocumentConfig};
 use blitz_html::HtmlDocument;
 
 /// Regression test for https://github.com/DioxusLabs/blitz/issues/407
@@ -25,4 +25,36 @@ fn resolve_does_not_panic_after_removing_animated_node() {
 
     // Must not panic: stale animation entry should be skipped safely.
     doc.resolve(0.1);
+}
+
+#[test]
+fn slow_css_animation_uses_low_power_pacing() {
+    let html = r#"
+        <style>
+          @keyframes sweep { to { transform: rotate(360deg); } }
+          .sweep { animation: sweep 6s linear infinite; }
+        </style>
+        <div class="sweep">animated</div>
+    "#;
+
+    let mut doc = HtmlDocument::from_html(html, DocumentConfig::default());
+    doc.resolve(0.0);
+
+    assert_eq!(doc.animation_pacing(), AnimationPacing::SlowCss);
+}
+
+#[test]
+fn fast_css_animation_keeps_interactive_pacing() {
+    let html = r#"
+        <style>
+          @keyframes spin { to { transform: rotate(360deg); } }
+          .spin { animation: spin 1s linear infinite; }
+        </style>
+        <div class="spin">animated</div>
+    "#;
+
+    let mut doc = HtmlDocument::from_html(html, DocumentConfig::default());
+    doc.resolve(0.0);
+
+    assert_eq!(doc.animation_pacing(), AnimationPacing::Interactive);
 }
