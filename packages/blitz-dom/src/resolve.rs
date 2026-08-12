@@ -384,7 +384,40 @@ impl BaseDocument {
             let mut damage = doc.nodes[node_id].damage().unwrap_or(ALL_DAMAGE);
             let _flags = doc.nodes[node_id].flags;
 
-            if !doc.incremental_layout || damage.intersects(CONSTRUCT_FC | CONSTRUCT_BOX) {
+            // A hidden subtree keeps the boxes it already has.
+            //
+            // `display: none` means "do not lay this out", not "forget what you
+            // know about it". Collecting layout children for a hidden container
+            // yields an empty list, so hiding a pane used to discard every box
+            // and every shaped inline layout beneath it, and revealing it built
+            // all of them again from the DOM. In an application that retains
+            // its tabs and toggles them by class, that is the entire cost of a
+            // tab switch, paid again on every switch: measured on six retained
+            // panes of a real project tab, a *re-reveal* cost exactly what the
+            // first reveal cost, 46,526 layout computations either way.
+            //
+            // Damage is deliberately left in place rather than cleared. Content
+            // that changes while hidden still carries its damage to the reveal,
+            // where the normal path reconstructs precisely what changed.
+            if doc.incremental_layout
+                && doc.nodes[node_id].is_display_none()
+                && doc.nodes[node_id].layout_children.borrow().is_some()
+            {
+                return;
+            }
+
+            // A node that has never been constructed has no boxes to keep, and
+            // no damage either once its styles survive being hidden: a pane
+            // that was hidden before it was ever shown reaches its reveal with
+            // valid styles, nothing marked dirty, and nothing to lay out. It
+            // used to be rescued by stylo discarding those styles. Ask the
+            // boxes instead of the damage.
+            let never_constructed = doc.nodes[node_id].layout_children.borrow().is_none();
+
+            if !doc.incremental_layout
+                || never_constructed
+                || damage.intersects(CONSTRUCT_FC | CONSTRUCT_BOX)
+            {
                 //} || flags.contains(NodeFlags::IS_INLINE_ROOT) {
 
                 // Deallocate the anonymous blocks created for this node in the
