@@ -120,6 +120,16 @@ pub struct ElementData {
 
     // Taffy layout data:
     pub style: Style<Atom>,
+    /// Whether flushing this subtree contributes anything to an ancestor's
+    /// paint order: a hoisted `position: fixed` node, or a descendant that
+    /// pushes into an ancestor's stacking context.
+    ///
+    /// Set while flushing, read to decide whether a subtree with no damage can
+    /// be skipped entirely. Without it the walk cannot be skipped at all: an
+    /// ancestor rebuilds its stacking context from scratch, so a subtree that
+    /// feeds it and is not walked simply vanishes from paint.
+    pub subtree_hoists: bool,
+
     /// The computed values [`style`](Self::style) was built from, held alive.
     ///
     /// A taffy `Style` does not own its `calc()` values. `stylo_taffy` stores a
@@ -157,6 +167,9 @@ pub struct DocumentData {
     pub has_snapshot: bool,
     pub snapshot_handled: AtomicBool,
     pub style: Style<Atom>,
+    /// See [`ElementData::subtree_hoists`].
+    pub subtree_hoists: bool,
+
     /// See [`ElementData::style_source`]. The document node is styled and laid
     /// out like an element, so it carries the same hazard.
     pub style_source: Option<ServoArc<ComputedValues>>,
@@ -204,6 +217,7 @@ impl DocumentData {
             snapshot_handled: AtomicBool::new(false),
             style: Default::default(),
             style_source: None,
+            subtree_hoists: false,
             display_constructed_as: StyloDisplay::Block,
             cache: Cache::new(),
             unrounded_layout: Layout::new(),
@@ -291,6 +305,7 @@ impl Clone for ElementData {
             detailed_grid_info: None,
             style: Default::default(),
             style_source: None,
+            subtree_hoists: false,
             display_constructed_as: StyloDisplay::Block,
             cache: Cache::new(),
             unrounded_layout: Layout::new(),
@@ -410,6 +425,7 @@ impl ElementData {
             detailed_grid_info: None,
             style: Default::default(),
             style_source: None,
+            subtree_hoists: false,
             display_constructed_as: StyloDisplay::Block,
             cache: Cache::new(),
             unrounded_layout: Layout::new(),
