@@ -190,7 +190,11 @@ fn inline_elements_follow_the_pane_when_it_narrows() {
     );
     doc.set_incremental_layout(true);
     doc.resolve(0.0);
-    assert_eq!(widest_overhang(&doc), None, "wrong before the pane narrowed");
+    assert_eq!(
+        widest_overhang(&doc),
+        None,
+        "wrong before the pane narrowed"
+    );
 
     let shell = doc.query_selector("#shell").unwrap().expect("no shell");
     doc.mutate().set_attribute(
@@ -204,6 +208,69 @@ fn inline_elements_follow_the_pane_when_it_narrows() {
         widest_overhang(&doc),
         None,
         "a box is left behind at its old x after the pane narrowed"
+    );
+}
+
+/// Growing the chrome underneath the transcript, which is what a pull-request
+/// card, the compact prompt or a queued-message banner does.
+///
+/// The owner reported the spill and "dialogs that push the bottom" in the same
+/// breath, so a taller sibling was the obvious candidate: it changes the free
+/// space in the column, and the transcript gets re-measured for its height.
+/// That measure runs `compute_inline_layout` with `RunMode::ComputeSize` on the
+/// vertical axis, which is the one combination that does not return early at
+/// `inline.rs:462`. It falls through, re-breaks every line at whatever trial
+/// width it was made at, writes those breaks back onto the node, and skips the
+/// box placement below, which is `PerformLayout`-only. Text moves, the boxes on
+/// it do not.
+///
+/// **This arrangement does not reproduce that**, and the test passes. It is
+/// kept as a regression guard on the chrome-growth path rather than as the
+/// reproduction, and as a record that the sibling alone is not the trigger:
+/// something else about the live sequence is needed, and until it is in hand
+/// the mechanism above stays a hypothesis. Run with `BLITZ_TRACE_INLINE=1` to
+/// see the passes; a `places=no` line whose `broke_at` differs from the last
+/// `places=yes` is the defect, and none appears here.
+#[test]
+fn the_transcript_survives_the_chrome_growing_under_it() {
+    let css = include_str!("../fixtures/app.css");
+    let markup = include_str!("../fixtures/transcript.html");
+    let html = format!(
+        r#"<html><head><style>{css}</style></head>
+           <body class="bg-base-100" style="margin:0">
+             <div style="display:flex; flex-direction:column; width:{WIDTH}px; height:{HEIGHT}px;">
+               {markup}
+               <div id="chrome"></div>
+             </div>
+           </body></html>"#
+    );
+    let mut doc = HtmlDocument::from_html(
+        &html,
+        DocumentConfig {
+            viewport: Some(Viewport::new(WIDTH, HEIGHT, 1.0, ColorScheme::Dark)),
+            html_parser_provider: Some(Arc::new(HtmlProvider) as _),
+            ..Default::default()
+        },
+    );
+    doc.set_incremental_layout(true);
+    doc.resolve(0.0);
+    assert_eq!(widest_overhang(&doc), None, "wrong before the chrome grew");
+
+    let chrome = doc.query_selector("#chrome").unwrap().expect("no chrome");
+    doc.mutate().set_inner_html(
+        chrome,
+        r#"<div style="padding:16px; border:1px solid #333;">
+             <div style="font-weight:600;">Pull request ready for review</div>
+             <div>Four hundred and twelve lines changed across nine files.</div>
+             <div>Merge when the checks finish.</div>
+           </div>"#,
+    );
+    doc.resolve(0.0);
+
+    assert_eq!(
+        widest_overhang(&doc),
+        None,
+        "a box hangs past the transcript after a card grew underneath it"
     );
 }
 

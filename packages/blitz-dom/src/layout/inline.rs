@@ -725,30 +725,44 @@ impl BaseDocument {
         // it was placed at, so it was silent through the entire bug and read as
         // evidence of absence. Those boxes were never outside their own line,
         // only outside the box the block ended up with.
-        if *TRACE_INLINE.get_or_init(|| std::env::var_os("BLITZ_TRACE_INLINE").is_some())
-            && inputs.run_mode == taffy::RunMode::PerformLayout
-        {
+        // Filtering this on `PerformLayout` is what hid the bug for a whole
+        // session. The accusation is that a *measure* re-breaks the lines and
+        // leaves them behind, so a trace that only prints measures' well-behaved
+        // sibling reads zero and gets believed. Every pass that reaches this
+        // point has already re-broken the lines, so every pass prints, and the
+        // run mode and axis are columns rather than a filter.
+        //
+        // `places=` is the column that names the defect: box placement below is
+        // `PerformLayout`-only, so a line printing `places=no` with a `broke_at`
+        // different from the last `places=yes` has just moved the text out from
+        // under boxes that stayed where they were.
+        if *TRACE_INLINE.get_or_init(|| std::env::var_os("BLITZ_TRACE_INLINE").is_some()) {
             let boxes = inline_layout.layout.inline_boxes().len();
-            {
-                let ws = self.nodes[node_id]
-                    .primary_styles()
-                    .map(|s| format!("{:?}", s.get_inherited_text().clone_white_space_collapse()))
-                    .unwrap_or_default();
-                let wrap = self.nodes[node_id]
-                    .primary_styles()
-                    .map(|s| format!("{:?}", s.get_inherited_text().clone_text_wrap_mode()))
-                    .unwrap_or_default();
-                eprintln!(
-                    "inline-layout node={:?} boxes={boxes} broke_at={:.1} known={:?} avail={:?} final={:.1} ws={ws} wrap={wrap} layout_w={:.1} lines={}",
-                    node_id,
-                    width / scale,
-                    inputs.known_dimensions.width,
-                    inputs.available_space.width,
-                    final_size.width,
-                    inline_layout.layout.width() / scale,
-                    inline_layout.layout.len(),
-                );
-            }
+            let ws = self.nodes[node_id]
+                .primary_styles()
+                .map(|s| format!("{:?}", s.get_inherited_text().clone_white_space_collapse()))
+                .unwrap_or_default();
+            let wrap = self.nodes[node_id]
+                .primary_styles()
+                .map(|s| format!("{:?}", s.get_inherited_text().clone_text_wrap_mode()))
+                .unwrap_or_default();
+            let places = if inputs.run_mode == taffy::RunMode::PerformLayout {
+                "yes"
+            } else {
+                "no"
+            };
+            eprintln!(
+                "inline-layout node={:?} mode={:?} axis={:?} places={places} boxes={boxes} broke_at={:.1} known={:?} avail={:?} final={:.1} ws={ws} wrap={wrap} layout_w={:.1} lines={}",
+                node_id,
+                inputs.run_mode,
+                inputs.axis,
+                width / scale,
+                inputs.known_dimensions.width,
+                inputs.available_space.width,
+                final_size.width,
+                inline_layout.layout.width() / scale,
+                inline_layout.layout.len(),
+            );
         }
 
         if inputs.run_mode == taffy::RunMode::PerformLayout {
