@@ -10,6 +10,12 @@ categories.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+# Turns on blitz-dom's per-resolve layout counters, which `streaming_token_cost`
+# reads. Off by default: the counting itself costs a `HashMap` entry per
+# `compute_child_layout`, so it must not ride the default test run.
+counters = ["blitz-dom/log-phase-times"]
+
 [dev-dependencies]
 # Blitz dependencies
 blitz-test-harness = { workspace = true }
