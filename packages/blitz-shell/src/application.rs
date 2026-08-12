@@ -45,16 +45,18 @@ impl<Rend: WindowRenderer> BlitzApplication<Rend> {
     }
 
     #[cfg(feature = "debug-control")]
-    fn service_debug_controller(&mut self, event_loop: &dyn ActiveEventLoop) {
+    /// Returns whether it set the control flow, so `about_to_wait` does not
+    /// overwrite its poll cadence with `Wait`.
+    fn service_debug_controller(&mut self, event_loop: &dyn ActiveEventLoop) -> bool {
         let Some(controller) = self.debug_controller.as_mut() else {
-            return;
+            return false;
         };
         let Some(document) = self
             .windows
             .values_mut()
             .find_map(|view| view.try_downcast_doc_mut::<blitz_script::ScriptDocument>())
         else {
-            return;
+            return false;
         };
         controller.service_pending(document);
         if controller.exit_requested() {
@@ -63,7 +65,9 @@ impl<Rend: WindowRenderer> BlitzApplication<Rend> {
             event_loop.set_control_flow(ControlFlow::wait_duration(
                 std::time::Duration::from_millis(10),
             ));
+            return true;
         }
+        false
     }
 
     fn window_mut_by_doc_id(&mut self, doc_id: usize) -> Option<&mut View<Rend>> {
@@ -225,7 +229,9 @@ impl<Rend: WindowRenderer> ApplicationHandler for BlitzApplication<Rend> {
     fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
         let _ = event_loop;
         #[cfg(feature = "debug-control")]
-        self.service_debug_controller(event_loop);
+        let debug_control_is_polling = self.service_debug_controller(event_loop);
+        #[cfg(not(feature = "debug-control"))]
+        let debug_control_is_polling = false;
 
         #[cfg(target_os = "ios")]
         for view in self.windows.values_mut() {
@@ -239,9 +245,19 @@ impl<Rend: WindowRenderer> ApplicationHandler for BlitzApplication<Rend> {
         // earliest deadline across every window becomes the wait, so a window
         // that is animating does not stop the others sleeping.
         //
-        // Left alone when nothing is animating: `ControlFlow::Wait` is already
-        // the default, and overwriting it here would fight whatever else set
-        // it.
+        // Restored to `Wait` when nothing is animating, rather than left alone.
+        //
+        // `ControlFlow::Wait` is the default, but it is not what the loop is
+        // still set to once an animation has ended: the last frame's
+        // `WaitUntil` stays in force, its deadline is already in the past, and
+        // the loop then wakes immediately, forever, with nothing to do. It
+        // costs 76% of a core on an idle window, and it is invisible in a
+        // profile of the app because no frame of ours is on the stack: the
+        // whole main thread sits in `__CFRunLoopDoTimers` re-arming a timer.
+        //
+        // The debug controller polls on its own 10ms cadence, so it says
+        // whether it has set the control flow already and is not overwritten
+        // here.
         // web_time, not std: on wasm they are genuinely distinct types, and
         // both `poll_animation_frame` and winit's own `ControlFlow::WaitUntil`
         // are in web_time's. On native web_time re-exports std's, which is why
@@ -254,6 +270,8 @@ impl<Rend: WindowRenderer> ApplicationHandler for BlitzApplication<Rend> {
             .min();
         if let Some(deadline) = next_frame {
             event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+        } else if !debug_control_is_polling {
+            event_loop.set_control_flow(ControlFlow::Wait);
         }
     }
 }
