@@ -2766,6 +2766,40 @@ root={:?} root_right={root_right:.1} root_w={:.1} lines={} layout_scale={:.2} vp
         if reported > 0 {
             eprintln!("escaped-fragment total={reported}");
         }
+
+        // The opposite failure, and the one that reads as "first load is
+        // broken": lines broken far narrower than the box they sit in, so a
+        // paragraph comes out as a column of one or two words inside a
+        // full-width bubble. Nothing escapes, so the check above never sees it.
+        let mut narrow = 0;
+        for (id, node) in self.nodes.iter() {
+            let Some(inline) = node
+                .data
+                .downcast_element()
+                .and_then(|element| element.inline_layout_data.as_ref())
+            else {
+                continue;
+            };
+            let box_width = node.final_layout().size.width as f64 * self.viewport.scale() as f64;
+            let broken_at = inline.layout.width() as f64;
+            // Only interesting when the text had more to give: a short string
+            // legitimately measures narrower than its box.
+            let full = inline.layout.calculate_content_widths().max as f64;
+            if box_width > 40.0 && broken_at < box_width * 0.6 && full > box_width * 0.9 {
+                narrow += 1;
+                if narrow <= 12 {
+                    eprintln!(
+                        "narrow-break node={id:?} broken_at={broken_at:.1} box={box_width:.1} \
+                         max_content={full:.1} lines={} text={:?}",
+                        inline.layout.len(),
+                        inline.text.chars().take(40).collect::<String>(),
+                    );
+                }
+            }
+        }
+        if narrow > 0 {
+            eprintln!("narrow-break total={narrow}");
+        }
     }
 
     pub fn inline_fragment_rects(&self, node_id: NodeId) -> Option<Vec<BoundingRect>> {
