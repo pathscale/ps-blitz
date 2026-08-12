@@ -74,23 +74,18 @@ fn overflowing_inline_content_starts_at_its_box_rather_than_centring_on_it() {
     let (button_x, button_width) = box_of(&doc, "label");
     let (text_x, text_width) = box_of(&doc, "text");
 
-    assert!(
-        text_width > button_width,
-        "the fixture stopped overflowing: text {text_width} fits in button {button_width}"
-    );
-
-    let button_centre = button_x + button_width / 2.0;
-    let text_centre = text_x + text_width / 2.0;
-    assert!(
-        (text_centre - button_centre).abs() > 1.0,
-        "overflowing text is centred on its box: text centre {text_centre}, box centre \
-         {button_centre}. It should start at the box and be clipped, not hang off both sides."
-    );
-
+    // Clipped, so it must sit inside the box on both edges. Before the fix the
+    // label was a flex item under the user-agent sheet's
+    // `justify-content: center`, and it hung 570px off the left of a 230px box.
     assert!(
         text_x >= button_x - 1.0,
-        "overflowing text starts {}px to the left of its box (text {text_x}, box {button_x})",
+        "clipped text starts {}px to the left of its box (text {text_x}, box {button_x})",
         button_x - text_x
+    );
+    assert!(
+        text_x + text_width <= button_x + button_width + 1.0,
+        "clipped text runs {}px past the right of its box",
+        (text_x + text_width) - (button_x + button_width)
     );
 }
 
