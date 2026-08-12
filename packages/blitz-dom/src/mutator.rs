@@ -693,12 +693,41 @@ impl DocumentMutator<'_> {
     }
 
     /// Remove the node from it's parent but don't drop it
+
+    /// Zero the layout of a node and everything under it.
+    fn clear_layout_of_subtree(doc: &mut BaseDocument, node_id: NodeId) {
+        let mut stack = vec![node_id];
+        while let Some(id) = stack.pop() {
+            let Some(node) = doc.nodes.get_mut(id) else {
+                continue;
+            };
+            // The accessors panic on node kinds that have none, so ask the data
+            // first rather than every node in the subtree: a text node has no
+            // layout of its own and a removal walk hits plenty of them.
+            if node.data.downcast_element().is_some() {
+                *node.unrounded_layout_mut() = taffy::Layout::with_order(0);
+                *node.final_layout_mut() = taffy::Layout::with_order(0);
+                node.cache_mut().clear();
+            }
+            stack.extend(node.children.iter().copied());
+        }
+    }
+
     pub fn remove_node(&mut self, node_id: NodeId) {
         let node_is_in_document = self.doc.nodes[node_id].flags.is_in_document();
         // Process the subtree *before* severing the parent link so that
         // interaction state referencing removed nodes can retarget to the
         // nearest surviving ancestor.
         self.process_removed_subtree(node_id);
+
+        // A detached node keeps its box otherwise, and a box is all layout and
+        // paint need: the application's boot splash was removed by its
+        // framework the moment the workspace was ready, kept a 1318x880 layout
+        // for the rest of the session, and painted its own background over
+        // whichever panel it landed on. The page looked blank. The node is
+        // deliberately not dropped, so JS wrappers stay valid, but nothing
+        // outside the document should occupy space in it.
+        Self::clear_layout_of_subtree(self.doc, node_id);
 
         let node = &mut self.doc.nodes[node_id];
 
