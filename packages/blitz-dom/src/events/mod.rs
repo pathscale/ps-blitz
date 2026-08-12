@@ -230,12 +230,10 @@ pub(crate) fn handle_dom_event<F: FnMut(DomEvent)>(
                     // what people expect from every other application, and
                     // makes the keys work the moment the pointer is in the
                     // panel.
-                    let target = doc
-                        .nearest_scroll_container(target_node_id)
-                        .or_else(|| {
-                            doc.get_hover_node_id()
-                                .and_then(|hovered| doc.nearest_scroll_container(hovered))
-                        });
+                    let target = doc.nearest_scroll_container(target_node_id).or_else(|| {
+                        doc.get_hover_node_id()
+                            .and_then(|hovered| doc.nearest_scroll_container(hovered))
+                    });
                     match target {
                         Some(container) => {
                             doc.scroll_node_by(container, dx, dy, |_| {});

@@ -615,38 +615,6 @@ pub(crate) fn collect_layout_children(
                     .flags
                     .insert(NodeFlags::IS_INLINE_ROOT);
 
-                // Rebuilding the inline layout invalidates every cached layout
-                // for this node. The rebuilt `TextLayout` has not been broken
-                // into lines yet, so until a layout pass runs it is one
-                // unbroken line as wide as its content, and the fragment rects
-                // read out of it (which is where non-atomic inline elements get
-                // their geometry) are that line's.
-                //
-                // Without this the taffy cache still answers for the node, no
-                // layout pass runs, and the block keeps a correct-looking box
-                // over a parley layout that was never wrapped. Measured on a
-                // live transcript: blocks 713px wide and four lines tall whose
-                // text layout was a single line 1,742px wide, with the inline
-                // elements on it reported up to 987px past the pane.
-                // The node *and its ancestors*. Damage propagation runs
-                // before construction, so a cache cleared here cannot reach
-                // the parents through it, and a parent whose own layout is
-                // still cached never descends: clearing only this node changes
-                // nothing at all, which is exactly what was measured.
-                let mut current = Some(container_node_id);
-                while let Some(id) = current {
-                    let Some(node) = doc.nodes.get_mut(id) else {
-                        break;
-                    };
-                    node.cache_mut().clear();
-                    // The *layout* parent, not the DOM parent. Taffy descends
-                    // the layout tree, and anonymous blocks make the two
-                    // differ, so walking `parent` clears a chain taffy never
-                    // visits and the node is still served from a cache that
-                    // was never invalidated.
-                    current = node.layout_parent.get().or(node.parent);
-                }
-
                 find_inline_layout_embedded_boxes(doc, container_node_id, &mut out.children);
                 return;
             }
