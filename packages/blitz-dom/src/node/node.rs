@@ -1311,6 +1311,18 @@ impl Node {
         use style::computed_values::pointer_events::T as PointerEvents;
         use style::computed_values::visibility::T as Visibility;
 
+        // A hidden subtree takes no hits.
+        //
+        // This never needed saying while hiding a pane destroyed its boxes: a
+        // hidden subtree had nothing to test against. It keeps its boxes now,
+        // and their `final_layout` is whatever it was when the pane was last
+        // visible — full size, in place, over the tab in front. A retained tab
+        // measured 331 of its 370 elements still carrying live geometry after
+        // being hidden, and every one of them was a click target.
+        if matches!(self.style().display, taffy::Display::None) {
+            return None;
+        }
+
         // Don't hit on visbility:hidden elements
         if let Some(style) = self.primary_styles() {
             if matches!(

@@ -566,6 +566,18 @@ impl BaseDocument {
                     continue;
                 };
 
+                // A hidden subtree generates no boxes, so nothing in it may be
+                // hoisted. This walk had no display check because it could not
+                // reach a hidden subtree: hiding a pane emptied its layout
+                // children and stylo discarded its styles, so the recursion
+                // stopped and `primary_styles` returned None. Now that a hidden
+                // pane keeps both, every `position: fixed` element in every
+                // background tab was hoisted onto the root and painted over the
+                // tab in front, one ghost per retained tab.
+                if styles.clone_display().is_none() {
+                    continue;
+                }
+
                 if !under_transform && styles.clone_position() == Position::Fixed {
                     out.push(child_id);
                 }
