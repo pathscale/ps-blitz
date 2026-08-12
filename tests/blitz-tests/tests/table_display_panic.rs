@@ -24,10 +24,14 @@ fn go(class: &str) {
 }
 
 #[test]
-fn table_row() { go("table-row"); }
+fn table_row() {
+    go("table-row");
+}
 
 #[test]
-fn table_column() { go("table-column"); }
+fn table_column() {
+    go("table-column");
+}
 
 /// Without the stylesheet, so the answer is `display` and not some other
 /// declaration the class happens to carry.
