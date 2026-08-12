@@ -920,6 +920,7 @@ dependencies = [
  "dioxus",
  "dioxus-core",
  "dioxus-native-dom",
+ "image",
  "keyboard-types 0.7.0",
  "markup5ever",
  "ps-anyrender",

@@ -41,6 +41,7 @@ markup5ever = { workspace = true }
 keyboard-types = { workspace = true }
 usvg = { workspace = true }
 taffy = { workspace = true }
+image = { workspace = true, features = ["png"] }
 
 [lib]
 path = "lib.rs"

@@ -1,9 +1,9 @@
 use anyrender::PaintScene;
 use blitz_dom::{BaseDocument, NodeId, node::TextBrush, util::ToColorColor};
-use kurbo::{Affine, Rect, Stroke};
+use kurbo::{Affine, Rect, RoundedRect, Stroke};
 use parley::{Affinity, Cursor, Layout, Line, PositionedLayoutItem, Selection};
 use peniko::Fill;
-use style::values::computed::TextDecorationLine;
+use style::values::computed::{CSSPixelLength, TextDecorationLine};
 
 use crate::color::{Color, ToColorColor as _};
 use crate::{FONT_EMBOLDEN_ENABLED, SELECTION_COLOR};
@@ -57,7 +57,51 @@ pub(crate) fn draw_inline_backgrounds<'a>(
             let y1 = baseline + metrics.descent as f64;
             let rect = Rect::new(x, y0, x + w, y1);
 
-            scene.fill(Fill::NonZero, transform, bg_color, None, &rect);
+            // `border-radius` applies to an inline box's background too. Filling
+            // a plain rect made the application's inline code chips — styled
+            // `rounded-[5px] border bg-base-300` — render as hard-edged squares
+            // sitting behind their text, which is what they were reported as.
+            //
+            // Resolved the same way `create_css_rect` does it for a block box:
+            // percentages against the box being painted, each corner clamped so
+            // opposite radii cannot overlap.
+            let s_border = styles.get_border();
+            let resolve_w = CSSPixelLength::new(rect.width() as f32);
+            let resolve_h = CSSPixelLength::new(rect.height() as f32);
+            let resolve = |radius: &style::values::computed::BorderCornerRadius| -> (f64, f64) {
+                (
+                    radius.0.width.0.resolve(resolve_w).px() as f64,
+                    radius.0.height.0.resolve(resolve_h).px() as f64,
+                )
+            };
+            let corners = [
+                resolve(&s_border.border_top_left_radius),
+                resolve(&s_border.border_top_right_radius),
+                resolve(&s_border.border_bottom_right_radius),
+                resolve(&s_border.border_bottom_left_radius),
+            ];
+
+            // Kurbo's uniform radii are enough here: a chip's corners are the
+            // same in practice, and taking the smallest keeps an over-large
+            // radius from swallowing a short run.
+            let limit = (rect.width().min(rect.height()) / 2.0).max(0.0);
+            let radius = corners
+                .iter()
+                .flat_map(|(x, y)| [*x, *y])
+                .fold(f64::INFINITY, f64::min)
+                .min(limit);
+
+            if radius > 0.0 {
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    bg_color,
+                    None,
+                    &RoundedRect::from_rect(rect, radius),
+                );
+            } else {
+                scene.fill(Fill::NonZero, transform, bg_color, None, &rect);
+            }
         }
     }
 }
