@@ -15,6 +15,9 @@ rust-version.workspace = true
 # reads. Off by default: the counting itself costs a `HashMap` entry per
 # `compute_child_layout`, so it must not ride the default test run.
 counters = ["blitz-dom/log-phase-times"]
+# The rayon fan-out over deferred inline construction, for measuring against
+# the sequential path it is switched off in favour of.
+parallel-construct = ["blitz-dom/parallel-construct"]
 
 [dev-dependencies]
 # Blitz dependencies
