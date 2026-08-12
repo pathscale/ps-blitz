@@ -719,10 +719,30 @@ impl<'a> TElement for BlitzNode<'a> {
         unsafe { self.stylo_element_data().ensure_init() }
     }
 
-    unsafe fn clear_data(&self) {
-        // SAFETY: stylo traversal has exclusive access to nodes
-        unsafe { self.stylo_element_data().clear() }
-    }
+    /// Deliberately keeps the data.
+    ///
+    /// Stylo calls this from exactly one place: `clear_descendant_data`, which
+    /// runs when an element is restyled to `display: none` and throws away the
+    /// computed styles of everything beneath it. That is right for Gecko, where
+    /// a hidden subtree has no frames and the styles are dead weight.
+    ///
+    /// It is wrong for an application that retains its tabs. Hiding a pane
+    /// deleted every computed style under it, so revealing it again had no old
+    /// style to diff against, every node came back as fully damaged, and the
+    /// pane was reconstructed, re-shaped and laid out from nothing. Measured on
+    /// six retained panes of a real project tab, that made a *re-reveal* cost
+    /// exactly what the first reveal cost, 46,526 layout computations and 55ms,
+    /// on every switch forever.
+    ///
+    /// Keeping the styles is safe because nothing else consults them while the
+    /// subtree is hidden, and a mutation inside a hidden pane still marks its
+    /// nodes dirty the usual way, so the reveal restyles precisely what changed.
+    /// The memory is the styles of tabs the user is holding open, which is the
+    /// trade the application already made by retaining them.
+    ///
+    /// The cost is that `clear_descendant_data` still walks the subtree to find
+    /// nothing to clear, since it descends on `has_data`. One walk per hide.
+    unsafe fn clear_data(&self) {}
 
     fn has_data(&self) -> bool {
         self.stylo_element_data_opt().is_some_and(|s| s.has_data())

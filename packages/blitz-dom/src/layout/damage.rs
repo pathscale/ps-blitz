@@ -582,8 +582,20 @@ impl BaseDocument {
         // It is the largest phase in an idle frame: at 7,008 nodes a frame
         // that recomputes nothing still spent 3.5ms here, walking the tree to
         // discover it had nothing to do.
+        // A node that has never had a taffy style built is not "untouched", it
+        // is unbuilt, and skipping it leaves layout running against defaults:
+        // no `min-width: 0`, no flex, so a revealed pane laid out at its
+        // max-content width of 150,948px. Nothing distinguished the two cases
+        // while stylo discarded the styles of a hidden subtree, because a
+        // subtree that had never been flushed had never been styled either.
+        let never_flushed = self
+            .nodes
+            .get(node_id)
+            .is_some_and(|node| node.style_source_opt().is_none());
+
         if incremental
             && subtree_skip_enabled()
+            && !never_flushed
             && self
                 .nodes
                 .get(node_id)
