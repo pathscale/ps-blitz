@@ -105,6 +105,43 @@ fn isolate_holds_a_fixed_negative_z_descendant() {
 }
 
 #[test]
+fn a_held_fixed_layer_survives_a_second_resolve() {
+    // The first version of this held only until something relayed out.
+    //
+    // `hoist_fixed_position_nodes` learned a node's original parent by reading
+    // `layout_parent`, but the hoist sets that to the root, so on every pass
+    // after the first the node took the `parent_id == root_id` branch and was
+    // never re-recorded. The bookkeeping was cleared at the top of the same
+    // function, so the map came back empty and the layer fell into the root's
+    // stacking context.
+    //
+    // On a page that is one frame old this looks fine. On a real one the
+    // background painted, the first image finished loading, and it vanished.
+    //
+    // One resolve is not enough to catch that, which is why this test resolves
+    // again rather than asserting something new.
+    let mut doc = document(
+        r#"<html><body style="margin:0">
+            <div id="root" style="position:relative;isolation:isolate;min-height:600px">
+                <div id="bg" style="position:fixed;inset:0;z-index:-10"></div>
+            </div>
+        </body></html>"#,
+    );
+
+    assert!(
+        hoists_negative_z(&doc, "#root"),
+        "precondition: the layer starts in the isolate's context"
+    );
+
+    doc.resolve(0.0);
+
+    assert!(
+        hoists_negative_z(&doc, "#root"),
+        "the layer must stay in the isolate's context across a relayout"
+    );
+}
+
+#[test]
 fn a_held_fixed_layer_still_covers_the_viewport() {
     // Putting the layer in the right stacking context is only half of it. Paint
     // draws a hoisted child at its stacking context root's origin plus the
