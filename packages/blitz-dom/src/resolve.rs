@@ -323,6 +323,31 @@ impl BaseDocument {
             overflow = overflow.union(child_rect_in_self);
         }
 
+        // Text overflows too, and only layout *children* were counted above.
+        //
+        // Glyph runs are not nodes, so a `white-space: nowrap` line wider than
+        // its box left `scrollable_overflow` exactly equal to that box. Paint
+        // skips its clip layer when the overflow rect fits the border box —
+        // most `overflow-hidden` wrappers really do clip nothing, and a layer
+        // is the most expensive thing in a frame — so the one case that needed
+        // the clip was the one case that reported it was unnecessary. A
+        // truncated tab title painted straight through the close button beside
+        // it, a branch name through the chip after it, and a transcript line
+        // under the cost readout: measured here as a 150px box painting its
+        // text out to x=354.
+        if let Some(inline_layout) = self.nodes[node_id]
+            .data
+            .downcast_element()
+            .and_then(|element| element.inline_layout_data.as_ref())
+        {
+            // Already device pixels: parley is handed the scaled size, so
+            // scaling again doubled every inline root's overflow at 2x and
+            // inflated its hit area with it.
+            let text_width = inline_layout.layout.width() as f64;
+            let text_height = inline_layout.layout.height() as f64;
+            overflow = overflow.union(Rect::new(0.0, 0.0, text_width, text_height));
+        }
+
         *self.nodes[node_id].scrollable_overflow_mut() = overflow;
         *self.nodes[node_id].layout_children.get_mut() = layout_children;
 
