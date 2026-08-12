@@ -554,6 +554,32 @@ impl BaseDocument {
         self.flush_image_layers_from_style(node_id, ImageLayerKind::Mask);
 
         let incremental = self.incremental_layout;
+
+        // Skip an untouched subtree outright, rather than walking it to find
+        // out it is untouched.
+        //
+        // `propagate_damage_flags` stores the union of a node's own damage and
+        // its whole subtree's, so an empty value means nothing under here
+        // changed. That was already enough to skip rebuilding the taffy style,
+        // and not enough to skip the recursion, because an ancestor rebuilds
+        // its stacking context from scratch and a subtree that feeds it would
+        // vanish from paint. `subtree_hoists` is that missing bit, set below
+        // while walking.
+        //
+        // It is the largest phase in an idle frame: at 7,008 nodes a frame
+        // that recomputes nothing still spent 3.5ms here, walking the tree to
+        // discover it had nothing to do.
+        if incremental
+            && self
+                .nodes
+                .get(node_id)
+                .and_then(|node| node.damage())
+                .is_some_and(|damage| damage.is_empty())
+            && !self.nodes[node_id].subtree_hoists()
+        {
+            return;
+        }
+
         let display = {
             let node = self.nodes.get_mut(node_id).unwrap();
             let damage = node.damage().unwrap_or(ALL_DAMAGE);
@@ -776,9 +802,18 @@ impl BaseDocument {
 
         // Outside the block above, so the borrow on paint_children has ended:
         // reaching another node's stacking context needs `self` mutably.
+        let hoisted_fixed_here = !deferred_fixed.is_empty();
         for (child_id, z_index, origin) in deferred_fixed {
             self.place_hoisted_fixed(child_id, z_index, origin, node_id, stacking_context);
         }
+
+        // Anything this subtree contributes upward makes it unskippable next
+        // frame. A hoisted fixed node counts even when this node establishes a
+        // stacking context, because `place_hoisted_fixed` reaches a context
+        // that is not this one.
+        let feeds_an_ancestor = hoisted_fixed_here
+            || (parent_stacking_context.is_some() && !stacking_context.children.is_empty());
+        *self.nodes[node_id].subtree_hoists_mut() = feeds_an_ancestor;
 
         if let Some(parent_stacking_context) = parent_stacking_context {
             let position = self.nodes[node_id].final_layout().location;

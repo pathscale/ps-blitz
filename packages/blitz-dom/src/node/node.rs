@@ -170,6 +170,7 @@ universal_accessors! {
     stylo_element_data / stylo_element_data_mut: StyloData,
     style / style_mut: Style<Atom>,
     style_source / style_source_mut: Option<ServoArc<ComputedValues>>,
+    subtree_hoists / subtree_hoists_mut: bool,
     cache / cache_mut: Cache,
     unrounded_layout / unrounded_layout_mut: Layout,
     final_layout / final_layout_mut: Layout,
