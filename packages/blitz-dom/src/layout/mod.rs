@@ -130,6 +130,7 @@ pub mod layout_counters {
     use std::cell::Cell;
 
     thread_local! {
+        static ACTIVE: Cell<bool> = const { Cell::new(false) };
         static COMPUTED: Cell<u64> = const { Cell::new(0) };
         static CACHES_CLEARED: Cell<u64> = const { Cell::new(0) };
         static LOOKUPS: Cell<u64> = const { Cell::new(0) };
@@ -141,7 +142,28 @@ pub mod layout_counters {
             std::cell::RefCell::new(std::collections::HashMap::new());
     }
 
+    /// Select collection once for the whole resolve and reset its scratch data.
+    pub(crate) fn begin(active: bool) {
+        ACTIVE.with(|enabled| enabled.set(active));
+        if !active {
+            return;
+        }
+        COMPUTED.with(|count| count.set(0));
+        CACHES_CLEARED.with(|count| count.set(0));
+        LOOKUPS.with(|count| count.set(0));
+        HITS.with(|count| count.set(0));
+        DISTINCT.with(|seen| seen.borrow_mut().clear());
+    }
+
+    #[inline(always)]
+    fn active() -> bool {
+        ACTIVE.with(Cell::get)
+    }
+
     pub(crate) fn note_computed(node_id: NodeId) {
+        if !active() {
+            return;
+        }
         COMPUTED.with(|count| count.set(count.get() + 1));
         DISTINCT.with(|seen| {
             *seen.borrow_mut().entry(node_id).or_insert(0u32) += 1;
@@ -168,10 +190,16 @@ pub mod layout_counters {
     }
 
     pub(crate) fn note_cache_cleared() {
+        if !active() {
+            return;
+        }
         CACHES_CLEARED.with(|count| count.set(count.get() + 1));
     }
 
     pub(crate) fn note_lookup(hit: bool) {
+        if !active() {
+            return;
+        }
         LOOKUPS.with(|count| count.set(count.get() + 1));
         if hit {
             HITS.with(|count| count.set(count.get() + 1));
@@ -215,6 +243,10 @@ pub mod layout_counters {
 
     /// Counts since the last call, then reset.
     pub fn take() -> LayoutCounts {
+        if !active() {
+            LAST.with(|last| last.set(LayoutCounts::ZERO));
+            return LayoutCounts::ZERO;
+        }
         let counts = LayoutCounts {
             computed: COMPUTED.with(|count| count.replace(0)),
             distinct: DISTINCT.with(|seen| {
@@ -227,6 +259,7 @@ pub mod layout_counters {
             lookups: LOOKUPS.with(|count| count.replace(0)),
             hits: HITS.with(|count| count.replace(0)),
         };
+        ACTIVE.with(|active| active.set(false));
         LAST.with(|last| last.set(counts));
         counts
     }

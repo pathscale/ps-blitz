@@ -20,7 +20,9 @@ mod accessibility;
 
 pub use crate::application::BlitzApplication;
 pub use crate::event::{BlitzShellEvent, BlitzShellProxy};
-pub use crate::frame_stats::{FrameStatsSnapshot, FrameTimings, TimingStats, latest_frame_stats};
+pub use crate::frame_stats::{
+    FrameStatsSnapshot, FrameTimings, TimingStats, clear_frame_stats, latest_frame_stats,
+};
 pub use crate::window::{View, WindowConfig};
 
 #[cfg(feature = "data-uri")]

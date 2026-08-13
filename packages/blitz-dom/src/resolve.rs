@@ -7,7 +7,6 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use debug_timer::debug_timer;
 use kurbo::{Affine, Rect};
 use parley::LayoutContext;
 use selectors::Element as _;
@@ -206,7 +205,13 @@ impl BaseDocument {
             .retain(|node_id, _| nodes.contains_key(*node_id));
 
         let root_node_id = self.root_element().id;
-        debug_timer!(timer, feature = "log-phase-times");
+        #[cfg(feature = "log-phase-times")]
+        let mut timer =
+            debug_timer::RealDebugTimer::init_if(blitz_traits::profiling::deep_profiling_enabled());
+        #[cfg(not(feature = "log-phase-times"))]
+        let mut timer = debug_timer::DummyDebugTimer::init();
+        #[cfg(feature = "log-phase-times")]
+        crate::layout::layout_counters::begin(blitz_traits::profiling::deep_profiling_enabled());
 
         // Compute the shadow DOM flattened tree (shadow-root composition and
         // <slot> distribution). This must happen *before* style resolution so

@@ -101,13 +101,23 @@ mod real_debug_timer {
 
     impl DebugTimer {
         pub fn init() -> Self {
+            Self::init_if(true)
+        }
+
+        pub fn init_if(enabled: bool) -> Self {
             Self {
-                recorded_times: vec![("start", Instant::now())],
+                recorded_times: if enabled {
+                    vec![("start", Instant::now())]
+                } else {
+                    Vec::new()
+                },
             }
         }
 
         pub fn record_time(&mut self, message: &'static str) {
-            self.recorded_times.push((message, Instant::now()));
+            if !self.recorded_times.is_empty() {
+                self.recorded_times.push((message, Instant::now()));
+            }
         }
 
         pub fn is_logging(&self) -> bool {
@@ -115,7 +125,7 @@ mod real_debug_timer {
         }
 
         pub fn print_times(&self, message: &str) {
-            if !is_logging() {
+            if self.recorded_times.is_empty() || !is_logging() {
                 return;
             }
 
@@ -161,6 +171,10 @@ mod dummy_debug_timer {
     impl DebugTimer {
         #[inline(always)]
         pub fn init() -> Self {
+            Self
+        }
+        #[inline(always)]
+        pub fn init_if(_enabled: bool) -> Self {
             Self
         }
         #[inline(always)]
