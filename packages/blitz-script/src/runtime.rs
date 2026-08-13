@@ -633,7 +633,8 @@ impl ScriptRuntime {
 
     /// Run all timers that are currently due. Returns `true` if any JavaScript was run.
     pub fn run_due_timers(&mut self) -> bool {
-        let timers_started = std::time::Instant::now();
+        let timers_started =
+            blitz_traits::profiling::deep_profiling_enabled().then(std::time::Instant::now);
         let due = self.ctx.state.borrow_mut().timers.take_due(Instant::now());
         if due.is_empty() {
             return false;
@@ -648,7 +649,9 @@ impl ScriptRuntime {
             }
         }
         self.run_jobs("timer microtasks");
-        crate::script_stats::record_work("timers", timers_started.elapsed());
+        if let Some(started) = timers_started {
+            crate::script_stats::record_work("timers", started.elapsed());
+        }
         true
     }
 
@@ -664,12 +667,15 @@ impl ScriptRuntime {
     ) -> bool {
         // Attributed by event name. A poll costing 16ms says nothing about what
         // to fix; "scroll cost 14ms of it" names the handler.
-        let dispatch_started = std::time::Instant::now();
+        let dispatch_started =
+            blitz_traits::profiling::deep_profiling_enabled().then(std::time::Instant::now);
         let ran = self.dispatch_dom_event_timed(chain, event, event_state);
-        crate::script_stats::record_work(
-            &format!("event:{}", event.data.name()),
-            dispatch_started.elapsed(),
-        );
+        if let Some(started) = dispatch_started {
+            crate::script_stats::record_work(
+                &format!("event:{}", event.data.name()),
+                started.elapsed(),
+            );
+        }
         ran
     }
 

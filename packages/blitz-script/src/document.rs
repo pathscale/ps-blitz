@@ -362,9 +362,12 @@ impl Document for ScriptDocument {
     }
 
     fn poll(&mut self, task_context: Option<TaskContext>) -> bool {
-        let poll_started = std::time::Instant::now();
+        let profiling = blitz_traits::profiling::deep_profiling_enabled();
+        let poll_started = profiling.then(std::time::Instant::now);
         let ran = self.poll_inner(task_context);
-        crate::script_stats::record_poll(poll_started.elapsed(), ran);
+        if let Some(started) = poll_started {
+            crate::script_stats::record_poll(started.elapsed(), ran);
+        }
         ran
     }
 }
@@ -391,9 +394,12 @@ impl ScriptDocument {
             // One-time: parsing and running the application bundle. Separated
             // because it is startup cost, and folding it into the steady-state
             // numbers made every per-poll average meaningless.
-            let started = std::time::Instant::now();
+            let started =
+                blitz_traits::profiling::deep_profiling_enabled().then(std::time::Instant::now);
             self.execute_scripts();
-            crate::script_stats::record_work("startup:execute_scripts", started.elapsed());
+            if let Some(started) = started {
+                crate::script_stats::record_work("startup:execute_scripts", started.elapsed());
+            }
             ran = true;
         }
 
@@ -403,9 +409,12 @@ impl ScriptDocument {
             // The embedder's per-poll work. For a Solid application this is
             // where reactive updates and DOM mutation actually happen, so it is
             // the bucket that matters once startup is excluded.
-            let started = std::time::Instant::now();
+            let started =
+                blitz_traits::profiling::deep_profiling_enabled().then(std::time::Instant::now);
             ran |= hook(self, task_context.as_ref());
-            crate::script_stats::record_work("poll_hook", started.elapsed());
+            if let Some(started) = started {
+                crate::script_stats::record_work("poll_hook", started.elapsed());
+            }
             self.poll_hook = Some(hook);
         }
 

@@ -535,6 +535,7 @@ impl<Rend: WindowRenderer> View<Rend> {
     }
 
     pub fn redraw(&mut self) {
+        let profiling = blitz_traits::profiling::deep_profiling_enabled();
         let frame_started = Instant::now();
         self.redraw_pending.set(false);
         #[cfg(target_os = "ios")]
@@ -542,10 +543,10 @@ impl<Rend: WindowRenderer> View<Rend> {
         let animation_time = self.current_animation_time();
         let is_visible = self.is_visible;
 
-        let resolve_started = Instant::now();
+        let resolve_started = profiling.then(Instant::now);
         let mut inner = self.doc.inner_mut();
         inner.resolve(animation_time);
-        let resolve_time = resolve_started.elapsed();
+        let resolve_time = resolve_started.map_or(Duration::ZERO, |started| started.elapsed());
 
         // Unregister resources (e.g. textures) from dropped custom widget nodes
         #[cfg(feature = "custom-widget")]
@@ -566,10 +567,10 @@ impl<Rend: WindowRenderer> View<Rend> {
         let insets = self.safe_area_insets;
 
         let mut paint_time = Duration::ZERO;
-        let render_started = Instant::now();
+        let render_started = profiling.then(Instant::now);
         if !is_blocked && is_visible {
             self.renderer.render(|scene| {
-                let paint_started = Instant::now();
+                let paint_started = profiling.then(Instant::now);
                 paint_scene(
                     scene,
                     &mut inner,
@@ -579,15 +580,19 @@ impl<Rend: WindowRenderer> View<Rend> {
                     insets.left,
                     insets.top,
                 );
-                paint_time = paint_started.elapsed();
+                paint_time = paint_started.map_or(Duration::ZERO, |started| started.elapsed());
             });
         }
-        let renderer_time = render_started.elapsed().saturating_sub(paint_time);
+        let renderer_time = render_started
+            .map_or(Duration::ZERO, |started| started.elapsed())
+            .saturating_sub(paint_time);
 
         drop(inner);
 
-        self.frame_stats
-            .record(frame_started, resolve_time, paint_time, renderer_time);
+        if profiling {
+            self.frame_stats
+                .record(frame_started, resolve_time, paint_time, renderer_time);
+        }
 
         if !is_blocked && is_visible && is_animating {
             // Due rather than requested. Requesting here is what runs an

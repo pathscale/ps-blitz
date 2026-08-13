@@ -9,10 +9,8 @@
 //! module: with no accessor it timed its own snapshot collection and reported that
 //! as frame cost, which measures the observer rather than the application.
 //!
-//! Recording here is unconditional. `BLITZ_FRAME_STATS` still gates the log line,
-//! but gating the shared data on it too would mean a normally launched app reports
-//! no frame data at all, which is what pushed the previous consumer into inventing
-//! numbers.
+//! Recording is selected once at the frame boundary by the process-wide deep
+//! profiling mode. A normal frame does not enter this module at all.
 //!
 //! All windows in the process feed the same log. A multi-window app therefore sees
 //! its windows interleaved; the aggregate still describes real presented frames,
@@ -126,6 +124,17 @@ pub(crate) fn set_display_refresh_millihertz(rate: Option<u32>) {
     }
 }
 
+/// Discard every retained frame sample.
+pub fn clear_frame_stats() {
+    if let Ok(mut log) = FRAME_LOG.lock() {
+        let refresh_millihertz = log.refresh_millihertz;
+        *log = FrameLog {
+            refresh_millihertz,
+            ..FrameLog::default()
+        };
+    }
+}
+
 /// The display's refresh rate, when the platform reported one.
 ///
 /// Read by the animation pacing in `window.rs`, so that the gap between
@@ -164,6 +173,9 @@ pub(crate) fn record_frame(
 /// Returns `None` until the first frame has been presented, so that callers can
 /// report "no data yet" instead of reporting zeros as if they were measurements.
 pub fn latest_frame_stats() -> Option<FrameStatsSnapshot> {
+    if !blitz_traits::profiling::deep_profiling_enabled() {
+        return None;
+    }
     let log = FRAME_LOG.lock().ok()?;
     summarise(
         &log.frames,
@@ -349,6 +361,8 @@ mod tests {
 
     #[test]
     fn recording_publishes_to_the_process_global_log() {
+        blitz_traits::profiling::set_deep_profiling_enabled(true);
+        clear_frame_stats();
         record_frame(
             Instant::now(),
             Duration::from_millis(2),
@@ -358,5 +372,7 @@ mod tests {
         let stats = latest_frame_stats().expect("a frame was just recorded");
         assert!(stats.frames_total >= 1);
         assert!(stats.latest.total_ms >= 9.0);
+        blitz_traits::profiling::set_deep_profiling_enabled(false);
+        clear_frame_stats();
     }
 }

@@ -6,6 +6,7 @@ pub mod events;
 pub mod navigation;
 pub mod net;
 pub mod node_id;
+pub mod profiling;
 pub mod shell;
 
 pub use node_id::NodeId;

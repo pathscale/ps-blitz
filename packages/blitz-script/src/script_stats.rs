@@ -93,6 +93,9 @@ thread_local! {
 /// Use for anything called per DOM node. `record_work` takes a `&str` and
 /// interns it, which is fine per event and far too expensive per element.
 pub fn record_static(label: &'static str, duration: Duration) {
+    if !blitz_traits::profiling::deep_profiling_enabled() {
+        return;
+    }
     // `try_with`/`try_borrow_mut` rather than the panicking forms: this runs
     // inside `Drop`, and a profiler that can panic during unwinding turns a
     // recoverable error into an abort.
@@ -140,6 +143,9 @@ fn drain_local_statics(log: &mut Log) {
 /// label is the event name where there is one, so a profile says which handler
 /// is expensive instead of only that something was.
 pub fn record_work(label: &str, duration: Duration) {
+    if !blitz_traits::profiling::deep_profiling_enabled() {
+        return;
+    }
     let Ok(mut guard) = LOG.lock() else {
         return;
     };
@@ -186,6 +192,9 @@ pub fn work_breakdown() -> Vec<(String, u64, f64, f64)> {
 
 /// Record one `poll`. Cheap enough to leave on: a lock and a push.
 pub fn record_poll(duration: Duration, ran_script: bool) {
+    if !blitz_traits::profiling::deep_profiling_enabled() {
+        return;
+    }
     let Ok(mut guard) = LOG.lock() else {
         return;
     };
@@ -227,6 +236,9 @@ pub struct ScriptStatsSnapshot {
 /// than printing zeros that look like a measurement.
 #[must_use]
 pub fn latest_script_stats() -> Option<ScriptStatsSnapshot> {
+    if !blitz_traits::profiling::deep_profiling_enabled() {
+        return None;
+    }
     let guard = LOG.lock().ok()?;
     let log = guard.as_ref()?;
     if log.polls.is_empty() {
@@ -268,7 +280,7 @@ pub fn latest_script_stats() -> Option<ScriptStatsSnapshot> {
 #[cfg(feature = "dom-stats")]
 pub struct Timed {
     label: &'static str,
-    started: std::time::Instant,
+    started: Option<std::time::Instant>,
 }
 
 #[cfg(feature = "dom-stats")]
@@ -277,7 +289,8 @@ impl Timed {
     pub fn new(label: &'static str) -> Self {
         Self {
             label,
-            started: std::time::Instant::now(),
+            started: blitz_traits::profiling::deep_profiling_enabled()
+                .then(std::time::Instant::now),
         }
     }
 }
@@ -285,8 +298,22 @@ impl Timed {
 #[cfg(feature = "dom-stats")]
 impl Drop for Timed {
     fn drop(&mut self) {
-        record_static(self.label, self.started.elapsed());
+        if let Some(started) = self.started {
+            record_static(self.label, started.elapsed());
+        }
     }
+}
+
+/// Discard every retained script and DOM timing sample.
+pub fn clear() {
+    if let Ok(mut log) = LOG.lock() {
+        *log = None;
+    }
+    let _ = LOCAL_STATICS.try_with(|local| {
+        if let Ok(mut buckets) = local.try_borrow_mut() {
+            buckets.clear();
+        }
+    });
 }
 
 /// The zero-cost stand-in. Same call sites, no clock, no bucket, no drop glue.
@@ -319,6 +346,7 @@ mod tests {
         // The static buckets outlive the shared log, so clearing only the log
         // would leak the previous test's DOM samples into the next one.
         LOCAL_STATICS.with(|local| local.borrow_mut().clear());
+        blitz_traits::profiling::set_deep_profiling_enabled(true);
         guard
     }
 
