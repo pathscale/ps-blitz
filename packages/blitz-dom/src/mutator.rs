@@ -745,8 +745,6 @@ impl DocumentMutator<'_> {
         }
     }
 
-    /// Remove the node from it's parent but don't drop it
-
     /// Zero the layout of a node and everything under it.
     fn clear_layout_of_subtree(doc: &mut BaseDocument, node_id: NodeId) {
         let mut stack = vec![node_id];
@@ -766,6 +764,7 @@ impl DocumentMutator<'_> {
         }
     }
 
+    /// Remove the node from its parent but don't drop it.
     pub fn remove_node(&mut self, node_id: NodeId) {
         let node_is_in_document = self.doc.nodes[node_id].flags.is_in_document();
         // Process the subtree *before* severing the parent link so that
