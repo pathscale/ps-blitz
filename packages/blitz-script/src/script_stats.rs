@@ -442,7 +442,6 @@ fn maybe_report(log: &Log) {
 
     eprintln!(
         "[script] polls={} productive={} spent={spent_ms:.0}ms last_second={delta_ms:.1}ms ({share:.1}% of wall clock)",
-        log.total,
-        log.productive,
+        log.total, log.productive,
     );
 }

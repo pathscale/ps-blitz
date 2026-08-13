@@ -43,7 +43,10 @@ fn hiding_a_sibling_by_class_takes_its_box_away() {
     doc.poll(None);
     doc.inner_mut().resolve(0.0);
 
-    assert!(area(&doc, "#b") > 0.0, "the newly shown tab did not lay out");
+    assert!(
+        area(&doc, "#b") > 0.0,
+        "the newly shown tab did not lay out"
+    );
     assert_eq!(
         area(&doc, "#a"),
         0.0,

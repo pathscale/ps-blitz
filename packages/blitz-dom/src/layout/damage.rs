@@ -594,10 +594,10 @@ impl BaseDocument {
 
                     (stylo_taffy::to_taffy_style(style), style.clone_display())
                 };
-                taffy_style.item_is_replaced =
-                    node.data.downcast_element().is_some_and(|el| {
-                        crate::layout::replaced::is_replaced_element(&el.name.local)
-                    });
+                taffy_style.item_is_replaced = node
+                    .data
+                    .downcast_element()
+                    .is_some_and(|el| crate::layout::replaced::is_replaced_element(&el.name.local));
 
                 *node.style_mut() = taffy_style;
                 *node.display_constructed_as_mut() = display_constructed_as;
