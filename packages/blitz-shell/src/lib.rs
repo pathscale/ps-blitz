@@ -23,6 +23,55 @@ pub use crate::event::{BlitzShellEvent, BlitzShellProxy};
 pub use crate::frame_stats::{
     FrameStatsSnapshot, FrameTimings, TimingStats, clear_frame_stats, latest_frame_stats,
 };
+
+/// Start or stop one process-wide deep-profiling capture window.
+///
+/// The concrete collectors live in the shell and script crates, so this is the
+/// lowest shared layer that can coordinate them without making `blitz-traits`
+/// depend on its consumers. A state transition always clears both stores:
+/// enabling begins an empty capture, and disabling retains nothing while the
+/// capability is dormant. Reapplying the current state is a no-op so a settings
+/// refresh cannot accidentally split an active user capture.
+#[cfg(feature = "debug-control")]
+pub fn set_deep_profiling_enabled(enabled: bool) {
+    if blitz_traits::profiling::deep_profiling_enabled() == enabled {
+        return;
+    }
+
+    // Stop collection before clearing. On enable, collection remains stopped
+    // until both stores are empty, so no section can enter the new window with
+    // a sample from the old one.
+    blitz_traits::profiling::set_deep_profiling_enabled(false);
+    clear_frame_stats();
+    blitz_script::script_stats::clear();
+    blitz_traits::profiling::set_deep_profiling_enabled(enabled);
+}
+
+#[cfg(all(test, feature = "debug-control"))]
+mod profiling_lifecycle_tests {
+    use std::time::Duration;
+
+    #[test]
+    fn a_new_deep_capture_window_drops_all_previous_collector_samples() {
+        crate::set_deep_profiling_enabled(true);
+        crate::frame_stats::record_frame(
+            web_time::Instant::now(),
+            Duration::from_millis(2),
+            Duration::from_millis(3),
+            Duration::from_millis(4),
+        );
+        blitz_script::script_stats::record_poll(Duration::from_millis(5), true);
+        assert!(crate::latest_frame_stats().is_some());
+        assert!(blitz_script::script_stats::latest_script_stats().is_some());
+
+        crate::set_deep_profiling_enabled(false);
+        crate::set_deep_profiling_enabled(true);
+
+        assert!(crate::latest_frame_stats().is_none());
+        assert!(blitz_script::script_stats::latest_script_stats().is_none());
+        crate::set_deep_profiling_enabled(false);
+    }
+}
 pub use crate::window::{View, WindowConfig};
 
 #[cfg(feature = "data-uri")]

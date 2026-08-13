@@ -20,12 +20,20 @@ pub struct DebugOptions {
 }
 
 impl DebugOptions {
-    /// Deep samples are useful only while the local inspection plane exists to
-    /// retrieve them. This also prevents an inconsistent persisted pair from
-    /// silently collecting in the background.
+    /// Whether the intrusive collectors should run.
+    ///
+    /// This is the deep-profiling switch alone. It was once ANDed with
+    /// `inspection_and_agent_control`, on the reasoning that samples are only
+    /// useful while a plane exists to read them back — but the collectors also
+    /// feed the frame log and phase timings, which need no socket, and the AND
+    /// made the embedder's toggle silently inert with inspection off. Turning
+    /// inspection off and on then lost the setting entirely.
+    ///
+    /// Kept as a named method rather than a field read because embedders call
+    /// it across a version boundary.
     #[must_use]
     pub const fn effective_deep_profiling(self) -> bool {
-        self.inspection_and_agent_control && self.deep_intrusive_profiling
+        self.deep_intrusive_profiling
     }
 }
 
@@ -57,22 +65,30 @@ mod tests {
         set_deep_profiling_enabled(false);
     }
 
+    /// Deep profiling answers for itself. It used to be ANDed with inspection,
+    /// which made the switch inert whenever the inspection plane was off — the
+    /// embedder's toggle appeared to do nothing, and the stored preference was
+    /// then cleared to match, losing it.
     #[test]
-    fn deep_profiling_requires_the_inspection_plane() {
+    fn deep_profiling_is_independent_of_the_inspection_plane() {
         assert!(!DebugOptions::default().effective_deep_profiling());
-        assert!(
-            DebugOptions {
-                inspection_and_agent_control: true,
-                deep_intrusive_profiling: true,
-            }
-            .effective_deep_profiling()
-        );
-        assert!(
-            !DebugOptions {
-                inspection_and_agent_control: false,
-                deep_intrusive_profiling: true,
-            }
-            .effective_deep_profiling()
-        );
+        for inspection in [false, true] {
+            assert!(
+                DebugOptions {
+                    inspection_and_agent_control: inspection,
+                    deep_intrusive_profiling: true,
+                }
+                .effective_deep_profiling(),
+                "deep profiling should follow its own switch (inspection {inspection})"
+            );
+            assert!(
+                !DebugOptions {
+                    inspection_and_agent_control: inspection,
+                    deep_intrusive_profiling: false,
+                }
+                .effective_deep_profiling(),
+                "deep profiling off means off (inspection {inspection})"
+            );
+        }
     }
 }
