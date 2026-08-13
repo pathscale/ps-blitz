@@ -130,7 +130,12 @@ impl ElementCx<'_, '_> {
                 let y1 = oy + h - bottom;
 
                 if x1 <= x0 || y1 <= y0 {
-                    return None;
+                    // A valid basic shape that resolves to an empty region
+                    // clips all paint. `None` means `clip-path:none` to the
+                    // caller and therefore disables clipping altogether,
+                    // which made visually-hidden checkboxes (`inset(50%)`)
+                    // paint as native black pills over their custom controls.
+                    return Some(BezPath::new());
                 }
 
                 // TODO: Support border-radius on inset()

@@ -494,10 +494,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             clip_path_for_layer.apply_affine(Affine::scale(self.scale));
         }
 
-        cx.draw_outline(scene);
-        cx.draw_outset_box_shadow(scene);
-
-        // clip-path clip ayer
+        // clip-path clip layer
         self.layer_manager.maybe_with_layer(
             scene,
             LayerSite::ClipPath,
