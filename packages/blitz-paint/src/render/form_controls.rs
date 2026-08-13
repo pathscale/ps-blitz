@@ -5,6 +5,7 @@ use blitz_dom::local_name;
 use kurbo::{Affine, BezPath, Cap, Circle, Join, Point, RoundedRect, Stroke, Vec2};
 use peniko::Fill;
 use style::dom::TElement as _;
+use style::values::computed::Appearance;
 
 impl ElementCx<'_, '_> {
     pub(super) fn draw_input(&self, scene: &mut impl PaintScene) {
@@ -14,6 +15,19 @@ impl ElementCx<'_, '_> {
         let Some(checked) = self.element.checkbox_input_checked() else {
             return;
         };
+
+        // `appearance: none` is how a component library says it has replaced
+        // this control and will draw its own. Painting anyway put the native
+        // box on top of the replacement: AgencyZero's toggles hide the real
+        // input at about a pixel beside their track, and every checked one
+        // grew an accent-coloured speck just outside its rounded edge.
+        //
+        // The UA sheet gives these controls a non-`none` appearance precisely
+        // so this comparison can mean something; `appearance` starts out
+        // `none` for everything.
+        if self.style.get_box().clone_appearance() == Appearance::None {
+            return;
+        }
 
         let type_attr = self.node.attr(local_name!("type"));
         let disabled = self.node.attr(local_name!("disabled")).is_some();

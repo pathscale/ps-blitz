@@ -53,13 +53,21 @@ input {
     display: inline-block;
 }
 
+/*
+ * `appearance` has to be stated here for `appearance: none` to mean anything.
+ * Its initial value is `none`, so without a UA rule to override, an author
+ * asking for `none` computes to exactly what every other checkbox computes to
+ * and the paint side has no way to tell them apart.
+ */
 input[type="checkbox"] {
+    appearance: checkbox;
     width: 14px;
     height: 14px;
     margin: 3px 3px 3px 4px;
 }
 
 input[type="radio"] {
+    appearance: radio;
     width: 14px;
     height: 14px;
     border-radius: 14px;
