@@ -58,30 +58,45 @@ fn panel(border_alpha: &str, shadow_alpha: &str) -> HtmlDocument {
     doc
 }
 
-/// Sampled just *outside* the panel, not inside it.
+/// Sampled *inside* the panel's own edge, because the fixture asks for
+/// `outline-offset: -2px`.
 ///
-/// `outline-offset` is ignored by this renderer: a probe with `-2px` painted in
-/// exactly the same place as one with no offset at all. So the outline always
-/// lands outside the border box, and AgencyZero's `.rounded-panel`, which asks
-/// for `outline-offset: -1px`, gets an outline sitting a pixel outside rather
-/// than inset. Worth fixing in the engine; irrelevant to whether the axis works.
+/// This used to sample outside, at (59, 59), and pass: `outline-offset` was
+/// read by nobody, so a `-2px` probe painted in exactly the same place as one
+/// with no offset at all and every inset ring landed outside its box. That is
+/// fixed (see `outline_offset.rs`), so the ring is now where the stylesheet
+/// asked for it and the sample follows it in. AgencyZero's `.rounded-panel`
+/// asks for the same inset pixel.
+///
+/// At rest the ring is transparent and the panel's own background shows through
+/// at that pixel, which is why the off case is the panel colour and not the
+/// page.
 #[test]
 fn the_border_axis_paints_only_when_raised() {
-    // At 0% the outline is fully transparent, so the page shows through.
+    const PANEL_FILL: [u8; 3] = [0x10, 0x10, 0x10];
+
+    // At 0% the outline is fully transparent, so the panel shows through.
     let mut off = panel("0%", "0");
-    let at_edge = pixel_at(&mut off, 59, 59);
+    let at_edge = pixel_at(&mut off, 61, 100);
     assert_eq!(
-        at_edge,
-        [255, 255, 255],
-        "a 0% edge should paint nothing outside the panel"
+        at_edge, PANEL_FILL,
+        "a 0% edge should paint nothing over the panel"
     );
 
     // Raised, the outline colour has to appear in the same place.
     let mut on = panel("100%", "0");
-    let raised = pixel_at(&mut on, 59, 59);
+    let raised = pixel_at(&mut on, 61, 100);
     assert!(
         raised[0] > 150 && raised[1] < 90,
         "a raised edge should paint the outline colour, got {raised:?}"
+    );
+
+    // And nothing should escape the box, which is what the negative offset buys.
+    let outside = pixel_at(&mut on, 59, 100);
+    assert_eq!(
+        outside,
+        [255, 255, 255],
+        "an inset edge must not paint outside the panel"
     );
 }
 

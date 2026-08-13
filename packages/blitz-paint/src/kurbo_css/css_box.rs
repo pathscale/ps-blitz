@@ -34,10 +34,14 @@ pub struct CssBox {
     pub padding_box: Rect,
     pub content_box: Rect,
     pub outline_box: Rect,
+    /// The inner edge of the outline ring, which is the border box displaced by
+    /// `outline-offset`.
+    pub outline_inner_box: Rect,
 
     pub padding_width: Insets,
     pub border_width: Insets,
     pub outline_width: f64,
+    pub outline_offset: f64,
 
     pub border_radii: NonUniformRoundedRectRadii,
 }
@@ -48,11 +52,18 @@ impl CssBox {
         border: Insets,
         padding: Insets,
         outline_width: f64,
+        outline_offset: f64,
         mut border_radii: NonUniformRoundedRectRadii,
     ) -> Self {
         let padding_box = border_box - border;
         let content_box = padding_box - padding;
-        let outline_box = border_box.inset(outline_width);
+        // A negative `outline-offset` pulls the ring inside the box, and a large
+        // enough one would turn it inside out, so the inward travel is capped at
+        // half the shorter side. `Rect::inset` grows on a positive argument.
+        let inward_limit = -(border_box.width().min(border_box.height()) / 2.0);
+        let outline_offset = outline_offset.max(inward_limit);
+        let outline_inner_box = border_box.inset(outline_offset);
+        let outline_box = border_box.inset(outline_offset + outline_width);
 
         // Correct the border radii if they are too big if two border radii would intersect, then we need to shrink
         // ALL border radii by the same factor such that they do not
@@ -79,7 +90,9 @@ impl CssBox {
             border_box,
             content_box,
             outline_box,
+            outline_inner_box,
             outline_width,
+            outline_offset,
             padding_width: padding,
             border_width: border,
             border_radii,
@@ -191,6 +204,7 @@ impl CssBox {
             slice_border,
             Insets::ZERO,
             0.0,
+            0.0,
             slice_radii,
         )
     }
@@ -201,10 +215,14 @@ impl CssBox {
 
         // TODO: this has been known to produce quirky outputs with hugely rounded edges
         self.shape(&mut path, CssBoxKind::OutlineBox, Direction::Clockwise);
-        path.move_to(self.corner(Corner::TopLeft, CssBoxKind::BorderBox));
+        path.move_to(self.corner(Corner::TopLeft, CssBoxKind::OutlineInnerBox));
 
-        self.shape(&mut path, CssBoxKind::BorderBox, Direction::Anticlockwise);
-        path.move_to(self.corner(Corner::TopLeft, CssBoxKind::BorderBox));
+        // The hole is the *inner edge of the ring*, not the border box. They
+        // coincide only at `outline-offset: 0`, and using the border box for
+        // both meant every offset was silently discarded: an outline asked to
+        // sit 1px inside painted 1px outside instead.
+        self.shape(&mut path, CssBoxKind::OutlineInnerBox, Direction::Anticlockwise);
+        path.move_to(self.corner(Corner::TopLeft, CssBoxKind::OutlineInnerBox));
 
         path
     }
@@ -325,6 +343,7 @@ impl CssBox {
     fn corner(&self, corner: Corner, css_box: CssBoxKind) -> Point {
         let Rect { x0, y0, x1, y1 } = match css_box {
             CssBoxKind::OutlineBox => self.outline_box,
+            CssBoxKind::OutlineInnerBox => self.outline_inner_box,
             CssBoxKind::BorderBox => self.border_box,
             CssBoxKind::PaddingBox => self.padding_box,
             CssBoxKind::ContentBox => self.content_box,
@@ -489,6 +508,24 @@ impl CssBox {
         )
     }
 
+    /// A corner radius of one of the two outline edges, displaced outwards by
+    /// `distance` from the border box.
+    ///
+    /// A square corner stays square however far the ring travels: CSS grows the
+    /// radius with the offset only where there was already a curve. A negative
+    /// distance can consume the radius entirely, at which point the corner is
+    /// square again, so this floors at zero rather than going negative and
+    /// drawing an inverted arc.
+    fn outline_corner_radii(&self, corner_radii: Vec2, distance: f64) -> Vec2 {
+        if corner_radii.x == 0.0 || corner_radii.y == 0.0 {
+            return Vec2::ZERO;
+        }
+        Vec2::new(
+            (corner_radii.x + distance).max(0.0),
+            (corner_radii.y + distance).max(0.0),
+        )
+    }
+
     /// Check if a corner is sharp (IE the absolute radius is 0)
     fn is_sharp(&self, corner: Corner, side: CssBoxKind) -> bool {
         use Corner::*;
@@ -506,7 +543,18 @@ impl CssBox {
         }
 
         let css_box: Insets = match side {
-            OutlineBox => return false,
+            // The ring's own radii are the border radii displaced by the offset,
+            // so a negative offset can flatten a corner that is round on the box
+            // itself. Asking the same helper that draws them keeps the two from
+            // disagreeing about whether an arc exists.
+            OutlineBox => {
+                return self
+                    .outline_corner_radii(corner_radii, self.outline_offset + self.outline_width)
+                    == Vec2::ZERO;
+            }
+            OutlineInnerBox => {
+                return self.outline_corner_radii(corner_radii, self.outline_offset) == Vec2::ZERO;
+            }
             BorderBox => return false,
             PaddingBox => self.border_width,
             ContentBox => add_insets(self.border_width, self.padding_width),
@@ -565,7 +613,8 @@ impl CssBox {
 
         let radii: Vec2 = match side {
             BorderBox => corner_radii,
-            OutlineBox => corner_radii + Vec2::new(self.outline_width, self.outline_width),
+            OutlineBox => self.outline_corner_radii(corner_radii, self.outline_offset + self.outline_width),
+            OutlineInnerBox => self.outline_corner_radii(corner_radii, self.outline_offset),
             PaddingBox => corner_radii - get_corner_insets(*border_width, corner),
             ContentBox => {
                 corner_radii - get_corner_insets(add_insets(*border_width, *padding_width), corner)
@@ -694,6 +743,7 @@ mod tests {
             Insets::uniform(10.0),
             Insets::ZERO,
             0.0,
+            0.0,
             NonUniformRoundedRectRadii {
                 top_left: Vec2::new(60.0, 20.0),
                 top_right: Vec2::new(20.0, 50.0), // ry > rx
@@ -788,6 +838,7 @@ fn detects_elliptical_border() {
             Insets::uniform(1.0),
             Insets::ZERO,
             0.0,
+            0.0,
             radii,
         )
     };
@@ -815,6 +866,7 @@ fn detects_uniform_corner_border() {
             Rect::new(0.0, 0.0, w, h),
             Insets::uniform(1.0),
             Insets::ZERO,
+            0.0,
             0.0,
             radii,
         )
