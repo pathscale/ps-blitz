@@ -700,6 +700,35 @@ pub(crate) fn collect_layout_children(
         }
 
         _ => {
+            // Internal table boxes can receive direct text from malformed or
+            // authored display combinations. Passing that raw text to Taffy
+            // is invalid: text carries neither a style nor a layout cache.
+            // This check is restricted to the specialised-display fallback
+            // and runs only while rebuilding its box tree, never on an idle
+            // layout frame.
+            let has_direct_text = doc.nodes[container_node_id]
+                .layout_dom_children()
+                .iter()
+                .copied()
+                .any(|child_id| {
+                    let child = &doc.nodes[child_id];
+                    child.data.kind() == NodeKind::Text && !child.is_whitespace_node()
+                });
+            if has_direct_text {
+                let existing_layout = doc.nodes[container_node_id]
+                    .element_data_mut()
+                    .and_then(|el| el.inline_layout_data.take());
+                let layout = existing_layout.unwrap_or_else(|| Box::new(TextLayout::new()));
+                doc.deferred_construction_nodes.push(ConstructionTask {
+                    node_id: container_node_id,
+                    data: ConstructionTaskData::InlineLayout(layout),
+                });
+                doc.nodes[container_node_id]
+                    .flags
+                    .insert(NodeFlags::IS_INLINE_ROOT);
+                find_inline_layout_embedded_boxes(doc, container_node_id, &mut out.children);
+                return;
+            }
             push_non_whitespace_children_and_pseudos(
                 &mut out.children,
                 &doc.nodes[container_node_id],
