@@ -166,6 +166,7 @@ const CSS_ANIMATION_TARGET_FPS: u32 = 15;
 /// Canvas, scrolling, custom widgets and other interactive animation sources
 /// keep the previous animation-only cadence.
 const INTERACTIVE_ANIMATION_TARGET_FPS: u32 = 30;
+const CARET_BLINK_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Used only when the display will not say what its refresh rate is.
 const CSS_ANIMATION_FALLBACK_INTERVAL: Duration = Duration::from_millis(67);
@@ -189,6 +190,7 @@ fn animation_frame_interval_for_refresh(
 ) -> Duration {
     let (target_fps, fallback_interval) = match pacing {
         blitz_dom::AnimationPacing::Idle => return Duration::ZERO,
+        blitz_dom::AnimationPacing::Caret => return CARET_BLINK_INTERVAL,
         blitz_dom::AnimationPacing::SlowCss => {
             (CSS_ANIMATION_TARGET_FPS, CSS_ANIMATION_FALLBACK_INTERVAL)
         }
@@ -245,6 +247,14 @@ mod animation_pacing_tests {
         assert_eq!(
             animation_frame_interval_for_refresh(blitz_dom::AnimationPacing::Interactive, None),
             Duration::from_millis(33),
+        );
+    }
+
+    #[test]
+    fn caret_only_frames_run_at_blink_boundaries() {
+        assert_eq!(
+            animation_frame_interval_for_refresh(blitz_dom::AnimationPacing::Caret, Some(120_000)),
+            Duration::from_millis(500),
         );
     }
 }
@@ -571,7 +581,7 @@ impl<Rend: WindowRenderer> View<Rend> {
         if !is_blocked && is_visible {
             self.renderer.render(|scene| {
                 let paint_started = profiling.then(Instant::now);
-                paint_scene(
+                blitz_paint::paint_scene_at_time(
                     scene,
                     &mut inner,
                     scale,
@@ -579,6 +589,7 @@ impl<Rend: WindowRenderer> View<Rend> {
                     height,
                     insets.left,
                     insets.top,
+                    animation_time,
                 );
                 paint_time = paint_started.map_or(Duration::ZERO, |started| started.elapsed());
             });
