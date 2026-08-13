@@ -10,6 +10,7 @@ use crate::runtime::ScriptRuntime;
 /// before Blitz's default actions run.
 pub(crate) struct ScriptEventHandler<'rt> {
     pub runtime: &'rt mut ScriptRuntime,
+    pub profiling: bool,
 }
 
 impl EventHandler for ScriptEventHandler<'_> {
@@ -20,6 +21,7 @@ impl EventHandler for ScriptEventHandler<'_> {
         _doc: &mut dyn Document,
         event_state: &mut EventState,
     ) {
-        self.runtime.dispatch_dom_event(chain, event, event_state);
+        self.runtime
+            .dispatch_dom_event(chain, event, event_state, self.profiling);
     }
 }

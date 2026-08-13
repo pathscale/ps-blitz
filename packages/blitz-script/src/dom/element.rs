@@ -23,6 +23,7 @@ pub(crate) fn init_element_proto(proto: &JsObject, context: &mut Context) {
     define_accessor(proto, "localName", Some(local_name), None, context);
     define_accessor(proto, "namespaceURI", Some(namespace_uri), None, context);
     define_accessor(proto, "id", Some(get_id), Some(set_id), context);
+    define_accessor(proto, "src", Some(get_src), Some(set_src), context);
     define_accessor(
         proto,
         "className",
@@ -207,13 +208,13 @@ fn write_attr(ctx: &DomCtx, node_id: NodeId, name: &str, value: &str) {
     // and every classList mutation reach the DOM through this function and
     // through nothing else, and while they were uncounted a keystroke looked
     // like it touched no DOM at all while dirtying layout every time.
-    let _t = crate::script_stats::Timed::new("dom:attr=");
+    let _t = crate::script_stats::Timed::new(ctx, "dom:attr=");
     let mut doc = ctx.mutate_doc();
     doc.mutate().set_attribute(node_id, attr_name(name), value);
 }
 
 fn clear_attr(ctx: &DomCtx, node_id: NodeId, name: &str) {
-    let _t = crate::script_stats::Timed::new("dom:attr-remove");
+    let _t = crate::script_stats::Timed::new(ctx, "dom:attr-remove");
     let mut doc = ctx.mutate_doc();
     doc.mutate().clear_attribute(node_id, attr_name(name));
 }
@@ -348,6 +349,21 @@ fn get_id(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<J
 }
 fn set_id(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     attr_setter("id", this, args, context)
+}
+
+/// `src`, reflected to the attribute.
+///
+/// Without this, `element.src = url` set a plain JavaScript property and the
+/// DOM never heard about it, so nothing that reads the attribute — the script
+/// runner, the image loader — could see what the page had asked for. Every
+/// loader that builds a `<script>` and assigns `src` rather than calling
+/// `setAttribute` was silently inert.
+fn get_src(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let _ = args;
+    attr_getter("src", this, context)
+}
+fn set_src(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    attr_setter("src", this, args, context)
 }
 
 fn get_class_name(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {

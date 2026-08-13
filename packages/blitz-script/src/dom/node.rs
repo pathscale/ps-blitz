@@ -236,8 +236,8 @@ fn text_content(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResul
 }
 
 fn set_text_content(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let _t = crate::script_stats::Timed::new("dom:textContent=");
     let ctx = dom_ctx(context)?;
+    let _t = crate::script_stats::Timed::new(&ctx, "dom:textContent=");
     let node_id = this_node_id(this)?;
     let text = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
 
@@ -298,8 +298,8 @@ fn arg_node_id(args: &[JsValue], index: usize) -> JsResult<NodeId> {
 }
 
 fn append_child(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let _t = crate::script_stats::Timed::new("dom:appendChild");
     let ctx = dom_ctx(context)?;
+    let _t = crate::script_stats::Timed::new(&ctx, "dom:appendChild");
     let parent_id = this_node_id(this)?;
     let child_id = arg_node_id(args, 0)?;
 
@@ -340,7 +340,8 @@ fn arg_node_or_text(
 
 /// `ParentNode.append(...nodes)`: nodes or strings, appended in order.
 fn append(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let _t = crate::script_stats::Timed::new("dom:append");
+    let profiling_ctx = dom_ctx(context)?;
+    let _t = crate::script_stats::Timed::new(&profiling_ctx, "dom:append");
     let parent_id = this_node_id(this)?;
     for arg in args {
         let ctx = dom_ctx(context)?;
@@ -363,7 +364,8 @@ fn append(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<J
 
 /// `ParentNode.prepend(...nodes)`: the same, inserted before the first child.
 fn prepend(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let _t = crate::script_stats::Timed::new("dom:prepend");
+    let profiling_ctx = dom_ctx(context)?;
+    let _t = crate::script_stats::Timed::new(&profiling_ctx, "dom:prepend");
     let parent_id = this_node_id(this)?;
     for (offset, arg) in args.iter().enumerate() {
         let ctx = dom_ctx(context)?;
@@ -387,7 +389,8 @@ fn prepend(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<
 
 /// `ParentNode.replaceChildren(...nodes)`: empty the parent, then append.
 fn replace_children(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let _t = crate::script_stats::Timed::new("dom:replaceChildren");
+    let profiling_ctx = dom_ctx(context)?;
+    let _t = crate::script_stats::Timed::new(&profiling_ctx, "dom:replaceChildren");
     let parent_id = this_node_id(this)?;
     {
         let ctx = dom_ctx(context)?;
@@ -403,8 +406,8 @@ fn replace_children(this: &JsValue, args: &[JsValue], context: &mut Context) -> 
 }
 
 fn insert_before(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let _t = crate::script_stats::Timed::new("dom:insertBefore");
     let ctx = dom_ctx(context)?;
+    let _t = crate::script_stats::Timed::new(&ctx, "dom:insertBefore");
     let parent_id = this_node_id(this)?;
     let new_id = arg_node_id(args, 0)?;
 
@@ -586,7 +589,11 @@ fn compare_document_position(
     }))
 }
 
-fn clone_node(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(super) fn clone_node(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
     let deep = args.first().map(JsValue::to_boolean).unwrap_or(false);

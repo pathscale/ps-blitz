@@ -632,9 +632,8 @@ impl ScriptRuntime {
     }
 
     /// Run all timers that are currently due. Returns `true` if any JavaScript was run.
-    pub fn run_due_timers(&mut self) -> bool {
-        let timers_started =
-            blitz_traits::profiling::deep_profiling_enabled().then(std::time::Instant::now);
+    pub fn run_due_timers(&mut self, profiling: bool) -> bool {
+        let timers_started = profiling.then(std::time::Instant::now);
         let due = self.ctx.state.borrow_mut().timers.take_due(Instant::now());
         if due.is_empty() {
             return false;
@@ -664,11 +663,11 @@ impl ScriptRuntime {
         chain: &[NodeId],
         event: &DomEvent,
         event_state: &mut EventState,
+        profiling: bool,
     ) -> bool {
         // Attributed by event name. A poll costing 16ms says nothing about what
         // to fix; "scroll cost 14ms of it" names the handler.
-        let dispatch_started =
-            blitz_traits::profiling::deep_profiling_enabled().then(std::time::Instant::now);
+        let dispatch_started = profiling.then(std::time::Instant::now);
         let ran = self.dispatch_dom_event_timed(chain, event, event_state);
         if let Some(started) = dispatch_started {
             crate::script_stats::record_work(
@@ -953,6 +952,27 @@ impl ScriptRuntime {
             name,
             true,
             |ctx, target, context| create_event(ctx, name, true, false, target, context),
+            &mut event_state,
+        );
+        if ran {
+            self.run_jobs("event microtasks");
+        }
+        ran
+    }
+
+    /// Dispatch a simple, non-bubbling event at one node.
+    ///
+    /// For the resource events a script element reports on itself, `load` and
+    /// `error`. Non-bubbling because that is what the DOM specifies for them,
+    /// and a loader listening on the element would otherwise also hear every
+    /// image on the page finish.
+    pub fn dispatch_node_event(&mut self, node_id: NodeId, name: &str) -> bool {
+        let mut event_state = EventState::default();
+        let ran = self.dispatch_event_inner(
+            &[node_id],
+            name,
+            false,
+            |ctx, target, context| create_event(ctx, name, false, false, target, context),
             &mut event_state,
         );
         if ran {

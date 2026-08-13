@@ -93,9 +93,6 @@ thread_local! {
 /// Use for anything called per DOM node. `record_work` takes a `&str` and
 /// interns it, which is fine per event and far too expensive per element.
 pub fn record_static(label: &'static str, duration: Duration) {
-    if !blitz_traits::profiling::deep_profiling_enabled() {
-        return;
-    }
     // `try_with`/`try_borrow_mut` rather than the panicking forms: this runs
     // inside `Drop`, and a profiler that can panic during unwinding turns a
     // recoverable error into an abort.
@@ -143,9 +140,6 @@ fn drain_local_statics(log: &mut Log) {
 /// label is the event name where there is one, so a profile says which handler
 /// is expensive instead of only that something was.
 pub fn record_work(label: &str, duration: Duration) {
-    if !blitz_traits::profiling::deep_profiling_enabled() {
-        return;
-    }
     let Ok(mut guard) = LOG.lock() else {
         return;
     };
@@ -192,9 +186,6 @@ pub fn work_breakdown() -> Vec<(String, u64, f64, f64)> {
 
 /// Record one `poll`. Cheap enough to leave on: a lock and a push.
 pub fn record_poll(duration: Duration, ran_script: bool) {
-    if !blitz_traits::profiling::deep_profiling_enabled() {
-        return;
-    }
     let Ok(mut guard) = LOG.lock() else {
         return;
     };
@@ -286,11 +277,10 @@ pub struct Timed {
 #[cfg(feature = "dom-stats")]
 impl Timed {
     #[must_use]
-    pub fn new(label: &'static str) -> Self {
+    pub(crate) fn new(ctx: &crate::state::DomCtx, label: &'static str) -> Self {
         Self {
             label,
-            started: blitz_traits::profiling::deep_profiling_enabled()
-                .then(std::time::Instant::now),
+            started: ctx.deep_profiling_enabled().then(std::time::Instant::now),
         }
     }
 }
@@ -324,7 +314,7 @@ pub struct Timed;
 impl Timed {
     #[must_use]
     #[inline(always)]
-    pub fn new(_label: &'static str) -> Self {
+    pub(crate) fn new(_ctx: &crate::state::DomCtx, _label: &'static str) -> Self {
         Self
     }
 }
@@ -417,6 +407,56 @@ mod tests {
         assert_eq!(stats.window_polls, 1);
         assert_eq!(stats.total_polls, 11);
         assert_eq!(stats.productive_polls, 1);
+    }
+
+    #[cfg(feature = "dom-stats")]
+    #[test]
+    fn poll_keeps_its_selected_mode_when_the_global_flag_changes_inside_it() {
+        use blitz_dom::{Document, DocumentConfig};
+
+        let _serial = reset();
+        let mut document =
+            crate::ScriptDocument::from_html("<body></body>", DocumentConfig::default());
+        document.set_poll_hook(|document, _| {
+            // The poll selected profiling before this hook. Inner collectors
+            // must keep that selection rather than rereading the global.
+            blitz_traits::profiling::set_deep_profiling_enabled(false);
+            document.eval("document.body.appendChild(document.createElement('div'))");
+            true
+        });
+
+        assert!(document.poll(None));
+        blitz_traits::profiling::set_deep_profiling_enabled(true);
+
+        assert!(
+            work_breakdown()
+                .iter()
+                .any(|(label, ..)| label == "dom:createElement"),
+            "DOM attribution follows the enclosing poll mode"
+        );
+        assert!(latest_script_stats().is_some());
+    }
+
+    #[cfg(feature = "dom-stats")]
+    #[test]
+    fn disabled_poll_does_not_start_collecting_if_the_global_turns_on_inside_it() {
+        use blitz_dom::{Document, DocumentConfig};
+
+        let _serial = reset();
+        clear();
+        blitz_traits::profiling::set_deep_profiling_enabled(false);
+        let mut document =
+            crate::ScriptDocument::from_html("<body></body>", DocumentConfig::default());
+        document.set_poll_hook(|document, _| {
+            blitz_traits::profiling::set_deep_profiling_enabled(true);
+            document.eval("document.body.appendChild(document.createElement('div'))");
+            true
+        });
+
+        assert!(document.poll(None));
+
+        assert!(work_breakdown().is_empty());
+        assert!(latest_script_stats().is_none());
     }
 }
 
