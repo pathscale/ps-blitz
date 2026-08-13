@@ -593,9 +593,27 @@ impl BaseDocument {
             .get(node_id)
             .is_some_and(|node| node.style_source_opt().is_none());
 
+        // A paint-only restyle can replace the computed-values arc without
+        // adding layout damage. The cached taffy style may contain raw calc()
+        // pointers into that arc, so arc identity is also part of the subtree
+        // skip condition.
+        let style_changed = {
+            let node = &self.nodes[node_id];
+            let stylo_element_data = node.stylo_element_data_opt().and_then(|s| s.get());
+            let primary = stylo_element_data
+                .as_ref()
+                .and_then(|data| data.styles.get_primary());
+            match (primary, node.style_source_opt()) {
+                (Some(current), Some(cached)) => !ServoArc::ptr_eq(current, cached),
+                (None, None) => false,
+                _ => true,
+            }
+        };
+
         if incremental
             && subtree_skip_enabled()
             && !never_flushed
+            && !style_changed
             && self
                 .nodes
                 .get(node_id)
@@ -645,18 +663,6 @@ impl BaseDocument {
             // allocations behind every pointer in the old style. The steady
             // state this gate exists for is unaffected, because a frame that
             // restyles nothing hands back the same arc.
-            let style_changed = {
-                let stylo_element_data = node.stylo_element_data_opt().and_then(|s| s.get());
-                let primary = stylo_element_data
-                    .as_ref()
-                    .and_then(|data| data.styles.get_primary());
-                match (primary, node.style_source_opt()) {
-                    (Some(current), Some(cached)) => !ServoArc::ptr_eq(current, cached),
-                    (None, None) => false,
-                    _ => true,
-                }
-            };
-
             let needs_style_flush = !incremental
                 || style_changed
                 || damage.intersects(RestyleDamage::RELAYOUT | CONSTRUCT_BOX);
