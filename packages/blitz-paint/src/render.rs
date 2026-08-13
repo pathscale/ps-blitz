@@ -515,7 +515,6 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                 // sheet gives a focused input a 2px outline. Focusing one then
                 // painted a blue mark beside the switch it was meant to be
                 // invisible behind.
-                cx.draw_outline(scene);
                 cx.draw_outset_box_shadow(scene);
 
                 // If the element has a CSS `mask`, then push an isolation layer for the
@@ -617,6 +616,19 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                             cx.transform = unscrolled_transform;
                             cx.draw_scrollbars(scene);
                         }
+
+                        // Last, because CSS paints an outline over the element
+                        // it belongs to rather than under it. It only stopped
+                        // mattering while `outline-offset` was ignored and the
+                        // ring could never overlap the box: a negative offset
+                        // pulls it inside, where a background painted after it
+                        // simply erased it.
+                        //
+                        // Inside the effect layer so opacity and filters apply
+                        // to it, and outside the overflow clip because an
+                        // outline is not clipped by its own element's overflow.
+                        cx.transform = unscrolled_transform;
+                        cx.draw_outline(scene);
                     },
                 );
 
@@ -1265,6 +1277,7 @@ fn create_css_rect(style: &ComputedValues, layout: &Layout, scale: f64) -> CssBo
     let border = insets_from_taffy_rect(layout.border.map(|p| p as f64 * scale));
     let padding = insets_from_taffy_rect(layout.padding.map(|p| p as f64 * scale));
     let outline_width = style.get_outline().outline_width.0.to_f64_px() * scale;
+    let outline_offset = style.get_outline().outline_offset.to_f64_px() * scale;
 
     // Resolve the radii to a length. need to downscale since the radii are in document pixels
     let resolve_w = CSSPixelLength::new(width as _);
@@ -1283,5 +1296,12 @@ fn create_css_rect(style: &ComputedValues, layout: &Layout, scale: f64) -> CssBo
         bottom_left: resolve_radii(&s_border.border_bottom_left_radius),
     };
 
-    CssBox::new(border_box, border, padding, outline_width, border_radii)
+    CssBox::new(
+        border_box,
+        border,
+        padding,
+        outline_width,
+        outline_offset,
+        border_radii,
+    )
 }
