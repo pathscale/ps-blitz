@@ -112,15 +112,9 @@ fn no_class_in_the_shipped_stylesheet_aborts_layout() {
     std::panic::set_hook(previous);
     killers.sort();
 
-    // Two known defects, asserted as a set rather than waived, so a third one
-    // still fails this test the day it appears. `table-row` and `table-column`
-    // abort in `node.rs` when the class is applied to an element that is not
-    // inside a table, and `MessageBody` renders markdown tables, so this is
-    // reachable from the application rather than theoretical.
-    const KNOWN: [&str; 2] = ["table-column", "table-row"];
-
     assert_eq!(
-        killers, KNOWN,
+        killers,
+        Vec::<String>::new(),
         "the set of classes that abort layout changed: {killers:?}"
     );
 }
