@@ -1,8 +1,8 @@
 //! Integration between Dioxus and Blitz
 use crate::NodeId;
 use crate::events::{
-    BlitzKeyboardData, NativeConverter, NativeFocusData, NativeFormData, NativePointerData,
-    NativeScrollData, NativeTouchData, NativeWheelData, NodeHandle,
+    BlitzKeyboardData, DocumentCommandQueue, NativeConverter, NativeFocusData, NativeFormData,
+    NativePointerData, NativeScrollData, NativeTouchData, NativeWheelData, NodeHandle,
 };
 use crate::mutation_writer::{DioxusState, MutationWriter};
 use crate::qual_name;
@@ -68,6 +68,7 @@ pub struct DioxusDocument {
     pub inner: Rc<RefCell<BaseDocument>>,
     pub vdom: VirtualDom,
     pub vdom_state: DioxusState,
+    command_queue: DocumentCommandQueue,
 
     #[allow(unused)]
     pub(crate) html_element_id: NodeId,
@@ -135,6 +136,7 @@ impl DioxusDocument {
             vdom,
             vdom_state,
             inner: Rc::new(RefCell::new(doc)),
+            command_queue: Rc::new(RefCell::new(Vec::new())),
             html_element_id,
             head_element_id,
             body_element_id,
@@ -189,6 +191,7 @@ impl DioxusDocument {
                 let event = Event::new(
                     Rc::new(PlatformEventData::new(Box::new(NodeHandle {
                         doc: Rc::clone(&self.inner),
+                        command_queue: Rc::clone(&self.command_queue),
                         node_id,
                     }))) as Rc<dyn Any>,
                     false,
@@ -242,7 +245,7 @@ impl Document for DioxusDocument {
             // Applied on the pending path too, and before the early return:
             // a request made on an otherwise idle frame would otherwise wait for
             // whatever happens to poll next, which on a static page is nothing.
-            crate::events::flush_pending_focus();
+            crate::events::flush_document_commands(&self.inner, &self.command_queue);
             match ready {
                 std::task::Poll::Ready(_) => {}
                 std::task::Poll::Pending => return subdoc_changes,
@@ -257,7 +260,7 @@ impl Document for DioxusDocument {
         self.flush_queued_mounted_events();
         // Again after the render: a `mounted` handler is the usual place an
         // element asks for focus as soon as it exists, and those run above.
-        crate::events::flush_pending_focus();
+        crate::events::flush_document_commands(&self.inner, &self.command_queue);
 
         true
     }
