@@ -67,6 +67,16 @@ base64 = { workspace = true, optional = true }
 image = { workspace = true, features = ["png"], optional = true }
 
 [dev-dependencies]
+# Tests measure text, so the test build needs real fonts.
+#
+# `system-fonts` is off by default for the library on purpose, and a test build
+# without it does not fail: parley simply finds no face, every line shapes to
+# nothing, and each box reports a height of zero. So `cargo test -p
+# ps-blitz-script` looked like five broken layout features — textarea
+# autosizing, shrink-to-fit, relayout on edit — while the engine itself was
+# fine and the browser rendered text correctly. A dev-dependency turns it on
+# for tests only, leaving what the library ships unchanged.
+blitz-dom = { workspace = true, features = ["system-fonts"] }
 anyrender = { workspace = true }
 anyrender_vello_cpu = { workspace = true }
 blitz-paint = { workspace = true }
