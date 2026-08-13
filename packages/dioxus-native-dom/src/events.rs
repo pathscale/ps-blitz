@@ -133,21 +133,11 @@ impl HtmlEventConverter for NativeConverter {
     }
 }
 
-/// Focus requests that arrived while the document was borrowed.
-///
-/// A thread-local rather than a field on [`NodeHandle`], because the handle is
-/// constructed in several places and threading a queue through all of them buys
-/// nothing here: everything in this crate is `Rc`/`RefCell` and already confined
-/// to the main thread, so the queue has exactly the same reach as the documents
-/// it names.
-///
-/// Each entry keeps its own document handle. Sub-documents are separate
-/// `BaseDocument`s, so a single shared queue must record *which* document a
-/// request belongs to rather than assume the outermost one.
-thread_local! {
-    static PENDING_FOCUS: RefCell<Vec<(Rc<RefCell<BaseDocument>>, NodeId, bool)>> =
-        const { RefCell::new(Vec::new()) };
+pub(crate) enum DocumentCommand {
+    SetFocus { node_id: NodeId, focus: bool },
 }
+
+pub(crate) type DocumentCommandQueue = Rc<RefCell<Vec<DocumentCommand>>>;
 
 fn apply_focus(doc: &mut BaseDocument, node_id: NodeId, focus: bool) {
     if focus {
@@ -157,24 +147,27 @@ fn apply_focus(doc: &mut BaseDocument, node_id: NodeId, focus: bool) {
     }
 }
 
-fn queue_focus(doc: Rc<RefCell<BaseDocument>>, node_id: NodeId, focus: bool) {
-    PENDING_FOCUS.with(|queue| queue.borrow_mut().push((doc, node_id, focus)));
+fn queue_focus(queue: &DocumentCommandQueue, node_id: NodeId, focus: bool) {
+    queue
+        .borrow_mut()
+        .push(DocumentCommand::SetFocus { node_id, focus });
 }
 
-/// Apply focus requests that could not be applied when they were made.
+/// Apply commands for one document that could not be applied when requested.
 ///
 /// Call this only where the document is known not to be borrowed. Requests are
 /// taken out of the queue before any is applied, so a handler that queues
 /// another one does not extend this pass into an unbounded loop.
-pub(crate) fn flush_pending_focus() {
-    let queued = PENDING_FOCUS.with(|queue| std::mem::take(&mut *queue.borrow_mut()));
-    for (doc, node_id, focus) in queued {
+pub(crate) fn flush_document_commands(
+    doc: &Rc<RefCell<BaseDocument>>,
+    queue: &DocumentCommandQueue,
+) {
+    let queued = std::mem::take(&mut *queue.borrow_mut());
+    for command in queued {
+        let DocumentCommand::SetFocus { node_id, focus } = command;
         // Still fallible: a caller may hold the borrow for reasons of its own.
         // Dropping the request is wrong, so it goes back on the queue for the
         // next flush rather than panicking or being lost.
-        //
-        // The result is settled before `doc` is touched again, so the borrow
-        // ends before the re-queue moves it.
         let applied = match doc.try_borrow_mut() {
             Ok(mut doc_ref) => {
                 apply_focus(&mut doc_ref, node_id, focus);
@@ -183,7 +176,7 @@ pub(crate) fn flush_pending_focus() {
             Err(_) => false,
         };
         if !applied {
-            queue_focus(doc, node_id, focus);
+            queue_focus(queue, node_id, focus);
         }
     }
 }
@@ -191,6 +184,7 @@ pub(crate) fn flush_pending_focus() {
 #[derive(Clone)]
 pub struct NodeHandle {
     pub(crate) doc: Rc<RefCell<BaseDocument>>,
+    pub(crate) command_queue: DocumentCommandQueue,
     pub(crate) node_id: NodeId,
 }
 
@@ -308,12 +302,11 @@ impl RenderedElementBacking for NodeHandle {
         //
         // Deferring the request further does not avoid it, because every later
         // tick is inside a poll too. So a request that cannot be applied now is
-        // recorded and applied by `flush_pending_focus` once the borrow is
-        // released. This is the queue the `TODO: queue focus events somehow`
-        // that used to sit here was asking for.
+        // recorded in this document's command queue and applied once the
+        // borrow is released.
         match self.doc.try_borrow_mut() {
             Ok(mut doc) => apply_focus(&mut doc, self.node_id, focus),
-            Err(_) => queue_focus(Rc::clone(&self.doc), self.node_id, focus),
+            Err(_) => queue_focus(&self.command_queue, self.node_id, focus),
         }
 
         Box::pin(async { Ok(()) })
@@ -760,6 +753,7 @@ mod tests {
         let root_id = doc.borrow().root_node().id;
         let handle = NodeHandle {
             doc: Rc::clone(&doc),
+            command_queue: Rc::new(RefCell::new(Vec::new())),
             node_id: root_id,
         };
 
@@ -775,7 +769,7 @@ mod tests {
             "the request cannot have been applied while the document was borrowed"
         );
 
-        flush_pending_focus();
+        flush_document_commands(&doc, &handle.command_queue);
 
         assert_eq!(
             doc.borrow().get_focussed_node_id(),
@@ -794,12 +788,53 @@ mod tests {
         let root_id = doc.borrow().root_node().id;
         let handle = NodeHandle {
             doc: Rc::clone(&doc),
+            command_queue: Rc::new(RefCell::new(Vec::new())),
             node_id: root_id,
         };
 
         let _ = handle.set_focus(true);
 
         assert_eq!(doc.borrow().get_focussed_node_id(), Some(root_id));
+    }
+
+    #[test]
+    fn flushing_one_document_does_not_apply_another_documents_focus() {
+        use blitz_dom::DocumentConfig;
+
+        let first = Rc::new(RefCell::new(BaseDocument::new(DocumentConfig::default())));
+        let second = Rc::new(RefCell::new(BaseDocument::new(DocumentConfig::default())));
+        let first_id = first.borrow().root_node().id;
+        let second_id = second.borrow().root_node().id;
+        let first_queue = Rc::new(RefCell::new(Vec::new()));
+        let second_queue = Rc::new(RefCell::new(Vec::new()));
+        let first_handle = NodeHandle {
+            doc: Rc::clone(&first),
+            command_queue: Rc::clone(&first_queue),
+            node_id: first_id,
+        };
+        let second_handle = NodeHandle {
+            doc: Rc::clone(&second),
+            command_queue: Rc::clone(&second_queue),
+            node_id: second_id,
+        };
+
+        {
+            let _first_borrow = first.borrow_mut();
+            let _second_borrow = second.borrow_mut();
+            let _ = first_handle.set_focus(true);
+            let _ = second_handle.set_focus(true);
+        }
+
+        // This stands in for polling only the first DioxusDocument. A global
+        // command queue incorrectly drains the second document's command too.
+        flush_document_commands(&first, &first_queue);
+
+        assert_eq!(first.borrow().get_focussed_node_id(), Some(first_id));
+        assert_eq!(
+            second.borrow().get_focussed_node_id(),
+            None,
+            "polling one document must not execute another document's commands",
+        );
     }
 
     #[test]
