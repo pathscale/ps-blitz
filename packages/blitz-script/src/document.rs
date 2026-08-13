@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context as TaskContext, Waker};
 
 use blitz_dom::{
-    BaseDocument, DEFAULT_CSS, DocGuard, DocGuardMut, Document, DocumentConfig, EventDriver,
+    BaseDocument, DEFAULT_CSS, DocGuard, DocGuardMut, Document, DocumentConfig, EventDriver, NodeId,
 };
 use blitz_html::{DocumentHtmlParser, HtmlProvider};
 use blitz_traits::events::{DomEvent, UiEvent};
@@ -23,6 +23,7 @@ type PollHook =
 
 /// A `<script>` element found in the document
 struct PendingScript {
+    node_id: NodeId,
     src: Option<String>,
     inline_text: String,
 }
@@ -41,6 +42,13 @@ pub struct ScriptDocument {
     base_url: Option<Url>,
     fetcher: Box<dyn ScriptFetcher>,
     scripts_executed: bool,
+    /// Which `<script>` nodes have already run.
+    ///
+    /// By node rather than a single "done" flag, because scripts keep arriving
+    /// after the first pass: a loader that appends its bundle, an analytics
+    /// snippet, a lazily inserted chunk. Keyed this way, a rescan can tell a
+    /// script it has run from one it has not without running anything twice.
+    executed_scripts: std::collections::HashSet<NodeId>,
     poll_hook: Option<PollHook>,
 
     // Timer wakeups: a background thread which wakes the event loop (via the
@@ -86,6 +94,7 @@ impl ScriptDocument {
             base_url,
             fetcher: Box::new(DefaultScriptFetcher),
             scripts_executed: false,
+            executed_scripts: std::collections::HashSet::new(),
             poll_hook: None,
             waker: Arc::new(Mutex::new(None)),
             timer_thread: None,
@@ -117,33 +126,35 @@ impl ScriptDocument {
         self.poll_hook = Some(Box::new(hook));
     }
 
+    /// Append document-thread work without discarding an embedder's existing
+    /// poll lifecycle.
+    pub fn add_poll_hook(
+        &mut self,
+        mut hook: impl for<'a> FnMut(&mut ScriptDocument, Option<&TaskContext<'a>>) -> bool + 'static,
+    ) {
+        let Some(mut existing) = self.poll_hook.take() else {
+            self.poll_hook = Some(Box::new(hook));
+            return;
+        };
+        self.poll_hook = Some(Box::new(move |document, task_context| {
+            let ran_existing = existing(document, task_context);
+            let ran_added = hook(document, task_context);
+            ran_existing | ran_added
+        }));
+    }
+
     /// Execute the document's `<script>` elements in document order, then fire
     /// the `DOMContentLoaded` and `load` events.
     ///
     /// Does nothing if scripts have already been executed.
     pub fn execute_scripts(&mut self) {
+        let _profiling = self.runtime.ctx.enter_profiling_boundary();
         if self.scripts_executed {
             return;
         }
         self.scripts_executed = true;
 
-        for script in self.collect_scripts() {
-            match script.src {
-                Some(src) => {
-                    let Some(url) = self.resolve_script_url(&src) else {
-                        eprintln!("blitz-script: could not resolve script URL {src:?}");
-                        continue;
-                    };
-                    match self.fetcher.fetch(&url) {
-                        Ok(code) => self.runtime.eval(&code, url.as_str()),
-                        Err(error) => {
-                            eprintln!("blitz-script: failed to fetch script {url}: {error}")
-                        }
-                    }
-                }
-                None => self.runtime.eval(&script.inline_text, "<inline script>"),
-            }
-        }
+        self.run_pending_scripts();
 
         self.runtime.dispatch_document_event("DOMContentLoaded");
         self.runtime.dispatch_window_event("load");
@@ -177,6 +188,7 @@ impl ScriptDocument {
 
     /// Evaluate arbitrary JavaScript code in the document's script context
     pub fn eval(&mut self, code: &str) {
+        let _profiling = self.runtime.ctx.enter_profiling_boundary();
         self.runtime.eval(code, "<eval>");
         self.request_redraw();
         self.arm_timer_thread();
@@ -188,6 +200,7 @@ impl ScriptDocument {
     /// `eval_script_with_callback`. JavaScript exceptions are recorded in the runtime diagnostics
     /// and returned as an error.
     pub fn eval_json(&mut self, code: &str) -> Result<serde_json::Value, String> {
+        let _profiling = self.runtime.ctx.enter_profiling_boundary();
         let result = self.runtime.eval_json(code, "<eval with result>");
         self.request_redraw();
         self.arm_timer_thread();
@@ -225,14 +238,70 @@ impl ScriptDocument {
     /// through the document's event driver. The event is exposed to JavaScript
     /// event listeners, and Blitz's default actions run unless prevented.
     pub fn dispatch_dom_event(&mut self, event: DomEvent) {
+        let profiling_boundary = self.runtime.ctx.enter_profiling_boundary();
+        let profiling = profiling_boundary.enabled();
         let handler = ScriptEventHandler {
             runtime: &mut self.runtime,
+            profiling,
         };
         let mut driver = EventDriver::new(&mut self.inner, handler);
         driver.handle_dom_event(event);
 
         self.request_redraw();
         self.arm_timer_thread();
+    }
+
+    /// Run every `<script>` that has appeared since the last pass.
+    ///
+    /// Called on each poll as well as at startup, because script elements are
+    /// not only a parser product: a page can build one and append it, and that
+    /// is how most real loaders bring in their bundle. Running only the markup
+    /// the parser produced meant those were fetched by nobody and the page
+    /// simply never started.
+    ///
+    /// A `src` script reports `load` when it runs and `error` when it does not.
+    /// Loaders wait on those before continuing — nofilter.io keeps the body
+    /// hidden until the bundle's `load` arrives — so a script that ran silently
+    /// would still leave the page blank.
+    fn run_pending_scripts(&mut self) {
+        // Collect first, then run: executing a script can append more, and the
+        // borrow on the document has to be released before any of them runs.
+        let pending: Vec<PendingScript> = self
+            .collect_scripts()
+            .into_iter()
+            .filter(|script| !self.executed_scripts.contains(&script.node_id))
+            .collect();
+
+        for script in pending {
+            // Marked before running, not after: a script that appends another
+            // copy of itself, or that throws, must not be retried on every
+            // poll for the life of the page.
+            self.executed_scripts.insert(script.node_id);
+            match script.src {
+                Some(src) => {
+                    let Some(url) = self.resolve_script_url(&src) else {
+                        eprintln!("blitz-script: could not resolve script URL {src:?}");
+                        self.runtime.dispatch_node_event(script.node_id, "error");
+                        continue;
+                    };
+                    match self.fetcher.fetch(&url) {
+                        Ok(code) => {
+                            self.runtime.eval(&code, url.as_str());
+                            self.runtime.dispatch_node_event(script.node_id, "load");
+                        }
+                        Err(error) => {
+                            eprintln!("blitz-script: failed to fetch script {url}: {error}");
+                            self.runtime.dispatch_node_event(script.node_id, "error");
+                        }
+                    }
+                }
+                None => {
+                    if !script.inline_text.trim().is_empty() {
+                        self.runtime.eval(&script.inline_text, "<inline script>");
+                    }
+                }
+            }
+        }
     }
 
     /// Find `<script>` elements in document order
@@ -261,6 +330,7 @@ impl ScriptDocument {
                     );
                     if is_js {
                         scripts.push(PendingScript {
+                            node_id,
                             src: element
                                 .attr(blitz_dom::local_name!("src"))
                                 .map(str::to_string),
@@ -350,8 +420,11 @@ impl Document for ScriptDocument {
     }
 
     fn handle_ui_event(&mut self, event: UiEvent) {
+        let profiling_boundary = self.runtime.ctx.enter_profiling_boundary();
+        let profiling = profiling_boundary.enabled();
         let handler = ScriptEventHandler {
             runtime: &mut self.runtime,
+            profiling,
         };
         let mut driver = EventDriver::new(&mut self.inner, handler);
         driver.handle_ui_event(event);
@@ -362,9 +435,10 @@ impl Document for ScriptDocument {
     }
 
     fn poll(&mut self, task_context: Option<TaskContext>) -> bool {
-        let profiling = blitz_traits::profiling::deep_profiling_enabled();
+        let profiling_boundary = self.runtime.ctx.enter_profiling_boundary();
+        let profiling = profiling_boundary.enabled();
         let poll_started = profiling.then(std::time::Instant::now);
-        let ran = self.poll_inner(task_context);
+        let ran = self.poll_inner(task_context, profiling);
         if let Some(started) = poll_started {
             crate::script_stats::record_poll(started.elapsed(), ran);
         }
@@ -375,7 +449,7 @@ impl Document for ScriptDocument {
 impl ScriptDocument {
     /// The real poll. Split out so every exit path is timed by the wrapper
     /// above rather than by a stopwatch threaded through each early return.
-    fn poll_inner(&mut self, task_context: Option<TaskContext>) -> bool {
+    fn poll_inner(&mut self, task_context: Option<TaskContext>, profiling: bool) -> bool {
         // Store the waker so the timer thread can wake the event loop
         if let Some(cx) = &task_context {
             let mut waker = self.waker.lock().unwrap();
@@ -388,29 +462,41 @@ impl ScriptDocument {
             }
         }
 
+        // A scripted document may itself be an embedder. Chuzz's Solid chrome
+        // is one: its `<web-view>` elements own the page documents. Poll those
+        // children at the same outer boundary so their timers, resource
+        // completions, and script work continue to make progress.
+        let subdocument_changes = self
+            .inner
+            .borrow_mut()
+            .poll_subdocuments(task_context.as_ref().map(TaskContext::waker));
+
         // Execute scripts on first poll if they haven't been run explicitly
-        let mut ran = false;
+        let mut ran = subdocument_changes;
         if !self.scripts_executed {
             // One-time: parsing and running the application bundle. Separated
             // because it is startup cost, and folding it into the steady-state
             // numbers made every per-poll average meaningless.
-            let started =
-                blitz_traits::profiling::deep_profiling_enabled().then(std::time::Instant::now);
+            let started = profiling.then(std::time::Instant::now);
             self.execute_scripts();
             if let Some(started) = started {
                 crate::script_stats::record_work("startup:execute_scripts", started.elapsed());
             }
             ran = true;
+        } else {
+            // Steady state: pick up any script the page appended since the last
+            // turn. Cheap when there are none, and it is the only path by which
+            // a runtime-injected bundle ever runs.
+            self.run_pending_scripts();
         }
 
-        ran |= self.runtime.run_due_timers();
+        ran |= self.runtime.run_due_timers(profiling);
 
         if let Some(mut hook) = self.poll_hook.take() {
             // The embedder's per-poll work. For a Solid application this is
             // where reactive updates and DOM mutation actually happen, so it is
             // the bucket that matters once startup is excluded.
-            let started =
-                blitz_traits::profiling::deep_profiling_enabled().then(std::time::Instant::now);
+            let started = profiling.then(std::time::Instant::now);
             ran |= hook(self, task_context.as_ref());
             if let Some(started) = started {
                 crate::script_stats::record_work("poll_hook", started.elapsed());

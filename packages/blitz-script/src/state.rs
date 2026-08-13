@@ -2,6 +2,7 @@
 //! JavaScript side (native functions registered with the Boa `Context`).
 
 use blitz_dom::NodeId;
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -105,6 +106,15 @@ pub(crate) struct DomCtx {
     /// which is what a reader sees as the view jumping.
     #[unsafe_ignore_trace]
     pub layout_dirty: Rc<std::cell::Cell<bool>>,
+    /// Deep profiling mode selected by the enclosing script boundary.
+    ///
+    /// DOM bindings are the hottest collector call sites. They read this local
+    /// cell instead of reloading the process-wide atomic for every attribute,
+    /// node, style, or geometry operation.
+    #[unsafe_ignore_trace]
+    deep_profiling: Rc<Cell<bool>>,
+    #[unsafe_ignore_trace]
+    profiling_boundary_depth: Rc<Cell<u32>>,
 }
 
 impl DomCtx {
@@ -113,6 +123,52 @@ impl DomCtx {
             doc,
             state: Rc::new(RefCell::new(RuntimeState::default())),
             layout_dirty: Rc::new(std::cell::Cell::new(true)),
+            deep_profiling: Rc::new(Cell::new(false)),
+            profiling_boundary_depth: Rc::new(Cell::new(0)),
+        }
+    }
+
+    /// Select deep profiling once at the outermost script boundary.
+    ///
+    /// A poll hook may call `document.eval`, and script may synchronously
+    /// dispatch more script. Nested boundaries inherit the outer decision so
+    /// no inner collector rereads the process-wide flag halfway through work.
+    pub(crate) fn enter_profiling_boundary(&self) -> ProfilingBoundary {
+        let depth = self.profiling_boundary_depth.get();
+        if depth == 0 {
+            self.deep_profiling
+                .set(blitz_traits::profiling::deep_profiling_enabled());
+        }
+        self.profiling_boundary_depth.set(depth + 1);
+        ProfilingBoundary {
+            deep_profiling: Rc::clone(&self.deep_profiling),
+            depth: Rc::clone(&self.profiling_boundary_depth),
+        }
+    }
+
+    /// Read the current boundary-selected mode without touching global state.
+    pub(crate) fn deep_profiling_enabled(&self) -> bool {
+        self.deep_profiling.get()
+    }
+}
+
+pub(crate) struct ProfilingBoundary {
+    deep_profiling: Rc<Cell<bool>>,
+    depth: Rc<Cell<u32>>,
+}
+
+impl ProfilingBoundary {
+    pub(crate) fn enabled(&self) -> bool {
+        self.deep_profiling.get()
+    }
+}
+
+impl Drop for ProfilingBoundary {
+    fn drop(&mut self) {
+        let depth = self.depth.get().saturating_sub(1);
+        self.depth.set(depth);
+        if depth == 0 {
+            self.deep_profiling.set(false);
         }
     }
 }
@@ -170,7 +226,7 @@ impl DomCtx {
         // is the mutation that preceded it. The count matters as much as the
         // total: a handler that measures, mutates and measures again pays this
         // once per cycle, and the cycles are what to remove.
-        let _t = crate::script_stats::Timed::new("layout:flush_from_script");
+        let _t = crate::script_stats::Timed::new(self, "layout:flush_from_script");
         if let Ok(mut doc) = self.doc.try_borrow_mut() {
             doc.resolve(0.0);
         } else {

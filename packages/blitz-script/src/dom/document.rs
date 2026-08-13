@@ -30,6 +30,7 @@ pub(crate) fn init_document_proto(proto: &JsObject, context: &mut Context) {
     define_method(proto, "createElement", 1, create_element, context);
     define_method(proto, "createElementNS", 2, create_element_ns, context);
     define_method(proto, "createTextNode", 1, create_text_node, context);
+    define_method(proto, "importNode", 2, import_node, context);
     define_method(proto, "getSelection", 0, get_selection, context);
     define_method(proto, "createComment", 1, create_comment, context);
     define_method(proto, "getElementById", 1, get_element_by_id, context);
@@ -100,8 +101,8 @@ fn default_view(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResul
 // === Node creation ===
 
 fn create_element(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let _t = crate::script_stats::Timed::new("dom:createElement");
     let ctx = dom_ctx(context)?;
+    let _t = crate::script_stats::Timed::new(&ctx, "dom:createElement");
     let _ = this_node_id(this)?;
     let tag = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?
         .to_ascii_lowercase();
@@ -123,6 +124,20 @@ fn create_element_ns(this: &JsValue, args: &[JsValue], context: &mut Context) ->
             .create_element(qual_name_ns(&tag, &ns), Vec::new())
     };
     Ok(node_wrapper(&ctx, node_id, context).into())
+}
+
+/// Clone a node for insertion into this document.
+///
+/// Every script-visible node currently belongs to the document represented by
+/// this Boa realm, so importing is the same structural operation as
+/// `cloneNode`. Keeping it on `Document` still matters: Solid deliberately
+/// takes this path for custom-element template roots such as Chuzz's
+/// `<web-view>` page host.
+fn import_node(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let _ = this_node_id(this)?;
+    let node = args.first().cloned().unwrap_or_else(JsValue::undefined);
+    let deep = args.get(1).cloned().unwrap_or_else(JsValue::undefined);
+    super::node::clone_node(&node, &[deep], context)
 }
 
 /// `document.getSelection()`.
@@ -194,8 +209,8 @@ fn selection_add_range(_: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<
 }
 
 fn create_text_node(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let _t = crate::script_stats::Timed::new("dom:createTextNode");
     let ctx = dom_ctx(context)?;
+    let _t = crate::script_stats::Timed::new(&ctx, "dom:createTextNode");
     let _ = this_node_id(this)?;
     let text = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
     let node_id = {
