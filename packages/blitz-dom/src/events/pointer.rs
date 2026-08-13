@@ -500,6 +500,21 @@ pub(crate) fn handle_pointerup<F: FnMut(DomEvent)>(
     event: &BlitzPointerEvent,
     mut dispatch_event: F,
 ) {
+    // A click is activation spanning a pointer-down and pointer-up, not an
+    // alias for pointer-up. Keep the release event targeted at the element
+    // currently under the pointer, but synthesize click only at the nearest
+    // common inclusive ancestor of the down and up targets. In particular,
+    // if the pressed element was removed and layout exposed an unrelated
+    // control before release, that newly exposed control must not inherit the
+    // click.
+    let click_target = doc.mousedown_node_id.take().and_then(|down_target| {
+        let down_chain = doc.node_chain(down_target);
+        let up_chain = doc.node_chain(target);
+        down_chain
+            .into_iter()
+            .find(|candidate| up_chain.contains(candidate))
+    });
+
     if doc.devtools().highlight_hover {
         let mut node = doc.get_node(target).unwrap();
         if event.button == MouseEventButton::Secondary {
@@ -540,8 +555,14 @@ pub(crate) fn handle_pointerup<F: FnMut(DomEvent)>(
     }
 
     // Dispatch a click event
-    if do_click && event.button == MouseEventButton::Main {
-        dispatch_event(DomEvent::new(target, DomEventData::Click(event.clone())));
+    if do_click
+        && event.button == MouseEventButton::Main
+        && let Some(click_target) = click_target
+    {
+        dispatch_event(DomEvent::new(
+            click_target,
+            DomEventData::Click(event.clone()),
+        ));
     }
 
     // Dispatch a context menu event

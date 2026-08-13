@@ -177,6 +177,7 @@ impl<'doc, Handler: EventHandler> EventDriver<'doc, Handler> {
                 hover_node_id = self.handle_pointer_move(event);
                 let mut doc = self.doc.inner_mut();
                 doc.unactive_node();
+                doc.set_mousedown_node_id(None);
 
                 if event.is_primary && matches!(event.id, BlitzPointerId::Finger(_)) {
                     should_clear_hover = true;
