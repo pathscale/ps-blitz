@@ -2,6 +2,57 @@
 
 use blitz_dom::{Document, DocumentConfig};
 use blitz_script::ScriptDocument;
+
+#[derive(Clone)]
+struct PollProbe {
+    inner: std::rc::Rc<std::cell::RefCell<blitz_dom::BaseDocument>>,
+    polls: std::rc::Rc<std::cell::Cell<usize>>,
+}
+
+impl blitz_dom::Document for PollProbe {
+    fn inner(&self) -> blitz_dom::DocGuard<'_> {
+        blitz_dom::DocGuard::RefCell(self.inner.borrow())
+    }
+
+    fn inner_mut(&mut self) -> blitz_dom::DocGuardMut<'_> {
+        blitz_dom::DocGuardMut::RefCell(self.inner.borrow_mut())
+    }
+
+    fn poll(&mut self, _cx: Option<std::task::Context<'_>>) -> bool {
+        self.polls.set(self.polls.get() + 1);
+        true
+    }
+}
+
+#[test]
+fn script_document_polls_mounted_subdocuments() {
+    use blitz_dom::Document as _;
+
+    let mut outer = ScriptDocument::from_html(
+        r#"<web-view id="page"></web-view>"#,
+        blitz_dom::DocumentConfig::default(),
+    );
+    outer.execute_scripts();
+    let page = outer
+        .inner()
+        .get_element_by_id("page")
+        .expect("fixture page host");
+    let polls = std::rc::Rc::new(std::cell::Cell::new(0));
+    let probe = PollProbe {
+        inner: std::rc::Rc::new(std::cell::RefCell::new(blitz_dom::BaseDocument::new(
+            blitz_dom::DocumentConfig::default(),
+        ))),
+        polls: std::rc::Rc::clone(&polls),
+    };
+    outer.inner_mut().set_sub_document(page, Box::new(probe));
+
+    assert!(outer.poll(None));
+    assert_eq!(
+        polls.get(),
+        1,
+        "the Solid chrome must drive its page document"
+    );
+}
 use blitz_traits::events::{DomEvent, DomEventData};
 use blitz_traits::shell::{ColorScheme, Viewport};
 use keyboard_types::Modifiers;
@@ -503,6 +554,27 @@ fn template_content_exposes_parsed_children() {
     );
 
     assert_eq!(text_of_selector(&doc, ".from-template"), "hello");
+}
+
+#[test]
+fn document_import_node_supports_solid_custom_element_templates() {
+    let doc = doc_from_html(
+        r#"
+        <html><body>
+            <script>
+                // Solid uses importNode rather than cloneNode for templates
+                // whose root is a custom element. Chuzz's page host is a
+                // <web-view>, so opening a second tab takes this exact path.
+                const template = document.createElement("template");
+                template.innerHTML = "<web-view data-tab='2'><span>page</span></web-view>";
+                const clone = document.importNode(template.content.firstChild, true);
+                document.body.appendChild(clone);
+            </script>
+        </body></html>
+        "#,
+    );
+
+    assert_eq!(text_of_selector(&doc, "web-view[data-tab='2']"), "page");
 }
 
 #[test]
@@ -2043,5 +2115,91 @@ fn editing_an_existing_text_node_relays_out_its_container() {
     assert!(
         scroll <= width + 0.5,
         "text must not overflow the box that sizes itself to it: {sizes}"
+    );
+}
+
+/// A script element appended by script has to run.
+///
+/// `execute_scripts` is a single pass over the markup the parser produced, so
+/// only scripts present in the original HTML ever ran. Every loader that
+/// injects its bundle at runtime — CDN failover, analytics, lazy chunks — was
+/// therefore dropped on the floor, and silently: no error, just a page that
+/// never builds.
+///
+/// nofilter.io is the case this was found on. Its bundle is declared as
+/// `<script data-src>` and appended by an inline bootstrap, and because the
+/// bootstrap awaits the new element's `load` event before removing a
+/// `body{display:none}` rule, a script that never runs leaves a blank white
+/// window rather than a partial page.
+#[test]
+fn a_script_element_appended_by_script_runs() {
+    let mut doc = doc_from_html(
+        r#"
+        <html><body>
+            <div id="out">not-run</div>
+            <script>
+                const injected = document.createElement("script");
+                injected.textContent =
+                    "document.getElementById('out').textContent = 'ran'";
+                document.head.appendChild(injected);
+            </script>
+        </body></html>
+        "#,
+    );
+    // The append happens while the first pass is still running, so the new
+    // script is picked up on the next turn of the loop rather than inline.
+    doc.poll(None);
+
+    assert_eq!(text_of_selector(&doc, "#out"), "ran");
+}
+
+/// The same, for a script with a `src`, and its `load` event.
+///
+/// The `src` form is the one real loaders use, and the `load` event is what
+/// they wait on: nofilter.io resolves a promise in `onload` and only then
+/// unhides the body, so a fetch that runs without firing the event is still a
+/// blank page.
+#[test]
+fn an_appended_script_with_a_src_is_fetched_and_reports_load() {
+    struct CannedScripts;
+    impl blitz_script::ScriptFetcher for CannedScripts {
+        fn fetch(&self, url: &blitz_traits::net::Url) -> Result<String, blitz_script::FetchError> {
+            if url.as_str().ends_with("/app.mjs") {
+                Ok("document.getElementById('out').textContent = 'bundle'".to_owned())
+            } else {
+                Err(blitz_script::FetchError::InvalidData("unexpected".into()))
+            }
+        }
+    }
+
+    let mut doc = ScriptDocument::from_html(
+        r#"
+        <html><body>
+            <div id="out">not-run</div>
+            <div id="loaded">no</div>
+            <script>
+                const injected = document.createElement("script");
+                injected.onload = function () {
+                    document.getElementById('loaded').textContent = 'yes';
+                };
+                injected.src = "https://example.com/app.mjs";
+                document.head.appendChild(injected);
+            </script>
+        </body></html>
+        "#,
+        DocumentConfig {
+            base_url: Some("https://example.com/".to_owned()),
+            ..Default::default()
+        },
+    )
+    .with_fetcher(CannedScripts);
+    doc.execute_scripts();
+    doc.poll(None);
+
+    assert_eq!(text_of_selector(&doc, "#out"), "bundle");
+    assert_eq!(
+        text_of_selector(&doc, "#loaded"),
+        "yes",
+        "the loader waits on this event before it will show the page"
     );
 }
