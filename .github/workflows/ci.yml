@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - v0.*
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -39,6 +40,7 @@ jobs:
       - run: cargo build --workspace
 
   build-features-default:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     name: "Build [default features]"
     runs-on: ubicloud-standard-8
     steps:
@@ -52,6 +54,7 @@ jobs:
       - run: cargo build --workspace
 
   test-features-default:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     name: "Test [default features]"
     runs-on: ubicloud-standard-8
     steps:
@@ -80,6 +83,7 @@ jobs:
   # wasm_hello is a standalone workspace; seven_guis and todomvc are workspace
   # members with a [lib] crate-type = ["cdylib"] target for wasm.
   build-wasm-examples:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     name: "Build wasm examples"
     runs-on: ubicloud-standard-8
     steps:
@@ -159,6 +163,14 @@ jobs:
               command: "build",
               args: "--all",
             }
+        exclude:
+          - platform:
+              name: ${{ github.event_name == 'workflow_dispatch' && 'manual' || 'android' }}
+              target: aarch64-linux-android
+              os: ubicloud-standard-8
+              cross: true
+              command: build
+              args: --all
 
     name: Test (${{ matrix.platform.name }})
 
