@@ -42,6 +42,11 @@ fn chip_x(doc: &HtmlDocument) -> f32 {
     doc.get_node(id).unwrap().final_layout().location.x
 }
 
+fn chip_width(doc: &HtmlDocument) -> f32 {
+    let id = doc.query_selector("#chip").unwrap().expect("no chip");
+    doc.get_node(id).unwrap().final_layout().size.width
+}
+
 fn prose_width(doc: &HtmlDocument) -> f32 {
     let id = doc.query_selector("#prose").unwrap().expect("no prose");
     doc.get_node(id).unwrap().final_layout().size.width
@@ -61,17 +66,19 @@ fn document(incremental: bool) -> HtmlDocument {
     doc
 }
 
-/// The chip is on a line inside a block that is about 700px wide, so it cannot
-/// be at an x from a wider or a zero-width trial.
+/// The chip is on a line inside a block that is about 700px wide, so its full
+/// box must fit inside that block. Starting a wrapped line at x=0 is valid.
 #[test]
 fn an_inline_element_sits_on_the_line_it_was_laid_out_on() {
     let doc = document(true);
     let x = chip_x(&doc);
+    let chip_width = chip_width(&doc);
     let width = prose_width(&doc);
     assert!(width > 400.0, "the block did not get a real width: {width}");
     assert!(
-        x > 0.0 && x <= width,
-        "chip at {x} is not inside its {width}px block"
+        x >= 0.0 && x + chip_width <= width + 0.5,
+        "chip spans {x}..{} outside its {width}px block",
+        x + chip_width,
     );
 }
 
@@ -88,7 +95,13 @@ fn resolving_again_does_not_move_it() {
         first, second,
         "the chip moved on a second resolve with nothing changed"
     );
-    assert!(second > 0.0, "the chip was left at x=0 by a measurement");
+    let chip_width = chip_width(&doc);
+    let width = prose_width(&doc);
+    assert!(
+        second >= 0.0 && second + chip_width <= width + 0.5,
+        "chip spans {second}..{} outside its {width}px block after a second resolve",
+        second + chip_width,
+    );
 }
 
 /// And after a mutation elsewhere, which is what a live document does all day:
