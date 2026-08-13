@@ -59,6 +59,8 @@ pub struct BlitzDomPainter<'dom, 'a> {
     /// offset while its contents painted correctly.
     pub(crate) initial_x: f64,
     pub(crate) initial_y: f64,
+    /// Seconds on the document animation clock.
+    pub(crate) animation_time: f64,
     /// The id of the document's root element (cached to avoid re-resolving it for every element)
     pub(crate) root_element_id: Option<NodeId>,
     /// Scrollbar hover/drag state, resolved once per scene like the root element
@@ -84,6 +86,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         initial_x: f64,
         initial_y: f64,
         custom_widget_scenes: &'a CustomWidgetSceneMap,
+        animation_time: f64,
     ) -> Self {
         let selection_ranges: HashMap<NodeId, (usize, usize)> = dom
             .get_text_selection_ranges()
@@ -101,6 +104,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             height,
             initial_x,
             initial_y,
+            animation_time,
             root_element_id,
             #[cfg(feature = "scrollbars")]
             hovered_scrollbar: dom.hovered_scrollbar(),
@@ -504,6 +508,19 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             None,
             None,
             |scene| {
+                // Inside the clip, because `clip-path` clips the element it is
+                // applied to and that includes its outline and its outset
+                // shadow. Drawing them before the layer was pushed left both
+                // unclipped, which is invisible until something has a clip that
+                // removes the element entirely: the sr-only pattern every
+                // component library hides a real control with is
+                // `clip-path: inset(50%)` on a 1px box, and the user-agent
+                // sheet gives a focused input a 2px outline. Focusing one then
+                // painted a blue mark beside the switch it was meant to be
+                // invisible behind.
+                cx.draw_outline(scene);
+                cx.draw_outset_box_shadow(scene);
+
                 // If the element has a CSS `mask`, then push an isolation layer for the
                 // masked content. The mask is applied when the layer is popped below.
                 let mask_layer_pushed = cx.maybe_push_css_mask_layer(scene);
@@ -939,7 +956,9 @@ impl ElementCx<'_, '_> {
                         &convert_rect(rect),
                     );
                 }
-                if let Some(cursor) = input_data.editor.cursor_geometry(1.5) {
+                if (self.animation_time % 1.0) < 0.5
+                    && let Some(cursor) = input_data.editor.cursor_geometry(1.5)
+                {
                     let color = self.style.get_inherited_text().color;
                     let caret_color = match &self.style.get_inherited_ui().caret_color.0 {
                         ColorOrAuto::Auto => color,
@@ -1199,6 +1218,7 @@ impl ElementCx<'_, '_> {
                 initial_x,
                 initial_y,
                 self.custom_widget_scenes,
+                self.animation_time,
             );
             painter.paint_scene(scene);
         }

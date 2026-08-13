@@ -192,6 +192,7 @@ pub enum DocumentEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AnimationPacing {
     Idle,
+    Caret,
     SlowCss,
     Interactive,
 }
@@ -2126,6 +2127,12 @@ impl BaseDocument {
     /// CSS animations are commonly decorative and can use a lower cadence.
     /// Canvas, scrolling and custom widgets remain at the interactive cadence.
     pub fn animation_pacing(&self) -> AnimationPacing {
+        let focused_text_input = self.focus_node_id.is_some_and(|node_id| {
+            self.nodes
+                .get(node_id)
+                .and_then(|node| node.element_data())
+                .is_some_and(|element| element.text_input_data().is_some())
+        });
         #[cfg(feature = "custom-widget")]
         let custom_widget_is_animating = self.custom_widget_nodes.iter().any(|&node_id| {
             self.nodes[node_id]
@@ -2163,6 +2170,8 @@ impl BaseDocument {
             } else {
                 AnimationPacing::SlowCss
             }
+        } else if focused_text_input {
+            AnimationPacing::Caret
         } else if self.subdoc_animation_pacing != AnimationPacing::Idle {
             self.subdoc_animation_pacing
         } else {

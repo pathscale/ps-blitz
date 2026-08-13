@@ -51,6 +51,19 @@ pub fn paint_scene(
     x_offset: u32,
     y_offset: u32,
 ) {
+    paint_scene_at_time(scene, doc, scale, width, height, x_offset, y_offset, 0.0)
+}
+
+pub fn paint_scene_at_time(
+    scene: &mut impl PaintScene,
+    doc: &mut BaseDocument,
+    scale: f64,
+    width: u32,
+    height: u32,
+    x_offset: u32,
+    y_offset: u32,
+    animation_time: f64,
+) {
     // Run `.paint()` on every custom widget in the document (and all subdocuments) ahead of time.
     // This helps us avoid borrow-checker issues as we recurse down the tree (`.paint()` require `&mut self`).
     //
@@ -68,6 +81,7 @@ pub fn paint_scene(
         x_offset as f64,
         y_offset as f64,
         &custom_widget_scenes,
+        animation_time,
     );
     generator.paint_scene(scene);
 
