@@ -4,6 +4,7 @@ members = [
     "packages/debug_timer",
     "packages/blitz-traits",
     "packages/blitz-dom",
+    "packages/blitz-dom-api",
     "packages/blitz-html",
     "packages/blitz-script",
     "packages/blitz-debug-control",
