@@ -245,6 +245,13 @@ pub struct BaseDocument {
     /// paints beneath every background between them and disappears.
     pub(crate) hoisted_fixed_parents: HashMap<NodeId, NodeId>,
 
+    /// Stacking contexts holding a hoisted child that an ancestor clips.
+    ///
+    /// Collected while flushing styles so that `resolve_hoisted_clips` visits
+    /// those contexts alone, rather than scanning every node in the document
+    /// after every layout to find the handful that hoist anything at all.
+    pub(crate) hoisted_clip_hosts: Vec<NodeId>,
+
     // Stylo
     /// The Stylo engine
     pub(crate) stylist: Stylist,
@@ -495,6 +502,7 @@ impl BaseDocument {
 
         let mut doc = Self {
             hoisted_fixed_parents: HashMap::new(),
+            hoisted_clip_hosts: Vec::new(),
             id,
             tx,
             rx: Some(rx),

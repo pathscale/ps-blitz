@@ -13,6 +13,7 @@ use style::selector_parser::RestyleDamage;
 use style::servo_arc::Arc as ServoArc;
 use style::url::ComputedUrl;
 use style::values::computed::Float;
+use style::values::computed::Overflow as StyloOverflow;
 use style::values::generics::image::Image as StyloImage;
 use style::values::specified::align::AlignFlags;
 use style::values::specified::box_::DisplayInside;
@@ -328,6 +329,46 @@ pub struct HoistedPaintChild {
     pub node_id: NodeId,
     pub z_index: i32,
     pub position: taffy::Point<f32>,
+    /// The ancestors this child was hoisted past whose overflow clips it.
+    ///
+    /// Hoisting moves a node out of the subtree whose clip layers would have
+    /// contained it, so without these it paints over anything its ancestors
+    /// were meant to cut it off at. Empty for the overwhelming majority of
+    /// hoisted children, which cross nothing that clips.
+    ///
+    /// Ids, not rectangles: this is collected before taffy runs, when every
+    /// box is still zero-sized. `resolve_hoisted_clips` turns them into
+    /// [`Self::clips`] once there is a layout to read.
+    pub clip_ancestors: Vec<NodeId>,
+    /// Where [`Self::clip_ancestors`] ended up, relative to the origin of the
+    /// stacking context this child paints in.
+    pub clips: Vec<taffy::Rect<f32>>,
+    /// Whether an ancestor's overflow clips this child from here upward.
+    ///
+    /// An ancestor does not clip a positioned box whose containing block is
+    /// outside that ancestor (CSS 2.1 11.1.1), so for an absolutely positioned
+    /// child this starts false and turns on at its containing block: an
+    /// `overflow: hidden` wrapper *between* the child and the box it is
+    /// positioned against has no say over it. In-flow children are clipped by
+    /// everything above them, and `position: fixed` by nothing, its containing
+    /// block being the viewport.
+    pub clips_apply: bool,
+    /// Absolutely positioned, so `clips_apply` turns on at its containing block.
+    pub starts_at_containing_block: bool,
+}
+
+impl HoistedPaintChild {
+    fn new(node_id: NodeId, z_index: i32, position: Position) -> Self {
+        Self {
+            node_id,
+            z_index,
+            position: taffy::Point::ZERO,
+            clip_ancestors: Vec::new(),
+            clips: Vec::new(),
+            clips_apply: !matches!(position, Position::Absolute | Position::Fixed),
+            starts_at_containing_block: position == Position::Absolute,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -458,6 +499,10 @@ impl BaseDocument {
     }
 
     pub fn flush_styles_to_layout(&mut self, node_id: NodeId) {
+        // Rebuilt by the walk below, and stale otherwise: an incremental flush
+        // can rebuild a context whose hoisted children no longer cross
+        // anything that clips.
+        self.hoisted_clip_hosts.clear();
         self.flush_styles_to_layout_impl(node_id, None);
     }
 
@@ -826,11 +871,9 @@ impl BaseDocument {
                     if let Some(&origin) = self.hoisted_fixed_parents.get(&child_id) {
                         deferred_fixed.push((child_id, z_index, origin));
                     } else {
-                        stacking_context.children.push(HoistedPaintChild {
-                            node_id: child_id,
-                            z_index,
-                            position: taffy::Point::ZERO,
-                        })
+                        stacking_context.children.push(HoistedPaintChild::new(
+                            child_id, z_index, position,
+                        ))
                     }
                 } else {
                     paint_children.push(child_id);
@@ -867,7 +910,36 @@ impl BaseDocument {
         if let Some(parent_stacking_context) = parent_stacking_context {
             let position = self.nodes[node_id].final_layout().location;
             let scroll_offset = *self.nodes[node_id].scroll_offset();
+
+            // Everything below is leaving this node's subtree, so this node's
+            // own clip layer will not contain any of it. Note the clip here and
+            // let it ride up with the children it applies to.
+            let (clips_here, is_containing_block) = self.nodes[node_id]
+                .primary_styles()
+                .map(|styles| {
+                    let box_styles = styles.get_box();
+                    (
+                        !matches!(box_styles.overflow_x, StyloOverflow::Visible)
+                            || !matches!(box_styles.overflow_y, StyloOverflow::Visible),
+                        // A positioned box is a containing block for absolutely
+                        // positioned descendants. A transform or a filter makes
+                        // one too, but both make a stacking context as well,
+                        // which stops the hoist before it reaches here.
+                        box_styles.position != Position::Static,
+                    )
+                })
+                .unwrap_or((false, false));
+
             for hoisted in stacking_context.children.iter_mut() {
+                // Before the push, because a containing block clips its own
+                // absolutely positioned children.
+                if hoisted.starts_at_containing_block && is_containing_block {
+                    hoisted.clips_apply = true;
+                }
+                if clips_here && hoisted.clips_apply {
+                    hoisted.clip_ancestors.push(node_id);
+                }
+
                 hoisted.position.x += position.x - scroll_offset.x as f32;
                 hoisted.position.y += position.y - scroll_offset.y as f32;
             }
@@ -877,6 +949,13 @@ impl BaseDocument {
         } else {
             stacking_context.sort();
             stacking_context.compute_content_size(self);
+            if stacking_context
+                .children
+                .iter()
+                .any(|child| !child.clip_ancestors.is_empty())
+            {
+                self.hoisted_clip_hosts.push(node_id);
+            }
             self.nodes[node_id].stacking_context = Some(Box::new(new_stacking_context));
         }
     }
@@ -910,11 +989,9 @@ impl BaseDocument {
         let host = self.nearest_stacking_context_ancestor(origin);
 
         if host == Some(current) || host.is_none() {
-            current_context.children.push(HoistedPaintChild {
-                node_id: child_id,
-                z_index,
-                position: taffy::Point::ZERO,
-            });
+            current_context
+                .children
+                .push(HoistedPaintChild::new(child_id, z_index, Position::Fixed));
             return;
         }
         let host = host.unwrap();
@@ -927,18 +1004,14 @@ impl BaseDocument {
         let Some(context) = self.nodes[host].stacking_context.as_mut() else {
             // No context to join. Falling back to the caller's keeps the node
             // painted rather than dropping it.
-            current_context.children.push(HoistedPaintChild {
-                node_id: child_id,
-                z_index,
-                position: taffy::Point::ZERO,
-            });
+            current_context
+                .children
+                .push(HoistedPaintChild::new(child_id, z_index, Position::Fixed));
             return;
         };
-        context.children.push(HoistedPaintChild {
-            node_id: child_id,
-            z_index,
-            position,
-        });
+        let mut hoisted = HoistedPaintChild::new(child_id, z_index, Position::Fixed);
+        hoisted.position = position;
+        context.children.push(hoisted);
         let mut context = self.nodes[host].stacking_context.take().unwrap();
         context.sort();
         context.compute_content_size(self);

@@ -278,6 +278,7 @@ impl BaseDocument {
         #[cfg(target_arch = "wasm32")]
         self.resolve_layout();
         self.correct_hoisted_fixed_positions();
+        self.resolve_hoisted_clips();
         timer.record_time("layout");
 
         // One extra pass, only when a repair moved a box. Bounded deliberately:
@@ -297,6 +298,7 @@ impl BaseDocument {
             self.flush_styles_to_layout(root_node_id);
             self.resolve_layout();
             self.correct_hoisted_fixed_positions();
+            self.resolve_hoisted_clips();
             self.repair_inline_line_breaks();
             self.resolve_transforms(root_node_id);
         }
@@ -800,6 +802,53 @@ impl BaseDocument {
                     };
                 }
             }
+        }
+    }
+
+    /// Turn each hoisted child's clipping ancestors into rectangles paint can
+    /// use, relative to the origin of the stacking context it paints in.
+    ///
+    /// Separate from `flush_styles_to_layout`, which decides *which* ancestors
+    /// clip: that runs before taffy, when every box is still zero-sized, so
+    /// reading a size there produced an empty clip and made hoisted content
+    /// disappear entirely rather than merely escape.
+    pub(crate) fn resolve_hoisted_clips(&mut self) {
+        if self.hoisted_clip_hosts.is_empty() {
+            return;
+        }
+
+        // By index, leaving the list in place: it belongs to the last flush,
+        // and layout can run more than once against it.
+        for index in 0..self.hoisted_clip_hosts.len() {
+            let host = self.hoisted_clip_hosts[index];
+            let Some(mut context) = self.nodes[host].stacking_context.take() else {
+                continue;
+            };
+            let host_position = self.nodes[host].absolute_position(0.0, 0.0);
+
+            for child in context.children.iter_mut() {
+                child.clips.clear();
+                child.clips.reserve(child.clip_ancestors.len());
+                for &clipper in child.clip_ancestors.iter() {
+                    let node = &self.nodes[clipper];
+                    // The clip is the clipping box's own border box, so its
+                    // own scroll offset does not enter into it. Ancestor
+                    // scrolling does, and `absolute_position` applies that.
+                    let position = node.absolute_position(0.0, 0.0);
+                    let layout = node.final_layout();
+                    let left = position.x - host_position.x;
+                    let top = position.y - host_position.y;
+                    // The padding box, matching what paint clips content to.
+                    child.clips.push(taffy::Rect {
+                        left: left + layout.border.left,
+                        top: top + layout.border.top,
+                        right: left + layout.size.width - layout.border.right,
+                        bottom: top + layout.size.height - layout.border.bottom,
+                    });
+                }
+            }
+
+            self.nodes[host].stacking_context = Some(context);
         }
     }
 
