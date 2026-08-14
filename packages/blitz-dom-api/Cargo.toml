@@ -1,0 +1,27 @@
+[package]
+name = "blitz-dom-api"
+description = "Runtime-agnostic DOM operations over blitz-dom"
+# Not published. The name is unprefixed because the brief for this crate names
+# it `blitz-dom-api`; every published package in this fork carries the `ps-`
+# prefix, so this one has to stay off crates.io until that is reconciled.
+publish = false
+version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "blitz_dom_api"
+
+[dependencies]
+# Blitz dependencies
+blitz-dom = { workspace = true }
+
+# Servo dependencies
+markup5ever = { workspace = true }
+
+[dev-dependencies]
+blitz-traits = { workspace = true }
