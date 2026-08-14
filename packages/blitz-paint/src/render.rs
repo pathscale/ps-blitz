@@ -755,6 +755,16 @@ struct ElementCx<'dom, 'a> {
     custom_widget_scene: Option<&'a Scene>,
 }
 
+/// A layout rect in CSS pixels as a device-pixel [`Rect`].
+fn scaled_rect(rect: &taffy::Rect<f32>, scale: f64) -> Rect {
+    Rect::new(
+        rect.left as f64 * scale,
+        rect.top as f64 * scale,
+        rect.right as f64 * scale,
+        rect.bottom as f64 * scale,
+    )
+}
+
 /// Converts parley BoundingBox into peniko Rect
 fn convert_rect(rect: &parley::BoundingBox) -> kurbo::Rect {
     peniko::kurbo::Rect::new(rect.x0, rect.y0, rect.x1, rect.y1)
@@ -1064,14 +1074,12 @@ impl ElementCx<'_, '_> {
 
         if let Some(hoisted) = &self.node.stacking_context {
             for hoisted_child in hoisted.neg_z_hoisted_children() {
-                let pos = kurbo::Vec2 {
-                    x: hoisted_child.position.x as f64 * self.scale,
-                    y: hoisted_child.position.y as f64 * self.scale,
-                };
-                self.render_node(
+                self.draw_hoisted_child(
                     scene,
                     hoisted_child.node_id,
-                    parent_style_transform.pre_translate(pos),
+                    hoisted_child.position,
+                    &hoisted_child.clips,
+                    parent_style_transform,
                     clip_rect,
                 );
             }
@@ -1087,18 +1095,74 @@ impl ElementCx<'_, '_> {
         // Positive z_index hoisted nodes
         if let Some(hoisted) = &self.node.stacking_context {
             for hoisted_child in hoisted.pos_z_hoisted_children() {
-                let pos = kurbo::Vec2 {
-                    x: hoisted_child.position.x as f64 * self.scale,
-                    y: hoisted_child.position.y as f64 * self.scale,
-                };
-                self.render_node(
+                self.draw_hoisted_child(
                     scene,
                     hoisted_child.node_id,
-                    parent_style_transform.pre_translate(pos),
+                    hoisted_child.position,
+                    &hoisted_child.clips,
+                    parent_style_transform,
                     clip_rect,
                 );
             }
         }
+    }
+
+    /// Paint a child that was hoisted into this stacking context, under the
+    /// overflow clips of the ancestors it was hoisted past.
+    ///
+    /// Those ancestors' own clip layers are not on the stack here, because the
+    /// hoist is exactly the act of leaving their subtree. Without re-applying
+    /// them a `z-index` child of an `overflow: hidden` box paints outside it.
+    ///
+    /// The recorded clips are all axis-aligned in this stacking context's
+    /// space, so they collapse into a single rectangle and a single layer
+    /// rather than one layer per ancestor. Corner radii are lost in that
+    /// collapse: a rounded clipper cuts a hoisted child square. That is a few
+    /// pixels at each corner, against content escaping its container entirely.
+    fn draw_hoisted_child(
+        &self,
+        scene: &mut impl PaintScene,
+        node_id: NodeId,
+        position: taffy::Point<f32>,
+        ancestor_clips: &[taffy::Rect<f32>],
+        parent_style_transform: Affine,
+        clip_rect: Rect,
+    ) {
+        let pos = kurbo::Vec2 {
+            x: position.x as f64 * self.scale,
+            y: position.y as f64 * self.scale,
+        };
+        let transform = parent_style_transform.pre_translate(pos);
+
+        let mut clips = ancestor_clips.iter();
+        let Some(first) = clips.next() else {
+            self.render_node(scene, node_id, transform, clip_rect);
+            return;
+        };
+        let clip = clips.fold(scaled_rect(first, self.scale), |accumulated, clip| {
+            accumulated.intersect(scaled_rect(clip, self.scale))
+        });
+
+        // Cull rather than clip when nothing of the child can survive. The
+        // child is still inside a clip layer in that case, so this is an
+        // optimisation and not the correctness argument.
+        let child_clip_rect = clip_rect.intersect(parent_style_transform.transform_rect_bbox(clip));
+        if child_clip_rect.width() <= 0.0 || child_clip_rect.height() <= 0.0 {
+            return;
+        }
+
+        let layer_used = self.layer_manager.maybe_push_layer(
+            scene,
+            LayerSite::Overflow,
+            true,
+            1.0,
+            parent_style_transform,
+            &clip,
+            None,
+            None,
+        );
+        self.render_node(scene, node_id, transform, child_clip_rect);
+        self.layer_manager.maybe_pop_layer(scene, layer_used);
     }
 
     #[cfg(feature = "svg")]
