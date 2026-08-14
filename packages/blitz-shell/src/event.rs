@@ -1,6 +1,7 @@
 use blitz_traits::navigation::NavigationOptions;
 use blitz_traits::net::NetWaker;
 use futures_util::task::ArcWake;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::{any::Any, sync::Arc};
 use winit::{event_loop::EventLoopProxy, window::WindowId};
@@ -102,25 +103,31 @@ impl NetWaker for BlitzShellProxy {
     }
 }
 
-/// Create a waker that will send a poll event to the event loop.
+/// Create a waker that asks the event loop to poll a window's document.
 ///
 /// This lets the VirtualDom "come up for air" and process events while the main thread is blocked by the WebView.
 ///
 /// All other IO lives in the Tokio runtime,
-pub fn create_waker(proxy: &BlitzShellProxy, id: WindowId) -> std::task::Waker {
+///
+/// The request is a flag the window owns rather than a queued event, because
+/// wanting a poll is an edge and not a message: two wakes before the loop comes
+/// round mean the same thing as one. Queueing them meant an allocation and a
+/// wake syscall each, and a poll each on the far side.
+pub fn create_waker(proxy: &BlitzShellProxy, poll_requested: Arc<AtomicBool>) -> std::task::Waker {
     struct DomHandle {
         proxy: BlitzShellProxy,
-        id: WindowId,
+        poll_requested: Arc<AtomicBool>,
     }
     impl ArcWake for DomHandle {
         fn wake_by_ref(arc_self: &Arc<Self>) {
-            let event = BlitzShellEvent::Poll {
-                window_id: arc_self.id,
-            };
-            arc_self.proxy.send_event(event)
+            arc_self.poll_requested.store(true, Ordering::Release);
+            arc_self.proxy.wake_up();
         }
     }
 
     let proxy = proxy.clone();
-    futures_util::task::waker(Arc::new(DomHandle { id, proxy }))
+    futures_util::task::waker(Arc::new(DomHandle {
+        poll_requested,
+        proxy,
+    }))
 }

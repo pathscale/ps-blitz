@@ -20,6 +20,7 @@ use atomic_refcell::AtomicRefCell;
 use std::any::Any;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::Waker;
 use std::time::Duration;
 use web_time::Instant;
@@ -81,6 +82,12 @@ pub struct View<Rend: WindowRenderer> {
 
     pub renderer: Rend,
     pub waker: Option<Waker>,
+
+    /// Set when something wants this document polled: an input event the shell
+    /// just handled, or a future waking on another thread. The event loop
+    /// drains it once before it sleeps, so a burst of pointer moves costs one
+    /// poll rather than one each, and nothing is queued or allocated to say so.
+    poll_requested: Arc<AtomicBool>,
 
     pub proxy: BlitzShellProxy,
     pub window: Arc<dyn Window>,
@@ -346,6 +353,7 @@ impl<Rend: WindowRenderer> View<Rend> {
         Self {
             renderer: config.renderer,
             waker: None,
+            poll_requested: Arc::new(AtomicBool::new(false)),
             animation_timer: None,
             keyboard_modifiers: Default::default(),
             proxy: proxy.clone(),
@@ -462,8 +470,6 @@ impl<Rend: WindowRenderer> View<Rend> {
             return false;
         }
 
-        let window_id = self.window_id();
-
         // Resync the renderer to the current viewport. Resize/scale events that
         // arrived while the renderer was Pending were no-ops on the renderer
         // (its `set_size` only matches Active), so the surface created during
@@ -499,7 +505,7 @@ impl<Rend: WindowRenderer> View<Rend> {
         drop(inner);
         self.redraw_pending.set(false);
 
-        self.waker = Some(create_waker(&self.proxy, window_id));
+        self.waker = Some(create_waker(&self.proxy, Arc::clone(&self.poll_requested)));
         // Scripts can schedule timers before the native surface exists. Their timer thread has
         // nothing to wake until this point, so poll once after installing the event-loop waker
         // to run already-due work and re-arm future deadlines.
@@ -514,6 +520,23 @@ impl<Rend: WindowRenderer> View<Rend> {
 
         #[cfg(feature = "custom-widget")]
         self.doc.inner_mut().destroy_surfaces();
+    }
+
+    /// Ask for a poll before the event loop next sleeps.
+    ///
+    /// Costs one relaxed store when the flag is already set, which is the
+    /// common case during a drag or a scroll.
+    pub fn request_poll(&self) {
+        self.poll_requested.store(true, Ordering::Release);
+    }
+
+    /// Poll iff a poll was asked for since the last drain, clearing the request.
+    pub fn poll_if_requested(&mut self) -> bool {
+        if self.poll_requested.swap(false, Ordering::AcqRel) {
+            self.poll()
+        } else {
+            false
+        }
     }
 
     pub fn poll(&mut self) -> bool {
