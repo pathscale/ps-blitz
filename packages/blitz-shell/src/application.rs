@@ -82,8 +82,11 @@ impl<Rend: WindowRenderer> BlitzApplication<Rend> {
     ) {
         match event {
             BlitzShellEvent::Poll { window_id } => {
-                if let Some(window) = self.windows.get_mut(&window_id) {
-                    window.poll();
+                // Kept for embedders that send it. The poll itself happens in
+                // `about_to_wait` with every other request, which runs before
+                // the loop sleeps, so this is not deferred past this turn.
+                if let Some(window) = self.windows.get(&window_id) {
+                    window.request_poll();
                 };
             }
             BlitzShellEvent::CloseWindow { window_id } => {
@@ -210,8 +213,11 @@ impl<Rend: WindowRenderer> ApplicationHandler for BlitzApplication<Rend> {
 
         if let Some(window) = self.windows.get_mut(&window_id) {
             window.handle_winit_event(event);
+            // Flag rather than a queued event and a wake: this runs on the
+            // event loop's own thread, `about_to_wait` follows before the loop
+            // sleeps, and a drag delivers hundreds of these a second.
+            window.request_poll();
         }
-        self.proxy.send_event(BlitzShellEvent::Poll { window_id });
     }
 
     fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
@@ -231,6 +237,13 @@ impl<Rend: WindowRenderer> ApplicationHandler for BlitzApplication<Rend> {
         let _ = event_loop;
         #[cfg(feature = "debug-control")]
         self.service_debug_controller(event_loop);
+
+        // Every poll asked for since the loop last slept, coalesced to one per
+        // window. Before the animation deadline below, because a poll is what
+        // schedules the next animation frame.
+        for window in self.windows.values_mut() {
+            window.poll_if_requested();
+        }
 
         #[cfg(target_os = "ios")]
         for view in self.windows.values_mut() {
@@ -282,7 +295,7 @@ impl<Rend: WindowRenderer> ApplicationHandlerExtMacOS for BlitzApplication<Rend>
     ) {
         if let Some(window) = self.windows.get_mut(&window_id) {
             window.handle_apple_standard_keybinding(action);
-            self.proxy.send_event(BlitzShellEvent::Poll { window_id });
+            window.request_poll();
         }
     }
 }
