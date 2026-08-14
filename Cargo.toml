@@ -121,13 +121,13 @@ skrifa = { version = "0.42", default-features = false, features = [
 ] } # Should match parley and vello versions
 
 # AnyRender
-anyrender = { package = "ps-anyrender", git = "https://github.com/pathscale/ps-anyrender.git", rev = "0e4122bff9220b85e4e462d1c3213c24beace3ea" }
+anyrender = { package = "ps-anyrender", git = "https://github.com/pathscale/ps-anyrender.git", rev = "acb9714cedfa2a6adbac76f8e494f75af60ccc6e" }
 anyrender_serialize = { version = "0.6.0" }
 anyrender_skia = { version = "0.10.0" }
-anyrender_vello = { package = "ps-anyrender-vello", git = "https://github.com/pathscale/ps-anyrender.git", rev = "0e4122bff9220b85e4e462d1c3213c24beace3ea" }
-anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", git = "https://github.com/pathscale/ps-anyrender.git", rev = "0e4122bff9220b85e4e462d1c3213c24beace3ea" }
-anyrender_vello_hybrid = { package = "ps-anyrender-vello-hybrid", git = "https://github.com/pathscale/ps-anyrender.git", rev = "0e4122bff9220b85e4e462d1c3213c24beace3ea" }
-anyrender_svg = { package = "ps-anyrender-svg", git = "https://github.com/pathscale/ps-anyrender.git", rev = "0e4122bff9220b85e4e462d1c3213c24beace3ea" }
+anyrender_vello = { package = "ps-anyrender-vello", git = "https://github.com/pathscale/ps-anyrender.git", rev = "acb9714cedfa2a6adbac76f8e494f75af60ccc6e" }
+anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", git = "https://github.com/pathscale/ps-anyrender.git", rev = "acb9714cedfa2a6adbac76f8e494f75af60ccc6e" }
+anyrender_vello_hybrid = { package = "ps-anyrender-vello-hybrid", git = "https://github.com/pathscale/ps-anyrender.git", rev = "acb9714cedfa2a6adbac76f8e494f75af60ccc6e" }
+anyrender_svg = { package = "ps-anyrender-svg", git = "https://github.com/pathscale/ps-anyrender.git", rev = "acb9714cedfa2a6adbac76f8e494f75af60ccc6e" }
 wgpu_context = { version = "0.8.0" }
 
 # Linebender + Fontations + WGPU + SVG
