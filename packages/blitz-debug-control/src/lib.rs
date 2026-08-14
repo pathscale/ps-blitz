@@ -7,9 +7,9 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
+use std::sync::{Arc, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -29,6 +29,43 @@ pub struct ServerConfig {
     pub descriptor_path: PathBuf,
     /// Git revision or build identifier for the renderer.
     pub renderer_revision: String,
+}
+
+/// Wakes whichever thread services requests, so it does not have to poll for
+/// them.
+///
+/// The server cannot know how to wake its embedder, and the embedder's event
+/// loop does not exist yet when the server starts, so the callback is installed
+/// later. A `OnceLock` rather than a lock because it is written exactly once
+/// and read on the path of every request.
+///
+/// Without one installed the embedder must poll, which is what the Blitz shell
+/// used to do on a 10ms timer: 100 wakeups a second while idle, up to 10ms of
+/// latency on every command, and enough of both to show up in any measurement
+/// taken with the driver attached.
+#[derive(Clone, Default)]
+pub struct ServiceWaker(Arc<OnceLock<Box<dyn Fn() + Send + Sync>>>);
+
+impl ServiceWaker {
+    /// Install the wake callback. Later calls are ignored.
+    pub fn set(&self, wake: impl Fn() + Send + Sync + 'static) {
+        let _ = self.0.set(Box::new(wake));
+    }
+
+    fn wake(&self) {
+        if let Some(wake) = self.0.get() {
+            wake();
+        }
+    }
+}
+
+impl std::fmt::Debug for ServiceWaker {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ServiceWaker")
+            .field("installed", &self.0.get().is_some())
+            .finish()
+    }
 }
 
 /// A command forwarded from the HTTP server to the renderer thread.
@@ -85,6 +122,7 @@ pub struct DebugServer {
     token: String,
     descriptor_path: PathBuf,
     shutdown: Arc<AtomicBool>,
+    waker: ServiceWaker,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -100,14 +138,28 @@ impl DebugServer {
         let listener = TcpListener::bind(config.bind_address)?;
         let address = listener.local_addr()?;
         let token = random_hex(32)?;
-        let (command_tx, command_rx) = mpsc::sync_channel(1);
+        // Unbounded, where this was `sync_channel(1)` serviced by a poll. A
+        // request that arrives before the embedder can service it (no document
+        // yet, say) used to occupy the only slot, and the next one was refused
+        // outright with "renderer command queue is full".
+        let (command_tx, command_rx) = mpsc::channel();
         let shutdown = Arc::new(AtomicBool::new(false));
+        let waker = ServiceWaker::default();
 
         let thread_shutdown = Arc::clone(&shutdown);
         let thread_token = token.clone();
+        let thread_waker = waker.clone();
         let thread = thread::Builder::new()
             .name("blitz-debug-control".into())
-            .spawn(move || server_loop(listener, &thread_token, command_tx, thread_shutdown))?;
+            .spawn(move || {
+                server_loop(
+                    listener,
+                    &thread_token,
+                    command_tx,
+                    &thread_waker,
+                    thread_shutdown,
+                )
+            })?;
 
         if let Err(error) = write_descriptor(&config, address, &token) {
             shutdown.store(true, Ordering::Release);
@@ -122,10 +174,17 @@ impl DebugServer {
                 token,
                 descriptor_path: config.descriptor_path,
                 shutdown,
+                waker,
                 thread: Some(thread),
             },
             command_rx,
         ))
+    }
+
+    /// Handle for telling the server how to wake the thread that services
+    /// requests. Nothing wakes until a callback is installed.
+    pub fn waker(&self) -> ServiceWaker {
+        self.waker.clone()
     }
 
     pub fn address(&self) -> SocketAddr {
@@ -205,7 +264,8 @@ fn write_descriptor(config: &ServerConfig, address: SocketAddr, token: &str) -> 
 fn server_loop(
     listener: TcpListener,
     token: &str,
-    command_tx: SyncSender<ControlRequest>,
+    command_tx: Sender<ControlRequest>,
+    waker: &ServiceWaker,
     shutdown: Arc<AtomicBool>,
 ) {
     let mut active_session: Option<String> = None;
@@ -218,7 +278,9 @@ fn server_loop(
                 let _ = stream.set_read_timeout(Some(COMMAND_TIMEOUT));
                 let _ = stream.set_write_timeout(Some(COMMAND_TIMEOUT));
                 let response = match read_request(&mut stream) {
-                    Ok(request) => route(request, token, &mut active_session, &command_tx),
+                    Ok(request) => {
+                        route(request, token, &mut active_session, &command_tx, waker)
+                    }
                     Err(error) => webdriver_error("invalid argument", error.to_string()),
                 };
                 let _ = write_response(&mut stream, response);
@@ -309,7 +371,8 @@ fn route(
     request: HttpRequest,
     token: &str,
     active_session: &mut Option<String>,
-    command_tx: &SyncSender<ControlRequest>,
+    command_tx: &Sender<ControlRequest>,
+    waker: &ServiceWaker,
 ) -> Value {
     if request.method == "GET" && request.path == "/status" {
         return json!({"value": {
@@ -362,15 +425,12 @@ fn route(
         body: request.body,
         reply: reply_tx,
     };
-    match command_tx.try_send(control_request) {
-        Ok(()) => {}
-        Err(TrySendError::Full(_)) => {
-            return webdriver_error("timeout", "renderer command queue is full");
-        }
-        Err(TrySendError::Disconnected(_)) => {
-            return webdriver_error("unknown error", "renderer command channel is closed");
-        }
+    if command_tx.send(control_request).is_err() {
+        return webdriver_error("unknown error", "renderer command channel is closed");
     }
+    // Queue first, then wake: the embedder must find the request already there
+    // when it comes round, or the wake is spent on an empty queue.
+    waker.wake();
     match reply_rx.recv_timeout(COMMAND_TIMEOUT) {
         Ok(ControlResponse::Success(value)) => json!({"value": value}),
         Ok(ControlResponse::Error {
@@ -416,6 +476,7 @@ fn write_response(stream: &mut TcpStream, body: Value) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn descriptor_path() -> PathBuf {
@@ -529,9 +590,54 @@ mod tests {
         assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::InvalidInput));
     }
 
+    fn snapshot_request() -> HttpRequest {
+        HttpRequest {
+            method: "GET".into(),
+            path: "/session/test-session/blitz/getDomSnapshot".into(),
+            body: Value::Null,
+        }
+    }
+
+    /*
+     * The wake has to arrive after the request is queued, never before: a wake
+     * delivered to an empty queue is spent, and the embedder has no timer to
+     * fall back on any more. Draining inside the callback is exactly what the
+     * event loop does when it comes round, so servicing here proves the
+     * ordering rather than asserting it indirectly.
+     */
     #[test]
-    fn a_full_renderer_queue_fails_without_blocking_the_server() {
-        let (command_tx, command_rx) = mpsc::sync_channel(1);
+    fn wakes_the_servicer_with_the_request_already_queued() {
+        let (command_tx, command_rx) = mpsc::channel::<ControlRequest>();
+        let waker = ServiceWaker::default();
+        let queue = Mutex::new(command_rx);
+        waker.set(move || {
+            let queued = queue.lock().unwrap().try_recv().unwrap();
+            assert_eq!(queued.path, "blitz/getDomSnapshot");
+            queued
+                .respond(ControlResponse::Success(json!({"serviced": true})))
+                .unwrap();
+        });
+
+        let mut active_session = Some("test-session".to_string());
+        let response = route(
+            snapshot_request(),
+            "token",
+            &mut active_session,
+            &command_tx,
+            &waker,
+        );
+
+        assert_eq!(response["value"]["serviced"], true);
+    }
+
+    /*
+     * `sync_channel(1)` refused this outright with "renderer command queue is
+     * full". One unserviced request is normal, not a fault: it happens whenever
+     * a command arrives before the embedder has a document to run it against.
+     */
+    #[test]
+    fn a_second_request_queues_behind_an_unserviced_one() {
+        let (command_tx, command_rx) = mpsc::channel::<ControlRequest>();
         let (reply_tx, _reply_rx) = mpsc::sync_channel(1);
         command_tx
             .send(ControlRequest {
@@ -541,18 +647,57 @@ mod tests {
                 reply: reply_tx,
             })
             .unwrap();
+
+        let waker = ServiceWaker::default();
+        let queue = Mutex::new(command_rx);
+        waker.set(move || {
+            let queue = queue.lock().unwrap();
+            assert_eq!(queue.try_recv().unwrap().path, "occupied");
+            queue
+                .try_recv()
+                .unwrap()
+                .respond(ControlResponse::Success(json!({"serviced": true})))
+                .unwrap();
+        });
+
         let mut active_session = Some("test-session".to_string());
         let response = route(
-            HttpRequest {
-                method: "GET".into(),
-                path: "/session/test-session/blitz/getDomSnapshot".into(),
-                body: Value::Null,
-            },
+            snapshot_request(),
             "token",
             &mut active_session,
             &command_tx,
+            &waker,
         );
-        assert_eq!(response["value"]["error"], "timeout");
-        drop(command_rx);
+
+        assert_eq!(response["value"]["serviced"], true);
+    }
+
+    /// Nothing installs a waker until the embedder is up, and requests that
+    /// arrive in that window must still be queued rather than dropped.
+    #[test]
+    fn queues_requests_while_no_waker_is_installed() {
+        let (command_tx, command_rx) = mpsc::channel::<ControlRequest>();
+        let waker = ServiceWaker::default();
+        let mut active_session = Some("test-session".to_string());
+
+        let sender = command_tx.clone();
+        let servicer = thread::spawn(move || {
+            let queued = command_rx.recv_timeout(COMMAND_TIMEOUT).unwrap();
+            drop(sender);
+            queued
+                .respond(ControlResponse::Success(json!({"serviced": true})))
+                .unwrap();
+        });
+
+        let response = route(
+            snapshot_request(),
+            "token",
+            &mut active_session,
+            &command_tx,
+            &waker,
+        );
+
+        servicer.join().unwrap();
+        assert_eq!(response["value"]["serviced"], true);
     }
 }

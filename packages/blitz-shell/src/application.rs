@@ -41,33 +41,34 @@ impl<Rend: WindowRenderer> BlitzApplication<Rend> {
 
     #[cfg(feature = "debug-control")]
     pub fn set_debug_controller(&mut self, controller: blitz_script::DebugController) {
+        // The server thread wakes the loop when a request lands, the same way
+        // everything else here does. Before this the loop woke itself every
+        // 10ms to look: 100 wakeups a second at idle, up to 10ms of latency on
+        // each command, and a floor under every measurement taken with the
+        // driver attached, which is most of them.
+        let proxy = self.proxy.clone();
+        controller.set_waker(move || proxy.wake_up());
         self.debug_controller = Some(controller);
     }
 
     #[cfg(feature = "debug-control")]
-    /// Returns whether it set the control flow, so `about_to_wait` does not
-    /// overwrite its poll cadence with `Wait`.
-    fn service_debug_controller(&mut self, event_loop: &dyn ActiveEventLoop) -> bool {
+    fn service_debug_controller(&mut self, event_loop: &dyn ActiveEventLoop) {
         let Some(controller) = self.debug_controller.as_mut() else {
-            return false;
+            return;
         };
         let Some(document) = self
             .windows
             .values_mut()
             .find_map(|view| view.try_downcast_doc_mut::<blitz_script::ScriptDocument>())
         else {
-            return false;
+            // No document to run against yet. The request stays queued, and
+            // whatever creates the window brings the loop round again.
+            return;
         };
         controller.service_pending(document);
         if controller.exit_requested() {
             event_loop.exit();
-        } else {
-            event_loop.set_control_flow(ControlFlow::wait_duration(
-                std::time::Duration::from_millis(10),
-            ));
-            return true;
         }
-        false
     }
 
     fn window_mut_by_doc_id(&mut self, doc_id: usize) -> Option<&mut View<Rend>> {
@@ -229,9 +230,7 @@ impl<Rend: WindowRenderer> ApplicationHandler for BlitzApplication<Rend> {
     fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
         let _ = event_loop;
         #[cfg(feature = "debug-control")]
-        let debug_control_is_polling = self.service_debug_controller(event_loop);
-        #[cfg(not(feature = "debug-control"))]
-        let debug_control_is_polling = false;
+        self.service_debug_controller(event_loop);
 
         #[cfg(target_os = "ios")]
         for view in self.windows.values_mut() {
@@ -255,9 +254,6 @@ impl<Rend: WindowRenderer> ApplicationHandler for BlitzApplication<Rend> {
         // profile of the app because no frame of ours is on the stack: the
         // whole main thread sits in `__CFRunLoopDoTimers` re-arming a timer.
         //
-        // The debug controller polls on its own 10ms cadence, so it says
-        // whether it has set the control flow already and is not overwritten
-        // here.
         // web_time, not std: on wasm they are genuinely distinct types, and
         // both `poll_animation_frame` and winit's own `ControlFlow::WaitUntil`
         // are in web_time's. On native web_time re-exports std's, which is why
@@ -270,7 +266,7 @@ impl<Rend: WindowRenderer> ApplicationHandler for BlitzApplication<Rend> {
             .min();
         if let Some(deadline) = next_frame {
             event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
-        } else if !debug_control_is_polling {
+        } else {
             event_loop.set_control_flow(ControlFlow::Wait);
         }
     }

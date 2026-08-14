@@ -31,7 +31,7 @@ const EVENT_TRACE_CAPACITY: usize = 256;
 /// The networking thread can only create [`ControlRequest`] values. Call one
 /// of the `service_*` methods from the thread that owns `ScriptDocument`.
 pub struct DebugController {
-    _server: DebugServer,
+    server: DebugServer,
     requests: Receiver<ControlRequest>,
     document_generation: u64,
     document_revision: u64,
@@ -52,7 +52,7 @@ impl DebugController {
     pub fn start(config: ServerConfig) -> io::Result<Self> {
         let (server, requests) = DebugServer::start(config)?;
         Ok(Self {
-            _server: server,
+            server,
             requests,
             document_generation: 1,
             document_revision: 1,
@@ -68,6 +68,16 @@ impl DebugController {
             action_buttons: MouseEventButtons::default(),
             exit_requested: false,
         })
+    }
+
+    /// Tell the server how to wake the thread that calls `service_pending`.
+    ///
+    /// An embedder with an event loop should install this, then service on
+    /// wake. Without it the server has no way to say a request has arrived and
+    /// the embedder is back to polling. Harnesses that call `service_one` block
+    /// on the channel and need nothing here.
+    pub fn set_waker(&self, wake: impl Fn() + Send + Sync + 'static) {
+        self.server.waker().set(wake);
     }
 
     /// Enable CPU screenshots and frame commits at the supplied viewport size.
