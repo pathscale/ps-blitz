@@ -8,12 +8,33 @@ use peniko::{Compose, Fill, Mix};
 impl ElementCx<'_, '_> {
     pub(super) fn draw_outset_box_shadow(&self, scene: &mut impl PaintScene) {
         let box_shadow = &self.style.get_effects().box_shadow.0;
-        let has_outset_shadow = box_shadow.iter().any(|s| !s.inset);
+        let current_color = self.style.clone_color();
+        /*
+         * A fully transparent shadow is not a shadow. The loop below already
+         * declines to draw one, but everything around it still ran: the clip
+         * rect was computed and, where the element needs one, a whole
+         * compositing layer was pushed and popped for a shape nothing was ever
+         * painted into.
+         *
+         * Not a rare shape. An application driving shadow alpha from a custom
+         * property has the declaration on every panel at all times and the
+         * value at zero unless someone has moved a slider, so this is the
+         * default state rather than an edge case: it cost one layer per panel,
+         * every frame, to draw nothing.
+         */
+        let has_outset_shadow = box_shadow.iter().any(|shadow| {
+            !shadow.inset
+                && shadow
+                    .base
+                    .color
+                    .resolve_to_absolute(&current_color)
+                    .as_srgb_color()
+                    .components[3]
+                    != 0.0
+        });
         if !has_outset_shadow {
             return;
         }
-
-        let current_color = self.style.clone_color();
         let opacity = self.style.get_effects().opacity;
         let bg_color = self
             .style
