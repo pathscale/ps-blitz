@@ -134,6 +134,58 @@ fn drain_local_statics(log: &mut Log) {
     });
 }
 
+/// What crossed from JavaScript into the host, in bytes.
+///
+/// Every DOM binding that takes a string reaches `dom::to_rust_string`, and
+/// nothing else converts a `JsValue` into an owned Rust `String` on the way
+/// into the DOM. So one counter there accounts for the whole guest-to-host
+/// string traffic, which is the quantity a boundary design changes and a
+/// timing number cannot isolate.
+///
+/// Deliberately *not* interned, because Boa is not: a binding receives a
+/// `JsString` and copies it out on every call, so `createElement("tr")` pays
+/// for `"tr"` a thousand times in a thousand-row build. That repetition is the
+/// measurement, not an inefficiency in the counter.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct BoundaryCounters {
+    /// Strings converted out of the JavaScript heap.
+    pub strings_crossed: u64,
+    /// Their total length in UTF-8 bytes.
+    pub bytes_copied: u64,
+}
+
+thread_local! {
+    /// Script runs on the document thread, so a `Cell` is the whole
+    /// synchronisation story and the hot path needs no atomic.
+    static BOUNDARY: std::cell::Cell<BoundaryCounters> =
+        const { std::cell::Cell::new(BoundaryCounters { strings_crossed: 0, bytes_copied: 0 }) };
+}
+
+/// Record one string crossing. Gated on the same switch as [`Timed`], so a
+/// build that is not profiling pays one relaxed atomic load and nothing else.
+pub(crate) fn record_boundary_string(bytes: usize) {
+    if !blitz_traits::profiling::deep_profiling_enabled() {
+        return;
+    }
+    let _ = BOUNDARY.try_with(|cell| {
+        let mut counters = cell.get();
+        counters.strings_crossed += 1;
+        counters.bytes_copied += bytes as u64;
+        cell.set(counters);
+    });
+}
+
+/// What has crossed on this thread since the last [`reset_boundary_counters`].
+#[must_use]
+pub fn boundary_counters() -> BoundaryCounters {
+    BOUNDARY.try_with(std::cell::Cell::get).unwrap_or_default()
+}
+
+/// Zero the boundary counters for this thread.
+pub fn reset_boundary_counters() {
+    let _ = BOUNDARY.try_with(|cell| cell.set(BoundaryCounters::default()));
+}
+
 /// Attribute a slice of script time to a named source.
 ///
 /// Called from the runtime around timer callbacks and DOM event dispatch. The
