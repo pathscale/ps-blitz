@@ -78,6 +78,9 @@ pub struct BlitzDomPainter<'dom, 'a> {
 
 impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
     /// Create a new BlitzDomPainter for the given document
+    // Same eight arguments as `paint_scene_at_time`, for the same reason, and
+    // they should be grouped in the same change rather than separately.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         dom: &'dom BaseDocument,
         scale: f64,

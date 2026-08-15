@@ -54,6 +54,13 @@ pub fn paint_scene(
     paint_scene_at_time(scene, doc, scale, width, height, x_offset, y_offset, 0.0)
 }
 
+// Eight arguments: the scene, the document, and six scalars describing the
+// target. `scale`, `width`, `height`, `x_offset` and `y_offset` would group
+// naturally into a viewport struct, which would take this to four and read
+// better. That is a public API change for every caller of blitz-paint,
+// including the pinned consumers, so it is not something to fold into the
+// commit that added the eighth argument.
+#[allow(clippy::too_many_arguments)]
 pub fn paint_scene_at_time(
     scene: &mut impl PaintScene,
     doc: &mut BaseDocument,
