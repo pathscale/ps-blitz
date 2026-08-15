@@ -20,9 +20,12 @@ use blitz_traits::platform::{
     FetchError, FetchHandler, FetchProvider, FetchRequest, FetchResponse, StatusCode, Url,
 };
 
+/// Where a [`Sink`] leaves the one answer its request produced.
+type Slot = Arc<Mutex<Option<Result<FetchResponse, FetchError>>>>;
+
 /// Collects the one answer a request produces.
 #[derive(Default)]
-struct Sink(Arc<Mutex<Option<Result<FetchResponse, FetchError>>>>);
+struct Sink(Slot);
 
 impl FetchHandler for Sink {
     fn complete(self: Box<Self>, result: Result<FetchResponse, FetchError>) {
@@ -38,7 +41,7 @@ impl FetchHandler for Sink {
 /// wrong.
 async fn fetch_one(url: &str) -> Result<FetchResponse, FetchError> {
     let provider = Provider::new(None);
-    let slot: Arc<Mutex<Option<Result<FetchResponse, FetchError>>>> = Arc::default();
+    let slot: Slot = Arc::default();
 
     provider.fetch(
         FetchRequest::get(Url::parse(url).expect("test URL should parse")),
@@ -155,8 +158,7 @@ async fn an_unservable_scheme_says_so_rather_than_hanging() {
 #[tokio::test]
 async fn concurrent_requests_do_not_cross_answers() {
     let provider = Arc::new(Provider::new(None));
-    let slots: Vec<Arc<Mutex<Option<Result<FetchResponse, FetchError>>>>> =
-        (0..8).map(|_| Arc::default()).collect();
+    let slots: Vec<Slot> = (0..8).map(|_| Arc::default()).collect();
 
     for (nth, slot) in slots.iter().enumerate() {
         provider.fetch(
