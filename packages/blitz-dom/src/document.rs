@@ -335,6 +335,12 @@ pub struct BaseDocument {
     pub(crate) changed_nodes: HashSet<NodeId>,
     /// Set of changed nodes for updating the accessibility tree
     pub(crate) deferred_construction_nodes: Vec<ConstructionTask>,
+    /// Which parts of the document differ from the previously painted frame.
+    ///
+    /// Off unless a consumer asks for it, so a document that never questions
+    /// its own frames does not pay to answer. See
+    /// [`set_paint_damage_tracking`](Self::set_paint_damage_tracking).
+    pub(crate) paint_damage: crate::paint_damage::PaintDamageTracker,
 
     /// Nodes that contain custom widgets
     #[cfg(feature = "custom-widget")]
@@ -558,6 +564,7 @@ impl BaseDocument {
 
             changed_nodes: HashSet::new(),
             deferred_construction_nodes: Vec::new(),
+            paint_damage: Default::default(),
             image_cache: HashMap::new(),
             pending_images: HashMap::new(),
             pending_critical_resources: HashSet::new(),
@@ -1005,6 +1012,42 @@ impl BaseDocument {
 
     pub fn root_node_mut(&mut self) -> &mut Node {
         &mut self.nodes[self.root_node_id]
+    }
+
+    /// Ask this document to work out which regions differ between frames.
+    ///
+    /// Off by default. A consumer that turns it on is charged one pass over the
+    /// node list per [`resolve`](Self::resolve) - a pass `resolve` already makes
+    /// to clear damage - plus a hash lookup and a rectangle comparison per node.
+    /// Nothing else in the document reads the result, so leaving it off costs a
+    /// single branch.
+    ///
+    /// The consumer this exists for is a `backdrop-filter` cache. Blurring what
+    /// is behind an element costs a render pass and a filter every frame, and
+    /// the only way that stops being permanent is to skip the elements whose
+    /// input has not changed. Turning this on is what makes that question
+    /// answerable.
+    ///
+    /// The first frame after enabling reports everything as changed, because
+    /// there is no previous frame to compare against.
+    pub fn set_paint_damage_tracking(&mut self, enabled: bool) {
+        self.paint_damage.set_enabled(enabled);
+    }
+
+    /// Whether [`set_paint_damage_tracking`](Self::set_paint_damage_tracking) is on.
+    pub fn paint_damage_tracking(&self) -> bool {
+        self.paint_damage.is_enabled()
+    }
+
+    /// What changed since the previously resolved frame.
+    ///
+    /// Empty when tracking is off, which is indistinguishable from "nothing
+    /// changed" and deliberately so: a consumer that has not asked for the
+    /// question to be answered must not read the empty answer as a licence to
+    /// reuse a cache. Check
+    /// [`paint_damage_tracking`](Self::paint_damage_tracking) first.
+    pub fn paint_damage(&self) -> &crate::paint_damage::PaintDamage {
+        self.paint_damage.damage()
     }
 
     pub fn try_root_element(&self) -> Option<&Node> {

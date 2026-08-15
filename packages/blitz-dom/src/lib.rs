@@ -50,6 +50,7 @@ mod iframe;
 /// Integration of taffy and the DOM.
 mod layout;
 mod mutator;
+pub mod paint_damage;
 mod query_selector;
 mod resolve;
 mod selection;
@@ -95,6 +96,11 @@ pub use markup5ever::{
 };
 pub use mutator::DocumentMutator;
 pub use node::{Attribute, DocumentData, ElementData, Node, NodeData, TextNodeData};
+pub use paint_damage::PaintDamage;
+// Re-exported because `PaintDamage` takes and returns `kurbo::Rect` across the
+// crate boundary. A consumer that pulls kurbo in itself and lands on a
+// different version gets a type mismatch on a name that looks identical.
+pub use kurbo;
 pub use parley::FontContext;
 pub use tree::NodeTree;
 
