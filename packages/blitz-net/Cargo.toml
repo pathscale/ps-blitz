@@ -38,6 +38,12 @@ directories = { workspace = true, optional = true }
 
 tracing = { workspace = true, optional = true }
 
+[dev-dependencies]
+# `FetchProvider::fetch` hands work to `tokio::spawn`, which panics outside a
+# runtime, so the tests need one. The library itself needs only `sync` and
+# `time`; `rt-multi-thread` and `macros` are the test harness's.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+
 [target.'cfg(target_os = "android")'.dependencies]
 reqwest = { workspace = true, features = ["native-tls-vendored"] }
 

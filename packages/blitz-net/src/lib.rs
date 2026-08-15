@@ -1,8 +1,22 @@
 //! Networking (HTTP, filesystem, Data URIs) for Blitz
 //!
-//! Provides an implementation of the [`blitz_traits::net::NetProvider`] trait.
+//! Provides implementations of [`blitz_traits::net::NetProvider`], which loads
+//! the resources a document needs, and of
+//! [`blitz_traits::platform::FetchProvider`], which serves a guest's `fetch()`.
+//!
+//! **Both run on the one client.** `Provider` holds a single `reqwest::Client`,
+//! built once with HTTP/2, the cookie jar, the compression codecs and the
+//! cacache disk cache, plus one per-host semaphore enforcing the browser's cap
+//! of six concurrent requests per origin. A guest's `fetch` therefore shares
+//! the connection pool, the cookies and the cache with the page's own loads,
+//! and counts against the same concurrency budget, which is what a browser
+//! does. A second client would have given a guest its own cookie jar and its
+//! own six connections per host.
 
 use blitz_traits::net::{AbortSignal, Body, Bytes, NetHandler, NetProvider, NetWaker, Request};
+use blitz_traits::platform::{
+    FetchError, FetchHandler, FetchProvider, FetchRequest, FetchResponse, HeaderMap, StatusCode,
+};
 use data_url::DataUrl;
 use std::{
     collections::HashMap,
@@ -252,6 +266,152 @@ impl Provider {
         }
 
         result
+    }
+}
+
+/// The `fetch()` path.
+///
+/// Separate from [`Provider::fetch_inner`] rather than layered on it, and the
+/// reason is the whole point of the trait: `fetch_inner` returns
+/// `(String, Bytes)` and turns any non-success status into a `ProviderError`
+/// that [`NetProvider::fetch`] then logs and drops. A caller loading an image
+/// wants exactly that. A `fetch()` caller wants the 404.
+impl Provider {
+    async fn platform_fetch_inner(
+        client: Client,
+        request: FetchRequest,
+        per_host_limits: HostLimits,
+    ) -> Result<FetchResponse, FetchError> {
+        match request.url.scheme() {
+            "data" => Self::platform_fetch_data(request),
+            "file" => Self::platform_fetch_file(request),
+            "http" | "https" => Self::platform_fetch_http(client, request, per_host_limits).await,
+            scheme => Err(FetchError::UnsupportedScheme(scheme.to_owned())),
+        }
+    }
+
+    /// A `data:` URL, answered as a synthetic 200.
+    ///
+    /// The status and the `Content-Type` are invented, because a data URL has
+    /// no server to supply them, and inventing them is what the fetch
+    /// specification requires: a `data:` response is a 200 whose content type
+    /// is the one encoded in the URL.
+    fn platform_fetch_data(request: FetchRequest) -> Result<FetchResponse, FetchError> {
+        let data_url = DataUrl::process(request.url.as_str())
+            .map_err(|err| FetchError::InvalidRequest(format!("{err:?}")))?;
+        let mime = data_url.mime_type().to_string();
+        let (body, _) = data_url
+            .decode_to_vec()
+            .map_err(|err| FetchError::InvalidRequest(format!("{err:?}")))?;
+
+        let mut headers = HeaderMap::new();
+        if let Ok(value) = mime.parse() {
+            // Via `reqwest`, which re-exports `http`'s header types. Naming
+            // `http` directly would mean a new dependency for one constant.
+            headers.insert(reqwest::header::CONTENT_TYPE, value);
+        }
+
+        Ok(FetchResponse::new(request.url, StatusCode::OK)
+            .headers(headers)
+            .body(Bytes::from(body)))
+    }
+
+    /// A `file:` URL, answered as a synthetic 200.
+    ///
+    /// Goes through [`Url::to_file_path`] rather than `Url::path`, which is
+    /// what [`Provider::fetch_inner`] uses. `path` hands back the URL's
+    /// percent-encoded path component as a string, so a file whose name
+    /// contains a space or a `#` is looked up under the wrong name, and on
+    /// Windows the leading slash makes it wrong outright. `to_file_path`
+    /// decodes and refuses a URL that does not name a local path.
+    ///
+    /// **This is not access control, and it is not claiming to be.** Whether a
+    /// document may read local files at all is an origin question, and origins
+    /// are not visible here; see `blitz-platform-api`, which holds the origin
+    /// and is where such a policy belongs.
+    fn platform_fetch_file(request: FetchRequest) -> Result<FetchResponse, FetchError> {
+        let path = request.url.to_file_path().map_err(|()| {
+            FetchError::InvalidRequest(format!("not a local path: {}", request.url))
+        })?;
+
+        let body = std::fs::read(path).map_err(|err| FetchError::Network(err.to_string()))?;
+
+        Ok(FetchResponse::new(request.url, StatusCode::OK).body(Bytes::from(body)))
+    }
+
+    async fn platform_fetch_http(
+        client: Client,
+        request: FetchRequest,
+        per_host_limits: HostLimits,
+    ) -> Result<FetchResponse, FetchError> {
+        // The same per-origin permit the page's own loads take, so a guest
+        // cannot open more connections to a host than a browser would.
+        let host_key = request
+            .url
+            .host_str()
+            .map(str::to_owned)
+            .unwrap_or_default();
+        let semaphore = {
+            let mut map = per_host_limits.lock().unwrap();
+            map.entry(host_key)
+                .or_insert_with(|| Arc::new(Semaphore::new(PER_HOST_MAX_CONCURRENT)))
+                .clone()
+        };
+        let _permit = semaphore
+            .acquire()
+            .await
+            .expect("per-host semaphore was closed");
+
+        let mut req = client
+            .request(request.method, request.url)
+            .headers(request.headers)
+            .header("User-Agent", USER_AGENT);
+
+        if let Some(body) = request.body {
+            req = req.body(body);
+        }
+
+        let response = req
+            .send()
+            .await
+            .map_err(|err| FetchError::Network(err.to_string()))?;
+
+        // Everything below here is what `fetch_inner` throws away.
+        let status = response.status();
+        let headers = response.headers().clone();
+        let url = response.url().clone();
+        let body = response
+            .bytes()
+            .await
+            .map_err(|err| FetchError::Network(err.to_string()))?;
+
+        Ok(FetchResponse::new(url, status).headers(headers).body(body))
+    }
+}
+
+impl FetchProvider for Provider {
+    fn fetch(&self, request: FetchRequest, handler: Box<dyn FetchHandler>) {
+        let client = self.client.clone();
+        let per_host_limits = self.per_host_limits.clone();
+
+        #[cfg(feature = "tracing")]
+        let url = request.url.to_string();
+
+        spawn(async move {
+            let result = Self::platform_fetch_inner(client, request, per_host_limits).await;
+
+            #[cfg(feature = "tracing")]
+            match &result {
+                Ok(response) => tracing::info!(
+                    url = url.as_str(),
+                    status = response.status.as_u16(),
+                    "fetch complete"
+                ),
+                Err(error) => tracing::error!(url = url.as_str(), error = ?error, "fetch failed"),
+            }
+
+            handler.complete(result);
+        });
     }
 }
 
