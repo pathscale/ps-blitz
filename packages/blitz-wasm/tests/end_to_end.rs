@@ -172,15 +172,18 @@ fn counters(store: &Store<Host>) -> Counters {
 }
 
 /// The whole ABI, in the order this file asserts it.
-const ABI: [&str; 8] = [
+const ABI: [&str; 11] = [
     "add_listener",
     "append_child",
     "create_element",
     "create_text",
+    "get_attribute",
+    "has_attribute",
     "intern",
     "remove_listener",
     "set_attribute",
     "set_text",
+    "text_content",
 ];
 
 /// The guest imports nothing outside the ABI, from nowhere but the `blitz`
@@ -212,12 +215,12 @@ fn the_guest_imports_only_the_blitz_module() {
         );
     }
 
-    // Exactly the seven a counter uses. The eighth, `remove_listener`, is
-    // registered by the host and declared by the bindings, but this guest
-    // never calls it and `lto = true` drops the import — a module imports what
-    // it *calls*, not what its bindings declare. Asserting the exact set
-    // rather than a subset keeps this test able to notice a guest that quietly
-    // stops calling one.
+    // Exactly the ten this guest uses: seven to build the counter, three to
+    // read it back. The eleventh, `remove_listener`, is registered by the host
+    // and declared by the bindings, but this guest never calls it and
+    // `lto = true` drops the import — a module imports what it *calls*, not
+    // what its bindings declare. Asserting the exact set rather than a subset
+    // keeps this test able to notice a guest that quietly stops calling one.
     let expected: Vec<String> = ABI
         .iter()
         .filter(|name| **name != "remove_listener")
@@ -577,6 +580,296 @@ fn the_resulting_tree_lays_out() {
     click(&mut store, &instance, ".increment");
     assert!(store.data().mutated());
     store.data_mut().document_mut().resolve(0.0);
+}
+
+// === The read direction ===
+//
+// Everything above measures the guest writing to the host. Everything below
+// measures the host answering the guest, which is the direction the handle and
+// atom design does nothing for: the bytes coming back *are* the payload.
+
+/// Run the guest's `echo` export, which reads the tree back and writes what it
+/// read into the document.
+fn echo(store: &mut Store<Host>, instance: &Instance) {
+    let status = call(store, instance, "echo");
+    assert_eq!(
+        status,
+        OK,
+        "the guest's read-back reported {status}; last dom error {:?}",
+        store.data().counters().last_dom_error
+    );
+}
+
+/// The text of the node matching `selector`.
+fn text_of(store: &Store<Host>, selector: &str) -> String {
+    node::text_content(store.data().document(), query(store, selector)).unwrap()
+}
+
+/// A read comes back, and the bytes that come back are the right ones.
+///
+/// Asserted at the DOM, not at the return code. The guest writes what it read
+/// straight into the document without formatting it, so a reader that returned
+/// nothing shows up here as an empty echo node and a reader that returned the
+/// wrong bytes shows up as the wrong echo node. A test that accepted "echo
+/// returned 0" would pass against a host reader that answered every call with
+/// zero bytes.
+#[test]
+fn a_read_returns_the_bytes_that_were_written() {
+    let (mut store, instance) = counter();
+    echo(&mut store, &instance);
+
+    // `class="count"` was set by the guest at mount, as two atoms and zero
+    // bytes. It comes back as five bytes.
+    assert_eq!(text_of(&store, ".echo-class"), "count");
+
+    // And the subtree's text, concatenated by the host: the button's label and
+    // the digit the effect wrote.
+    assert_eq!(text_of(&store, ".echo-text"), "+10");
+}
+
+/// A read is live, not a cache of what the guest itself last wrote.
+#[test]
+fn a_read_sees_what_the_host_sees_now() {
+    let (mut store, instance) = counter();
+    click(&mut store, &instance, ".increment");
+    click(&mut store, &instance, ".increment");
+    assert_eq!(readout(&store), "2");
+
+    echo(&mut store, &instance);
+    assert_eq!(
+        text_of(&store, ".echo-text"),
+        "+12",
+        "the read returned the tree as it was at mount, not as it is now"
+    );
+}
+
+/// Absent is not empty, and the host and the guest agree on which is which.
+///
+/// The guest's side of this is the return code — there is no way to make
+/// "absent" visible in the DOM without the guest inventing bytes for it — so
+/// the host asserts the same distinction independently, against the document
+/// the guest was reading.
+#[test]
+fn an_absent_attribute_is_not_an_empty_one() {
+    let (mut store, instance) = counter();
+
+    // `echo` returns OK only if it saw `id` as absent, `data-empty` as present
+    // with zero length, `hasAttribute("class")` true and `hasAttribute("id")`
+    // false. Any one of those wrong is a distinct negative code.
+    echo(&mut store, &instance);
+
+    let doc = store.data().document();
+    let readout = query(&store, ".count");
+    assert_eq!(element::get_attribute(doc, readout, "id").unwrap(), None);
+    assert_eq!(
+        element::get_attribute(doc, readout, "data-empty").unwrap(),
+        Some(String::new()),
+        "the guest set this to empty and read it back as present"
+    );
+
+    // `ABSENT` is a status, so nothing about it is an error, and the host's
+    // error slot must not have been touched by the absent read.
+    assert_eq!(
+        store.data().counters().last_error,
+        None,
+        "an absent attribute is an answer, not a failure"
+    );
+}
+
+/// What a read costs, stated in full, including the half that never crosses the
+/// boundary.
+///
+/// **This is the number the read direction exists to produce, and it is worse
+/// than the write direction's.** A write of `n` bytes crosses `n` bytes. A read
+/// of `n` bytes crosses `n` bytes *and* allocates `n` bytes of host-side
+/// `String` first, because every reader in `blitz-dom-api` returns an owned
+/// value. The handle-and-atom design saves nothing here: the name is free, and
+/// the answer is the payload.
+#[test]
+fn a_read_costs_its_value_twice() {
+    let (mut store, instance) = counter();
+    let before = counters(&store);
+    echo(&mut store, &instance);
+    let c = counters(&store);
+
+    // Four `get_attribute` calls: `class` on the readout, `id` (absent),
+    // `data-empty` (present, zero length), and `data-long` (absent, since this
+    // test did not put one there).
+    assert_eq!(c.get_attribute.calls, 4);
+
+    // Only `class` had bytes. Five of them crossed, host to guest...
+    assert_eq!(c.get_attribute.bytes_written, "count".len() as u64);
+    // ...and five of them were allocated host-side first, into the `String`
+    // `element::get_attribute` returns. That is the second copy, and it is the
+    // one a byte-across-the-boundary count cannot see.
+    assert_eq!(c.get_attribute.host_string_bytes, "count".len() as u64);
+    // Two owned strings: `count` and the empty `data-empty` value. The absent
+    // reads allocated nothing here, because there was nothing to return.
+    assert_eq!(c.get_attribute.host_allocs, 2);
+    // Nothing travelled the other way. A read carries a handle and an atom.
+    assert_eq!(c.get_attribute.bytes_copied, 0);
+
+    // `text_content` is the same shape and rebuilds its answer from the whole
+    // subtree every time.
+    assert_eq!(c.text_content.calls, 1);
+    assert_eq!(c.text_content.bytes_written, "+10".len() as u64);
+    assert_eq!(c.text_content.host_string_bytes, "+10".len() as u64);
+    assert_eq!(c.text_content.bytes_copied, 0);
+
+    // `has_attribute` is the one read the atom design does help: a handle and
+    // an atom in, a boolean out, no payload in either direction.
+    assert_eq!(c.has_attribute.calls, 2);
+    assert_eq!(c.has_attribute.bytes_crossed(), 0);
+    // Its `host_string_bytes` zero is a lie of omission, and counters.rs says
+    // so: `element::has_attribute` clones the value and discards it. Asserted
+    // anyway, so that a future change which starts counting it is noticed here
+    // rather than silently improving a number.
+    assert_eq!(c.has_attribute.host_string_bytes, 0);
+
+    // The two directions are separate totals and are never added into one by
+    // accident. Nothing before `echo` wrote into guest memory at all, so the
+    // read direction's total *is* the delta.
+    let read_bytes = c.total_bytes_written() - before.total_bytes_written();
+    assert_eq!(before.total_bytes_written(), 0);
+    assert_eq!(read_bytes, ("count".len() + "+10".len()) as u64);
+
+    // And the claim itself, as one equality: **every byte a read delivered was
+    // allocated host-side first.** Eight bytes of answers cost eight bytes
+    // across the boundary and eight bytes of `String` that existed only to be
+    // copied again.
+    let read_host_side = (c.get_attribute.host_string_bytes + c.text_content.host_string_bytes)
+        - (before.get_attribute.host_string_bytes + before.text_content.host_string_bytes);
+    assert_eq!(read_host_side, read_bytes);
+}
+
+/// **A read never gets cheaper.**
+///
+/// This is the sharpest version of the reversal, and the direct mirror of
+/// `clicking_repeatedly_costs_only_the_digits`. A repeated *write* is free
+/// forever, because the vocabulary was learned once and is integers thereafter.
+/// A repeated read of the same unchanged attribute costs the same bytes every
+/// time, because there is no place in this design for a returned value to be
+/// amortised into. The gap between the two directions widens as a page runs.
+#[test]
+fn reading_the_same_value_twice_costs_it_twice() {
+    let (mut store, instance) = counter();
+
+    echo(&mut store, &instance);
+    let first = counters(&store);
+    echo(&mut store, &instance);
+    let second = counters(&store);
+
+    // Nothing new to name: every string the second pass used was interned by
+    // the first, so the write direction really is free the second time round.
+    assert_eq!(
+        second.intern.calls, first.intern.calls,
+        "the second pass should have named nothing new"
+    );
+
+    // And the read direction charged full price again, for the same bytes off
+    // the same unchanged nodes.
+    assert_eq!(
+        second.get_attribute.bytes_written - first.get_attribute.bytes_written,
+        first.get_attribute.bytes_written
+    );
+    assert_eq!(
+        second.get_attribute.host_string_bytes - first.get_attribute.host_string_bytes,
+        first.get_attribute.host_string_bytes
+    );
+    assert_eq!(
+        second.text_content.bytes_written - first.text_content.bytes_written,
+        first.text_content.bytes_written
+    );
+    assert_eq!(
+        second.total_bytes_written(),
+        2 * first.total_bytes_written()
+    );
+}
+
+/// The chosen mechanism's failure mode, exercised.
+///
+/// The guest supplies the buffer, so a value longer than its first guess costs
+/// **two host calls and two host-side allocations of the whole value** to
+/// deliver it once. That is the price of not calling back into the guest for
+/// memory, and it is a number here rather than a caveat in a doc comment.
+#[test]
+fn a_value_that_does_not_fit_costs_a_second_call_and_a_second_copy() {
+    let (mut store, instance) = counter();
+
+    // Longer than the bindings' 64-byte first guess, and set from the host so
+    // the guest cannot have known its length in advance.
+    let long = "x".repeat(200);
+    let readout = query(&store, ".count");
+    element::set_attribute(store.data_mut().document_mut(), readout, "data-long", &long).unwrap();
+
+    let before = counters(&store);
+    echo(&mut store, &instance);
+    let c = counters(&store);
+
+    // It arrived intact, all 200 bytes, through a buffer that started at 64.
+    assert_eq!(text_of(&store, ".echo-long"), long);
+
+    // Five calls where the other test saw four: `data-long` took two of them.
+    assert_eq!(c.get_attribute.calls - before.get_attribute.calls, 5);
+
+    // The bytes crossed once. The first call reported the length and wrote
+    // nothing, because half a UTF-8 string is not a string.
+    assert_eq!(
+        c.get_attribute.bytes_written - before.get_attribute.bytes_written,
+        ("count".len() + long.len()) as u64
+    );
+
+    // But the host built the value twice, once per call. This is the whole
+    // cost of the mechanism, and it is 400 bytes of allocation to deliver 200.
+    assert_eq!(
+        c.get_attribute.host_string_bytes - before.get_attribute.host_string_bytes,
+        ("count".len() + 2 * long.len()) as u64
+    );
+    assert_eq!(
+        c.get_attribute.host_allocs - before.get_attribute.host_allocs,
+        4
+    );
+}
+
+/// A forged handle and a bad buffer are error returns from a reader, not traps.
+///
+/// Driven from *inside the guest*, through the real imports, which is the only
+/// way to exercise a host function's validation: `add_to_linker`'s closures are
+/// not reachable from a test. The guest calls all three readers with a handle
+/// this instance never issued, and `get_attribute` with a buffer outside its own
+/// memory, and reports what it was told.
+#[test]
+fn a_forged_read_is_an_error_not_a_trap() {
+    let (mut store, instance) = counter();
+
+    let status = call(&mut store, &instance, "probe_forged");
+    assert_eq!(
+        status, OK,
+        "the guest saw an unexpected status from a deliberately bad read; \
+         see `probe_forged` in the demo guest for what each code means"
+    );
+
+    // Every one of those calls was counted, errors included: a counter that
+    // skipped failures would make a guest look cheaper than it is.
+    let c = counters(&store);
+    assert_eq!(
+        c.get_attribute.calls, 2,
+        "one forged handle, one bad buffer"
+    );
+    assert_eq!(c.text_content.calls, 1);
+    assert_eq!(c.has_attribute.calls, 1);
+    // And none of them produced a byte in either direction.
+    assert_eq!(c.get_attribute.bytes_crossed(), 0);
+    assert_eq!(c.text_content.bytes_crossed(), 0);
+    assert_eq!(
+        c.get_attribute.host_string_bytes, 0,
+        "nothing was allocated for a call that never reached the document"
+    );
+
+    // The instance is still alive, which is the property a trap would have
+    // destroyed, and a real read still works.
+    echo(&mut store, &instance);
+    assert_eq!(text_of(&store, ".echo-class"), "count");
 }
 
 /// A guest mistake is a status code, never a trap.

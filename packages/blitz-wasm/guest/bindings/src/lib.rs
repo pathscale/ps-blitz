@@ -32,6 +32,20 @@
 //! "class", ...)` a thousand times performs one host call for the name, not a
 //! thousand.
 //!
+//! # Reads
+//!
+//! [`Element::get_attribute`], [`Node::text_content`] and
+//! [`Element::has_attribute`] go the other way, and the atom memo above does
+//! not help them: the *name* is still free, but the bytes coming back are the
+//! payload.
+//!
+//! The host's mechanism is a guest-supplied buffer — `(ptr, cap)` in, length
+//! out, retry once if it did not fit — and [`read_into`] is where that protocol
+//! is spoken. The ergonomic methods hand back an owned `String`, which costs a
+//! third copy of the value; the `_into` variants take a `&mut Vec<u8>` the
+//! caller reuses and cost two. ABI.md, "The read direction", has the numbers
+//! and says plainly that they are worse than the write direction's.
+//!
 //! # Why this is not `no_std`
 //!
 //! A `no_std` guest on `wasm32-unknown-unknown` has no global allocator and no
@@ -56,6 +70,9 @@ unsafe extern "C" {
     fn set_text(node: i32, ptr: u32, len: u32) -> i32;
     fn add_listener(node: i32, event: i32) -> i32;
     fn remove_listener(listener: i32) -> i32;
+    fn get_attribute(node: i32, name: i32, out_ptr: u32, out_cap: u32) -> i32;
+    fn text_content(node: i32, out_ptr: u32, out_cap: u32) -> i32;
+    fn has_attribute(node: i32, name: i32) -> i32;
 }
 
 /// A host status code that was not a success.
@@ -79,6 +96,7 @@ impl Error {
             -6 => "too many handles",
             -7 => "bad listener id",
             -8 => "too many listeners",
+            -9 => "attribute absent",
             _ => "unknown error",
         }
     }
@@ -93,6 +111,70 @@ fn check(status: i32) -> Result<i32> {
     } else {
         Ok(status)
     }
+}
+
+/// The host's "the attribute is not there" answer.
+///
+/// The one negative status that is not a failure — the DOM's `null`. It is
+/// mapped to `Ok(None)` here so that no guest above these bindings ever sees it
+/// as an error. See the host's `blitz_wasm::status::ABSENT`.
+const ABSENT: i32 = -9;
+
+/// How big a buffer a read tries first.
+///
+/// A read that fits costs one host call; a read that does not costs two, and
+/// the host allocates its answer twice. So this wants to be comfortably above
+/// the common case and nowhere near a page: class lists, ids and short labels
+/// are the values a guest reads most, and 64 bytes covers them. A guest that
+/// knows better hoists its own buffer and calls the `_into` variants, which
+/// take the retry decision away from this constant entirely.
+const FIRST_TRY: usize = 64;
+
+/// Run a host reader into `buf`, growing it once if the value did not fit.
+///
+/// The host's protocol: the return value is always the value's full byte
+/// length, and the bytes were written only if that length fits the capacity
+/// given. So the retry is not error handling, it is the second half of a
+/// two-outcome call, and it happens at most once — the second attempt is sized
+/// from the answer the first one gave.
+///
+/// `buf` is left holding exactly the value's bytes.
+fn read_into(buf: &mut Vec<u8>, mut call: impl FnMut(u32, u32) -> i32) -> Result<Option<usize>> {
+    if buf.len() < FIRST_TRY {
+        buf.resize(FIRST_TRY, 0);
+    }
+    let needed = match call(buf.as_mut_ptr() as u32, buf.len() as u32) {
+        ABSENT => return Ok(None),
+        status => check(status)? as usize,
+    };
+    if needed > buf.len() {
+        buf.resize(needed, 0);
+        // Sized from the host's own answer, so this cannot come back short;
+        // nothing else runs between the two calls that could lengthen the
+        // value. A second overflow would be a host bug, and it is reported as
+        // one rather than looped on.
+        let again = match call(buf.as_mut_ptr() as u32, buf.len() as u32) {
+            ABSENT => return Ok(None),
+            status => check(status)? as usize,
+        };
+        if again > buf.len() {
+            return Err(Error(-3)); // ERR_BAD_MEMORY: the host contradicted itself.
+        }
+    }
+    buf.truncate(needed);
+    Ok(Some(needed))
+}
+
+/// Turn the bytes a reader left in `buf` into a `String`.
+///
+/// **This is the third copy.** The host allocated the value once, wrote it into
+/// `buf` once, and this allocates it a third time so the caller can own a
+/// `String`. The `_into` variants exist so a guest that reuses one buffer per
+/// frame pays only the first two; see ABI.md, "The read direction".
+fn into_string(buf: &[u8]) -> Result<String> {
+    core::str::from_utf8(buf)
+        .map(str::to_owned)
+        .map_err(|_| Error(-4)) // ERR_BAD_UTF8, though the host only sends `str`.
 }
 
 /// An interned name. Copies nothing when passed to a host function.
@@ -151,6 +233,18 @@ impl Node {
         self.0
     }
 
+    /// A node from a raw handle.
+    ///
+    /// Not `unsafe`, and that is the ABI's claim rather than an oversight: a
+    /// handle is an index into a table the *host* owns, holding only the mount
+    /// point it seeded and nodes this guest created. A forged one is either out
+    /// of range, which is an error return, or it names a node this guest could
+    /// already reach. There is nothing here to reach that was not already
+    /// reachable, and nothing that can trap. See the host's ABI.md, "Handles".
+    pub const fn from_raw(handle: i32) -> Node {
+        Node(handle)
+    }
+
     /// Append `child`, detaching it from any current parent first.
     pub fn append(self, child: Node) -> Result<()> {
         check(unsafe { append_child(self.0, child.0) })?;
@@ -176,6 +270,31 @@ impl Node {
     /// The listener fires for events that reach this node by bubbling, not
     /// only for events targeted at it directly. Note the limitation the host's
     /// deferred dispatch imposes — see [`Listener`].
+    /// This node's `textContent`, concatenated over its whole subtree.
+    ///
+    /// **Costs three copies of the value**: the host builds it into a `String`,
+    /// copies that into a guest buffer, and this allocates a third time to hand
+    /// back an owned `String`. Use [`Node::text_content_into`] with a reused
+    /// buffer to pay only the first two. The concatenation is rebuilt from the
+    /// subtree on every call, so this is not a cheap poll on a large tree.
+    pub fn text_content(self) -> Result<String> {
+        let mut buf = Vec::new();
+        self.text_content_into(&mut buf)?;
+        into_string(&buf)
+    }
+
+    /// This node's `textContent`, into a buffer the caller owns.
+    ///
+    /// `buf` is left holding exactly the bytes; its length is the answer. This
+    /// is the read path that does not allocate per call once the buffer has
+    /// grown to fit.
+    pub fn text_content_into(self, buf: &mut Vec<u8>) -> Result<usize> {
+        // Always `Some`: every node has text content, and a node with none has
+        // content of length zero. There is no `ABSENT` case in this reader.
+        let len = read_into(buf, |ptr, cap| unsafe { text_content(self.0, ptr, cap) })?;
+        Ok(len.unwrap_or(0))
+    }
+
     pub fn on(self, event: &str, handler: impl FnMut() + 'static) -> Result<Listener> {
         let event = Atom::intern(event)?;
         let id = check(unsafe { add_listener(self.0, event.raw()) })? as u32;
@@ -287,6 +406,12 @@ impl Element {
         self.0
     }
 
+    /// An element from a raw handle. See [`Node::from_raw`] for why this is
+    /// safe.
+    pub const fn from_raw(handle: i32) -> Element {
+        Element(Node::from_raw(handle))
+    }
+
     /// Set an attribute. Both the name and the value are interned, so this
     /// copies nothing once each has been seen before.
     ///
@@ -305,6 +430,50 @@ impl Element {
     pub fn set_attribute_atoms(self, name: Atom, value: Atom) -> Result<()> {
         check(unsafe { set_attribute(self.0.0, name.raw(), value.raw()) })?;
         Ok(())
+    }
+
+    /// `element.getAttribute(name)`. `None` is the DOM's `null` — absent,
+    /// which is not the same as present and empty.
+    ///
+    /// The name is an atom, so asking costs nothing after the first time. The
+    /// *answer* is the payload and costs its length three times over; see
+    /// [`Element::get_attribute_into`] to drop that to two, and ABI.md, "The
+    /// read direction", for why it is not one.
+    pub fn get_attribute(self, name: &str) -> Result<Option<String>> {
+        let mut buf = Vec::new();
+        match self.get_attribute_into(name, &mut buf)? {
+            Some(_) => into_string(&buf).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// `element.getAttribute(name)`, into a buffer the caller owns.
+    ///
+    /// `Ok(None)` means absent and leaves `buf` untouched-but-resized;
+    /// `Ok(Some(len))` means `buf[..len]` is the value, and `len` may be zero
+    /// for an attribute that is present and empty. That distinction is the
+    /// whole reason the host spends a status code on `ABSENT`.
+    pub fn get_attribute_into(self, name: &str, buf: &mut Vec<u8>) -> Result<Option<usize>> {
+        let name = Atom::intern(name)?;
+        read_into(buf, |ptr, cap| unsafe {
+            get_attribute(self.0.0, name.raw(), ptr, cap)
+        })
+    }
+
+    /// `element.hasAttribute(name)`.
+    ///
+    /// The only read that moves no bytes: a handle and an atom in, a boolean
+    /// out. It is *not* the cheap way to avoid a read, though — the host still
+    /// clones the attribute's value internally and discards it. Asking this and
+    /// then reading is two clones, not one; read once and check for `None`.
+    pub fn has_attribute(self, name: &str) -> Result<bool> {
+        let name = Atom::intern(name)?;
+        Ok(check(unsafe { has_attribute(self.0.0, name.raw()) })? != 0)
+    }
+
+    /// This element's `textContent`. See [`Node::text_content`].
+    pub fn text_content(self) -> Result<String> {
+        self.0.text_content()
     }
 
     /// Append a child to this element.
@@ -326,12 +495,17 @@ pub fn text(text: &str) -> Result<Node> {
 
 /// Guest allocator exports.
 ///
-/// The host does not call either of these today: with the current five
-/// operations every string travels guest to host, so the guest allocates its
-/// own and the host only reads. They are exported now because the first
-/// operation that returns a string to the guest, or that asks the guest for a
-/// buffer to write into, needs them to already exist and to have a settled
-/// signature.
+/// **The host still does not call either of these, and now that is a decision
+/// rather than a gap.** The read direction exists, and the mechanism chosen for
+/// it is the guest-supplied buffer: the guest allocates, the host writes into
+/// what it was given. The alternative — the host calling `alloc` here to place
+/// the answer in guest memory itself — would mean a host function calling into
+/// the guest mid-call, which is the one thing this ABI is built not to do. See
+/// ABI.md, "The read direction", option (c).
+///
+/// They stay exported because they cost nothing and because an embedder driving
+/// this module from outside may want to place bytes in it. Nothing in the ABI
+/// depends on them.
 ///
 /// # Safety
 ///

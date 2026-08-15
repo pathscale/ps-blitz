@@ -3,10 +3,13 @@
 //! One convention for all of them, so a guest never has to remember which
 //! shape a particular import uses:
 //!
-//! - **Negative is an error.** The value is one of the constants below.
+//! - **Negative is an error.** The value is one of the constants below, with
+//!   exactly one exception, [`ABSENT`], which is called out below and in
+//!   ABI.md.
 //! - **Non-negative is success.** For an operation that creates something
 //!   (`intern`, `create_element`, `create_text`) the value *is* the handle or
-//!   atom. For everything else it is [`OK`], which is zero.
+//!   atom. For a reader it is the byte length of the value. For everything else
+//!   it is [`OK`], which is zero.
 //!
 //! Handles and atoms are therefore capped at `i32::MAX` rather than `u32::MAX`.
 //! That is 2.1 billion nodes, which is not the constraint anyone will hit
@@ -56,6 +59,32 @@ pub const ERR_BAD_LISTENER: i32 = -7;
 /// The listener table is full: more than `i32::MAX` listeners registered.
 pub const ERR_TOO_MANY_LISTENERS: i32 = -8;
 
+/// The attribute is not present. **The one negative value that is not a
+/// failure.**
+///
+/// `getAttribute` in the DOM returns `null` for an absent attribute, and `null`
+/// is distinct from present-and-empty: a guest that cannot tell the two apart
+/// cannot implement `hasAttribute` semantics on top of a read. So the reader
+/// needs three outcomes — a length, "not there", and a genuine failure — and
+/// the return value is a single `i32`.
+///
+/// The two alternatives were both worse:
+///
+/// - **Call [`has_attribute`] first.** Two crossings for every read, to
+///   describe a case the DOM calls `null`. This crate exists to measure what a
+///   crossing costs; doubling the count of the very operation being measured,
+///   for a reason unrelated to strings, would corrupt the measurement.
+/// - **Return `len + 1`, reserving `0` for absent.** Arithmetic on every read,
+///   in both the host and every guest binding, to avoid spending one code.
+///
+/// So the convention in this module gains exactly one exception, stated here
+/// and in ABI.md rather than left for a guest to discover. A guest binding maps
+/// this to `Ok(None)` and every other negative to an error; see
+/// `blitz_wasm_guest::Element::get_attribute`.
+///
+/// [`has_attribute`]: crate::add_to_linker
+pub const ABSENT: i32 = -9;
+
 /// A human-readable name for a status code, for test failure messages.
 pub fn name(status: i32) -> &'static str {
     match status {
@@ -68,6 +97,7 @@ pub fn name(status: i32) -> &'static str {
         ERR_TOO_MANY_HANDLES => "ERR_TOO_MANY_HANDLES",
         ERR_BAD_LISTENER => "ERR_BAD_LISTENER",
         ERR_TOO_MANY_LISTENERS => "ERR_TOO_MANY_LISTENERS",
+        ABSENT => "ABSENT (not an error)",
         n if n >= 0 => "OK (value)",
         _ => "unknown",
     }
