@@ -90,8 +90,43 @@ the same functions as `Node.nodeValue`.
 
 | Operation | Upstream | Facade | Semantics |
 | --- | --- | --- | --- |
-| `data` | `node.rs:270` | `character_data::data` | identical, including the bug: a comment reports `""` rather than its contents. `clone_node` does copy comment contents, so the two disagree upstream. Preserved so reparenting changes no behaviour; fixing it is a separate decision |
-| `data =` | `node.rs:281` | `character_data::set_data` | **different**: does not mark layout dirty |
+| `data` | `node.rs:270` | `character_data::data` | identical. Both were fixed in the same change, see below |
+| `data =` | `node.rs:281` | `character_data::set_data` | **different**: does not mark layout dirty. Otherwise identical, and both were fixed in the same change, see below |
+
+### The comment character-data bug, fixed across three sites
+
+Per the DOM specification `Comment` inherits `CharacterData`, so `comment.data`
+returns and sets the comment's text and `Node.nodeValue` does the same. The
+contents were already on the node, at `blitz-dom/src/node/node.rs:750`
+(`NodeData::Comment { contents: String }`), and nothing read them.
+
+The asymmetry was worse than a wrong getter. `clone_node` copied the contents
+from the start, so a script could clone a comment and read back text the
+original refused to report; and the setter was a silent no-op, so fixing only
+the getter would have traded one asymmetry for a worse one, with reads
+returning contents and writes vanishing.
+
+Three sites, fixed together in one change so that reparenting still changes no
+behaviour:
+
+1. `blitz-dom/src/mutator.rs:183`, `set_node_text` fell through to `_ =>
+   return` for anything that was not a text node. It now has a
+   `NodeData::Comment { ref mut contents }` arm. Deliberately **not** the text
+   arm's damage handling: a comment generates no layout box, so
+   `insert_damage(ALL_DAMAGE)` and `mark_ancestors_dirty()` would schedule a
+   relayout for a change that cannot affect a pixel, once per write. Asserted
+   by `mutator::test::setting_a_comments_data_does_not_dirty_layout`, which
+   carries a text-node write as a positive control so the assertion is capable
+   of failing.
+2. `blitz-script/src/dom/node.rs:276`, `node_value` returned `js_str("")` for a
+   comment and now returns the contents. `set_node_value` at `:281` needed no
+   change once site 1 landed, since it already routes through `set_node_text`.
+3. `blitz-dom-api/src/character_data.rs`, `data` returned `Some(String::new())`
+   for a comment and now returns the contents.
+
+`character_data::tests::a_comments_data_round_trips_through_a_write_and_a_clone`
+covers the whole path: read, write, read back, clone, read the clone. The clone
+leg is the one that would have caught the original disagreement.
 
 ## CSSStyleDeclaration — `style.rs`
 

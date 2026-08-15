@@ -273,7 +273,11 @@ fn node_value(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<
     let doc = ctx.doc.borrow();
     match doc.get_node(node_id).map(|node| &node.data) {
         Some(NodeData::Text(data)) => Ok(js_str(&data.content)),
-        Some(NodeData::Comment { .. }) => Ok(js_str("")),
+        // A comment is CharacterData, so `comment.data` and `comment.nodeValue`
+        // are its contents. This returned "" until the contents were reachable:
+        // `cloneNode` copied them, so a script could clone a comment and read
+        // back text that the original refused to report.
+        Some(NodeData::Comment { contents }) => Ok(js_str(contents)),
         _ => Ok(JsValue::null()),
     }
 }

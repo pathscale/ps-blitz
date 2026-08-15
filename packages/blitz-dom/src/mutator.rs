@@ -180,6 +180,24 @@ impl DocumentMutator<'_> {
         let node_is_in_document = self.doc.nodes[node_id].flags.is_in_document();
         let node = &mut self.doc.nodes[node_id];
 
+        // A comment is CharacterData too: `comment.data = "x"` and
+        // `comment.nodeValue = "x"` both land here, and until this arm existed
+        // they fell through to the `_ => return` below and vanished. The
+        // contents were already on the node and simply never written.
+        //
+        // Deliberately not the Text arm's damage handling. A comment generates
+        // no layout box, so `insert_damage(ALL_DAMAGE)` and
+        // `mark_ancestors_dirty` would schedule a relayout for a change that
+        // cannot affect a pixel, once per write. Nothing rendered depends on
+        // this string, so setting it is the whole operation.
+        if let NodeData::Comment { ref mut contents } = node.data {
+            if contents != value {
+                contents.clear();
+                contents.push_str(value);
+            }
+            return;
+        }
+
         let text = match node.data {
             NodeData::Text(ref mut text) => text,
             // TODO: otherwise this is basically element.textContent which is a bit different - need to parse as html
@@ -1581,7 +1599,9 @@ mod test {
 
     use blitz_traits::shell::{ColorScheme, ShellProvider, Viewport};
 
-    use crate::{Attribute, BaseDocument, DocumentConfig, ElementData, NodeData, qual_name};
+    use crate::{
+        Attribute, BaseDocument, DocumentConfig, ElementData, NodeData, NodeId, qual_name,
+    };
 
     #[test]
     fn media_type_defaults_to_screen() {
@@ -2053,6 +2073,100 @@ mod test {
                 .location
                 .x,
             120.0
+        );
+    }
+
+    /// `<html><body><div>text<!--comment--></div></body></html>`, laid out
+    /// once, returning the text and comment ids.
+    fn doc_with_a_comment() -> (BaseDocument, NodeId, NodeId, NodeId) {
+        let mut doc = BaseDocument::new(DocumentConfig {
+            viewport: Some(Viewport::new(400, 300, 1.0, ColorScheme::Light)),
+            ..Default::default()
+        });
+        let root_id = doc.root_node().id;
+
+        let mut mutr = doc.mutate();
+        let html = mutr.create_element(qual_name!("html"), vec![]);
+        let body = mutr.create_element(qual_name!("body"), vec![]);
+        let container = mutr.create_element(qual_name!("div"), vec![]);
+        let text = mutr.create_text_node("text");
+        let comment = mutr.create_comment_node("comment");
+        mutr.append_children(container, &[text, comment]);
+        mutr.append_children(body, &[container]);
+        mutr.append_children(html, &[body]);
+        mutr.append_children(root_id, &[html]);
+        drop(mutr);
+
+        doc.resolve(0.0);
+        (doc, container, text, comment)
+    }
+
+    /// A comment is CharacterData: `comment.data = "x"` has to land somewhere.
+    /// Before this arm existed it fell through and vanished, so a getter that
+    /// returned the contents would have disagreed with every write.
+    #[test]
+    fn setting_a_comments_data_writes_the_contents() {
+        let (mut doc, _container, _text, comment) = doc_with_a_comment();
+
+        doc.mutate().set_node_text(comment, "rewritten");
+
+        let NodeData::Comment { contents } = &doc.get_node(comment).unwrap().data else {
+            panic!("expected a comment node");
+        };
+        assert_eq!(contents, "rewritten");
+    }
+
+    /// A comment generates no box, so writing its data must not schedule a
+    /// relayout. Without this the obvious implementation (copy the Text arm)
+    /// costs a full resolve per write, and nothing observable would say so.
+    ///
+    /// The text-node write at the end is the control: it proves the assertion
+    /// above is capable of failing.
+    #[test]
+    fn setting_a_comments_data_does_not_dirty_layout() {
+        let (mut doc, container, text, comment) = doc_with_a_comment();
+
+        let container_damage_before = doc.get_node(container).unwrap().damage();
+        let comment_damage_before = doc.get_node(comment).unwrap().damage();
+
+        doc.mutate().set_node_text(comment, "rewritten");
+
+        assert_eq!(
+            doc.get_node(comment).unwrap().damage(),
+            comment_damage_before,
+            "writing a comment's data damaged the comment"
+        );
+        assert_eq!(
+            doc.get_node(container).unwrap().damage(),
+            container_damage_before,
+            "writing a comment's data damaged its parent, scheduling a relayout \
+             for a change that cannot affect a pixel"
+        );
+
+        doc.mutate().set_node_text(text, "rewritten");
+        assert_ne!(
+            doc.get_node(container).unwrap().damage(),
+            container_damage_before,
+            "a text write should damage the parent, so the assertions above can fail"
+        );
+    }
+
+    /// Writing the same contents back is not a change, and must stay as inert
+    /// as a write of different contents.
+    #[test]
+    fn rewriting_a_comment_with_its_own_contents_is_inert() {
+        let (mut doc, container, _text, comment) = doc_with_a_comment();
+        let container_damage_before = doc.get_node(container).unwrap().damage();
+
+        doc.mutate().set_node_text(comment, "comment");
+
+        let NodeData::Comment { contents } = &doc.get_node(comment).unwrap().data else {
+            panic!("expected a comment node");
+        };
+        assert_eq!(contents, "comment");
+        assert_eq!(
+            doc.get_node(container).unwrap().damage(),
+            container_damage_before
         );
     }
 }
