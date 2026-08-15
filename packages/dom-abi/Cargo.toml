@@ -1,18 +1,11 @@
 [package]
 name = "dom-abi"
 description = "The contracts between a WebAssembly guest and a DOM host: types, enums and constants only"
-# Not published, and that is the point rather than an oversight. The name is not
-# settled, the format will churn, and publishing is the moment "Additive
-# evolution only" (rule 3, README.md) starts applying to strangers rather than
-# to this repository. Every published package in this fork also carries the
-# `ps-` prefix, which this name does not; that is a second reason and it stays
-# unreconciled until the first is.
-publish = false
-version.workspace = true
+version = "0.1.0"
 license.workspace = true
-homepage.workspace = true
-repository.workspace = true
-categories.workspace = true
+homepage = "https://github.com/pathscale/ps-blitz"
+repository = "https://github.com/pathscale/ps-blitz"
+categories = ["wasm", "web-programming", "api-bindings"]
 edition.workspace = true
 rust-version.workspace = true
 
