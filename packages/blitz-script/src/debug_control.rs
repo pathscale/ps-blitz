@@ -794,10 +794,29 @@ impl DebugController {
             return Ok(());
         };
         let mut inner = document.inner_mut();
+        // The document's own scale, not a hardcoded 1.0.
+        //
+        // A HiDPI window is laid out at 2.0 and painted by the renderer at 2.0;
+        // a screenshot taken at 1.0 was a CSS-pixel image of it, at half the
+        // resolution the window actually shows. Legible, and not the picture
+        // anyone means when they ask for a screenshot of that window.
+        //
+        // The buffer is sized to match, so the result is a device-pixel image
+        // of the requested CSS viewport, the way a browser screenshot is.
+        //
+        // What this does *not* fix is text overflowing its boxes in a
+        // screenshot, which looks like exactly this bug and is not: glyph size
+        // does not follow the paint scale. `tests/screenshot_scale.rs` pins
+        // that down so the next person starts somewhere else.
+        let scale = inner.viewport().scale_f64();
+        let (device_width, device_height) = (
+            ((f64::from(width) * scale).round() as u32).max(1),
+            ((f64::from(height) * scale).round() as u32).max(1),
+        );
         let buffer = render_to_buffer::<VelloCpuImageRenderer, _>(
-            |scene| paint_scene(scene, &mut inner, 1.0, width, height, 0, 0),
-            width,
-            height,
+            |scene| paint_scene(scene, &mut inner, scale, device_width, device_height, 0, 0),
+            device_width,
+            device_height,
         );
         drop(inner);
 
@@ -806,8 +825,8 @@ impl DebugController {
         image::ImageEncoder::write_image(
             encoder,
             &buffer,
-            width,
-            height,
+            device_width,
+            device_height,
             image::ExtendedColorType::Rgba8,
         )
         .map_err(|encode_error| {
