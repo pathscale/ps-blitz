@@ -905,6 +905,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "blitz-platform-api"
+version = "0.3.0-beta.3"
+dependencies = [
+ "ps-blitz-traits",
+]
+
+[[package]]
 name = "blitz-test-harness"
 version = "0.3.0-beta.3"
 dependencies = [
