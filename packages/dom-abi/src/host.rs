@@ -242,7 +242,12 @@ impl Status {
     pub const ABSENT: Status = Status(-9);
 
     /// The raw `i32` that crossed.
-    pub fn raw(self) -> i32 {
+    ///
+    /// `const` because a guest wants these in const context: a guest binding
+    /// naming `Status::ABSENT` in a `const` is the whole reason this crate is
+    /// on crates.io, and without this it would have to reach for the tuple
+    /// field and lose the name.
+    pub const fn raw(self) -> i32 {
         self.0
     }
 
