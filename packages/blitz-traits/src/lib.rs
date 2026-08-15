@@ -6,6 +6,7 @@ pub mod events;
 pub mod navigation;
 pub mod net;
 pub mod node_id;
+pub mod platform;
 pub mod profiling;
 pub mod shell;
 
