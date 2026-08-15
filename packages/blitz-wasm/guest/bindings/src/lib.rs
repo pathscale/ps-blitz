@@ -118,7 +118,13 @@ fn check(status: i32) -> Result<i32> {
 /// The one negative status that is not a failure — the DOM's `null`. It is
 /// mapped to `Ok(None)` here so that no guest above these bindings ever sees it
 /// as an error. See the host's `blitz_wasm::status::ABSENT`.
-const ABSENT: i32 = -9;
+use dom_abi::host::Status;
+
+/// Kept as a local name for readability; the value is the host's.
+///
+/// `.0` rather than `.raw()` because `raw` is not `const` in the published
+/// 0.1.0. dom-abi 0.1.1 makes it `const` and this becomes `Status::ABSENT.raw()`.
+const ABSENT: i32 = Status::ABSENT.0;
 
 /// How big a buffer a read tries first.
 ///
@@ -174,7 +180,7 @@ fn read_into(buf: &mut Vec<u8>, mut call: impl FnMut(u32, u32) -> i32) -> Result
 fn into_string(buf: &[u8]) -> Result<String> {
     core::str::from_utf8(buf)
         .map(str::to_owned)
-        .map_err(|_| Error(-4)) // ERR_BAD_UTF8, though the host only sends `str`.
+        .map_err(|_| Error(Status::ERR_BAD_UTF8.raw())) // the host only sends `str`
 }
 
 /// An interned name. Copies nothing when passed to a host function.
@@ -382,7 +388,7 @@ pub fn run_listener(listener_id: u32) -> i32 {
     // handler" a panic instead of a feature.
     let handler = HANDLERS.with(|handlers| handlers.borrow().get(&listener_id).cloned());
     let Some(handler) = handler else {
-        return -7; // ERR_BAD_LISTENER: the host knows an id this guest does not.
+        return Status::ERR_BAD_LISTENER.raw(); // the host knows an id this guest does not
     };
     // The `Rc` keeps the closure alive even if the handler removes itself.
     (handler.borrow_mut())();

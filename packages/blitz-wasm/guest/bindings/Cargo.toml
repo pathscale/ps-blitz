@@ -11,3 +11,8 @@ rust-version = "1.89.0"
 name = "blitz_wasm_guest"
 
 [dependencies]
+# From crates.io, not by path, and that is the point rather than a detail.
+# A guest is written outside this repository, so the vocabulary it compiles
+# against has to be resolvable without cloning the engine. This crate is the
+# reference guest and it consumes `dom-abi` exactly as any other guest does.
+dom-abi = "0.1"

@@ -21,9 +21,21 @@ is a dependency anybody would defend; both are what you get by default if the
 shared vocabulary lives in either place. So it lives in neither. Same shape as
 `blitz-dom-api`, third time.
 
-It is `publish = false`. The name is not settled and the format will churn, and
-publishing is the moment additive-evolution discipline starts applying to
-strangers rather than to this repository.
+## It is published, and that is the point
+
+`dom-abi` is on crates.io, under the bare name, unlike every other package in
+this fork. **A guest is written outside this repository.** Somebody building a
+site against this engine needs the status codes, the id caps and the read
+protocol, and needs them without cloning an engine, a layout crate and a
+renderer to get at one file of constants. A path dependency cannot be resolved
+by anyone who is not already inside the tree, so the vocabulary is the one
+thing here that has to be fetchable on its own.
+
+That is also why rule 3 is not decoration. Additive evolution now applies to
+strangers, so a code's meaning may not change and a value may not be reused;
+new ones go on the end. `packages/blitz-wasm/guest/bindings` is the reference
+guest and it depends on the *published* crate rather than on `../../../`, so
+the arrangement an outside author gets is the one that is actually tested here.
 
 ## Three modules, three independent versions
 
