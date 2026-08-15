@@ -2670,7 +2670,7 @@ dependencies = [
 
 [[package]]
 name = "dom-abi"
-version = "0.3.0-beta.3"
+version = "0.1.1"
 dependencies = [
  "ron",
  "serde",
@@ -5823,7 +5823,7 @@ dependencies = [
 [[package]]
 name = "pixels_window_renderer"
 version = "0.7.0"
-source = "git+https://github.com/pathscale/ps-anyrender.git?rev=076f8a03318f4436bf9961e1a26a6e33356750db#076f8a03318f4436bf9961e1a26a6e33356750db"
+source = "git+https://github.com/pathscale/ps-anyrender.git?rev=cd8b39c6fb10eec914334b526721cc7e7387a793#cd8b39c6fb10eec914334b526721cc7e7387a793"
 dependencies = [
  "debug_timer 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "pixels",
@@ -6024,7 +6024,7 @@ dependencies = [
 [[package]]
 name = "ps-anyrender"
 version = "0.12.0"
-source = "git+https://github.com/pathscale/ps-anyrender.git?rev=076f8a03318f4436bf9961e1a26a6e33356750db#076f8a03318f4436bf9961e1a26a6e33356750db"
+source = "git+https://github.com/pathscale/ps-anyrender.git?rev=cd8b39c6fb10eec914334b526721cc7e7387a793#cd8b39c6fb10eec914334b526721cc7e7387a793"
 dependencies = [
  "kurbo",
  "peniko",
@@ -6035,7 +6035,7 @@ dependencies = [
 [[package]]
 name = "ps-anyrender-svg"
 version = "0.14.0"
-source = "git+https://github.com/pathscale/ps-anyrender.git?rev=076f8a03318f4436bf9961e1a26a6e33356750db#076f8a03318f4436bf9961e1a26a6e33356750db"
+source = "git+https://github.com/pathscale/ps-anyrender.git?rev=cd8b39c6fb10eec914334b526721cc7e7387a793#cd8b39c6fb10eec914334b526721cc7e7387a793"
 dependencies = [
  "image",
  "kurbo",
@@ -6047,7 +6047,7 @@ dependencies = [
 [[package]]
 name = "ps-anyrender-vello"
 version = "0.13.0"
-source = "git+https://github.com/pathscale/ps-anyrender.git?rev=076f8a03318f4436bf9961e1a26a6e33356750db#076f8a03318f4436bf9961e1a26a6e33356750db"
+source = "git+https://github.com/pathscale/ps-anyrender.git?rev=cd8b39c6fb10eec914334b526721cc7e7387a793#cd8b39c6fb10eec914334b526721cc7e7387a793"
 dependencies = [
  "debug_timer 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "futures-channel",
@@ -6065,15 +6065,15 @@ dependencies = [
 [[package]]
 name = "ps-anyrender-vello-cpu"
 version = "0.15.0"
-source = "git+https://github.com/pathscale/ps-anyrender.git?rev=076f8a03318f4436bf9961e1a26a6e33356750db#076f8a03318f4436bf9961e1a26a6e33356750db"
+source = "git+https://github.com/pathscale/ps-anyrender.git?rev=cd8b39c6fb10eec914334b526721cc7e7387a793#cd8b39c6fb10eec914334b526721cc7e7387a793"
 dependencies = [
  "debug_timer 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "glifo",
  "kurbo",
  "peniko",
- "pixels_window_renderer 0.7.0 (git+https://github.com/pathscale/ps-anyrender.git?rev=076f8a03318f4436bf9961e1a26a6e33356750db)",
+ "pixels_window_renderer 0.7.0 (git+https://github.com/pathscale/ps-anyrender.git?rev=cd8b39c6fb10eec914334b526721cc7e7387a793)",
  "ps-anyrender",
- "softbuffer_window_renderer 0.7.0 (git+https://github.com/pathscale/ps-anyrender.git?rev=076f8a03318f4436bf9961e1a26a6e33356750db)",
+ "softbuffer_window_renderer 0.7.0 (git+https://github.com/pathscale/ps-anyrender.git?rev=cd8b39c6fb10eec914334b526721cc7e7387a793)",
  "vello_common",
  "vello_cpu",
 ]
@@ -6081,7 +6081,7 @@ dependencies = [
 [[package]]
 name = "ps-anyrender-vello-hybrid"
 version = "0.9.0"
-source = "git+https://github.com/pathscale/ps-anyrender.git?rev=076f8a03318f4436bf9961e1a26a6e33356750db#076f8a03318f4436bf9961e1a26a6e33356750db"
+source = "git+https://github.com/pathscale/ps-anyrender.git?rev=cd8b39c6fb10eec914334b526721cc7e7387a793#cd8b39c6fb10eec914334b526721cc7e7387a793"
 dependencies = [
  "debug_timer 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "futures-channel",
@@ -6233,7 +6233,7 @@ dependencies = [
 [[package]]
 name = "ps-wgpu-context"
 version = "0.8.0"
-source = "git+https://github.com/pathscale/ps-anyrender.git?rev=076f8a03318f4436bf9961e1a26a6e33356750db#076f8a03318f4436bf9961e1a26a6e33356750db"
+source = "git+https://github.com/pathscale/ps-anyrender.git?rev=cd8b39c6fb10eec914334b526721cc7e7387a793#cd8b39c6fb10eec914334b526721cc7e7387a793"
 dependencies = [
  "futures-intrusive",
  "wgpu",
@@ -7450,7 +7450,7 @@ dependencies = [
 [[package]]
 name = "softbuffer_window_renderer"
 version = "0.7.0"
-source = "git+https://github.com/pathscale/ps-anyrender.git?rev=076f8a03318f4436bf9961e1a26a6e33356750db#076f8a03318f4436bf9961e1a26a6e33356750db"
+source = "git+https://github.com/pathscale/ps-anyrender.git?rev=cd8b39c6fb10eec914334b526721cc7e7387a793#cd8b39c6fb10eec914334b526721cc7e7387a793"
 dependencies = [
  "debug_timer 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "kurbo",
