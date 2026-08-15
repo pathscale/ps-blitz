@@ -278,9 +278,7 @@ fn server_loop(
                 let _ = stream.set_read_timeout(Some(COMMAND_TIMEOUT));
                 let _ = stream.set_write_timeout(Some(COMMAND_TIMEOUT));
                 let response = match read_request(&mut stream) {
-                    Ok(request) => {
-                        route(request, token, &mut active_session, &command_tx, waker)
-                    }
+                    Ok(request) => route(request, token, &mut active_session, &command_tx, waker),
                     Err(error) => webdriver_error("invalid argument", error.to_string()),
                 };
                 let _ = write_response(&mut stream, response);

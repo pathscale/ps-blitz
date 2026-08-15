@@ -58,7 +58,11 @@ fn a_length_translate_moves_the_hit_area() {
     let doc = document("translateX(-50px)");
 
     // The box paints across x 50..150 now, so 60 is inside it and 190 is not.
-    assert_eq!(hit_id(&doc, 60.0, 100.0), "box", "left of its layout position");
+    assert_eq!(
+        hit_id(&doc, 60.0, 100.0),
+        "box",
+        "left of its layout position"
+    );
     assert_eq!(
         hit_id(&doc, 190.0, 100.0),
         "backdrop",

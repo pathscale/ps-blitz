@@ -12,7 +12,11 @@ fn pixel(doc: &mut HtmlDocument) -> [u8; 3] {
         200,
         100,
     );
-    [buffer[40 * 200 * 4 + 40 * 4], buffer[40 * 200 * 4 + 40 * 4 + 1], buffer[40 * 200 * 4 + 40 * 4 + 2]]
+    [
+        buffer[40 * 200 * 4 + 40 * 4],
+        buffer[40 * 200 * 4 + 40 * 4 + 1],
+        buffer[40 * 200 * 4 + 40 * 4 + 2],
+    ]
 }
 
 #[test]
@@ -22,11 +26,14 @@ fn desktop_hover_media_rule_repaints_a_nested_button() {
       button { width: 80px; height: 80px; background: #0000ff }
       @media (hover: hover) { button:hover { background: #ff0000 } }
     </style></head><body><button><span>close</span></button></body></html>"#;
-    let mut doc = HtmlDocument::from_html(html, DocumentConfig {
-        viewport: Some(Viewport::new(200, 100, 1.0, ColorScheme::Light)),
-        html_parser_provider: Some(Arc::new(HtmlProvider) as _),
-        ..Default::default()
-    });
+    let mut doc = HtmlDocument::from_html(
+        html,
+        DocumentConfig {
+            viewport: Some(Viewport::new(200, 100, 1.0, ColorScheme::Light)),
+            html_parser_provider: Some(Arc::new(HtmlProvider) as _),
+            ..Default::default()
+        },
+    );
     doc.resolve(0.0);
     assert_eq!(pixel(&mut doc), [0, 0, 255]);
     doc.set_hover_to(40.0, 40.0);

@@ -58,7 +58,11 @@ fn appearance_none_suppresses_the_native_checkbox() {
         </body></html>"#,
     );
 
-    assert_eq!(pixel_at(&mut doc, 5, 5), [255, 255, 255], "fixture background");
+    assert_eq!(
+        pixel_at(&mut doc, 5, 5),
+        [255, 255, 255],
+        "fixture background"
+    );
     assert_eq!(
         pixel_at(&mut doc, 30, 30),
         [255, 255, 255],

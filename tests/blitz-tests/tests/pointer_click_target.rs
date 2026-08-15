@@ -72,11 +72,7 @@ fn releasing_over_a_newly_exposed_control_does_not_click_it() {
     let recorder = ClickRecorder::default();
 
     EventDriver::new(&mut doc, recorder.clone()).handle_ui_event(UiEvent::PointerDown(
-        pointer_event(
-            20.0,
-            20.0,
-            MouseEventButtons::from(MouseEventButton::Main),
-        ),
+        pointer_event(20.0, 20.0, MouseEventButtons::from(MouseEventButton::Main)),
     ));
     assert_eq!(doc.get_mousedown_node_id(), Some(warning));
 

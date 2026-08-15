@@ -871,9 +871,9 @@ impl BaseDocument {
                     if let Some(&origin) = self.hoisted_fixed_parents.get(&child_id) {
                         deferred_fixed.push((child_id, z_index, origin));
                     } else {
-                        stacking_context.children.push(HoistedPaintChild::new(
-                            child_id, z_index, position,
-                        ))
+                        stacking_context
+                            .children
+                            .push(HoistedPaintChild::new(child_id, z_index, position))
                     }
                 } else {
                     paint_children.push(child_id);
@@ -989,9 +989,11 @@ impl BaseDocument {
         let host = self.nearest_stacking_context_ancestor(origin);
 
         if host == Some(current) || host.is_none() {
-            current_context
-                .children
-                .push(HoistedPaintChild::new(child_id, z_index, Position::Fixed));
+            current_context.children.push(HoistedPaintChild::new(
+                child_id,
+                z_index,
+                Position::Fixed,
+            ));
             return;
         }
         let host = host.unwrap();
@@ -1004,9 +1006,11 @@ impl BaseDocument {
         let Some(context) = self.nodes[host].stacking_context.as_mut() else {
             // No context to join. Falling back to the caller's keeps the node
             // painted rather than dropping it.
-            current_context
-                .children
-                .push(HoistedPaintChild::new(child_id, z_index, Position::Fixed));
+            current_context.children.push(HoistedPaintChild::new(
+                child_id,
+                z_index,
+                Position::Fixed,
+            ));
             return;
         };
         let mut hoisted = HoistedPaintChild::new(child_id, z_index, Position::Fixed);
