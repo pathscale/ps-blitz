@@ -645,6 +645,15 @@ fn add_event_listener(
     context: &mut Context,
 ) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
+    // Registration is a DOM operation like any other, and a mount attaching a
+    // thousand listeners spent all of it outside the breakdown, so the profile
+    // read as though it had touched fewer bindings than it had.
+    //
+    // Its counterparts are still uncounted: `removeEventListener`,
+    // `dispatchEvent`, `removeChild`, `replaceChild`, `remove` and
+    // `nodeValue=`. Worth knowing before reading a total here as the cost of
+    // every DOM call this file serves.
+    let _t = crate::script_stats::Timed::new(&ctx, "dom:addEventListener");
     let node_id = this_node_id(this)?;
     let event_type = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
     let Some(callback) = args.get(1).and_then(|value| value.as_object()) else {
