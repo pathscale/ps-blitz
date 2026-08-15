@@ -165,7 +165,12 @@ pub struct RowId(pub u32);
 /// something the return value *is* the id. So ids are capped at `i32::MAX`
 /// rather than `u32::MAX`. That buys a single return value instead of an
 /// out-pointer plus the bounds check the out-pointer would need, and 2.1 billion
-/// live nodes is not the constraint anything hits first.
+/// ids is not the constraint anything hits first.
+///
+/// The cap counts ids *issued*, not ids in use: none of these are reused, so
+/// nothing gives one back. 2.1 billion is still not a number a document
+/// reaches, but it is a number a guest churning nodes in a loop could, which is
+/// the case the generational handle noted on [`Handle`] would answer.
 pub const MAX_ID: u32 = i32::MAX as u32;
 
 /// What a host function returned.
@@ -210,7 +215,11 @@ impl Status {
     /// test can read it — it just is not in the return value.
     pub const ERR_DOM: Status = Status(-5);
 
-    /// The handle table is full: more than [`MAX_ID`] live handles.
+    /// The handle table is full: more than [`MAX_ID`] handles have been issued.
+    ///
+    /// Issued, not live. [`Handle`]s are never reused and never freed, as its
+    /// own documentation says, so removing a node does not give its handle
+    /// back and this counts every node the guest has ever created.
     pub const ERR_TOO_MANY_HANDLES: Status = Status(-6);
 
     /// The listener id was never issued by this instance, or has been removed.
