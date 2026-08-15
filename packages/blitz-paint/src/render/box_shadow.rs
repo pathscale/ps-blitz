@@ -5,6 +5,21 @@ use anyrender::PaintScene;
 use kurbo::Vec2;
 use peniko::{Compose, Fill, Mix};
 
+/// Whether an alpha can change an 8-bit pixel.
+///
+/// Not `alpha != 0.0`. That is an exact comparison against a float that has
+/// been through colour parsing, a custom property and an sRGB conversion, and
+/// whether it lands on exactly zero depends on arithmetic the target chooses.
+/// It held on aarch64 and did not on x86_64, so the same document pushed six
+/// compositing layers on one machine and none on the other. That is a CI
+/// failure which reproduces nowhere locally, and it cost most of an afternoon.
+///
+/// Half a unit in 8-bit is the honest threshold: below it the shadow cannot
+/// move the output by one level, whatever the arithmetic did on the way.
+fn is_visible_alpha(alpha: f32) -> bool {
+    alpha * 255.0 >= 0.5
+}
+
 impl ElementCx<'_, '_> {
     pub(super) fn draw_outset_box_shadow(&self, scene: &mut impl PaintScene) {
         let box_shadow = &self.style.get_effects().box_shadow.0;
@@ -24,13 +39,14 @@ impl ElementCx<'_, '_> {
          */
         let has_outset_shadow = box_shadow.iter().any(|shadow| {
             !shadow.inset
-                && shadow
-                    .base
-                    .color
-                    .resolve_to_absolute(&current_color)
-                    .as_srgb_color()
-                    .components[3]
-                    != 0.0
+                && is_visible_alpha(
+                    shadow
+                        .base
+                        .color
+                        .resolve_to_absolute(&current_color)
+                        .as_srgb_color()
+                        .components[3],
+                )
         });
         if !has_outset_shadow {
             return;
@@ -84,7 +100,7 @@ impl ElementCx<'_, '_> {
                         .as_srgb_color();
 
                     let alpha = shadow_color.components[3];
-                    if alpha != 0.0 {
+                    if is_visible_alpha(alpha) {
                         let transform = self.transform.then_translate(Vec2 {
                             x: shadow.base.horizontal.px() as f64 * self.scale,
                             y: shadow.base.vertical.px() as f64 * self.scale,
