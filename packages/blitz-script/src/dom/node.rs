@@ -645,6 +645,11 @@ fn add_event_listener(
     context: &mut Context,
 ) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
+    // Registration is a DOM operation like any other, and was the only one in
+    // this file left uncounted. A mount that attaches a thousand listeners
+    // showed a thousand uncounted calls, so the breakdown read as though it had
+    // touched fewer bindings than it had.
+    let _t = crate::script_stats::Timed::new(&ctx, "dom:addEventListener");
     let node_id = this_node_id(this)?;
     let event_type = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
     let Some(callback) = args.get(1).and_then(|value| value.as_object()) else {
