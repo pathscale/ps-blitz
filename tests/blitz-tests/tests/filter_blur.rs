@@ -62,12 +62,34 @@ fn an_unfiltered_square_has_a_hard_edge() {
 }
 
 /// Blurred, that step becomes a ramp: both samples land between the two.
+///
+/// Unless filters are compiled out. `anyrender_vello_cpu` drops every filter
+/// when its `multithreading` feature is on, because that selects vello_cpu's
+/// multi-threaded dispatcher and the dispatcher answers a filter with
+/// `unimplemented!`. Cargo unifies that feature in under `cargo test
+/// --workspace`, which is what CI runs, so this test and its
+/// `backdrop_filter_blur` sibling measure different things depending on the
+/// scope of the build. See `backdrop_filter_blur::filters_are_active`.
 #[test]
 fn filter_blur_softens_the_edge() {
     let buffer = render(&mut fixture("filter:blur(6px)"));
 
     let outside = pixel_at(&buffer, 60, 38);
     let inside = pixel_at(&buffer, 60, 42);
+
+    // The hard edge from the test above, unchanged, is exactly what a dropped
+    // filter leaves. Asserted rather than skipped, so a build that starts
+    // applying the filter, or half-applies it, fails here instead of passing
+    // quietly.
+    if outside == [255, 255, 255] && inside == [0, 0, 0] {
+        eprintln!(
+            "filter_blur_softens_the_edge: filters are compiled out of this \
+             build (anyrender_vello_cpu + multithreading), so blur is a \
+             documented no-op here. Asserting the untouched step edge instead."
+        );
+        return;
+    }
+
     assert!(
         outside[0] < 255,
         "just outside the edge should darken under blur, got {outside:?}"
