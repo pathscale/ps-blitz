@@ -7,11 +7,35 @@ name = "blitz-wasm-demo"
 version = "0.1.0"
 dependencies = [
  "blitz-wasm-guest",
+ "solid_rs",
 ]
 
 [[package]]
 name = "blitz-wasm-guest"
 version = "0.1.0"
+
+[[package]]
+name = "slotmap"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bdd58c3c93c3d278ca835519292445cb4b0d4dc59ccfdf7ceadaab3f8aeb4038"
+dependencies = [
+ "version_check",
+]
+
+[[package]]
+name = "solid_rs"
+version = "0.1.0"
+source = "git+https://github.com/pathscale/SolidRS?rev=7c208b06e5f8c80e8626f0958569ede7cd642166#7c208b06e5f8c80e8626f0958569ede7cd642166"
+dependencies = [
+ "slotmap",
+]
+
+[[package]]
+name = "version_check"
+version = "0.9.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[patch.unused]]
 name = "ps-anyrender"

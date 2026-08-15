@@ -46,6 +46,16 @@ pub const ERR_DOM: i32 = -5;
 /// The handle table is full: more than `i32::MAX` live handles.
 pub const ERR_TOO_MANY_HANDLES: i32 = -6;
 
+/// The listener id was never issued by this instance, or has been removed.
+///
+/// Separate from [`ERR_BAD_HANDLE`] because it is a different namespace: a
+/// listener id indexes the listener table, a handle indexes the node table,
+/// and a guest that confuses the two should be told which one it got wrong.
+pub const ERR_BAD_LISTENER: i32 = -7;
+
+/// The listener table is full: more than `i32::MAX` listeners registered.
+pub const ERR_TOO_MANY_LISTENERS: i32 = -8;
+
 /// A human-readable name for a status code, for test failure messages.
 pub fn name(status: i32) -> &'static str {
     match status {
@@ -56,6 +66,8 @@ pub fn name(status: i32) -> &'static str {
         ERR_BAD_UTF8 => "ERR_BAD_UTF8",
         ERR_DOM => "ERR_DOM",
         ERR_TOO_MANY_HANDLES => "ERR_TOO_MANY_HANDLES",
+        ERR_BAD_LISTENER => "ERR_BAD_LISTENER",
+        ERR_TOO_MANY_LISTENERS => "ERR_TOO_MANY_LISTENERS",
         n if n >= 0 => "OK (value)",
         _ => "unknown",
     }

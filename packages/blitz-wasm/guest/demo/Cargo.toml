@@ -16,3 +16,16 @@ crate-type = ["cdylib"]
 
 [dependencies]
 blitz-wasm-guest = { path = "../bindings" }
+
+# The reactive core, from its own repository rather than a path.
+#
+# A git dependency, not a relative path: `solid_rs` is a sibling checkout on
+# one machine and nowhere at all on another, and a `../../../../../SolidRS`
+# that resolves only on the machine it was written on is not a dependency, it
+# is a local convention. Pinned to a `rev` and with `Cargo.lock` committed, so
+# the measurement in ABI.md can be reproduced rather than merely repeated.
+#
+# `default-features = false` turns off the port's `dev` diagnostics, which is
+# the shipping configuration and the one `SolidRS/crates/solidrs-wasm-smoke`
+# proves instantiates under wasmi.
+solid_rs = { git = "https://github.com/pathscale/SolidRS", rev = "7c208b06e5f8c80e8626f0958569ede7cd642166", default-features = false }

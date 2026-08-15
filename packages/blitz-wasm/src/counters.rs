@@ -30,6 +30,20 @@
 //! `String` by design (see its MAPPING.md, "Readers allocate a `String`").
 //! ABI.md says so next to the table, so a reader of these counters does not
 //! mistake "one host alloc" for "one allocation happened".
+//!
+//! `add_listener` is a third case: it grows two collections in
+//! [`ListenerTable`](crate::ListenerTable) by an amortised entry, which is not
+//! a per-call allocation and is not counted. Its `host_allocs` therefore reads
+//! zero, and that zero means "no string was built", not "no memory moved".
+//!
+//! # `dispatch` is an export, not an import
+//!
+//! Every other counter here is a call the guest made into the host.
+//! [`Op::Dispatch`] is the one call the *host* makes into the guest, counted
+//! here anyway because it is the number that answers the question this crate
+//! exists to answer: what does a click cost at the boundary. Its
+//! `bytes_copied` is structurally zero — the argument is a listener id, and
+//! there is no pointer in the signature to copy anything through.
 
 /// Counters for a single host function.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -58,8 +72,21 @@ pub struct Counters {
     pub append_child: OpCounters,
     pub set_attribute: OpCounters,
     pub set_text: OpCounters,
+    pub add_listener: OpCounters,
+    pub remove_listener: OpCounters,
+    /// Calls the host made *into* the guest's `dispatch` export. See the module
+    /// docs: it is the only outbound counter, and its `bytes_copied` is
+    /// structurally zero.
+    pub dispatch: OpCounters,
     /// The last non-`OK` status returned to the guest, or `None`.
     pub last_error: Option<i32>,
+    /// The last negative status the guest's `dispatch` export returned, or
+    /// `None`.
+    ///
+    /// The guest's status codes are its own, not this crate's: a guest is free
+    /// to mean anything by `-3`. It is kept only so a failing test can say
+    /// which listener reported trouble instead of "a click did nothing".
+    pub last_guest_status: Option<i32>,
     /// The last `DomError`, rendered, or `None`.
     ///
     /// The ABI collapses every `DomError` into `ERR_DOM`, so without this the
@@ -77,6 +104,10 @@ pub enum Op {
     AppendChild,
     SetAttribute,
     SetText,
+    AddListener,
+    RemoveListener,
+    /// The outbound one: a host call into the guest's `dispatch` export.
+    Dispatch,
 }
 
 impl Counters {
@@ -88,6 +119,9 @@ impl Counters {
             Op::AppendChild => &mut self.append_child,
             Op::SetAttribute => &mut self.set_attribute,
             Op::SetText => &mut self.set_text,
+            Op::AddListener => &mut self.add_listener,
+            Op::RemoveListener => &mut self.remove_listener,
+            Op::Dispatch => &mut self.dispatch,
         }
     }
 
@@ -111,7 +145,11 @@ impl Counters {
         self.last_dom_error = Some(error.to_string());
     }
 
-    /// Every call the guest made.
+    /// Every call the guest made into the host.
+    ///
+    /// `dispatch` is not in this sum: it goes the other way, and adding an
+    /// outbound call to a count of inbound ones would produce a number that
+    /// answers no question.
     pub fn total_calls(&self) -> u64 {
         self.intern.calls
             + self.create_element.calls
@@ -119,9 +157,12 @@ impl Counters {
             + self.append_child.calls
             + self.set_attribute.calls
             + self.set_text.calls
+            + self.add_listener.calls
+            + self.remove_listener.calls
     }
 
-    /// Every byte that crossed the boundary, interning included.
+    /// Every byte that crossed the boundary, interning included, in either
+    /// direction.
     pub fn total_bytes_copied(&self) -> u64 {
         self.intern.bytes_copied
             + self.create_element.bytes_copied
@@ -129,6 +170,9 @@ impl Counters {
             + self.append_child.bytes_copied
             + self.set_attribute.bytes_copied
             + self.set_text.bytes_copied
+            + self.add_listener.bytes_copied
+            + self.remove_listener.bytes_copied
+            + self.dispatch.bytes_copied
     }
 
     /// Bytes that crossed for anything other than interning a name.
