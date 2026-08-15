@@ -5,8 +5,7 @@ there about handles, error returns and reentrancy holds here unchanged; this
 document covers only what is new.
 
 A separate file rather than more of `ABI.md` because the two are separate
-surfaces with separate versions, and because `ABI.md` is being edited by the
-change that adds the DOM readers. Merging them is a tidy-up for after both land.
+surfaces with separate versions.
 
 Numbers here are asserted by `tests/platform.rs`, not quoted from a run.
 
@@ -88,9 +87,13 @@ contiguously without ever colliding.
 | `-27` | `ERR_NO_PLATFORM` — no providers installed on this instance |
 | `-28` | `ERR_ALREADY_SENT` |
 
-**These belong in `dom-abi` and are in `src/platform.rs` only until it lands.**
-Adding constants to a crate somebody else is actively writing is how two people
-pick the same number. Moving them is a rename with no value change.
+These live in `dom_abi::platform`, on the same `Status` type as the DOM codes,
+so there is one vocabulary and one place a code can be looked up.
+`dom_abi::platform::status_name` names any status from either surface, which is
+why a diagnostic never has to say "the guest got -22".
+
+`PLATFORM_ABI_VERSION` is separate from `HOST_ABI_VERSION`: adding a `fetch`
+import must not invalidate a guest that only touches the DOM.
 
 `ERR_NO_PLATFORM` rather than a panic: an embedder that binds these imports and
 installs no providers has made a mistake that belongs entirely to the embedding,

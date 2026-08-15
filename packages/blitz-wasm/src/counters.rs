@@ -93,6 +93,8 @@
 //! `bytes_copied` is structurally zero — the argument is a listener id, and
 //! there is no pointer in the signature to copy anything through.
 
+use dom_abi::host::Status;
+
 /// Counters for a single host function.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct OpCounters {
@@ -167,7 +169,7 @@ pub struct Counters {
     /// structurally zero.
     pub dispatch: OpCounters,
     /// The last non-`OK` status returned to the guest, or `None`.
-    pub last_error: Option<i32>,
+    pub last_error: Option<Status>,
     /// The last negative status the guest's `dispatch` export returned, or
     /// `None`.
     ///
@@ -315,12 +317,12 @@ impl Counters {
         self.slot(op).bytes_written += bytes as u64;
     }
 
-    pub(crate) fn record_error(&mut self, status: i32) {
+    pub(crate) fn record_error(&mut self, status: Status) {
         self.last_error = Some(status);
     }
 
     pub(crate) fn record_dom_error(&mut self, error: blitz_dom_api::DomError) {
-        self.last_error = Some(crate::status::ERR_DOM);
+        self.last_error = Some(Status::ERR_DOM);
         self.last_dom_error = Some(error.to_string());
     }
 

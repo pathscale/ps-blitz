@@ -24,7 +24,6 @@ use blitz_traits::platform::{
     Bytes, FetchError, FetchHandler, FetchProvider, FetchRequest, FetchResponse, OriginKey,
     StatusCode, StorageProvider, Url,
 };
-use blitz_wasm::platform::status::*;
 use blitz_wasm::{HasPlatform, PlatformState, add_platform_to_linker, dispatch_fetch_completions};
 use dom_abi::host::{OutBuffer, ReadOutcome, Status};
 use wasmi::{Engine, Instance, Linker, Module, Store, TypedFunc};
@@ -528,10 +527,13 @@ fn a_failed_request_is_distinguishable_from_a_response() {
     let id = rig.send_get("https://nowhere.invalid/");
     assert_eq!(rig.drain().delivered, 1);
 
-    assert_eq!(Status(rig.call1("call_fetch_status", id)), ERR_FETCH);
+    assert_eq!(
+        Status(rig.call1("call_fetch_status", id)),
+        Status::ERR_FETCH
+    );
     assert_eq!(
         Status(rig.call3("call_fetch_read_body", id, 256, 64)),
-        ERR_FETCH
+        Status::ERR_FETCH
     );
 }
 
@@ -547,11 +549,11 @@ fn reading_before_completion_says_pending_rather_than_answering_empty() {
     let id = rig.send_get("https://example.com/slow");
     assert_eq!(
         Status(rig.call1("call_fetch_status", id)),
-        ERR_REQUEST_PENDING
+        Status::ERR_REQUEST_PENDING
     );
     assert_eq!(
         Status(rig.call3("call_fetch_read_body", id, 256, 64)),
-        ERR_REQUEST_PENDING
+        Status::ERR_REQUEST_PENDING
     );
     assert_eq!(rig.drain().delivered, 0, "nothing has completed yet");
 
@@ -596,14 +598,20 @@ fn a_forged_request_id_is_an_error_not_a_trap() {
 
     assert_eq!(
         Status(rig.call1("call_fetch_status", 9_999)),
-        ERR_BAD_REQUEST
+        Status::ERR_BAD_REQUEST
     );
-    assert_eq!(Status(rig.call1("call_fetch_send", 9_999)), ERR_BAD_REQUEST);
+    assert_eq!(
+        Status(rig.call1("call_fetch_send", 9_999)),
+        Status::ERR_BAD_REQUEST
+    );
     assert_eq!(
         Status(rig.call1("call_fetch_release", 9_999)),
-        ERR_BAD_REQUEST
+        Status::ERR_BAD_REQUEST
     );
-    assert_eq!(Status(rig.call1("call_fetch_status", -1)), ERR_BAD_REQUEST);
+    assert_eq!(
+        Status(rig.call1("call_fetch_status", -1)),
+        Status::ERR_BAD_REQUEST
+    );
 
     // The instance still works.
     let id = rig.send_get("https://example.com/thing");
@@ -641,12 +649,15 @@ fn sending_twice_is_refused_and_a_draft_cannot_be_read() {
 
     assert_eq!(
         Status(rig.call1("call_fetch_status", id)),
-        ERR_REQUEST_PENDING,
+        Status::ERR_REQUEST_PENDING,
         "a draft has no status yet"
     );
 
     assert_eq!(rig.call1("call_fetch_send", id), Status::OK.raw());
-    assert_eq!(Status(rig.call1("call_fetch_send", id)), ERR_ALREADY_SENT);
+    assert_eq!(
+        Status(rig.call1("call_fetch_send", id)),
+        Status::ERR_ALREADY_SENT
+    );
 }
 
 #[test]
@@ -657,14 +668,14 @@ fn a_bad_url_and_a_bad_method_are_reported_separately() {
     let (uptr, ulen) = rig.poke(16, "not a url at all");
     assert_eq!(
         Status(rig.call4("call_fetch_new", mptr, mlen, uptr, ulen)),
-        ERR_BAD_URL
+        Status::ERR_BAD_URL
     );
 
     let (mptr, mlen) = rig.poke(0, "BAD METHOD");
     let (uptr, ulen) = rig.poke(16, "https://example.com/");
     assert_eq!(
         Status(rig.call4("call_fetch_new", mptr, mlen, uptr, ulen)),
-        ERR_BAD_HEADER
+        Status::ERR_BAD_HEADER
     );
 }
 
@@ -741,14 +752,17 @@ fn without_a_platform_host_every_import_answers_no_platform() {
     let (kptr, klen) = rig.poke(0, "k");
     assert_eq!(
         Status(rig.call4("call_storage_get", kptr, klen, 128, 64)),
-        ERR_NO_PLATFORM
+        Status::ERR_NO_PLATFORM
     );
 
     let (mptr, mlen) = rig.poke(0, "GET");
     let (uptr, ulen) = rig.poke(16, "https://example.com/");
     let id = rig.call4("call_fetch_new", mptr, mlen, uptr, ulen);
     assert!(id >= 0, "building a request needs no provider");
-    assert_eq!(Status(rig.call1("call_fetch_send", id)), ERR_NO_PLATFORM);
+    assert_eq!(
+        Status(rig.call1("call_fetch_send", id)),
+        Status::ERR_NO_PLATFORM
+    );
 
     assert_eq!(rig.drain(), blitz_wasm::Completed::default());
 }
@@ -824,10 +838,10 @@ fn absent_does_not_poison_the_last_error_slot() {
 
     assert_eq!(
         Status(rig.call1("call_fetch_status", 9_999)),
-        ERR_BAD_REQUEST
+        Status::ERR_BAD_REQUEST
     );
     assert_eq!(
         rig.store.data().state.counters().last_error,
-        Some(ERR_BAD_REQUEST)
+        Some(Status::ERR_BAD_REQUEST)
     );
 }
