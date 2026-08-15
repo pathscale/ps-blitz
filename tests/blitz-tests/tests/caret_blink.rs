@@ -31,5 +31,8 @@ fn a_focused_text_input_keeps_a_clock_and_blinks_its_caret() {
 
     let visible = frame(&mut doc, 0.25);
     let hidden = frame(&mut doc, 0.75);
-    assert_ne!(visible, hidden, "the focused caret stayed continuously visible");
+    assert_ne!(
+        visible, hidden,
+        "the focused caret stayed continuously visible"
+    );
 }

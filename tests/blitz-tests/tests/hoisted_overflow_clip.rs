@@ -114,7 +114,11 @@ fn a_fixed_child_is_not_clipped_by_an_ancestor() {
     );
 
     assert_eq!(pixel_at(&mut doc, 30, 30), GREEN, "fixture panel");
-    assert_eq!(pixel_at(&mut doc, 30, 100), RED, "a fixed child was clipped");
+    assert_eq!(
+        pixel_at(&mut doc, 30, 100),
+        RED,
+        "a fixed child was clipped"
+    );
 }
 
 /// Negative z-index paints below its parent's background rather than above it,

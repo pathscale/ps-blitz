@@ -221,7 +221,11 @@ impl CssBox {
         // coincide only at `outline-offset: 0`, and using the border box for
         // both meant every offset was silently discarded: an outline asked to
         // sit 1px inside painted 1px outside instead.
-        self.shape(&mut path, CssBoxKind::OutlineInnerBox, Direction::Anticlockwise);
+        self.shape(
+            &mut path,
+            CssBoxKind::OutlineInnerBox,
+            Direction::Anticlockwise,
+        );
         path.move_to(self.corner(Corner::TopLeft, CssBoxKind::OutlineInnerBox));
 
         path
@@ -613,7 +617,9 @@ impl CssBox {
 
         let radii: Vec2 = match side {
             BorderBox => corner_radii,
-            OutlineBox => self.outline_corner_radii(corner_radii, self.outline_offset + self.outline_width),
+            OutlineBox => {
+                self.outline_corner_radii(corner_radii, self.outline_offset + self.outline_width)
+            }
             OutlineInnerBox => self.outline_corner_radii(corner_radii, self.outline_offset),
             PaddingBox => corner_radii - get_corner_insets(*border_width, corner),
             ContentBox => {
