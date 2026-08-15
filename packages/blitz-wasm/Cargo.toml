@@ -18,6 +18,13 @@ name = "blitz_wasm"
 [dependencies]
 # Blitz dependencies
 blitz-dom-api = { workspace = true }
+# The runtime-agnostic platform APIs this crate binds for a guest. Same
+# relationship as `blitz-dom-api`: the logic is there, the ABI is here.
+blitz-platform-api = { workspace = true }
+# The shared guest/host vocabulary: status codes, id caps, and the read
+# protocol. A direct path rather than a workspace dependency only because the
+# workspace entry is being added by the change that introduces the crate.
+dom-abi = { path = "../dom-abi" }
 blitz-dom = { workspace = true }
 # `DomEvent` and `EventState` live here, and `blitz-dom` does not re-export
 # them. `blitz-script` carries this dependency for exactly the same reason:
@@ -34,6 +41,14 @@ blitz-traits = { workspace = true }
 wasmi = "1.1"
 
 [dev-dependencies]
+# Guests written in the text format. Already in this workspace's lockfile, so
+# it costs no new crate.
+#
+# It earns its place by testing what a Rust guest cannot: a buffer one byte
+# too small, a zero capacity, a pointer past the end of linear memory. A guest
+# compiled from Rust would have to go out of its way to produce those, and they
+# are exactly the cases the read protocol exists to define.
+wat = "1"
 # `Modifiers`, for the synthetic click. `blitz-traits` takes its event types
 # from here and does not re-export this one.
 keyboard-types = { workspace = true }

@@ -22,6 +22,11 @@
 //! with the embedder.
 
 pub use bytes::Bytes;
+/// Re-exported so a binding can name `HeaderName` and `HeaderValue` when
+/// building a request, without taking its own dependency on `http` and pinning
+/// it to whatever version this crate happens to resolve. Same reasoning as the
+/// `keyboard_types` re-export in the crate root.
+pub use http;
 pub use http::{HeaderMap, Method, StatusCode};
 use std::sync::atomic::{AtomicU64, Ordering};
 pub use url::Url;
