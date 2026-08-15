@@ -5,6 +5,7 @@ members = [
     "packages/blitz-traits",
     "packages/blitz-dom",
     "packages/blitz-dom-api",
+    "packages/blitz-platform-api",
     "packages/dom-abi",
     "packages/blitz-wasm",
     "packages/blitz-html",
@@ -65,6 +66,7 @@ accesskit_xplat = { version = "0.1", path = "./packages/accesskit_xplat", defaul
 browser-persistence = { path = "./apps/browser/persistence" }
 blitz-test-harness = { path = "./packages/blitz-test-harness" }
 blitz-dom-api = { path = "./packages/blitz-dom-api" }
+blitz-platform-api = { path = "./packages/blitz-platform-api" }
 
 # Servo dependencies
 style = { version = "0.20.0", package = "stylo" }

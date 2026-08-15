@@ -1,0 +1,26 @@
+[package]
+name = "blitz-platform-api"
+description = "Runtime-agnostic host platform APIs (fetch, storage) over blitz-traits providers"
+# Not published, for the same reason as blitz-dom-api and blitz-wasm: the name
+# is unprefixed while every published package in this fork carries `ps-`.
+publish = false
+version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "blitz_platform_api"
+
+[dependencies]
+# The only dependency, and deliberately. The provider traits and the request
+# and response types live here; everything else in this crate is plain Rust
+# over them.
+#
+# In particular there is no HTTP client and no scripting engine, which is what
+# `tests/no_client_or_engine.rs` asserts against the resolved graph rather than
+# against this file.
+blitz-traits = { workspace = true }
