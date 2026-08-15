@@ -147,6 +147,12 @@ impl DomCtx {
     }
 
     /// Read the current boundary-selected mode without touching global state.
+    ///
+    /// Gated to match its only caller, `script_stats::Timed::new`. `dom-stats`
+    /// is off by default because a shipping build has no reader for it, which
+    /// makes this method dead in exactly the build CI checks, and
+    /// `cargo clippy --workspace -- -D warnings` fails on it.
+    #[cfg(feature = "dom-stats")]
     pub(crate) fn deep_profiling_enabled(&self) -> bool {
         self.deep_profiling.get()
     }
