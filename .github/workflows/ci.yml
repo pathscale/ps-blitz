@@ -180,7 +180,13 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
-          targets: ${{ matrix.platform.target }}
+          # wasm32 as well as the platform target: `blitz-wasm`'s end-to-end
+          # test builds a real guest module and instantiates it under wasmi,
+          # because compiling to wasm32 only proves the code type-checks while
+          # instantiating proves it links. Without the target installed the
+          # test cannot run, and a test that skips when its prerequisite is
+          # missing reports "no problem" and "not checked" identically.
+          targets: ${{ matrix.platform.target }},wasm32-unknown-unknown
           components: rustfmt
 
       # Install cross from source. Because latest release doesn't work with recent Rust
