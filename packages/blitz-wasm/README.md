@@ -80,14 +80,20 @@ guest's `alloc` — are recorded in ABI.md with what each would have cost.
 
 Reads are the axis this design does not win, and ABI.md says so with numbers
 rather than hedging. Setting `class="count"` costs **0 bytes**; reading it back
-costs **5 across the boundary and 5 more allocated host-side**, because the
-facade returns an owned `String` and the atom design has nothing to amortise
-when the answer *is* the payload. A value that overflows the guest's buffer
-costs two host calls and two host-side copies to deliver one value.
+costs **5**, because the atom design has nothing to amortise when the answer
+*is* the payload. A repeated write stays free forever; a repeated read pays full
+price every time, so the gap widens as a page runs.
 
-The obvious fix — a reader that writes straight into the guest's buffer, so the
-host-side `String` never exists — is deliberately **not** here. It is a second
-experiment and it needs this baseline to be measured against.
+It used to cost 5 more, allocated host-side, and that half is gone. The second
+experiment — buffer-writing readers in `blitz-dom-api`, so the intermediate
+`String` never exists — took `host_string_bytes` for reads from 5 to **0** with
+the bytes across the boundary unchanged, and took the 200-byte overflow case
+from 400 host-side bytes to **0**. The surcharge was the facade; the payload is
+the boundary. ABI.md, "The second experiment", has the before and after for both
+and the one place it did *not* work the same way.
+
+**The write direction still pays its `String`**, and that is now this crate's
+own doing rather than a rule it is obeying. See the same section.
 
 ## Events are dispatched *after* propagation
 
@@ -112,9 +118,10 @@ allocate nothing on the host side.
 Clicking it: **zero bytes.** An event is a listener id; the only byte that
 moves is the digit the effect writes back into the DOM.
 
-Reading it back: **8 bytes host-to-guest, and 8 more allocated host-side that
-never cross at all.** See "Reads go the other way" above; the two directions are
-separate counters and there is no total that mixes them.
+Reading it back: **8 bytes host-to-guest, and nothing else** — it was 8 more
+allocated host-side until the buffer readers landed. See "Reads go the other
+way" above; the two directions are separate counters and there is no total that
+mixes them.
 
 `tests/end_to_end.rs` asserts those numbers, including the interning cost and
 the host-side copies. A "zero bytes copied" claim that omits what interning cost

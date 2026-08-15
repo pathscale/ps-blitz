@@ -679,14 +679,28 @@ fn an_absent_attribute_is_not_an_empty_one() {
 /// What a read costs, stated in full, including the half that never crosses the
 /// boundary.
 ///
-/// **This is the number the read direction exists to produce, and it is worse
-/// than the write direction's.** A write of `n` bytes crosses `n` bytes. A read
-/// of `n` bytes crosses `n` bytes *and* allocates `n` bytes of host-side
-/// `String` first, because every reader in `blitz-dom-api` returns an owned
-/// value. The handle-and-atom design saves nothing here: the name is free, and
-/// the answer is the payload.
+/// **The second experiment's result, and it is the one that was hoped for.**
+/// The first measurement of this ABI recorded that a read of `n` bytes crossed
+/// `n` bytes *and* allocated `n` bytes of host-side `String` first, because
+/// every reader in `blitz-dom-api` returned an owned value. That second copy is
+/// now gone: the facade's buffer-writing readers put the bytes straight into
+/// the guest's buffer, and the `String` never exists.
+///
+/// The numbers this replaced, for the same page:
+///
+/// | | before | after |
+/// | --- | --- | --- |
+/// | `get_attribute.bytes_written` | 5 | 5 |
+/// | `get_attribute.host_string_bytes` | 5 | **0** |
+/// | `get_attribute.host_allocs` | 2 | **0** |
+/// | `text_content.host_string_bytes` | 3 | **0** |
+///
+/// **What crosses did not change, and that is the point.** The boundary traffic
+/// was never the artifact; the host-side copy was, and it was an artifact of the
+/// facade rather than of the ABI. `a_read_returns_the_bytes_that_were_written`
+/// is what stops that from being a claim about a reader that stopped working.
 #[test]
-fn a_read_costs_its_value_twice() {
+fn a_read_costs_only_what_it_delivers() {
     let (mut store, instance) = counter();
     let before = counters(&store);
     echo(&mut store, &instance);
@@ -697,33 +711,36 @@ fn a_read_costs_its_value_twice() {
     // test did not put one there).
     assert_eq!(c.get_attribute.calls, 4);
 
-    // Only `class` had bytes. Five of them crossed, host to guest...
+    // Only `class` had bytes. Five of them crossed, host to guest — unchanged
+    // by the experiment, because the payload is the payload.
     assert_eq!(c.get_attribute.bytes_written, "count".len() as u64);
-    // ...and five of them were allocated host-side first, into the `String`
-    // `element::get_attribute` returns. That is the second copy, and it is the
-    // one a byte-across-the-boundary count cannot see.
-    assert_eq!(c.get_attribute.host_string_bytes, "count".len() as u64);
-    // Two owned strings: `count` and the empty `data-empty` value. The absent
-    // reads allocated nothing here, because there was nothing to return.
-    assert_eq!(c.get_attribute.host_allocs, 2);
+    // And nothing at all was allocated host-side to deliver them. This read
+    // 5 before the facade grew `get_attribute_into`.
+    assert_eq!(
+        c.get_attribute.host_string_bytes, 0,
+        "the facade's `String` should be gone, not merely smaller"
+    );
+    assert_eq!(c.get_attribute.host_allocs, 0);
     // Nothing travelled the other way. A read carries a handle and an atom.
     assert_eq!(c.get_attribute.bytes_copied, 0);
 
-    // `text_content` is the same shape and rebuilds its answer from the whole
-    // subtree every time.
+    // `text_content` still rebuilds its answer from the whole subtree every
+    // time — that cost is inherent, because the value is a concatenation and
+    // exists nowhere until something builds it. What went away is the
+    // allocation it used to be built *into*.
     assert_eq!(c.text_content.calls, 1);
     assert_eq!(c.text_content.bytes_written, "+10".len() as u64);
-    assert_eq!(c.text_content.host_string_bytes, "+10".len() as u64);
+    assert_eq!(c.text_content.host_string_bytes, 0);
+    assert_eq!(c.text_content.host_allocs, 0);
     assert_eq!(c.text_content.bytes_copied, 0);
 
     // `has_attribute` is the one read the atom design does help: a handle and
-    // an atom in, a boolean out, no payload in either direction.
+    // an atom in, a boolean out, no payload in either direction. Its zero used
+    // to be a lie of omission — the facade cloned the value and discarded it to
+    // answer a boolean — and `element::has_attribute` no longer does that, so
+    // the zero is now the whole truth.
     assert_eq!(c.has_attribute.calls, 2);
     assert_eq!(c.has_attribute.bytes_crossed(), 0);
-    // Its `host_string_bytes` zero is a lie of omission, and counters.rs says
-    // so: `element::has_attribute` clones the value and discards it. Asserted
-    // anyway, so that a future change which starts counting it is noticed here
-    // rather than silently improving a number.
     assert_eq!(c.has_attribute.host_string_bytes, 0);
 
     // The two directions are separate totals and are never added into one by
@@ -733,13 +750,43 @@ fn a_read_costs_its_value_twice() {
     assert_eq!(before.total_bytes_written(), 0);
     assert_eq!(read_bytes, ("count".len() + "+10".len()) as u64);
 
-    // And the claim itself, as one equality: **every byte a read delivered was
-    // allocated host-side first.** Eight bytes of answers cost eight bytes
-    // across the boundary and eight bytes of `String` that existed only to be
-    // copied again.
+    // And the claim itself, as one equality: **a read now costs exactly what it
+    // delivers.** Eight bytes of answers, eight bytes across the boundary, and
+    // nothing else.
     let read_host_side = (c.get_attribute.host_string_bytes + c.text_content.host_string_bytes)
         - (before.get_attribute.host_string_bytes + before.text_content.host_string_bytes);
-    assert_eq!(read_host_side, read_bytes);
+    assert_eq!(read_host_side, 0);
+    assert!(read_bytes > 0, "a read of nothing would satisfy the above");
+}
+
+/// The write direction still pays the second copy, and this is what says so.
+///
+/// Worth asserting next to the read result rather than assumed: the experiment
+/// removed the read direction's host-side `String` and left the write
+/// direction's alone, so the two now differ and a future reader should be able
+/// to see which is which without re-deriving it.
+///
+/// `set_text` copies guest memory into a `String` before touching the document
+/// because [`blitz_wasm::read_string`] drops its borrow of guest memory first.
+/// That was the reentrancy rule as this crate happened to implement it, not as
+/// it is required — `host_view` holds both borrows at once and is safe for a
+/// stronger reason. So this number is a *remaining* cost, not an inherent one.
+#[test]
+fn the_write_direction_still_pays_for_its_string() {
+    let (store, _instance) = counter();
+    let c = counters(&store);
+
+    // The `0` the effect wrote: one byte across, one byte of host `String`.
+    assert_eq!(c.set_text.bytes_copied, "0".len() as u64);
+    assert_eq!(c.set_text.host_string_bytes, "0".len() as u64);
+    assert_eq!(c.set_text.host_allocs, 1);
+
+    // Interning pays it too, and for the same reason.
+    assert_eq!(c.intern.host_string_bytes, c.intern.bytes_copied);
+
+    // Reads, by contrast, now pay nothing host-side at all.
+    assert_eq!(c.get_attribute.host_string_bytes, 0);
+    assert_eq!(c.text_content.host_string_bytes, 0);
 }
 
 /// **A read never gets cheaper.**
@@ -786,14 +833,24 @@ fn reading_the_same_value_twice_costs_it_twice() {
     );
 }
 
-/// The chosen mechanism's failure mode, exercised.
+/// The chosen mechanism's failure mode, re-measured after the experiment.
 ///
-/// The guest supplies the buffer, so a value longer than its first guess costs
-/// **two host calls and two host-side allocations of the whole value** to
-/// deliver it once. That is the price of not calling back into the guest for
-/// memory, and it is a number here rather than a caveat in a doc comment.
+/// The guest supplies the buffer, so a value longer than its first guess still
+/// costs **two host calls** to deliver once. That is inherent to mechanism (b)
+/// and was never going to change: the guest cannot size a buffer for a length
+/// it has not been told.
+///
+/// What did change is the other half. It used to cost **400 bytes of host-side
+/// `String` to deliver 200** — the facade built the whole value on the call
+/// that wrote nothing, and again on the call that wrote it. Now it costs zero,
+/// because neither call builds anything: the first finds the value already
+/// contiguous in the document, measures it, and declines to copy.
+///
+/// So the overflow path's cost is now exactly one extra crossing and one extra
+/// attribute lookup, which is the honest floor for "ask without knowing the
+/// length".
 #[test]
-fn a_value_that_does_not_fit_costs_a_second_call_and_a_second_copy() {
+fn a_value_that_does_not_fit_costs_a_second_call_but_no_second_copy() {
     let (mut store, instance) = counter();
 
     // Longer than the bindings' 64-byte first guess, and set from the host so
@@ -810,6 +867,7 @@ fn a_value_that_does_not_fit_costs_a_second_call_and_a_second_copy() {
     assert_eq!(text_of(&store, ".echo-long"), long);
 
     // Five calls where the other test saw four: `data-long` took two of them.
+    // Unchanged by the experiment, and inherent to the mechanism.
     assert_eq!(c.get_attribute.calls - before.get_attribute.calls, 5);
 
     // The bytes crossed once. The first call reported the length and wrote
@@ -819,15 +877,17 @@ fn a_value_that_does_not_fit_costs_a_second_call_and_a_second_copy() {
         ("count".len() + long.len()) as u64
     );
 
-    // But the host built the value twice, once per call. This is the whole
-    // cost of the mechanism, and it is 400 bytes of allocation to deliver 200.
+    // And the host built nothing, on either call. This read 405 before the
+    // facade grew `get_attribute_into`: the whole 200-byte value, twice, plus
+    // the 5 for `class`.
     assert_eq!(
         c.get_attribute.host_string_bytes - before.get_attribute.host_string_bytes,
-        ("count".len() + 2 * long.len()) as u64
+        0,
+        "the overflow path should allocate nothing, not merely less"
     );
     assert_eq!(
         c.get_attribute.host_allocs - before.get_attribute.host_allocs,
-        4
+        0
     );
 }
 

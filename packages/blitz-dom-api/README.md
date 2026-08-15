@@ -39,6 +39,13 @@ binding calls out to guest code between operations and guest code calls back
 in, and a borrow still live across that boundary panics inside `RefCell` at a
 call site with no relationship to the code that took it.
 
+A binding that does not want the `String` does not have to pay for it. The
+buffer-writing readers — `element::get_attribute_into`, `node::text_content_into`
+and `node::text_content_len` — write into a slice the caller owns and return the
+value's full byte length, so nothing is allocated and nothing is truncated. They
+sit beside the owning readers rather than replacing them. `blitz-wasm` measured
+what the difference is worth; see MAPPING.md, "Readers allocate a `String`".
+
 **Mutations do not mark layout dirty and do not request a redraw.**
 `blitz-script` routes every mutation through `DomCtx::mutate_doc`, which does
 both. Both are properties of the embedding, so both stay with the binding. A
