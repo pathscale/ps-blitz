@@ -74,15 +74,21 @@
 pub mod counters;
 pub mod events;
 pub mod handles;
+pub mod platform;
 pub mod status;
 
 use blitz_dom::{BaseDocument, NodeId};
 use blitz_dom_api::{AtomId, DomError, Interner, document, element, node};
+use blitz_platform_api::PlatformHost;
 use wasmi::{Caller, Extern, Linker, Memory};
 
 pub use counters::{Counters, Direction, Op, OpCounters};
 pub use events::{Dispatched, ListenerId, ListenerTable, dispatch_dom_event};
 pub use handles::{Handle, HandleTable, MOUNT};
+pub use platform::{
+    Completed, HasPlatform, PlatformCounters, PlatformOp, PlatformOpCounters, PlatformState,
+    RequestId, add_platform_to_linker, dispatch_fetch_completions,
+};
 pub use status::{
     ABSENT, ERR_BAD_ATOM, ERR_BAD_HANDLE, ERR_BAD_LISTENER, ERR_BAD_MEMORY, ERR_BAD_UTF8, ERR_DOM,
     ERR_TOO_MANY_HANDLES, ERR_TOO_MANY_LISTENERS, OK,
@@ -112,6 +118,16 @@ pub struct Host {
     /// has somewhere to put its answer that is not "call the guest".
     pending: Vec<ListenerId>,
     redraw_requested: bool,
+    /// The platform APIs, if the embedder installed them.
+    ///
+    /// `Option` because they are genuinely optional: a guest that only builds
+    /// a tree needs no network and no storage, and an embedder that installs
+    /// neither should not have to supply providers to say so. The imports
+    /// answer `ERR_NO_PLATFORM` rather than panicking when this is `None`.
+    platform: Option<PlatformHost>,
+    /// The platform binding's own request table and counters. Separate from
+    /// [`Counters`] so fetch bytes never merge into DOM bytes.
+    platform_state: PlatformState,
 }
 
 impl Host {
@@ -131,7 +147,25 @@ impl Host {
             listeners: ListenerTable::default(),
             pending: Vec::new(),
             redraw_requested: false,
+            platform: None,
+            platform_state: PlatformState::default(),
         }
+    }
+
+    /// Install the platform APIs.
+    ///
+    /// A builder rather than an argument to [`Host::new`], so that every
+    /// existing caller keeps compiling and an embedder that wants no network
+    /// says so by not calling this.
+    pub fn with_platform(mut self, platform: PlatformHost) -> Self {
+        self.platform = Some(platform);
+        self
+    }
+
+    /// The platform counters: what `fetch` and storage moved across the
+    /// boundary, in both directions, and never mixed with the DOM's.
+    pub fn platform_counters(&self) -> &PlatformCounters {
+        self.platform_state.counters()
     }
 
     /// The document, for a caller that wants to inspect or lay out the result.
@@ -230,6 +264,22 @@ impl Host {
     fn fail_dom(&mut self, error: DomError) -> i32 {
         self.counters.record_dom_error(error);
         ERR_DOM
+    }
+}
+
+/// The platform imports reach the host through this, and through nothing else.
+///
+/// Deliberately narrow: it offers a `PlatformHost` and a request table, and no
+/// way to reach the document. A platform import therefore cannot touch the DOM
+/// even by accident, which is the same technique `WasmEventHandler` uses to
+/// guarantee it cannot reach a guest export.
+impl HasPlatform for Host {
+    fn platform(&self) -> Option<&PlatformHost> {
+        self.platform.as_ref()
+    }
+
+    fn platform_state(&mut self) -> &mut PlatformState {
+        &mut self.platform_state
     }
 }
 
