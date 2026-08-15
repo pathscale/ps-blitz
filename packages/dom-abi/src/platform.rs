@@ -68,7 +68,15 @@ impl Status {
     /// 404 through it.
     pub const ERR_FETCH: Status = Status(-22);
 
-    /// More than [`MAX_ID`](crate::host::MAX_ID) live requests.
+    /// More than [`MAX_ID`](crate::host::MAX_ID) requests have been issued.
+    ///
+    /// A running total, not a census of what is open. [`RequestId`]s are never
+    /// reused, so `fetch_release` does not hand one back and a guest that
+    /// creates and releases in a loop reaches this with nothing in flight. That
+    /// is the design and not a leak — a stale id has to be an error rather than
+    /// a silent hit on whatever took its place — but the binding also reports
+    /// how many requests are open, as a separate number, so it is worth being
+    /// explicit that this is not that number.
     pub const ERR_TOO_MANY_REQUESTS: Status = Status(-23);
 
     /// The URL did not parse.
