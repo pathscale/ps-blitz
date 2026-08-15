@@ -1,0 +1,13 @@
+[package]
+name = "blitz-wasm-guest"
+description = "Safe guest-side bindings for the blitz-wasm host imports"
+publish = false
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+edition = "2024"
+rust-version = "1.89.0"
+
+[lib]
+name = "blitz_wasm_guest"
+
+[dependencies]

@@ -1,0 +1,18 @@
+[package]
+name = "blitz-wasm-demo"
+description = "A demo guest that builds a page through blitz-wasm, to prove the path end to end"
+publish = false
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+edition = "2024"
+rust-version = "1.89.0"
+
+[lib]
+name = "blitz_wasm_demo"
+# cdylib, not rlib. An rlib compile proves the code type-checks for wasm32; it
+# never links, so a missing panic handler or an unsatisfied import shows up
+# only when a real module is produced and instantiated.
+crate-type = ["cdylib"]
+
+[dependencies]
+blitz-wasm-guest = { path = "../bindings" }

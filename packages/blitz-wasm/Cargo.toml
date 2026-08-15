@@ -1,0 +1,41 @@
+[package]
+name = "blitz-wasm"
+description = "A wasmi host binding over blitz-dom-api, so a WebAssembly guest can drive the DOM"
+# Not published, for the same reason as blitz-dom-api: the name is unprefixed
+# while every published package in this fork carries `ps-`.
+publish = false
+version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "blitz_wasm"
+
+[dependencies]
+# Blitz dependencies
+blitz-dom-api = { workspace = true }
+blitz-dom = { workspace = true }
+
+# The wasm interpreter. It belongs to this crate and nothing below it:
+# `blitz-dom-api` must never reach a wasm runtime, and `blitz-script` must
+# never reach this one.
+#
+# Pinned to the 1.x line, not 2.0.0-beta: `SolidRS/crates/solidrs-wasm-smoke`
+# already runs a guest under wasmi 1.1.0, so this is the version with evidence
+# behind it in this codebase.
+wasmi = "1.1"
+
+[dev-dependencies]
+blitz-traits = { workspace = true }
+# The layout test measures text, so the test build needs real fonts.
+#
+# Without `system-fonts` parley finds no face, every line shapes to nothing,
+# and every box reports a height of zero. A layout assertion then fails for a
+# reason that has nothing to do with the tree the guest built, and a layout
+# assertion written loosely enough to survive it would be measuring nothing.
+# `blitz-script` carries the same dev-dependency for the same reason.
+blitz-dom = { workspace = true, features = ["system-fonts"] }

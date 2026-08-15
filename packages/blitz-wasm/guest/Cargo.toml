@@ -1,0 +1,26 @@
+# A SEPARATE workspace, deliberately, for two reasons.
+#
+# 1. Deadlock. `cargo test -p blitz-wasm` holds the lock on the parent
+#    workspace's target directory. A test that shells out to `cargo build` for
+#    the guest would block on that lock forever if the guest shared it. Its own
+#    workspace means its own target directory and no contention.
+#
+# 2. Target triple. These crates only build for wasm32-unknown-unknown. Keeping
+#    them out of the parent's member list keeps `cargo check --workspace
+#    --all-targets` from trying to build a cdylib for the host triple.
+#
+# The same shape as SolidRS/crates/solidrs-wasm-smoke, which is where this
+# pattern was proven.
+[workspace]
+resolver = "2"
+members = ["bindings", "demo"]
+
+# Profiles live in the workspace root. `panic = "abort"` is not a choice on
+# wasm32-unknown-unknown, where unwinding is unsupported; stating it keeps the
+# profile honest and the module smaller.
+[profile.release]
+panic = "abort"
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
