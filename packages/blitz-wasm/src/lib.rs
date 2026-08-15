@@ -10,7 +10,7 @@
 //! when reading ABI.md: anything awkward here is evidence about the facade,
 //! not just about this binding.
 //!
-//! # The five operations, plus one, plus events
+//! # The five operations, plus one, plus events, plus the reads
 //!
 //! `create_element`, `create_text`, `append_child`, `set_attribute` and
 //! `set_text` are enough to build a page. `intern` is the sixth, and it is not
@@ -18,6 +18,27 @@
 //! the ABI produces an atom. `add_listener` and `remove_listener` are the
 //! seventh and eighth, and they are what makes the page respond rather than
 //! merely exist. See ABI.md.
+//!
+//! `get_attribute`, `text_content` and `has_attribute` are the ninth, tenth
+//! and eleventh, and they go the other way.
+//!
+//! # The read direction
+//!
+//! Every string in the first eight operations travels guest to host: the guest
+//! owns the bytes, passes `(ptr, len)`, and the host reads. A read reverses
+//! that, and nothing in the ABI reversed anything before, so a mechanism had to
+//! be chosen. It is **the guest supplies the buffer**: `(out_ptr, out_cap)` in,
+//! the value's full byte length out, and the guest retries with a bigger buffer
+//! if it did not fit. [`deliver`] is where that lives, and ABI.md, "The read
+//! direction", records the two mechanisms it was chosen over.
+//!
+//! **This is the direction the atom design does not help.** A read's name is an
+//! atom and costs nothing, but the bytes coming back *are* the payload, and the
+//! facade returns them as an owned `String` — so a read pays for its value
+//! twice, once into that `String` and once into guest memory. The counters
+//! attribute the two directions to separate fields and the second copy to
+//! [`OpCounters::host_string_bytes`], so the cost is a number rather than a
+//! footnote. ABI.md quotes it whether or not it flatters the design.
 //!
 //! # The reentrancy rule
 //!
@@ -57,13 +78,13 @@ pub mod status;
 
 use blitz_dom::{BaseDocument, NodeId};
 use blitz_dom_api::{AtomId, DomError, Interner, document, element, node};
-use wasmi::{Caller, Extern, Linker};
+use wasmi::{Caller, Extern, Linker, Memory};
 
-pub use counters::{Counters, Op, OpCounters};
+pub use counters::{Counters, Direction, Op, OpCounters};
 pub use events::{Dispatched, ListenerId, ListenerTable, dispatch_dom_event};
 pub use handles::{Handle, HandleTable, MOUNT};
 pub use status::{
-    ERR_BAD_ATOM, ERR_BAD_HANDLE, ERR_BAD_LISTENER, ERR_BAD_MEMORY, ERR_BAD_UTF8, ERR_DOM,
+    ABSENT, ERR_BAD_ATOM, ERR_BAD_HANDLE, ERR_BAD_LISTENER, ERR_BAD_MEMORY, ERR_BAD_UTF8, ERR_DOM,
     ERR_TOO_MANY_HANDLES, ERR_TOO_MANY_LISTENERS, OK,
 };
 
@@ -232,6 +253,91 @@ fn read_string(caller: &Caller<'_, Host>, ptr: i32, len: i32) -> Result<String, 
     core::str::from_utf8(bytes)
         .map(str::to_owned)
         .map_err(|_| ERR_BAD_UTF8)
+}
+
+/// A guest-supplied output buffer, validated.
+///
+/// [`Memory`] is a store index rather than a borrow, so holding one across the
+/// document read costs nothing and breaks no rule: it is not a pointer into
+/// guest memory, it is a name for the memory.
+struct GuestBuffer {
+    memory: Memory,
+    start: usize,
+    cap: usize,
+}
+
+/// Validate `(ptr, cap)` as a writable region of guest linear memory.
+///
+/// Done *before* the document is read, so that a guest which named a buffer
+/// outside its own memory pays only this check. That ordering matters more than
+/// it looks: the expensive half of a read is the owned `String` the facade
+/// allocates, and failing after that point would allocate it and throw it away.
+///
+/// A zero-capacity buffer is legal and is how a guest asks "how long is it?"
+/// without providing anywhere to put it — see [`deliver`].
+fn guest_buffer(caller: &Caller<'_, Host>, ptr: i32, cap: i32) -> Result<GuestBuffer, i32> {
+    let memory = caller
+        .get_export("memory")
+        .and_then(Extern::into_memory)
+        .ok_or(ERR_BAD_MEMORY)?;
+    let start = usize::try_from(ptr).map_err(|_| ERR_BAD_MEMORY)?;
+    let cap = usize::try_from(cap).map_err(|_| ERR_BAD_MEMORY)?;
+    let end = start.checked_add(cap).ok_or(ERR_BAD_MEMORY)?;
+    if end > memory.data(caller).len() {
+        return Err(ERR_BAD_MEMORY);
+    }
+    Ok(GuestBuffer { memory, start, cap })
+}
+
+/// Copy a string *into* guest linear memory, and report its length.
+///
+/// This is the read direction's whole mechanism, and it is option (b) of the
+/// three in ABI.md: the guest supplies the buffer, the host reports the length,
+/// and a guest whose buffer was too small retries with a bigger one.
+///
+/// **The return value is always the full byte length, whether or not it fit.**
+/// That is `snprintf`'s convention, and it is what makes one call enough in the
+/// common case and exactly two in the worst one. The write happens only when
+/// `len <= cap`; a truncated result is never written, because half a UTF-8
+/// string is not a string.
+///
+/// The failure mode is therefore *cost*, not corruption: an undersized buffer
+/// costs a second host call and a second facade read, and the guest sees the
+/// same bytes either way. See ABI.md, "The read direction", for the two
+/// mechanisms this was chosen over and what they would have cost instead.
+///
+/// The reentrancy rule is upheld here for the same reason [`read_string`]
+/// upholds it: by the time this runs, `text` is an owned value the host
+/// function holds, and no borrow of the document is outstanding. Writing it the
+/// other way round — handing this a `&str` borrowed out of the document — would
+/// not compile, because `memory.write` wants the store mutably.
+fn deliver(caller: &mut Caller<'_, Host>, buffer: &GuestBuffer, op: Op, text: &str) -> i32 {
+    let len = text.len();
+    // A value longer than `i32::MAX` has no representable length under this
+    // ABI's one-return-value convention. Unreachable in practice — no guest
+    // buffer is 2 GiB — but reported rather than silently truncated.
+    let Ok(reported) = i32::try_from(len) else {
+        return caller.data_mut().fail(ERR_BAD_MEMORY);
+    };
+    if len > buffer.cap {
+        // Nothing written, so nothing is recorded in `bytes_written`. The
+        // host-side `String` was still allocated, and the caller has already
+        // recorded that: a read that does not fit costs the expensive half
+        // twice and the cheap half once.
+        return reported;
+    }
+    if buffer
+        .memory
+        .write(&mut *caller, buffer.start, text.as_bytes())
+        .is_err()
+    {
+        // `guest_buffer` bounds-checked `cap`, and `len <= cap`, so this is
+        // unreachable short of the memory having shrunk underneath us. Reported
+        // rather than unwrapped, because the ABI's rule is that nothing traps.
+        return caller.data_mut().fail(ERR_BAD_MEMORY);
+    }
+    caller.data_mut().counters.record_write(op, len);
+    reported
 }
 
 /// Register every host function on `linker`, under the [`MODULE`] name.
@@ -518,6 +624,162 @@ pub fn add_to_linker(linker: &mut Linker<Host>) -> Result<(), wasmi::Error> {
             match host.listeners.remove(id) {
                 Ok(()) => OK,
                 Err(status) => host.fail(status),
+            }
+        },
+    )?;
+
+    // === get_attribute(node, name_atom, out_ptr, out_cap) -> len | ABSENT | error ===
+    //
+    // The read direction, and the one operation where the handle-and-atom
+    // design saves nothing: the bytes coming back *are* the payload. The name
+    // is still an atom, so the question costs nothing; the answer costs its own
+    // length twice, once into a host `String` the facade allocates and once
+    // into the guest's buffer. Both halves are counted, separately. See ABI.md.
+    linker.func_wrap(
+        MODULE,
+        "get_attribute",
+        |mut caller: Caller<'_, Host>, node: i32, name: i32, out_ptr: i32, out_cap: i32| -> i32 {
+            caller.data_mut().counters.record_call(Op::GetAttribute);
+            let buffer = match guest_buffer(&caller, out_ptr, out_cap) {
+                Ok(buffer) => buffer,
+                Err(status) => return caller.data_mut().fail(status),
+            };
+
+            let host = caller.data_mut();
+            let handle = match u32::try_from(node) {
+                Ok(handle) => handle,
+                Err(_) => return host.fail(ERR_BAD_HANDLE),
+            };
+            let node_id = match host.handles.get(handle) {
+                Ok(id) => id,
+                Err(status) => return host.fail(status),
+            };
+            let name_atom = match host.atom(name) {
+                Ok(atom) => atom,
+                Err(status) => return host.fail(status),
+            };
+            // Destructured for the same reason `create_element` destructures:
+            // the resolved name borrows `names` while the answer is being
+            // produced, and reaching through `host.` for both that and
+            // `counters` does not borrow-check.
+            let Host {
+                doc,
+                names,
+                counters,
+                ..
+            } = host;
+            let Ok(name) = names.resolve(name_atom) else {
+                counters.record_error(ERR_BAD_ATOM);
+                return ERR_BAD_ATOM;
+            };
+            let value = match element::get_attribute(doc, node_id, name) {
+                Ok(value) => value,
+                Err(error) => {
+                    counters.record_dom_error(error);
+                    return ERR_DOM;
+                }
+            };
+            // The DOM's `null`. Not an error and deliberately not recorded as
+            // one: an absent attribute is an answer, and a guest polling for an
+            // optional attribute would otherwise leave `last_error` permanently
+            // set to something nothing went wrong about.
+            let Some(value) = value else {
+                return ABSENT;
+            };
+            // The first copy: the facade allocated this, and it exists whether
+            // or not the guest's buffer turns out to be big enough.
+            counters.record_host_string(Op::GetAttribute, value.len());
+            deliver(&mut caller, &buffer, Op::GetAttribute, &value)
+        },
+    )?;
+
+    // === text_content(node, out_ptr, out_cap) -> len | error ===
+    //
+    // Same mechanism as `get_attribute` and no `ABSENT` case: every node has
+    // text content, and a node with none has content of length zero.
+    //
+    // This is the more expensive of the two reads and it is worth saying why:
+    // `node::text_content` concatenates over the *subtree*, so the host-side
+    // `String` is built fresh on every call, from every descendant, and its
+    // size is the size of the answer rather than of anything stored. A guest
+    // polling `text_content` on a large subtree is asking the host to rebuild
+    // that subtree's text each time.
+    linker.func_wrap(
+        MODULE,
+        "text_content",
+        |mut caller: Caller<'_, Host>, node: i32, out_ptr: i32, out_cap: i32| -> i32 {
+            caller.data_mut().counters.record_call(Op::TextContent);
+            let buffer = match guest_buffer(&caller, out_ptr, out_cap) {
+                Ok(buffer) => buffer,
+                Err(status) => return caller.data_mut().fail(status),
+            };
+
+            let host = caller.data_mut();
+            let handle = match u32::try_from(node) {
+                Ok(handle) => handle,
+                Err(_) => return host.fail(ERR_BAD_HANDLE),
+            };
+            let node_id = match host.handles.get(handle) {
+                Ok(id) => id,
+                Err(status) => return host.fail(status),
+            };
+            let text = match node::text_content(&host.doc, node_id) {
+                Ok(text) => text,
+                Err(error) => return host.fail_dom(error),
+            };
+            host.counters
+                .record_host_string(Op::TextContent, text.len());
+            deliver(&mut caller, &buffer, Op::TextContent, &text)
+        },
+    )?;
+
+    // === has_attribute(node, name_atom) -> 0 | 1 | error ===
+    //
+    // A read that moves no payload: a handle and an atom in, a boolean out. It
+    // is the read the handle-and-atom design does help, and it is the only one.
+    //
+    // Its zero in `bytes_written` is structural, and its zero in
+    // `host_string_bytes` is a *lie of omission* that counters.rs states in
+    // full: `element::has_attribute` goes through the same `read_attr` as
+    // `get_attribute`, so it clones the attribute value into a `String` and
+    // throws it away to answer a boolean. Measuring that would mean reading the
+    // value a second time purely to count it, which is a worse trade than
+    // writing it down.
+    linker.func_wrap(
+        MODULE,
+        "has_attribute",
+        |mut caller: Caller<'_, Host>, node: i32, name: i32| -> i32 {
+            let host = caller.data_mut();
+            host.counters.record_call(Op::HasAttribute);
+            let handle = match u32::try_from(node) {
+                Ok(handle) => handle,
+                Err(_) => return host.fail(ERR_BAD_HANDLE),
+            };
+            let node_id = match host.handles.get(handle) {
+                Ok(id) => id,
+                Err(status) => return host.fail(status),
+            };
+            let name_atom = match host.atom(name) {
+                Ok(atom) => atom,
+                Err(status) => return host.fail(status),
+            };
+            let Host {
+                doc,
+                names,
+                counters,
+                ..
+            } = host;
+            let Ok(name) = names.resolve(name_atom) else {
+                counters.record_error(ERR_BAD_ATOM);
+                return ERR_BAD_ATOM;
+            };
+            match element::has_attribute(doc, node_id, name) {
+                Ok(true) => 1,
+                Ok(false) => 0,
+                Err(error) => {
+                    counters.record_dom_error(error);
+                    ERR_DOM
+                }
             }
         },
     )?;

@@ -6,7 +6,7 @@ one of them changes, that test fails.
 
 ## The imports
 
-Eight functions, all in the module named `blitz`.
+Eleven functions, all in the module named `blitz`.
 
 | Import | Signature | Returns |
 | --- | --- | --- |
@@ -18,6 +18,13 @@ Eight functions, all in the module named `blitz`.
 | `set_text` | `(node: i32, ptr: i32, len: i32) -> i32` | `OK`, or error |
 | `add_listener` | `(node: i32, event_atom: i32) -> i32` | listener id, or error |
 | `remove_listener` | `(listener_id: i32) -> i32` | `OK`, or error |
+| `get_attribute` | `(node: i32, name_atom: i32, out_ptr: i32, out_cap: i32) -> i32` | byte length, `ABSENT`, or error |
+| `text_content` | `(node: i32, out_ptr: i32, out_cap: i32) -> i32` | byte length, or error |
+| `has_attribute` | `(node: i32, name_atom: i32) -> i32` | `0`, `1`, or error |
+
+The first eight all go one way: the guest owns the bytes and the host reads
+them. The last three go the other way, and that reversal needed a mechanism
+that did not exist — see "The read direction".
 
 Five of these are the operation set the original brief asked for. **`intern` is
 the sixth and it is not optional.** Every one of the five takes names as atoms
@@ -34,6 +41,160 @@ merely exist. Both are in the interned tier: a handle and an atom, zero bytes.
 text node in place and replaces an element's children with a single text node.
 One import covers both the update case and the "empty this and put a string in
 it" case, which is why there is no separate `set_data`.
+
+## The read direction
+
+**This is the axis the design does not win, and this section exists to say so
+with numbers rather than to hedge.**
+
+The prediction was that reads would reverse the result, for two reasons. First,
+every reader in `blitz-dom-api` returns an owned `String`, so a read costs two
+copies: one into that host `String` and one into guest memory. Second, the
+handle-and-atom design saves nothing on a read, because the bytes coming back
+*are* the payload — there is no vocabulary to amortise when the answer is the
+content. Both held. The measurement is under "The measurement: reading", and it
+is worse than the write direction's by exactly the factor predicted.
+
+### The mechanism: no direction existed to reuse
+
+Every string in the first eight operations travels guest to host as
+`(ptr, len)`, with the guest owning the memory. A read goes the other way, and
+nothing in the ABI went that way before. Three mechanisms were available.
+
+**(a) Two calls.** Ask for the length, allocate, ask again for the bytes.
+*Failure mode: the value can change between the two calls.* Nothing in this
+crate can currently change it — the guest is single-threaded and the host is not
+running — but the ABI would be promising something it does not enforce, and the
+first embedder that mutates the document from a host-side widget between the two
+calls gets a truncated or over-read value with no error. It also costs two
+crossings for **every** read, not just the ones that do not fit.
+
+**(b) The guest supplies the buffer.** `(out_ptr, out_cap)` in, the value's full
+byte length out, and the bytes written only if they fit. **Chosen.**
+*Failure mode: cost, not correctness.* A value longer than the buffer costs a
+second host call and a second host-side allocation of the whole value, and the
+guest sees the same bytes either way. Nothing is ever truncated — half a UTF-8
+string is not a string — and nothing is ever stale, because the value is
+produced fresh on the call that delivers it.
+
+**(c) The host allocates in guest memory.** The guest exports `alloc`; the host
+calls it and returns a pointer. *Failure mode: it breaks the rule this crate is
+built around.* A host function would call into the guest **mid-call**, which is
+the reentrancy violation that "Reentrancy" below exists to make impossible; and
+it puts the ownership of every returned buffer on the guest, so a guest that
+forgets to `dealloc` leaks and a guest that deallocs twice corrupts its own
+heap. The guest bindings export `alloc` and `dealloc` and the host still calls
+neither, and that is now a decision rather than a gap.
+
+### The protocol, exactly
+
+`get_attribute` and `text_content` **always return the value's full byte
+length**, whether or not it fit. This is `snprintf`'s convention:
+
+- `len <= cap` — the bytes are at `out_ptr`, and `len` of them are valid.
+- `len > cap` — **nothing was written.** The guest resizes to `len` and calls
+  again. The second call is sized from the host's own answer, so it cannot come
+  back short.
+- `cap == 0` — legal, and is how a guest asks for a length with nowhere to put
+  the value. It costs the host-side allocation and delivers nothing, so it is a
+  worse way to size a buffer than guessing and retrying.
+
+The guest's buffer is bounds-checked **before the document is read**, so a
+`(ptr, cap)` outside guest memory costs only the check. That ordering is not
+cosmetic: the expensive half of a read is the `String` the facade allocates, and
+failing after that point would allocate it and throw it away.
+
+`has_attribute` needs none of this. It answers `0` or `1` and moves no payload
+at all, which makes it the one read the atom design does help.
+
+### `ABSENT`, the one negative that is not a failure
+
+`getAttribute` returns `null` for an absent attribute, and `null` is not the
+same as present-and-empty: a guest that cannot tell them apart cannot implement
+`hasAttribute` on top of a read. So `get_attribute` needs three outcomes from
+one `i32`, and `ABSENT` (`-9`) is the third.
+
+It is the single exception to "negative is an error", and the alternatives were
+both worse. Calling `has_attribute` first would double the crossings of the very
+operation being measured, for a reason that has nothing to do with strings, and
+would corrupt the measurement this crate exists to take. Returning `len + 1` and
+reserving `0` for absent would put arithmetic in the host and in every guest
+binding forever, to avoid spending one status code. A guest binding maps `ABSENT`
+to `Ok(None)` and every other negative to an error, so no guest above the
+bindings sees it as a failure — and the host does not record it in `last_error`,
+because a guest polling for an optional attribute would otherwise leave the error
+slot permanently set to something that never went wrong.
+
+### The measurement: reading
+
+From `tests/end_to_end.rs`, reading back the page the counter mounted.
+
+| Operation | Calls | Bytes host → guest | Host-side `String` bytes |
+| --- | --- | --- | --- |
+| `get_attribute` (`class`, `"count"`) | 1 | 5 | 5 |
+| `get_attribute` (absent) | 2 | 0 | 0 |
+| `get_attribute` (present, empty) | 1 | 0 | 0 |
+| `text_content` (`"+10"`) | 1 | 3 | 3 |
+| `has_attribute` | 2 | 0 | 0 (see below) |
+| **total** | **7** | **8** | **8** |
+
+**Read the two byte columns together, and then compare them with the write
+direction.**
+
+- Setting `class="count"` costs **0 bytes.** A handle and two atoms.
+- Reading `class` back costs **5 bytes across the boundary and 5 more
+  allocated host-side**, so 10 bytes of copying for a 5-byte answer.
+
+That is the reversal, and it is not marginal: an operation that was free becomes
+one that pays for its value twice. The atom is still free — the *name* costs
+nothing, on a read as on a write — and it buys nothing, because the answer was
+never a name.
+
+**The comparison is stated at steady state, and that is the harshest version of
+it, not the kindest.** The first write of `class="count"` was not free: it cost
+10 bytes of interning, once, exactly as the mounting table records. What it
+bought was that every write after it is free, forever. A read buys nothing of
+the kind. The tenth read of the same unchanged attribute costs the same 5 bytes
+across and 5 bytes host-side as the first, because there is no place in the
+design for a returned value to be amortised into. So the gap between the two
+directions does not narrow as a page runs — it widens.
+
+There is a third copy the counters cannot see, and it belongs in this table's
+footnotes rather than out of the document: a guest binding that hands back an
+owned `String` allocates the value again on the guest side. The ergonomic
+`Element::get_attribute` therefore copies a 5-byte value three times. The
+`_into` variants, which write into a `Vec<u8>` the guest reuses across frames,
+cost two. Neither costs one.
+
+`has_attribute`'s zero in the host-side column is **a lie of omission, and it is
+recorded as one**: `element::has_attribute` goes through the same `read_attr` as
+`get_attribute`, so it clones the attribute's value into a `String` and discards
+it to answer a boolean. Counting that would mean reading the value a second time
+purely to measure it. So the zero is asserted, and this sentence is what stops
+it being read as "free".
+
+### The failure mode, measured
+
+A 200-byte attribute, against the guest bindings' 64-byte first guess:
+
+| | Value |
+| --- | --- |
+| Host calls for one read | **2** |
+| Bytes host → guest | 200 |
+| Host-side `String` bytes | **400** |
+| Host allocations | 2 |
+
+600 bytes of copying to deliver 200, and two crossings to deliver one value.
+That is what mechanism (b) costs when its guess is wrong, and it is the number
+to beat.
+
+### What this is not
+
+**No write-into-buffer reader is added here, deliberately.**
+`blitz-dom-api`'s MAPPING.md already names the fix — `get_attribute_into(&mut
+buf)` and its siblings, so the host-side `String` never exists — and it would
+halve the numbers above. It is a *second* experiment, and it is only meaningful
+against a baseline. This section is that baseline.
 
 ## The export
 
@@ -194,17 +355,28 @@ because the second occurrence of a given sentence is rare.
 
 ### Which operation uses which
 
-| Operation | Tier | Bytes copied per call |
-| --- | --- | --- |
-| `intern` | (b), by definition | `len` |
-| `create_element` | (a) | 0 |
-| `create_text` | (b) | `len` |
-| `append_child` | neither: two handles | 0 |
-| `set_attribute` | (a) for both name and value | 0 |
-| `set_text` | (b) | `len` |
-| `add_listener` | (a) | 0 |
-| `remove_listener` | neither: one listener id | 0 |
-| `dispatch` (export) | neither: one listener id | 0 |
+| Operation | Tier | Direction | Bytes per call |
+| --- | --- | --- | --- |
+| `intern` | (b), by definition | guest → host | `len` |
+| `create_element` | (a) | none | 0 |
+| `create_text` | (b) | guest → host | `len` |
+| `append_child` | neither: two handles | none | 0 |
+| `set_attribute` | (a) for both name and value | none | 0 |
+| `set_text` | (b) | guest → host | `len` |
+| `add_listener` | (a) | none | 0 |
+| `remove_listener` | neither: one listener id | none | 0 |
+| `get_attribute` | (a) for the name, **neither for the value** | host → guest | `len` |
+| `text_content` | (b), and it cannot be otherwise | host → guest | `len` |
+| `has_attribute` | (a) | none | 0 |
+| `dispatch` (export) | neither: one listener id | none | 0 |
+
+The third tier the readers reveal is **(c): not a tier at all.** A returned
+value is neither interned nor copied-by-agreement; it is copied because it is
+the answer. Interning it would be absurd — an atom is never released, so
+interning what a page *reads* would grow the host's table with the page's own
+content — and there is nothing cheaper to send instead. That is the structural
+reason reads reverse the result, stated without a measurement: the two tiers
+that make writes cheap have no read-direction counterpart.
 
 ### The measurement: mounting
 
@@ -271,16 +443,17 @@ global allocator and no panic handler, and supplying both by hand would shrink
 the module without moving a single boundary byte.
 
 The number worth noticing is the other one: **a guest carrying a whole reactive
-framework imports the same eight names as a guest carrying none.** The
-framework is entirely on the guest side of the boundary, which is what
+framework imports the same names as a guest carrying none.** The framework is
+entirely on the guest side of the boundary, which is what
 `the_guest_imports_only_the_blitz_module` asserts.
 
 ## Errors
 
 **Every host function returns `i32`. Negative is an error, non-negative is
-success.** For an operation that creates something the value *is* the handle or
-atom; for the rest it is `OK`, which is zero. Handles and atoms are therefore
-capped at `i32::MAX`, which buys a single return value instead of an
+success**, with exactly one exception, `ABSENT`. For an operation that creates
+something the value *is* the handle or atom; for a reader it is the byte length
+of the value; for the rest it is `OK`, which is zero. Handles and atoms are
+therefore capped at `i32::MAX`, which buys a single return value instead of an
 out-pointer and the bounds check that out-pointer would need.
 
 | Code | Meaning |
@@ -294,6 +467,7 @@ out-pointer and the bounds check that out-pointer would need.
 | `-6` | `ERR_TOO_MANY_HANDLES` |
 | `-7` | `ERR_BAD_LISTENER` |
 | `-8` | `ERR_TOO_MANY_LISTENERS` |
+| `-9` | `ABSENT` — **not an error.** See "The read direction". |
 
 `ERR_BAD_LISTENER` is separate from `ERR_BAD_HANDLE` because they are different
 namespaces: a listener id indexes the listener table, a handle indexes the node
@@ -344,12 +518,44 @@ guest export. See "Events: deferred dispatch" for the full design and for the
 
 ## Counters
 
-Three numbers per operation, and deliberately no timing. A timing number
+Five numbers per operation, and deliberately no timing. A timing number
 measured on one machine, in one build profile, against an interpreter is not
 evidence; a byte count is identical everywhere and is exactly what the boundary
 design changes.
 
-`bytes_copied` counts bytes read out of guest linear memory, and nothing else.
+**The two directions are separate fields and there is no total that mixes
+them.** A read byte and a write byte are not the same thing — they are produced
+by different mechanisms and cost different amounts — so a number that added them
+would be a number nobody could act on.
+
+| Field | Direction | Counts |
+| --- | --- | --- |
+| `bytes_copied` | guest → host | bytes read **out of** guest linear memory |
+| `bytes_written` | host → guest | bytes written **into** guest linear memory |
+| `host_string_bytes` | neither | owned host-side `String` bytes the call had to materialise |
+| `host_allocs` | neither | allocations this crate made or took ownership of |
+| `calls` | | invocations, errors included |
+
+`Counters::total_bytes_copied` and `Counters::total_bytes_written` are the two
+per-direction totals; `total_bytes_crossed` is the grand total and is for a
+grand total only, never for a claim about one direction.
+`Op::payload_direction` says which way a given operation can move bytes at all,
+so a report can group by direction without its author remembering the table.
+
+`host_string_bytes` is **the copy that never crosses the boundary**, and it is
+the number that stops a byte-across-the-boundary count from flattering itself.
+Both directions pay it, for different reasons:
+
+- Writing, because `read_string` must drop its borrow of guest memory before the
+  document is touched — that is the reentrancy rule, and it is not negotiable —
+  so the bytes land in a `String` first and the facade copies them again.
+- Reading, because every reader in `blitz-dom-api` returns an owned `String` by
+  design, and the host then copies it into guest memory.
+
+So a string operation of `n` payload bytes costs roughly `2n` bytes of copying,
+of which only `n` is boundary traffic. That is true in both directions; what
+differs is that the write direction's `n` is usually zero, because the value was
+an atom, and the read direction's never is.
 
 `dispatch` is counted here too, and it is the one counter that goes the other
 way: a call the *host* made into the guest. It is in this table anyway because
@@ -358,18 +564,25 @@ is the question the whole event path exists to answer. It is excluded from
 `total_calls`, which counts inbound calls and would answer no question at all
 with an outbound one added to it.
 
-`host_allocs` counts allocations **this crate** makes: the `String` built from
-guest memory. It does not count allocations inside `blitz-dom-api` or
-`blitz-dom`, which this crate cannot see without instrumenting packages it does
-not own, and it does not count the amortised growth of the listener table on
-`add_listener`, which is not a per-call allocation. `add_listener`'s zero
-therefore means "no string was built", not "no memory moved". Those omitted
-allocations exist and are not negligible:
-`blitz_dom_api::document::create_element` lowercases the tag into a fresh
-`String`, and every reader in the facade returns an owned `String` by design
-(see its MAPPING.md, "Readers allocate a `String`, so the wasm path pays two
-copies"). A reader of these counters must not take "zero host allocs" to mean
-"nothing was allocated".
+`host_allocs` counts allocations **this crate** makes or takes ownership of: the
+`String` built from guest memory on a write, and the `String` a facade reader
+hands back on a read. It does not count allocations the facade makes and keeps,
+which this crate cannot see without instrumenting packages it does not own, and
+it does not count the amortised growth of the listener table on `add_listener`,
+which is not a per-call allocation. `add_listener`'s zero therefore means "no
+string was built", not "no memory moved". Those omitted allocations exist and
+are not negligible:
+
+- `blitz_dom_api::document::create_element` lowercases the tag into a fresh
+  `String`.
+- `element::get_attribute` and `element::has_attribute` lowercase the attribute
+  *name* into a fresh `String` before the lookup, so a read allocates twice
+  host-side and only one of those is counted.
+- `element::has_attribute` clones the attribute's *value* and discards it, to
+  answer a boolean. Its zeros in both byte columns are real and its cost is not.
+
+A reader of these counters must not take "zero host allocs" to mean "nothing was
+allocated".
 
 Within that definition, `set_attribute` and `create_element` really do allocate
 nothing here. That took work: the obvious implementation resolves an atom and
@@ -395,8 +608,10 @@ is the caller. See its MAPPING.md.
    it, asks its window for the frame, and calls `clear_redraw_request`. An
    embedder driving the guest's exports directly, with no events involved,
    gates on `mutated()` as before.
-3. **The layout flush before a geometry read.** None of the eight operations
-   reads geometry, so this does not bite yet. It will the moment
+3. **The layout flush before a geometry read.** None of the eleven operations
+   reads geometry — the three readers added for the read direction read
+   attributes and text, which layout does not touch — so this does not bite
+   yet. It will the moment
    `getBoundingClientRect` is added: the facade does not flush, and a caller
    that forgets reads the layout from before its own mutations, silently.
 
@@ -420,11 +635,13 @@ document succeeds and silently empties the element.
   pattern was proven. Its `Cargo.lock` is committed for the same reason that
   one is: the harness reproduces a measurement, and a measurement whose
   versions cannot be re-resolved is an anecdote.
-- **`alloc`/`dealloc` are exported by the guest but the host never calls
-  them.** With these eight operations every string travels guest to host, so
-  the guest allocates its own and the host only reads. They exist now because
-  the first operation that returns a string to the guest needs them to already
-  have a settled signature.
+- **`alloc`/`dealloc` are exported by the guest and the host still never calls
+  them** — and that is now a decision, not a gap. The read direction exists, and
+  the mechanism chosen for it hands the host a buffer the guest already owns.
+  Calling `alloc` would be mechanism (c): a host function calling into the guest
+  mid-call, which is the one thing this ABI is built not to do. They stay
+  exported because they cost nothing and an embedder placing bytes in the module
+  from outside may want them.
 - **`dispatch` is exported by the demo guest, not by the bindings.** The
   bindings supply `run_listener`, which is half of it. The other half is the
   drain, and only the guest knows what its framework considers settled; a
@@ -449,6 +666,91 @@ document succeeds and silently empties the element.
   `set_attribute_str` taking `(ptr, len)` for the value; it is not needed for
   the five-operation set and adding it now would mean guessing at the split
   before there is a caller to observe.
+
+## Templates and lists: what is settled, and what is blocked
+
+`instantiate`, `set_binding` and `drop_instance` are **not bound**, because
+`blitz-templates` does not exist — not in this workspace, not on any branch of
+this repository. Nothing here can be built against a package that is not there,
+and a binding written against a guessed template representation would be the
+expensive kind of wrong.
+
+What *is* settled is the list-key representation, because that could be settled
+against real code rather than against a design. `map_array` has landed in
+`SolidRS` (`src/map.rs`; the suite is 183 tests and passes). Reading it changed
+the answer.
+
+### What `map.rs` actually produces
+
+- **A key is a type, not a value.** `K: Eq + Hash + 'static`, chosen by the
+  guest. `map_array` (identity mode) sets `K = Item` and clones the item;
+  `map_array_keyed` takes a key function; `map_array_by_index` has **no key at
+  all** — its `same_position` predicate is the constant `true`, because rows are
+  positional there.
+- **A key never leaves the guest, and is never stored.** It is recomputed from
+  the item on every pass, dropped into a `HashMap<K, isize>` for the duration of
+  that pass, and discarded. `MapData` holds items, mappings, owners and signals;
+  it does not hold keys.
+- **Duplicate keys are legal.** `new_indices_next` chains them, scanning
+  backwards so that duplicates match in natural order. Upstream permits this and
+  the port preserves it.
+- **Mapped-array identity is load-bearing.** A pass with no structural change
+  returns the *same* `Rc<Vec<M>>`, and `Rc::ptr_eq` is the memo's comparator, so
+  downstream consumers do not re-run at all.
+
+### The representation that follows
+
+**The key that crosses is a `u32` row id the guest issues, one per live row
+scope. It is not the key, not a hash of the key, and not an atom.**
+
+Each of the three alternatives fails against something in the list above:
+
+- **The key's bytes.** `K` need not be a string, so there is often nothing to
+  send; and when there is, this is Part 1's problem again — the whole list's
+  keys would cross on every pass, and "The read direction" measured what
+  per-frame string traffic costs.
+- **A hash of the key.** `map.rs` resolves collisions with full `Eq` inside its
+  `HashMap<K, _>`. The guest therefore has fidelity the host would not, and a
+  colliding pair would fuse two distinct rows into one — the host reusing the
+  wrong node for the wrong scope, silently, and only under collision.
+- **An atom.** Atoms are never released, and that is right for names because
+  names come from a small fixed vocabulary. Row keys come from the *data*. A
+  list that scrolls a million rows past would add a million entries the
+  interner can never free. A row id needs a free list; an atom is exactly the
+  thing that does not have one.
+
+A row id also resolves the duplicate-key problem rather than inheriting it. Two
+rows with the same `K` are two row scopes, so they are two ids — the guest has
+already disambiguated them with full `Eq` before anything crosses.
+
+### The consequence for "two reconciliations over one identity"
+
+This is the part worth stating plainly: **two independent reconciliations agree
+only if they run the same algorithm.** If the host reconciled by `K` and the
+guest reconciled by `K`, they would have to match on duplicate handling, on
+prefix and suffix skipping, and on the order removals are committed in — and
+where they differed, the guest's scope for one row would end up bound to the
+host's node for another, silently and only on some edits.
+
+Reconciling on the row id removes that requirement instead of documenting it.
+Exactly one row exists per id, so the host's reconciliation is a lookup with no
+ambiguity left in it, and the algorithm that resolved the ambiguity is the one
+in `map.rs` — which is the one with the tests.
+
+Two things follow for the calls, when they can be written:
+
+1. `drop_instance(node)` corresponds to a row scope's disposal, which `map.rs`
+   defers to commit time so that removals happen *after* the pass's new rows are
+   created. The host must tolerate that order: a row id can be issued for a new
+   row before the id of the row it displaced has been dropped.
+2. `set_binding(node, binding_id, value)` needs the two tiers Part 1 measured,
+   not one. A binding's *name* is a small fixed vocabulary and should be an atom
+   like `binding_id` already is; a binding's *value* is per-frame content and
+   must be copied `(ptr, len)`, for the same reason `set_text` is copied and
+   `set_attribute` is not.
+
+None of that is bound. It is written down so that when `blitz-templates`
+arrives, the key question is already answered against code that exists.
 
 ## Not what the brief assumed
 

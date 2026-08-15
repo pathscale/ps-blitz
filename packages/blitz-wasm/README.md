@@ -56,15 +56,38 @@ panel.set_attribute("class", "panel")?;
 panel.append(text("hello")?)?;
 Node::mount().append(panel.node())?;
 panel.on("click", || { /* ... */ })?;
+
+assert_eq!(panel.get_attribute("class")?.as_deref(), Some("panel"));
+assert_eq!(panel.text_content()?, "hello");
 ```
 
-## The eight operations
+## The eleven operations
 
 `intern`, `create_element`, `create_text`, `append_child`, `set_attribute`,
-`set_text`, `add_listener`, `remove_listener`. Five are enough to build a page;
-`intern` is what makes those five callable, since they all take names as atoms;
-the last two are what make the page respond. There is one export, `dispatch`.
+`set_text`, `add_listener`, `remove_listener`, `get_attribute`, `text_content`,
+`has_attribute`. Five are enough to build a page; `intern` is what makes those
+five callable, since they all take names as atoms; the next two are what make
+the page respond; the last three read it back. There is one export, `dispatch`.
 The full 35 operations `blitz-dom-api` exposes are deliberately not ported yet.
+
+## Reads go the other way, and cost more
+
+The first eight operations all travel guest to host. The three readers reverse
+that, and the mechanism is **the guest supplies the buffer**: `(ptr, cap)` in,
+the value's full byte length out, and the guest retries with a bigger buffer if
+it did not fit. The two alternatives — ask-then-fetch, and the host calling the
+guest's `alloc` — are recorded in ABI.md with what each would have cost.
+
+Reads are the axis this design does not win, and ABI.md says so with numbers
+rather than hedging. Setting `class="count"` costs **0 bytes**; reading it back
+costs **5 across the boundary and 5 more allocated host-side**, because the
+facade returns an owned `String` and the atom design has nothing to amortise
+when the answer *is* the payload. A value that overflows the guest's buffer
+costs two host calls and two host-side copies to deliver one value.
+
+The obvious fix — a reader that writes straight into the guest's buffer, so the
+host-side `String` never exists — is deliberately **not** here. It is a second
+experiment and it needs this baseline to be measured against.
 
 ## Events are dispatched *after* propagation
 
@@ -89,9 +112,14 @@ allocate nothing on the host side.
 Clicking it: **zero bytes.** An event is a listener id; the only byte that
 moves is the digit the effect writes back into the DOM.
 
-`tests/end_to_end.rs` asserts those numbers, including the interning cost. A
-"zero bytes copied" claim that omits what interning cost would be a true number
-telling a false story.
+Reading it back: **8 bytes host-to-guest, and 8 more allocated host-side that
+never cross at all.** See "Reads go the other way" above; the two directions are
+separate counters and there is no total that mixes them.
+
+`tests/end_to_end.rs` asserts those numbers, including the interning cost and
+the host-side copies. A "zero bytes copied" claim that omits what interning cost
+would be a true number telling a false story, and so would a read measured only
+at the boundary.
 
 ## Tests
 
@@ -129,11 +157,26 @@ with no JavaScript in any step. The effect writes into a `<span>` the handler
 never mentions, so a guest that simply set text on its own event target would
 fail the test — the reactive graph in the middle is load-bearing.
 
-A guest carrying a whole reactive framework imports the same eight names as a
-guest carrying none, which is the sharpest statement of where the boundary is.
+It also exports `echo`, which reads the tree back out of the host and writes
+what it read into the document verbatim, and `probe_forged`, which calls the
+readers with a handle the host never issued and a buffer outside its own memory
+and checks that it was told so rather than killed. Those two are how the read
+direction is tested at the DOM rather than at a return code.
+
+A guest carrying a whole reactive framework imports the same names as a guest
+carrying none, which is the sharpest statement of where the boundary is.
+
+## Templates and lists
+
+`instantiate` / `set_binding` / `drop_instance` are not bound: `blitz-templates`
+does not exist yet. The list-key question *is* settled, against `map_array` in
+[`SolidRS`](https://github.com/pathscale/SolidRS) rather than against a design —
+the key that crosses is a `u32` row id the guest issues per live row scope, not
+the key, not a hash of it, and not an atom. ABI.md has the three reasons and
+what each alternative breaks.
 
 ## Not here
 
-The other 27 facade operations, `preventDefault`, event objects with payloads,
-and anything from the `chuzz` repo. A click carries its listener id and nothing
-else.
+The other 24 facade operations, `preventDefault`, event objects with payloads,
+a write-into-buffer reader, and anything from the `chuzz` repo. A click carries
+its listener id and nothing else.
