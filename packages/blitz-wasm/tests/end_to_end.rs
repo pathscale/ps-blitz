@@ -9,6 +9,7 @@
 
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::OnceLock;
 
 use blitz_dom::{BaseDocument, DocumentConfig, NodeData, NodeId, qual_name};
 use blitz_dom_api::{document, element, node};
@@ -23,6 +24,17 @@ use wasmi::{Engine, Instance, Linker, Module, Store};
 /// workspace's target directory, so a guest that shared it would deadlock here
 /// rather than fail, and a deadlocked test looks like a hung machine.
 fn build_guest() -> Vec<u8> {
+    // Built once for the whole binary. Every test needs the module, cargo runs
+    // them on separate threads, and six concurrent `cargo build` invocations
+    // against one target directory race: cargo serialises on the lock, but a
+    // test can still read the `.wasm` while another invocation is replacing
+    // it. That produced exactly one spurious failure under load, which is the
+    // worst frequency for a flake to have.
+    static GUEST: OnceLock<Vec<u8>> = OnceLock::new();
+    GUEST.get_or_init(build_guest_once).clone()
+}
+
+fn build_guest_once() -> Vec<u8> {
     let guest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("guest");
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
 

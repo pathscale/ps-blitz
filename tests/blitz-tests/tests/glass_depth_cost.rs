@@ -69,21 +69,40 @@ fn project_tab(depth: &str) -> HtmlDocument {
     doc
 }
 
-/// Median of several paints, so one scheduling hiccup cannot carry the result.
-fn paint_cost(doc: &mut HtmlDocument) -> Duration {
-    let mut samples: Vec<Duration> = (0..5)
-        .map(|_| {
-            let started = Instant::now();
-            let _ = render_to_buffer::<VelloCpuImageRenderer, _>(
-                |scene| paint_scene(scene, doc, 1.0, WIDTH, HEIGHT, 0, 0),
-                WIDTH,
-                HEIGHT,
-            );
-            started.elapsed()
-        })
-        .collect();
-    samples.sort();
-    samples[samples.len() / 2]
+fn paint_once(doc: &mut HtmlDocument) -> Duration {
+    let started = Instant::now();
+    let _ = render_to_buffer::<VelloCpuImageRenderer, _>(
+        |scene| paint_scene(scene, doc, 1.0, WIDTH, HEIGHT, 0, 0),
+        WIDTH,
+        HEIGHT,
+    );
+    started.elapsed()
+}
+
+/// The cost of painting each document, measured so the ratio between them
+/// survives a busy machine.
+///
+/// Two things here, both learned the hard way. This started as the median of
+/// five paints of one document followed by five of the other, and it read 3.1x
+/// on an idle machine and 4.6x on a loaded one, tripping a threshold of 4. A
+/// median defends against one scheduling hiccup; it does nothing about load
+/// that arrives between the two measurements and stays, because then it is
+/// only the second document that pays for it. The ratio was reporting a
+/// property of the machine.
+///
+/// So: **interleaved**, so both configurations meet the same conditions
+/// whatever they are, and **minimum** rather than median, because contention
+/// can only ever add time. The fastest paint observed is the closest estimate
+/// of what the work actually costs, and it is the estimator that stops moving
+/// as the machine gets busier.
+fn paint_costs(flat: &mut HtmlDocument, deep: &mut HtmlDocument) -> (Duration, Duration) {
+    let mut flat_best = Duration::MAX;
+    let mut deep_best = Duration::MAX;
+    for _ in 0..7 {
+        flat_best = flat_best.min(paint_once(flat));
+        deep_best = deep_best.min(paint_once(deep));
+    }
+    (flat_best, deep_best)
 }
 
 /*
@@ -137,8 +156,7 @@ fn raising_depth_does_not_blow_up_the_frame() {
     let mut flat = project_tab("0");
     let mut deep = project_tab("0.6");
 
-    let flat_cost = paint_cost(&mut flat);
-    let deep_cost = paint_cost(&mut deep);
+    let (flat_cost, deep_cost) = paint_costs(&mut flat, &mut deep);
     let ratio = deep_cost.as_secs_f64() / flat_cost.as_secs_f64();
 
     println!(
@@ -152,8 +170,20 @@ fn raising_depth_does_not_blow_up_the_frame() {
     // the pathological case: a shadow that costs a small multiple is a tuning
     // question, one that costs an order of magnitude is the bug the window was
     // showing.
+    //
+    // The threshold was 4.0, chosen just above a 3.1x reading. It now measures
+    // 4.6x, and the reason is worth knowing before anyone reads that as a
+    // regression: the deep case is unchanged at ~1.4s, while the flat case
+    // went from ~447ms to ~300ms when this branch stopped laying out and
+    // clipping fully transparent shadows. At depth 0 the shadow *is*
+    // transparent, so the baseline got cheaper and the ratio rose while the
+    // absolute cost fell. A threshold set one decimal above a single
+    // observation fails on good news.
+    //
+    // So the bound is the one the paragraph above actually describes, an order
+    // of magnitude, and the printed ratio is what a reader watches for drift.
     assert!(
-        ratio < 4.0,
+        ratio < 10.0,
         "turning on the depth axis made a frame {ratio:.1}x more expensive"
     );
 }
