@@ -66,22 +66,37 @@ cases, same edge-case behaviour, so that the upstream function body becomes
 | `innerHTML =` | `element.rs:885` | `element::set_inner_html` | identical. Worth stating rather than assuming: what gets parsed comes from the document's `html_parser_provider`, and the default one parses nothing, so against a `DocumentConfig::default()` document this only empties the element |
 | `matches` | `element.rs:1211` | `element::matches` | **different**: unparseable selector is `Err(InvalidSelector)`. Upstream's `is_ok_and` maps it to `false` |
 | `closest` | `element.rs:1223` | `element::closest` | **different**: same. Upstream's `unwrap_or_default` searches an empty match set |
-| `getBoundingClientRect` | `element.rs:1127` | `geometry::bounding_client_rect` | **different**: does not flush layout. See below |
+| `getBoundingClientRect` | `element.rs:1127` | `geometry::bounding_client_rect` | **different**: does not flush layout. Flushing is an obligation on the caller, see below |
 
-### `getBoundingClientRect` is the one contract that had to change
+### The flush obligation on `getBoundingClientRect`
 
-Upstream calls `DomCtx::flush_layout` (`state.rs`) first, which resolves the
-document only if script has mutated it since the last frame. That dirty flag is
-runtime state: it is set by every mutation the *binding* routes through
-`mutate_doc`, and cleared by the flush. An operation over a borrowed
-`&BaseDocument` has no access to it, and a facade that resolved unconditionally
-would turn a cheap read into a full layout pass on every call.
+**This is an obligation on callers, not a property of the facade.** It is the
+only item in this document that causes a silent behaviour change if missed:
+nothing errors, nothing warns, the read simply answers with the layout from
+before the caller's own mutations.
 
-So the flush stays with the caller and the read moves here. A reparented
-`blitz-script` keeps its `ctx.flush_layout()` line and replaces only what
-follows it. `geometry::bounding_client_rect` documents this, and
-`geometry::tests::the_read_does_not_flush_layout` asserts it, so the difference
-cannot quietly stop being true.
+The state. `blitz-script` flushes at `dom/element.rs:1135`, calling
+`DomCtx::flush_layout` before it reads. That resolves the document only if
+script has mutated it since the last frame, tracked by a dirty flag that every
+mutation through `DomCtx::mutate_doc` sets and the flush clears. The flag is
+runtime state: an operation over a borrowed `&BaseDocument` has no access to
+it, and a facade that resolved unconditionally would turn a cheap read into a
+full layout pass on every call.
+
+Therefore:
+
+- **Any binding must flush before calling `geometry::bounding_client_rect`.**
+  The facade will not do it and cannot detect that you did not.
+- **Reparenting `blitz-script` must keep the `ctx.flush_layout()` call at
+  `dom/element.rs:1135`.** Only the read below it is replaced. Deleting the
+  flush on the assumption that the facade inherited it is precisely the silent
+  regression this section exists to prevent: the composer's autosize measures,
+  writes, and measures again, and it would measure the pre-write layout every
+  time.
+
+`geometry::bounding_client_rect`'s own documentation states this, and
+`geometry::tests::the_read_does_not_flush_layout` asserts the facade really
+does not flush, so the obligation cannot quietly stop being real.
 
 ## CharacterData — `node.rs`
 
@@ -172,6 +187,48 @@ them compiles and then misbehaves:
    special-cases it at `document.rs:261`). A different runtime will coerce
    differently; that is the binding's business and deliberately not this
    crate's.
+
+## Known costs, and what they are not evidence about
+
+Two deliberate choices here will show up in a `blitz-wasm` profile. Both are
+recorded now so that a future reader measuring that profile attributes them
+correctly, rather than reading them as an argument against the design they sit
+next to.
+
+### Readers allocate a `String`, so the wasm path pays two copies
+
+Reading an attribute allocates a `String` on the host and the binding then
+copies it into guest linear memory. That is two copies where one would do.
+
+**This is a facade cost, not an ABI cost.** It is a consequence of this crate's
+borrow discipline, which returns owned values so that no borrow survives a call
+and a guest re-entering between operations cannot panic inside `RefCell`. It
+says nothing about the handle design, and a counter showing it should not be
+read as evidence against handles: the same handle ABI over a write-into-buffer
+reader would pay one copy.
+
+The eventual fix is that variant: `get_attribute_into(&mut buf)` and its
+siblings, writing straight into a caller-supplied buffer so the host-side
+`String` never exists. Not added now because there is no caller to shape it
+around, and a buffer API guessed at without one is the harder thing to change
+later.
+
+### The interner is bypassed, so names are re-interned by hashing
+
+`AtomId` and `Interner` exist and the ownership rule is settled (one interner
+per document; an id is only valid against the interner that minted it), but the
+operations take `&str`. So the binding resolves at its own boundary and hands a
+string in, and `markup5ever` then re-interns that string by hashing it.
+
+**No bytes cross the boundary for this**, so counters measuring what the guest
+transfers are unaffected. It is a timing tax only: one hash per name per
+operation, on names with very small alphabets, exactly where an atom would have
+been free.
+
+Atom-taking variants are deliberately deferred. Add them when `blitz-wasm`'s
+own numbers justify them, and not before: the shape they should take depends on
+what the guest actually passes most, and adding them speculatively fixes a
+signature to a caller that does not exist yet.
 
 ## Out of scope, and why
 
