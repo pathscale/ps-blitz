@@ -90,5 +90,6 @@
 #![forbid(unsafe_code)]
 
 pub mod host;
+pub mod platform;
 pub mod runtime;
 pub mod template;
