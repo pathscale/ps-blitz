@@ -22,9 +22,8 @@ blitz-dom-api = { workspace = true }
 # relationship as `blitz-dom-api`: the logic is there, the ABI is here.
 blitz-platform-api = { workspace = true }
 # The shared guest/host vocabulary: status codes, id caps, and the read
-# protocol. A direct path rather than a workspace dependency only because the
-# workspace entry is being added by the change that introduces the crate.
-dom-abi = { path = "../dom-abi" }
+# protocol. Published separately, so it is versioned in the workspace table.
+dom-abi = { workspace = true }
 blitz-dom = { workspace = true }
 # `DomEvent` and `EventState` live here, and `blitz-dom` does not re-export
 # them. `blitz-script` carries this dependency for exactly the same reason:

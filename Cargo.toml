@@ -66,6 +66,11 @@ accesskit_xplat = { version = "0.1", path = "./packages/accesskit_xplat", defaul
 browser-persistence = { path = "./apps/browser/persistence" }
 blitz-test-harness = { path = "./packages/blitz-test-harness" }
 blitz-dom-api = { path = "./packages/blitz-dom-api" }
+# Published to crates.io on its own 0.1 line, unlike everything else here,
+# which tracks the workspace version. The `version` is what makes a
+# consumer outside this repo resolvable, and it is what caught the copy
+# that had drifted to `publish = false` and a workspace version.
+dom-abi = { version = "0.1.1", path = "./packages/dom-abi" }
 blitz-platform-api = { path = "./packages/blitz-platform-api" }
 
 # Servo dependencies
