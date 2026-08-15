@@ -190,28 +190,67 @@ them compiles and then misbehaves:
 
 ## Known costs, and what they are not evidence about
 
-Two deliberate choices here will show up in a `blitz-wasm` profile. Both are
-recorded now so that a future reader measuring that profile attributes them
-correctly, rather than reading them as an argument against the design they sit
-next to.
+Two deliberate choices here show up in a `blitz-wasm` profile. Both are recorded
+so that a future reader measuring that profile attributes them correctly, rather
+than reading them as an argument against the design they sit next to.
 
-### Readers allocate a `String`, so the wasm path pays two copies
+One of the two has since been measured and addressed, and its entry says so
+rather than being quietly rewritten. A prediction that turned out right is worth
+more on the record than off it.
 
-Reading an attribute allocates a `String` on the host and the binding then
-copies it into guest linear memory. That is two copies where one would do.
+### Readers allocate a `String` — and the buffer variants that do not
 
-**This is a facade cost, not an ABI cost.** It is a consequence of this crate's
-borrow discipline, which returns owned values so that no borrow survives a call
-and a guest re-entering between operations cannot panic inside `RefCell`. It
-says nothing about the handle design, and a counter showing it should not be
-read as evidence against handles: the same handle ABI over a write-into-buffer
-reader would pay one copy.
+**Status: measured, then fixed.** This entry is kept in full rather than
+deleted, because the number it predicted was taken and the prediction was
+right.
 
-The eventual fix is that variant: `get_attribute_into(&mut buf)` and its
-siblings, writing straight into a caller-supplied buffer so the host-side
-`String` never exists. Not added now because there is no caller to shape it
-around, and a buffer API guessed at without one is the harder thing to change
-later.
+The owning readers allocate a `String` on the host, and a binding that wanted
+the bytes somewhere else then copies it there. That is two copies where one
+would do. It was recorded here as **a facade cost, not an ABI cost** — a
+consequence of this crate's borrow discipline, which returns owned values so
+that no borrow survives a call and a runtime re-entering between operations
+cannot find a live one — with the note that the same handle ABI over a
+write-into-buffer reader would pay one copy.
+
+`blitz-wasm` measured it: reading a 5-byte attribute cost 5 bytes across the
+boundary and 5 bytes of host-side `String`, and a 200-byte value that overflowed
+the guest's buffer cost 400 bytes of `String` to deliver 200. Then it became the
+caller this entry was waiting for, and the variants were added:
+
+| Owning | Buffer-writing |
+| --- | --- |
+| `element::get_attribute` | `element::get_attribute_into` |
+| `node::text_content` | `node::text_content_into`, `node::text_content_len` |
+
+Both sets are supported. **The owning readers are not deprecated**: a caller
+that wants a `String` should not have to supply a buffer and then build one, and
+`blitz-script` will want exactly that. The buffer variants return the value's
+full byte length and write only if it fits, which is `snprintf`'s convention and
+the one `blitz-wasm`'s ABI already speaks.
+
+After the change, `blitz-wasm` reports `host_string_bytes == 0` for every read,
+with the bytes that cross the boundary unchanged. The prediction held exactly.
+
+Three things are worth carrying forward from it.
+
+**The borrow discipline was never the obstacle.** `element::find_attr` returns
+`Option<&str>` into the document, and that is fine because it is `pub(crate)`:
+the discipline is a rule about the public surface, and every public caller still
+either clones or writes into a caller-supplied buffer.
+
+**`textContent` is not the same shape as an attribute.** An attribute's value is
+contiguous in the document, so the buffer variant is one `memcpy` and the
+`String` was pure overhead. `textContent` is a concatenation over a subtree that
+exists nowhere until something builds it, so the variant removes an
+*allocation*, not a copy, and pays for the "nothing is written unless it all
+fits" guarantee with a second traversal — one pass to measure, one to fill. A
+caller that already knows the length skips the first with `text_content_len`.
+
+**`has_attribute` was the sharpest case and had no buffer at all.** It went
+through the same helper as `get_attribute`, so it cloned the whole attribute
+value and discarded it to answer a boolean. Zero bytes ever crossed a boundary
+for that, which is precisely why a counter watching the boundary could not have
+found it. It allocates nothing now.
 
 ### The interner is bypassed, so names are re-interned by hashing
 

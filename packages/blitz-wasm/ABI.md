@@ -48,12 +48,17 @@ it" case, which is why there is no separate `set_data`.
 with numbers rather than to hedge.**
 
 The prediction was that reads would reverse the result, for two reasons. First,
-every reader in `blitz-dom-api` returns an owned `String`, so a read costs two
+every reader in `blitz-dom-api` returned an owned `String`, so a read cost two
 copies: one into that host `String` and one into guest memory. Second, the
 handle-and-atom design saves nothing on a read, because the bytes coming back
 *are* the payload — there is no vocabulary to amortise when the answer is the
-content. Both held. The measurement is under "The measurement: reading", and it
-is worse than the write direction's by exactly the factor predicted.
+content.
+
+Both held on first measurement. **The first has since been removed and the
+second has not**, because only one of them was ever about the boundary. See
+"The second experiment" below for what changed and by how much; the numbers
+under "The measurement: reading" are the current ones, and the ones they
+replaced are quoted beside them.
 
 ### The mechanism: no direction existed to reuse
 
@@ -127,74 +132,161 @@ slot permanently set to something that never went wrong.
 
 ### The measurement: reading
 
-From `tests/end_to_end.rs`, reading back the page the counter mounted.
+From `tests/end_to_end.rs`, reading back the page the counter mounted. The
+"before" column is the first measurement, taken against the facade's owning
+readers; see "The second experiment" for what moved it.
 
-| Operation | Calls | Bytes host → guest | Host-side `String` bytes |
-| --- | --- | --- | --- |
-| `get_attribute` (`class`, `"count"`) | 1 | 5 | 5 |
-| `get_attribute` (absent) | 2 | 0 | 0 |
-| `get_attribute` (present, empty) | 1 | 0 | 0 |
-| `text_content` (`"+10"`) | 1 | 3 | 3 |
-| `has_attribute` | 2 | 0 | 0 (see below) |
-| **total** | **7** | **8** | **8** |
+| Operation | Calls | Bytes host → guest | Host `String` bytes, before | after |
+| --- | --- | --- | --- | --- |
+| `get_attribute` (`class`, `"count"`) | 1 | 5 | 5 | **0** |
+| `get_attribute` (absent) | 2 | 0 | 0 | 0 |
+| `get_attribute` (present, empty) | 1 | 0 | 0 | 0 |
+| `text_content` (`"+10"`) | 1 | 3 | 3 | **0** |
+| `has_attribute` | 2 | 0 | 0 (a lie, then) | 0 (true, now) |
+| **total** | **7** | **8** | **8** | **0** |
 
-**Read the two byte columns together, and then compare them with the write
-direction.**
+**Compare the surviving column with the write direction.**
 
 - Setting `class="count"` costs **0 bytes.** A handle and two atoms.
-- Reading `class` back costs **5 bytes across the boundary and 5 more
-  allocated host-side**, so 10 bytes of copying for a 5-byte answer.
+- Reading `class` back costs **5 bytes**, and now nothing else.
 
-That is the reversal, and it is not marginal: an operation that was free becomes
-one that pays for its value twice. The atom is still free — the *name* costs
-nothing, on a read as on a write — and it buys nothing, because the answer was
-never a name.
+That is still the reversal, and it is still not marginal: an operation that was
+free becomes one that pays its value in full. The atom is still free — the
+*name* costs nothing, on a read as on a write — and it still buys nothing,
+because the answer was never a name. What the second experiment removed was the
+*surcharge*, not the payload.
 
 **The comparison is stated at steady state, and that is the harshest version of
 it, not the kindest.** The first write of `class="count"` was not free: it cost
 10 bytes of interning, once, exactly as the mounting table records. What it
 bought was that every write after it is free, forever. A read buys nothing of
 the kind. The tenth read of the same unchanged attribute costs the same 5 bytes
-across and 5 bytes host-side as the first, because there is no place in the
-design for a returned value to be amortised into. So the gap between the two
-directions does not narrow as a page runs — it widens.
+as the first, because there is no place in the design for a returned value to be
+amortised into. So the gap between the two directions does not narrow as a page
+runs — it widens.
 
 There is a third copy the counters cannot see, and it belongs in this table's
 footnotes rather than out of the document: a guest binding that hands back an
 owned `String` allocates the value again on the guest side. The ergonomic
-`Element::get_attribute` therefore copies a 5-byte value three times. The
-`_into` variants, which write into a `Vec<u8>` the guest reuses across frames,
-cost two. Neither costs one.
+`Element::get_attribute` therefore copies a 5-byte value twice, once into the
+guest's buffer and once into its `String`. The `_into` variants, which write
+into a `Vec<u8>` the guest reuses across frames, cost one. That one is the
+payload and there is no removing it.
 
-`has_attribute`'s zero in the host-side column is **a lie of omission, and it is
-recorded as one**: `element::has_attribute` goes through the same `read_attr` as
-`get_attribute`, so it clones the attribute's value into a `String` and discards
-it to answer a boolean. Counting that would mean reading the value a second time
-purely to measure it. So the zero is asserted, and this sentence is what stops
-it being read as "free".
+`has_attribute`'s zero used to be **a lie of omission**: `element::has_attribute`
+went through the same `read_attr` as `get_attribute`, so it cloned the
+attribute's value into a `String` and discarded it to answer a boolean. It no
+longer does, so the zero is now the whole truth. The sentence that used to
+qualify it is kept here because a reader comparing two runs of this table
+deserves to know which zero they are looking at.
 
 ### The failure mode, measured
 
 A 200-byte attribute, against the guest bindings' 64-byte first guess:
 
-| | Value |
-| --- | --- |
-| Host calls for one read | **2** |
-| Bytes host → guest | 200 |
-| Host-side `String` bytes | **400** |
-| Host allocations | 2 |
+| | before | after |
+| --- | --- | --- |
+| Host calls for one read | 2 | **2** |
+| Bytes host → guest | 200 | 200 |
+| Host-side `String` bytes | 400 | **0** |
+| Host allocations | 2 | **0** |
 
-600 bytes of copying to deliver 200, and two crossings to deliver one value.
-That is what mechanism (b) costs when its guess is wrong, and it is the number
-to beat.
+The second crossing is inherent to mechanism (b) and was never going to move: a
+guest cannot size a buffer for a length it has not been told. The 400 bytes were
+not inherent, and they are gone — neither call builds anything now, because the
+first finds the value already contiguous in the document, measures it, and
+declines to copy.
 
-### What this is not
+## The second experiment: was the read cost the boundary, or the facade?
 
-**No write-into-buffer reader is added here, deliberately.**
-`blitz-dom-api`'s MAPPING.md already names the fix — `get_attribute_into(&mut
-buf)` and its siblings, so the host-side `String` never exists — and it would
-halve the numbers above. It is a *second* experiment, and it is only meaningful
-against a baseline. This section is that baseline.
+The section above named a write-into-buffer reader as the obvious fix and
+declined to build it, on the grounds that it was a second experiment needing a
+baseline. This is that experiment, run against that baseline.
+
+**The question.** A read of `n` bytes cost `n` across the boundary and `n`
+allocated host-side. Was the second `n` a property of the boundary — something
+any ABI over this document would pay — or an artifact of `blitz-dom-api`
+returning owned `String`s?
+
+**What was built.** Buffer-writing readers *beside* the owning ones, not
+replacing them: `element::get_attribute_into` and `node::text_content_into`,
+each taking a `&mut [u8]` and returning the full byte length under the same
+`snprintf` contract this ABI already uses. `blitz-script` will still want the
+owning readers, and they are untouched. `blitz-wasm`'s three readers now hand
+the facade the guest's own buffer, so there is nothing in between.
+
+**The result: `host_string_bytes` for reads went to zero, and `bytes_written`
+did not move.** The cost was the facade. Both tables above carry the before and
+after.
+
+### The two things that made it possible
+
+**`Memory::data_and_store_mut`.** The host has to hold guest memory and the
+document at the same time to write one from the other. `read_string` deliberately
+does the opposite — it drops its borrow of guest memory *before* touching the
+document — and this crate's docs described that as the reentrancy rule.
+It is not. `host_view` holds both at once and is **more** strongly safe: calling
+into the guest requires the store, and it holds the store mutably, so a guest
+call from in there does not typecheck rather than merely not happening. The rule
+is "no guest call with a document borrow live", and holding two borrows is not
+what breaks it.
+
+**A private borrow inside the facade.** `element::find_attr` returns
+`Option<&str>` into the document. The crate's borrow discipline — readers return
+owned values, so no borrow survives a call — is a rule about its *public*
+surface, and `find_attr` is `pub(crate)`. Every public caller either clones it
+or writes it into a buffer the caller supplied.
+
+### Where it did not work the same way, and why
+
+The two readers are not the same shape, and the experiment separated them.
+
+**`get_attribute` was a pure win.** An attribute's value exists in the document
+as contiguous bytes. Reading it into a buffer is one `memcpy` and the owning
+reader's `String` was overhead, start to finish.
+
+**`text_content` traded an allocation for a traversal.** `textContent` is a
+concatenation over a subtree; it does not exist anywhere until something builds
+it, so no reader can hand back bytes that were already sitting there. The
+allocation is gone — the bytes land in the caller's buffer — but honouring
+"nothing is written unless it all fits" needs the length before the first byte
+is written, and that costs a second walk. A single streaming pass would have
+written `one ` before discovering that `two` did not fit, and the guarantee this
+ABI states would have become false.
+
+Whether one allocation is worth one extra pointer-chasing walk is a timing
+question, and this crate measures bytes rather than time on purpose. What is not
+a timing question: the allocation is gone, and a caller that already knows the
+length can skip the measuring pass with `node::text_content_len`.
+
+Both go through `blitz-dom`'s `write_text_content`, which was made public and
+generic over `fmt::Write` so that the counting sink, the filling sink and
+`String` all share one traversal. A private copy of that walk in the facade
+would have disagreed with `blitz-dom`'s the first time a `NodeData` variant was
+added.
+
+### What it did not fix, and what that implies
+
+`has_attribute` picked up a separate improvement on the way past: it went
+through the same cloning helper, so it allocated the whole attribute value to
+answer a boolean. It no longer does. That was never a boundary cost at all —
+zero bytes crossed for it before and after — which makes it the cleanest example
+of the category this experiment was looking for.
+
+**The write direction still pays its `String`, and now that is the conspicuous
+one.** `set_text` of `n` bytes still reports `host_string_bytes == n`, because
+`read_string` copies guest memory into a `String` before the document is
+touched. The counters module used to call that copy "not negotiable, the
+reentrancy rule". **That was wrong, and `host_view` is the proof**: the same
+technique that removed the read direction's copy would remove the write
+direction's. It is not done here because this experiment was scoped to the read
+side and because it would move numbers the mounting table asserts.
+
+So the honest summary is narrower than "the facade was the cause". The facade
+was the cause *of the read direction's surcharge*. The write direction's
+surcharge is this crate's own, it is still there, and
+`the_write_direction_still_pays_for_its_string` is what will notice when it
+stops being.
 
 ## The export
 
@@ -544,18 +636,23 @@ so a report can group by direction without its author remembering the table.
 
 `host_string_bytes` is **the copy that never crosses the boundary**, and it is
 the number that stops a byte-across-the-boundary count from flattering itself.
-Both directions pay it, for different reasons:
+It is also the number that paid for itself: both directions used to report it,
+and finding out that only one of them had to is what "The second experiment"
+above is.
 
-- Writing, because `read_string` must drop its borrow of guest memory before the
-  document is touched — that is the reentrancy rule, and it is not negotiable —
-  so the bytes land in a `String` first and the facade copies them again.
-- Reading, because every reader in `blitz-dom-api` returns an owned `String` by
-  design, and the host then copies it into guest memory.
+- **Writing pays it.** `read_string` copies guest memory into a `String` before
+  the document is touched, and the facade copies that `String` into the node. A
+  `set_text` of `n` bytes reports `bytes_copied == n` and
+  `host_string_bytes == n`.
+- **Reading does not.** The facade's buffer-writing readers put the value
+  straight into the guest's buffer. A read of `n` bytes reports
+  `bytes_written == n` and `host_string_bytes == 0`.
 
-So a string operation of `n` payload bytes costs roughly `2n` bytes of copying,
-of which only `n` is boundary traffic. That is true in both directions; what
-differs is that the write direction's `n` is usually zero, because the value was
-an atom, and the read direction's never is.
+**The asymmetry is this crate's, not the boundary's.** The write direction's
+copy is not required by the reentrancy rule — `host_view` holds guest memory and
+the document at once and is more strongly safe than dropping one first — it is
+required by the shape `read_string` has. Removing it is the next experiment. Do
+not read the write direction's `n` as inherent just because it is still there.
 
 `dispatch` is counted here too, and it is the one counter that goes the other
 way: a call the *host* made into the guest. It is in this table anyway because
@@ -565,24 +662,27 @@ is the question the whole event path exists to answer. It is excluded from
 with an outbound one added to it.
 
 `host_allocs` counts allocations **this crate** makes or takes ownership of: the
-`String` built from guest memory on a write, and the `String` a facade reader
-hands back on a read. It does not count allocations the facade makes and keeps,
-which this crate cannot see without instrumenting packages it does not own, and
-it does not count the amortised growth of the listener table on `add_listener`,
-which is not a per-call allocation. `add_listener`'s zero therefore means "no
-string was built", not "no memory moved". Those omitted allocations exist and
-are not negligible:
+`String` built from guest memory on a write. A read takes ownership of nothing
+now, so its count is zero. It does not count allocations the facade makes and
+keeps, which this crate cannot see without instrumenting packages it does not
+own, and it does not count the amortised growth of the listener table on
+`add_listener`, which is not a per-call allocation. `add_listener`'s zero
+therefore means "no string was built", not "no memory moved".
+
+One omitted allocation is still there and is not negligible:
 
 - `blitz_dom_api::document::create_element` lowercases the tag into a fresh
   `String`.
-- `element::get_attribute` and `element::has_attribute` lowercase the attribute
-  *name* into a fresh `String` before the lookup, so a read allocates twice
-  host-side and only one of those is counted.
-- `element::has_attribute` clones the attribute's *value* and discards it, to
-  answer a boolean. Its zeros in both byte columns are real and its cost is not.
 
-A reader of these counters must not take "zero host allocs" to mean "nothing was
-allocated".
+Two more were, and the second experiment removed them. `element::get_attribute`
+still lowercases the queried name into a `String`, but the reader this crate
+calls, `get_attribute_into`, compares byte by byte instead; and
+`element::has_attribute` no longer clones the attribute's value to answer a
+boolean. Both were costs with **zero boundary traffic** to justify them, which
+is why a counter measuring only the boundary could never have found them.
+
+A reader of these counters must still not take "zero host allocs" to mean
+"nothing was allocated". It means this crate allocated nothing.
 
 Within that definition, `set_attribute` and `create_element` really do allocate
 nothing here. That took work: the obvious implementation resolves an atom and

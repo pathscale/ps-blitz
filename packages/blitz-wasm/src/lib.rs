@@ -289,54 +289,62 @@ fn guest_buffer(caller: &Caller<'_, Host>, ptr: i32, cap: i32) -> Result<GuestBu
     Ok(GuestBuffer { memory, start, cap })
 }
 
-/// Copy a string *into* guest linear memory, and report its length.
+/// Borrow the guest's output buffer and the host at the same time.
 ///
-/// This is the read direction's whole mechanism, and it is option (b) of the
-/// three in ABI.md: the guest supplies the buffer, the host reports the length,
-/// and a guest whose buffer was too small retries with a bigger one.
+/// # Why holding both at once is allowed
+///
+/// [`read_string`] enforces the reentrancy rule by *dropping* its borrow of
+/// guest memory before the document is touched. This holds both together, and
+/// that is a stronger guarantee rather than a weaker one: calling into the
+/// guest requires the store, and `data_and_store_mut` holds the store mutably
+/// for as long as either borrow lives. A guest call from in here is not
+/// forbidden by discipline, it does not typecheck.
+///
+/// That distinction is what makes the whole buffer-writing experiment possible.
+/// The read direction's second copy was never required by the reentrancy rule;
+/// it was required by the *shape* `read_string` happened to have.
+fn host_view<'a>(
+    caller: &'a mut Caller<'_, Host>,
+    buffer: &GuestBuffer,
+) -> Result<(&'a mut [u8], &'a mut Host), i32> {
+    let (memory, host) = buffer.memory.data_and_store_mut(caller);
+    // `guest_buffer` already bounds-checked this range and no guest has run
+    // since, so the `else` is unreachable. Reported rather than indexed,
+    // because the ABI's rule is that nothing traps.
+    let out = memory
+        .get_mut(buffer.start..buffer.start + buffer.cap)
+        .ok_or(ERR_BAD_MEMORY)?;
+    Ok((out, host))
+}
+
+/// Turn a facade reader's byte length into the ABI's return value, and record
+/// what actually crossed.
+///
+/// This is the read direction's protocol, option (b) of the three in ABI.md:
+/// the guest supplies the buffer, the host reports the length, and a guest
+/// whose buffer was too small retries with a bigger one.
 ///
 /// **The return value is always the full byte length, whether or not it fit.**
 /// That is `snprintf`'s convention, and it is what makes one call enough in the
-/// common case and exactly two in the worst one. The write happens only when
+/// common case and exactly two in the worst one. The facade writes only when
 /// `len <= cap`; a truncated result is never written, because half a UTF-8
-/// string is not a string.
+/// string is not a string, and so nothing is recorded in `bytes_written` for a
+/// call that delivered nothing.
 ///
 /// The failure mode is therefore *cost*, not corruption: an undersized buffer
-/// costs a second host call and a second facade read, and the guest sees the
-/// same bytes either way. See ABI.md, "The read direction", for the two
-/// mechanisms this was chosen over and what they would have cost instead.
-///
-/// The reentrancy rule is upheld here for the same reason [`read_string`]
-/// upholds it: by the time this runs, `text` is an owned value the host
-/// function holds, and no borrow of the document is outstanding. Writing it the
-/// other way round — handing this a `&str` borrowed out of the document — would
-/// not compile, because `memory.write` wants the store mutably.
-fn deliver(caller: &mut Caller<'_, Host>, buffer: &GuestBuffer, op: Op, text: &str) -> i32 {
-    let len = text.len();
+/// costs a second host call and a second facade read. What it no longer costs
+/// is a second host-side allocation — see ABI.md, "The second experiment".
+fn report_read(counters: &mut Counters, op: Op, len: usize, cap: usize) -> i32 {
     // A value longer than `i32::MAX` has no representable length under this
     // ABI's one-return-value convention. Unreachable in practice — no guest
     // buffer is 2 GiB — but reported rather than silently truncated.
     let Ok(reported) = i32::try_from(len) else {
-        return caller.data_mut().fail(ERR_BAD_MEMORY);
+        counters.record_error(ERR_BAD_MEMORY);
+        return ERR_BAD_MEMORY;
     };
-    if len > buffer.cap {
-        // Nothing written, so nothing is recorded in `bytes_written`. The
-        // host-side `String` was still allocated, and the caller has already
-        // recorded that: a read that does not fit costs the expensive half
-        // twice and the cheap half once.
-        return reported;
+    if len <= cap {
+        counters.record_write(op, len);
     }
-    if buffer
-        .memory
-        .write(&mut *caller, buffer.start, text.as_bytes())
-        .is_err()
-    {
-        // `guest_buffer` bounds-checked `cap`, and `len <= cap`, so this is
-        // unreachable short of the memory having shrunk underneath us. Reported
-        // rather than unwrapped, because the ABI's rule is that nothing traps.
-        return caller.data_mut().fail(ERR_BAD_MEMORY);
-    }
-    caller.data_mut().counters.record_write(op, len);
     reported
 }
 
@@ -645,7 +653,13 @@ pub fn add_to_linker(linker: &mut Linker<Host>) -> Result<(), wasmi::Error> {
                 Err(status) => return caller.data_mut().fail(status),
             };
 
-            let host = caller.data_mut();
+            // Guest memory and the document, borrowed together. The facade
+            // writes the value straight into `out`, so the host-side `String`
+            // this used to allocate never exists.
+            let (out, host) = match host_view(&mut caller, &buffer) {
+                Ok(both) => both,
+                Err(status) => return caller.data_mut().fail(status),
+            };
             let handle = match u32::try_from(node) {
                 Ok(handle) => handle,
                 Err(_) => return host.fail(ERR_BAD_HANDLE),
@@ -672,24 +686,18 @@ pub fn add_to_linker(linker: &mut Linker<Host>) -> Result<(), wasmi::Error> {
                 counters.record_error(ERR_BAD_ATOM);
                 return ERR_BAD_ATOM;
             };
-            let value = match element::get_attribute(doc, node_id, name) {
-                Ok(value) => value,
+            match element::get_attribute_into(doc, node_id, name, out) {
+                // The DOM's `null`. Not an error and deliberately not recorded
+                // as one: an absent attribute is an answer, and a guest polling
+                // for an optional attribute would otherwise leave `last_error`
+                // permanently set to something nothing went wrong about.
+                Ok(None) => ABSENT,
+                Ok(Some(len)) => report_read(counters, Op::GetAttribute, len, buffer.cap),
                 Err(error) => {
                     counters.record_dom_error(error);
-                    return ERR_DOM;
+                    ERR_DOM
                 }
-            };
-            // The DOM's `null`. Not an error and deliberately not recorded as
-            // one: an absent attribute is an answer, and a guest polling for an
-            // optional attribute would otherwise leave `last_error` permanently
-            // set to something nothing went wrong about.
-            let Some(value) = value else {
-                return ABSENT;
-            };
-            // The first copy: the facade allocated this, and it exists whether
-            // or not the guest's buffer turns out to be big enough.
-            counters.record_host_string(Op::GetAttribute, value.len());
-            deliver(&mut caller, &buffer, Op::GetAttribute, &value)
+            }
         },
     )?;
 
@@ -714,7 +722,10 @@ pub fn add_to_linker(linker: &mut Linker<Host>) -> Result<(), wasmi::Error> {
                 Err(status) => return caller.data_mut().fail(status),
             };
 
-            let host = caller.data_mut();
+            let (out, host) = match host_view(&mut caller, &buffer) {
+                Ok(both) => both,
+                Err(status) => return caller.data_mut().fail(status),
+            };
             let handle = match u32::try_from(node) {
                 Ok(handle) => handle,
                 Err(_) => return host.fail(ERR_BAD_HANDLE),
@@ -723,13 +734,14 @@ pub fn add_to_linker(linker: &mut Linker<Host>) -> Result<(), wasmi::Error> {
                 Ok(id) => id,
                 Err(status) => return host.fail(status),
             };
-            let text = match node::text_content(&host.doc, node_id) {
-                Ok(text) => text,
-                Err(error) => return host.fail_dom(error),
-            };
-            host.counters
-                .record_host_string(Op::TextContent, text.len());
-            deliver(&mut caller, &buffer, Op::TextContent, &text)
+            let Host { doc, counters, .. } = host;
+            match node::text_content_into(doc, node_id, out) {
+                Ok(len) => report_read(counters, Op::TextContent, len, buffer.cap),
+                Err(error) => {
+                    counters.record_dom_error(error);
+                    ERR_DOM
+                }
+            }
         },
     )?;
 

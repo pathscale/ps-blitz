@@ -28,49 +28,56 @@
 //! tell a misleading story, so [`Counters`] exposes both and the end-to-end
 //! test asserts both.
 //!
-//! # What `host_string_bytes` counts, and why the read direction needs it
+//! # What `host_string_bytes` counts, and what it caught
 //!
 //! Bytes of owned host-side `String` that had to exist in order to service the
 //! call. It is the *second* copy, the one that never crosses the boundary and
 //! that a byte-across-the-boundary count therefore cannot see.
 //!
-//! Both directions pay it, for different reasons:
+//! **It used to be non-zero in both directions. It is now non-zero in one, and
+//! this counter is what made the difference visible.**
 //!
-//! - **Writing**, the host copies guest memory into a `String` before touching
-//!   the document, because [`read_string`](crate::read_string) must drop its
-//!   borrow of guest memory first — that is the reentrancy rule, and it is not
-//!   negotiable. The facade then copies that `String` into the node.
-//! - **Reading**, every reader in `blitz-dom-api` returns an owned `String` by
-//!   design (see its MAPPING.md, "Readers allocate a `String`, so the wasm path
-//!   pays two copies"). The host receives that `String` and copies it again,
-//!   into guest memory.
+//! - **Writing** still pays it. `read_string` copies guest memory into a
+//!   `String` before the document is touched, and the facade copies that
+//!   `String` into the node. `set_text` of `n` bytes reports
+//!   `bytes_copied == n` and `host_string_bytes == n`.
+//! - **Reading** no longer pays it. `blitz-dom-api` grew buffer-writing
+//!   readers — `get_attribute_into` and `text_content_into` — which write
+//!   straight into the guest's own buffer, so the intermediate `String` never
+//!   exists. A read of `n` bytes reports `bytes_written == n` and
+//!   `host_string_bytes == 0`.
 //!
-//! So for a string operation of `n` payload bytes, roughly `2n` bytes are
-//! copied in total, and only `n` of them show up as boundary traffic. A read of
-//! an `n`-byte attribute reports `bytes_written == n` **and**
-//! `host_string_bytes == n`, and ABI.md quotes both. Quoting only the first
-//! would understate a read by half.
+//! That asymmetry is a fact about the code today, not about the boundary. The
+//! write direction's copy is not required by the reentrancy rule either:
+//! `host_view` holds guest memory and the document at the same time and is
+//! *more* strongly safe than dropping one before taking the other, because a
+//! guest call needs the store and it holds the store. The copy is required by
+//! the shape `read_string` happens to have. Removing it is the next experiment,
+//! not this one.
+//!
+//! Keep quoting this field next to the byte counts. Omitting it understated a
+//! read by half before the buffer readers landed, and understates a write by
+//! half today.
 //!
 //! # What `host_allocs` counts
 //!
 //! Allocations **this crate** makes or takes ownership of while servicing the
-//! call: the `String` it builds from guest memory on a write, and the `String`
-//! a facade reader hands back on a read. It does not count allocations the
+//! call: the `String` it builds from guest memory on a write. Reads take
+//! ownership of nothing, so theirs is zero. It does not count allocations the
 //! facade makes and keeps, because this crate cannot see them without
 //! instrumenting a package it does not own.
 //!
-//! Those exist and are not negligible:
+//! One of those is still there and is not negligible:
 //!
 //! - `document::create_element` lowercases the tag into a fresh `String`.
-//! - `element::get_attribute` and `element::has_attribute` lowercase the
-//!   attribute *name* into a fresh `String` before the lookup.
-//! - `element::has_attribute` is the sharpest one: it goes through the same
-//!   `read_attr` as `get_attribute`, so it **clones the attribute value into a
-//!   `String` and immediately discards it** to answer a boolean. Its
-//!   `bytes_written` is a structural zero and its `host_string_bytes` reads
-//!   zero, and neither of those zeros means no string was built. Counting it
-//!   would mean reading the value twice purely to measure it, which is a worse
-//!   trade than saying so here.
+//!
+//! Two others were, and are gone. `element::get_attribute` still lowercases the
+//! queried name into a fresh `String`, but the reader this crate now calls,
+//! `get_attribute_into`, compares byte by byte instead. And
+//! `element::has_attribute` used to clone the attribute's whole value and
+//! discard it to answer a boolean — a cost with no boundary traffic at all to
+//! justify it — which it no longer does. Its zeros used to be a lie of
+//! omission; they are now the whole truth.
 //!
 //! `add_listener` is another case: it grows two collections in
 //! [`ListenerTable`](crate::ListenerTable) by an amortised entry, which is not
@@ -299,17 +306,6 @@ impl Counters {
         slot.bytes_copied += bytes as u64;
         // One `String` per string read out of guest memory, and it is exactly
         // as long as what crossed.
-        slot.host_string_bytes += bytes as u64;
-        slot.host_allocs += 1;
-    }
-
-    /// A facade reader handed this crate an owned `String` of `bytes`.
-    ///
-    /// Recorded *before* the write into guest memory, and separately from it,
-    /// because the two are different costs and a read that does not fit the
-    /// guest's buffer pays this one and not the other.
-    pub(crate) fn record_host_string(&mut self, op: Op, bytes: usize) {
-        let slot = self.slot(op);
         slot.host_string_bytes += bytes as u64;
         slot.host_allocs += 1;
     }

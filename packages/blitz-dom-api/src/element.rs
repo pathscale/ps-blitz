@@ -25,6 +25,48 @@ pub(crate) fn read_attr(doc: &BaseDocument, node_id: NodeId, name: &str) -> Opti
         .map(|attr| attr.value.clone())
 }
 
+/// `local == name.to_ascii_lowercase()`, without allocating the lowercased
+/// copy.
+///
+/// `to_ascii_lowercase` maps each ASCII byte to one ASCII byte and leaves every
+/// other byte alone, so byte length is preserved and this is exactly the
+/// comparison [`read_attr`]'s callers make — one byte at a time instead of one
+/// `String` up front.
+fn local_matches(local: &str, name: &str) -> bool {
+    local.len() == name.len()
+        && local
+            .bytes()
+            .zip(name.bytes())
+            .all(|(stored, queried)| stored == queried.to_ascii_lowercase())
+}
+
+/// Borrow an attribute's value out of the document, without copying it.
+///
+/// # Why this is allowed to return a borrow
+///
+/// The crate's borrow discipline — every reader returns an owned value, so no
+/// borrow survives a call and a runtime re-entering between operations cannot
+/// find a live one — is a rule about the **public** surface. This is
+/// `pub(crate)`, its borrow never escapes the function that took it, and every
+/// public caller either clones it or writes it into a buffer the caller
+/// supplied. The discipline is intact; what changes is that the copy is no
+/// longer mandatory *inside* the crate.
+///
+/// This is the whole mechanism behind the buffer-writing readers. See
+/// MAPPING.md, "Readers allocate a `String`".
+pub(crate) fn find_attr<'doc>(
+    doc: &'doc BaseDocument,
+    node_id: NodeId,
+    name: &str,
+) -> Option<&'doc str> {
+    let element = doc.get_node(node_id)?.element_data()?;
+    element
+        .attrs()
+        .iter()
+        .find(|attr| local_matches(&attr.name.local, name))
+        .map(|attr| &*attr.value)
+}
+
 pub(crate) fn write_attr(doc: &mut BaseDocument, node_id: NodeId, name: &str, value: &str) {
     doc.mutate().set_attribute(node_id, attr_name(name), value);
 }
@@ -72,8 +114,49 @@ pub fn remove_attribute(doc: &mut BaseDocument, node: NodeId, name: &str) -> Res
 }
 
 /// `element.hasAttribute(name)`.
+///
+/// Allocates nothing. It used to allocate twice — the lowercased name, and a
+/// clone of the attribute's whole value, thrown away to answer a boolean —
+/// which is a cost with no boundary traffic at all to justify it. See
+/// MAPPING.md.
 pub fn has_attribute(doc: &BaseDocument, node: NodeId, name: &str) -> Result<bool> {
-    Ok(read_attr(doc, node, &name.to_ascii_lowercase()).is_some())
+    Ok(find_attr(doc, node, name).is_some())
+}
+
+/// `element.getAttribute(name)`, written into a caller-supplied buffer.
+///
+/// **The buffer-writing variant of [`get_attribute`], and the reason it
+/// exists**: the owning reader allocates a `String` that a binding then copies
+/// again into wherever it actually wanted the bytes. This writes into that
+/// destination directly, so the intermediate never exists.
+///
+/// - `Ok(None)` — the attribute is absent, which is the DOM's `null` and is not
+///   the same as present-and-empty. `out` is untouched.
+/// - `Ok(Some(len))` — `len` is the value's **full** byte length, always. The
+///   bytes were written to `out[..len]` if and only if `len <= out.len()`; a
+///   value that does not fit leaves `out` untouched rather than truncated,
+///   because half a UTF-8 string is not a string.
+///
+/// That is `snprintf`'s convention, and it is what lets a caller size a buffer
+/// from one call and get the bytes from a second, without the reader ever
+/// having to own them.
+///
+/// [`get_attribute`] is kept and is not deprecated: a caller that wants a
+/// `String` should not have to supply a buffer and then build one.
+pub fn get_attribute_into(
+    doc: &BaseDocument,
+    node: NodeId,
+    name: &str,
+    out: &mut [u8],
+) -> Result<Option<usize>> {
+    let Some(value) = find_attr(doc, node, name) else {
+        return Ok(None);
+    };
+    let len = value.len();
+    if len <= out.len() {
+        out[..len].copy_from_slice(value.as_bytes());
+    }
+    Ok(Some(len))
 }
 
 // === classList ===
@@ -283,6 +366,90 @@ mod tests {
         assert_eq!(
             get_attribute(&doc, id, "title").unwrap(),
             Some(String::new())
+        );
+    }
+
+    /// The buffer variant agrees with the owning one, value for value.
+    ///
+    /// Asserted as an equivalence rather than against literals: the two are a
+    /// pair, and the failure worth catching is them drifting apart.
+    #[test]
+    fn get_attribute_into_agrees_with_get_attribute() {
+        let (mut doc, _html, _head, body) = skeleton();
+        let id = attached_div(&mut doc, body);
+        set_attribute(&mut doc, id, "data-role", "panel").unwrap();
+        set_attribute(&mut doc, id, "title", "").unwrap();
+
+        for name in ["data-role", "title", "absent"] {
+            let owned = get_attribute(&doc, id, name).unwrap();
+            let mut buf = [0u8; 64];
+            let written = get_attribute_into(&doc, id, name, &mut buf).unwrap();
+            match owned {
+                None => assert_eq!(written, None, "{name} should be absent both ways"),
+                Some(value) => {
+                    assert_eq!(written, Some(value.len()), "{name} length");
+                    assert_eq!(&buf[..value.len()], value.as_bytes(), "{name} bytes");
+                }
+            }
+        }
+    }
+
+    /// The `snprintf` contract: the full length is always reported, and a value
+    /// that does not fit leaves the buffer untouched rather than truncated.
+    #[test]
+    fn get_attribute_into_reports_the_length_it_could_not_write() {
+        let (mut doc, _html, _head, body) = skeleton();
+        let id = attached_div(&mut doc, body);
+        set_attribute(&mut doc, id, "data-role", "panel").unwrap();
+
+        // Too small by one. Nothing is written — not four bytes of `pane`.
+        let mut buf = [b'.'; 4];
+        assert_eq!(
+            get_attribute_into(&doc, id, "data-role", &mut buf).unwrap(),
+            Some(5)
+        );
+        assert_eq!(
+            &buf, b"....",
+            "a value that does not fit must not be written"
+        );
+
+        // Zero capacity is legal, and is how a caller asks for a length alone.
+        assert_eq!(
+            get_attribute_into(&doc, id, "data-role", &mut []).unwrap(),
+            Some(5)
+        );
+
+        // Sized from that answer, it fits exactly.
+        let mut buf = vec![0u8; 5];
+        assert_eq!(
+            get_attribute_into(&doc, id, "data-role", &mut buf).unwrap(),
+            Some(5)
+        );
+        assert_eq!(&buf, b"panel");
+    }
+
+    /// The name is matched case-insensitively without the lowercased copy the
+    /// owning reader allocates, so the two must still agree on a mixed-case
+    /// query.
+    #[test]
+    fn get_attribute_into_lowercases_the_queried_name() {
+        let (mut doc, _html, _head, body) = skeleton();
+        let id = attached_div(&mut doc, body);
+        set_attribute(&mut doc, id, "data-role", "panel").unwrap();
+
+        let mut buf = [0u8; 16];
+        assert_eq!(
+            get_attribute_into(&doc, id, "DATA-Role", &mut buf).unwrap(),
+            Some(5)
+        );
+        assert_eq!(&buf[..5], b"panel");
+        assert!(has_attribute(&doc, id, "Data-ROLE").unwrap());
+
+        // And a name of a different length is not a match, which is what the
+        // byte-length check in `local_matches` is for.
+        assert_eq!(
+            get_attribute_into(&doc, id, "data-rol", &mut buf).unwrap(),
+            None
         );
     }
 

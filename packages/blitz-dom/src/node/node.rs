@@ -1204,10 +1204,22 @@ impl Node {
         out
     }
 
-    fn write_text_content(&self, out: &mut String) {
+    /// Write this subtree's text content into any [`std::fmt::Write`] sink.
+    ///
+    /// Public and generic so that a caller which does not want a `String` does
+    /// not have to fork this traversal to avoid one. `blitz-dom-api`'s
+    /// buffer-writing reader passes a sink that counts, and then one that fills
+    /// a caller-supplied slice; a private copy of this walk in that crate would
+    /// silently disagree with this one the first time a `NodeData` variant is
+    /// added here.
+    ///
+    /// The sinks callers pass do not fail, and `String`'s never has, so nothing
+    /// in this crate inspects the `Result`. It is kept in the signature because
+    /// it is `fmt::Write`'s, not because there is an error to handle.
+    pub fn write_text_content<W: Write>(&self, out: &mut W) {
         match &self.data {
             NodeData::Text(data) => {
-                out.push_str(&data.content);
+                let _ = out.write_str(&data.content);
             }
             NodeData::Element(..) | NodeData::AnonymousBlock(..) => {
                 for child_id in self.children.iter() {

@@ -2,6 +2,8 @@
 //!
 //! Upstream: `blitz-script/src/dom/node.rs`. See MAPPING.md.
 
+use std::fmt;
+
 use blitz_dom::node::NodeData;
 use blitz_dom::{BaseDocument, NodeId};
 
@@ -161,12 +163,92 @@ pub fn compare_document_position(doc: &BaseDocument, node: NodeId, other: NodeId
 
 /// `node.textContent`, concatenated over the subtree.
 ///
-/// Owned, per the crate's borrow discipline.
+/// Owned, per the crate's borrow discipline. [`text_content_into`] is the
+/// variant that writes into a caller's buffer instead.
 pub fn text_content(doc: &BaseDocument, node: NodeId) -> Result<String> {
     Ok(doc
         .get_node(node)
         .map(|node| node.text_content())
         .unwrap_or_default())
+}
+
+/// A [`fmt::Write`] sink that only measures.
+struct Counting(usize);
+
+impl fmt::Write for Counting {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.0 += s.len();
+        Ok(())
+    }
+}
+
+/// A [`fmt::Write`] sink that fills a caller's slice.
+///
+/// Only ever handed a slice already known to be large enough, so the debug
+/// assertion below is a check on this crate rather than on its caller.
+struct Filling<'out> {
+    out: &'out mut [u8],
+    at: usize,
+}
+
+impl fmt::Write for Filling<'_> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let end = self.at + s.len();
+        debug_assert!(end <= self.out.len(), "measured length was short");
+        self.out[self.at..end].copy_from_slice(s.as_bytes());
+        self.at = end;
+        Ok(())
+    }
+}
+
+/// The byte length of `node.textContent`, without building it.
+///
+/// One traversal, no allocation. Useful on its own for sizing a buffer, and it
+/// is the first half of [`text_content_into`].
+pub fn text_content_len(doc: &BaseDocument, node: NodeId) -> Result<usize> {
+    let mut counting = Counting(0);
+    if let Some(node) = doc.get_node(node) {
+        node.write_text_content(&mut counting);
+    }
+    Ok(counting.0)
+}
+
+/// `node.textContent`, written into a caller-supplied buffer.
+///
+/// Returns the **full** byte length, always. The bytes were written to
+/// `out[..len]` if and only if `len <= out.len()`; a value that does not fit
+/// leaves `out` untouched rather than truncated. Same contract as
+/// [`element::get_attribute_into`](crate::element::get_attribute_into).
+///
+/// # What this trades, which is not what the attribute reader trades
+///
+/// An attribute's value exists in the document as contiguous bytes, so reading
+/// it into a buffer is one `memcpy` and the owning reader's `String` was pure
+/// overhead. **`textContent` has no such bytes.** It is a concatenation over a
+/// subtree, so it does not exist anywhere until something builds it, and the
+/// only question is *where*.
+///
+/// So this does not remove a copy, it removes an **allocation**: the bytes land
+/// in the caller's buffer instead of in a `String` that is then copied there.
+/// The price is a second traversal — one pass to measure, one to fill — because
+/// the "nothing is written unless it all fits" guarantee cannot be honoured by
+/// a single streaming pass that discovers the overflow halfway through.
+///
+/// Whether one allocation is worth one extra pointer-chasing walk of a subtree
+/// is a timing question, and this crate deliberately measures bytes rather than
+/// time. What is *not* a timing question: the allocation is gone, and a caller
+/// that already knows the length can skip the measuring pass by calling
+/// [`text_content_len`] itself.
+pub fn text_content_into(doc: &BaseDocument, node: NodeId, out: &mut [u8]) -> Result<usize> {
+    let len = text_content_len(doc, node)?;
+    if len > out.len() {
+        return Ok(len);
+    }
+    if let Some(node) = doc.get_node(node) {
+        let mut filling = Filling { out, at: 0 };
+        node.write_text_content(&mut filling);
+    }
+    Ok(len)
 }
 
 /// `node.textContent = text`.
@@ -507,6 +589,65 @@ mod tests {
         append_child(&mut doc, outer, inner).unwrap();
         append_child(&mut doc, body, outer).unwrap();
         assert_eq!(text_content(&doc, outer).unwrap(), "one two");
+    }
+
+    /// The buffer variants agree with the owning one over the same subtree.
+    ///
+    /// All three go through `blitz-dom`'s single `write_text_content`
+    /// traversal, which is why this is an equivalence and not three
+    /// independently-maintained expectations. A private copy of that walk in
+    /// this crate is exactly what this would stop catching.
+    #[test]
+    fn text_content_into_agrees_with_text_content() {
+        let (mut doc, _html, _head, body) = skeleton();
+        let outer = div(&mut doc);
+        let inner = div(&mut doc);
+        let a = document::create_text_node(&mut doc, "one ").unwrap();
+        let b = document::create_text_node(&mut doc, "two").unwrap();
+        append_child(&mut doc, outer, a).unwrap();
+        append_child(&mut doc, inner, b).unwrap();
+        append_child(&mut doc, outer, inner).unwrap();
+        append_child(&mut doc, body, outer).unwrap();
+
+        let owned = text_content(&doc, outer).unwrap();
+        assert_eq!(text_content_len(&doc, outer).unwrap(), owned.len());
+
+        let mut buf = [0u8; 32];
+        assert_eq!(
+            text_content_into(&doc, outer, &mut buf).unwrap(),
+            owned.len()
+        );
+        assert_eq!(&buf[..owned.len()], owned.as_bytes());
+
+        // An empty subtree is length zero, not an error and not absent: every
+        // node has text content. This is why the reader has no `ABSENT` case.
+        let empty = div(&mut doc);
+        append_child(&mut doc, body, empty).unwrap();
+        assert_eq!(text_content_into(&doc, empty, &mut buf).unwrap(), 0);
+    }
+
+    /// The `snprintf` contract, across a concatenation rather than a single
+    /// stored value: the length is reported and the buffer is left untouched.
+    ///
+    /// The measure-then-fill split exists for exactly this case. A single
+    /// streaming pass would have written `one ` before discovering that `two`
+    /// did not fit, and the guarantee the ABI states would be false.
+    #[test]
+    fn text_content_into_writes_nothing_when_it_does_not_fit() {
+        let (mut doc, _html, _head, body) = skeleton();
+        let outer = div(&mut doc);
+        let a = document::create_text_node(&mut doc, "one ").unwrap();
+        let b = document::create_text_node(&mut doc, "two").unwrap();
+        append_child(&mut doc, outer, a).unwrap();
+        append_child(&mut doc, outer, b).unwrap();
+        append_child(&mut doc, body, outer).unwrap();
+
+        let mut buf = [b'.'; 5];
+        assert_eq!(text_content_into(&doc, outer, &mut buf).unwrap(), 7);
+        assert_eq!(
+            &buf, b".....",
+            "a partial write would have left `one ` here"
+        );
     }
 
     #[test]
