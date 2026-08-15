@@ -383,9 +383,19 @@ fn read_bytes<T>(caller: &Caller<'_, T>, ptr: i32, len: i32) -> Result<Vec<u8>, 
 ///
 /// So the bounds check happens before the fit check, and a bad buffer is
 /// [`ERR_BAD_MEMORY`](Status::ERR_BAD_MEMORY) deterministically on the first
-/// call, whatever the value's length. `cap == 0` names an empty region and is
-/// always legal, because it is how a guest asks for a length with nowhere to
-/// put the value.
+/// call, whatever the value's length.
+///
+/// `cap == 0` is included in that, and the reason is worth stating because it
+/// is the case that looks exempt. An empty region is how a guest asks for a
+/// length with nowhere to put the value, so the *capacity* is legal — but the
+/// pointer still has to name a place in memory. Skipping the check for
+/// `cap == 0` would make the answer depend on the stored value: a wild pointer
+/// would come back `OK` for a value that does not fit (the early return below
+/// never looks at it) and `ERR_BAD_MEMORY` for an empty one (`get_mut` does),
+/// which is the same "works on the values that arrive, breaks on the other
+/// one" shape this whole comment exists to argue against. The end of the
+/// declared region is `ptr + cap`, which for `cap == 0` is `ptr` itself, so
+/// one unconditional check covers both.
 fn write_out<T>(caller: &mut Caller<'_, T>, out: OutBuffer, bytes: &[u8]) -> Result<i32, Status> {
     let len = i32::try_from(bytes.len()).map_err(|_| Status::ERR_BAD_MEMORY)?;
 
@@ -395,13 +405,11 @@ fn write_out<T>(caller: &mut Caller<'_, T>, out: OutBuffer, bytes: &[u8]) -> Res
         .ok_or(Status::ERR_BAD_MEMORY)?;
     let start = out.ptr as usize;
 
-    if out.cap > 0 {
-        let declared_end = start
-            .checked_add(out.cap as usize)
-            .ok_or(Status::ERR_BAD_MEMORY)?;
-        if declared_end > memory.data(&*caller).len() {
-            return Err(Status::ERR_BAD_MEMORY);
-        }
+    let declared_end = start
+        .checked_add(out.cap as usize)
+        .ok_or(Status::ERR_BAD_MEMORY)?;
+    if declared_end > memory.data(&*caller).len() {
+        return Err(Status::ERR_BAD_MEMORY);
     }
 
     if bytes.len() > out.cap as usize {

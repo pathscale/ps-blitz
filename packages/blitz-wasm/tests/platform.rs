@@ -472,6 +472,62 @@ fn a_pointer_outside_memory_is_an_error_and_the_instance_survives() {
     assert_eq!(len, 5);
 }
 
+/// A `cap == 0` buffer is still a buffer, and its pointer is still checked.
+///
+/// `cap == 0` is how a guest asks for a length with nowhere to put the value,
+/// so the capacity is legal — but if the bounds check is skipped for it, the
+/// answer starts depending on what happens to be stored. A value too long to
+/// fit returns early without ever looking at the pointer; an empty value falls
+/// through to the write, where `get_mut` rejects it. Same buffer, same call,
+/// two different answers.
+#[test]
+fn a_zero_capacity_buffer_with_a_wild_pointer_fails_whatever_the_value_length() {
+    let mut rig = default_rig();
+
+    // One page is 65536 bytes, so this names a region outside memory.
+    const WILD: i32 = 70_000;
+
+    let (kptr, klen) = rig.poke(0, "full");
+    let (vptr, vlen) = rig.poke(64, "value");
+    assert_eq!(
+        rig.call4("call_storage_set", kptr, klen, vptr, vlen),
+        Status::OK.raw()
+    );
+
+    let (kptr, klen) = rig.poke(0, "empty");
+    let (vptr, vlen) = rig.poke(64, "");
+    assert_eq!(
+        rig.call4("call_storage_set", kptr, klen, vptr, vlen),
+        Status::OK.raw()
+    );
+
+    let (kptr, klen) = rig.poke(0, "full");
+    assert_eq!(
+        Status(rig.call4("call_storage_get", kptr, klen, WILD, 0)),
+        Status::ERR_BAD_MEMORY,
+        "a value that does not fit must not skip the pointer check"
+    );
+
+    let (kptr, klen) = rig.poke(0, "empty");
+    assert_eq!(
+        Status(rig.call4("call_storage_get", kptr, klen, WILD, 0)),
+        Status::ERR_BAD_MEMORY,
+        "and an empty value must answer the same way"
+    );
+
+    // A legal `cap == 0` probe still works: it reports the length and writes
+    // nothing. This is the case the unconditional check must not break.
+    let (kptr, klen) = rig.poke(0, "full");
+    assert_eq!(rig.call4("call_storage_get", kptr, klen, 128, 0), 5);
+    let (kptr, klen) = rig.poke(0, "empty");
+    assert_eq!(rig.call4("call_storage_get", kptr, klen, 128, 0), 0);
+
+    // Including one whose pointer sits exactly at the end of memory, which
+    // names an empty region and is in bounds.
+    let (kptr, klen) = rig.poke(0, "empty");
+    assert_eq!(rig.call4("call_storage_get", kptr, klen, 65_536, 0), 0);
+}
+
 // -- fetch ----------------------------------------------------------------
 
 #[test]
