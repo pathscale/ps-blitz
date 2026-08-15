@@ -5,6 +5,7 @@ members = [
     "packages/blitz-traits",
     "packages/blitz-dom",
     "packages/blitz-dom-api",
+    "packages/dom-abi",
     "packages/blitz-wasm",
     "packages/blitz-html",
     "packages/blitz-script",
