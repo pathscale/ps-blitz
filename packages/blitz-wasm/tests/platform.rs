@@ -767,6 +767,57 @@ fn without_a_platform_host_every_import_answers_no_platform() {
     assert_eq!(rig.drain(), blitz_wasm::Completed::default());
 }
 
+/// `ERR_NO_PLATFORM` from `fetch_send` must leave the draft where it was.
+///
+/// The status means "this embedding has no platform host", which is not the
+/// guest's fault and invites a retry once one is installed. Answering it while
+/// destroying the method, URL, headers and body would make that retry
+/// impossible, and would turn every later call on the id into
+/// `ERR_BAD_REQUEST` — a code that says the guest passed a bad id when in fact
+/// the host threw its request away.
+#[test]
+fn a_send_that_finds_no_platform_host_leaves_the_request_usable() {
+    let mut rig = rig_from(None);
+
+    let (mptr, mlen) = rig.poke(0, "POST");
+    let (uptr, ulen) = rig.poke(16, "https://example.com/submit");
+    let id = rig.call4("call_fetch_new", mptr, mlen, uptr, ulen);
+    assert!(id >= 0);
+
+    let (nptr, nlen) = rig.poke(64, "x-token");
+    let (vptr, vlen) = rig.poke(96, "sekrit");
+    assert_eq!(
+        rig.call5("call_fetch_header", id, nptr, nlen, vptr, vlen),
+        Status::OK.raw()
+    );
+    let (bptr, blen) = rig.poke(128, "{\"a\":1}");
+    assert_eq!(
+        rig.call3("call_fetch_body", id, bptr, blen),
+        Status::OK.raw()
+    );
+
+    assert_eq!(
+        Status(rig.call1("call_fetch_send", id)),
+        Status::ERR_NO_PLATFORM
+    );
+
+    // The id still names a draft. `ERR_BAD_REQUEST` here would mean the entry
+    // was taken out for the send and never put back.
+    let (nptr, nlen) = rig.poke(64, "x-second");
+    let (vptr, vlen) = rig.poke(96, "also-sekrit");
+    assert_eq!(
+        Status(rig.call5("call_fetch_header", id, nptr, nlen, vptr, vlen)),
+        Status::OK,
+        "the draft survived a send that found no platform host"
+    );
+
+    assert_eq!(
+        rig.store.data().state.live_requests(),
+        1,
+        "and it is still counted as live"
+    );
+}
+
 // -- counters -------------------------------------------------------------
 
 #[test]

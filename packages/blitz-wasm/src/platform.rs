@@ -555,7 +555,7 @@ pub fn add_platform_to_linker<T: HasPlatform>(linker: &mut Linker<T>) -> Result<
                 // Take the draft out before touching the platform host, so
                 // nothing holds a borrow of the state across the call.
                 let draft = match caller.data_mut().platform_state().requests.remove(&id) {
-                    Some(Request::Draft(request)) => *request,
+                    Some(Request::Draft(request)) => request,
                     Some(sent @ Request::Sent(_)) => {
                         caller.data_mut().platform_state().requests.insert(id, sent);
                         return Err(Status::ERR_ALREADY_SENT);
@@ -563,9 +563,23 @@ pub fn add_platform_to_linker<T: HasPlatform>(linker: &mut Linker<T>) -> Result<
                     None => return Err(Status::ERR_BAD_REQUEST),
                 };
 
+                // Every failure after the take has to put the draft back.
+                // `ERR_NO_PLATFORM` means "this embedding has no platform host
+                // yet", which is not the guest's fault and invites a retry — and
+                // a retry needs the method, URL, headers and body still to
+                // exist. Dropping the draft here would answer a retryable error
+                // while destroying the state the retry needs, and turn every
+                // later call on the id into `ERR_BAD_REQUEST`.
                 let platform_id = match platform(caller) {
-                    Ok(platform) => platform.start_fetch(draft),
-                    Err(status) => return Err(status),
+                    Ok(platform) => platform.start_fetch(*draft),
+                    Err(status) => {
+                        caller
+                            .data_mut()
+                            .platform_state()
+                            .requests
+                            .insert(id, Request::Draft(draft));
+                        return Err(status);
+                    }
                 };
 
                 let state = caller.data_mut().platform_state();
