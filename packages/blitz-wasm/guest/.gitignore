@@ -1,0 +1,10 @@
+# A separate workspace means a separate target directory, and the repository
+# root's `/target` rule is anchored, so it does not reach this one.
+target
+
+# `Cargo.lock` is deliberately NOT ignored here.
+#
+# This workspace builds the guest module whose boundary byte counts ABI.md
+# reports and `tests/end_to_end.rs` asserts. A measurement whose dependency
+# versions cannot be re-resolved is an anecdote, so the lock is committed even
+# though the repository does not commit locks for its libraries.

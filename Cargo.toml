@@ -5,6 +5,7 @@ members = [
     "packages/blitz-traits",
     "packages/blitz-dom",
     "packages/blitz-dom-api",
+    "packages/blitz-wasm",
     "packages/blitz-html",
     "packages/blitz-script",
     "packages/blitz-debug-control",
@@ -29,7 +30,11 @@ members = [
     "examples/wgpu_texture",
     "examples/wasm_hello",
 ]
-exclude = ["sites"]
+# `packages/blitz-wasm/guest` is a SEPARATE workspace, deliberately. It builds
+# for wasm32-unknown-unknown and has its own target directory, so
+# `cargo test -p blitz-wasm` can shell out to build it without deadlocking on
+# this workspace's own target lock. See packages/blitz-wasm/ABI.md.
+exclude = ["sites", "packages/blitz-wasm/guest"]
 resolver = "2"
 
 [workspace.package]
@@ -58,6 +63,7 @@ debug_timer = { version = "0.1.2", path = "./packages/debug_timer" }
 accesskit_xplat = { version = "0.1", path = "./packages/accesskit_xplat", default-features = false }
 browser-persistence = { path = "./apps/browser/persistence" }
 blitz-test-harness = { path = "./packages/blitz-test-harness" }
+blitz-dom-api = { path = "./packages/blitz-dom-api" }
 
 # Servo dependencies
 style = { version = "0.20.0", package = "stylo" }
