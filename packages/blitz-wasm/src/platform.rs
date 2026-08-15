@@ -39,55 +39,11 @@
 use blitz_platform_api::{FetchState, PlatformHost, RequestId as PlatformRequestId};
 use blitz_traits::platform::{Bytes, FetchRequest, Method, Url};
 use dom_abi::host::{MAX_ID, OutBuffer, Status};
+pub use dom_abi::platform::RequestId;
 use std::collections::HashMap;
 use wasmi::{Caller, Extern, Instance, Linker, Store};
 
 use crate::MODULE;
-
-/// Status codes for the platform imports.
-///
-/// # These belong in `dom-abi` and are here only until it lands
-///
-/// `dom_abi::host::Status` owns `-1` through `-9` for the DOM imports, and the
-/// whole argument for that crate is that a code living in a markdown table, an
-/// `i32` in the host and another `i32` in the guest bindings is three places to
-/// get it wrong. Platform codes belong in the same place for the same reason.
-///
-/// They are defined here because `dom-abi` is not committed yet, and adding
-/// constants to a crate somebody else is actively writing is how two people
-/// pick the same number. **The block starts at `-20`**, leaving `-10` to `-19`
-/// free so the DOM range can grow contiguously without ever colliding with
-/// this one. Moving them into `dom-abi` is then a rename with no value change.
-pub mod status {
-    use dom_abi::host::Status;
-
-    /// The request id was never issued by this instance, or has been released.
-    pub const ERR_BAD_REQUEST: Status = Status(-20);
-    /// The request has not completed. A guest must wait for `fetch_complete`.
-    pub const ERR_REQUEST_PENDING: Status = Status(-21);
-    /// The request finished without a response: DNS, TLS, refused, no
-    /// provider. Distinct from an HTTP error status, which is a *response*.
-    pub const ERR_FETCH: Status = Status(-22);
-    /// More than [`MAX_ID`](dom_abi::host::MAX_ID) live requests.
-    pub const ERR_TOO_MANY_REQUESTS: Status = Status(-23);
-    /// The URL did not parse.
-    pub const ERR_BAD_URL: Status = Status(-24);
-    /// The method or a header name/value was not valid HTTP.
-    pub const ERR_BAD_HEADER: Status = Status(-25);
-    /// The storage write was refused: quota, or the backing store failed.
-    pub const ERR_STORAGE: Status = Status(-26);
-    /// The operation needs a platform host and this instance has none.
-    ///
-    /// An embedder that binds these imports without installing a
-    /// [`PlatformHost`](blitz_platform_api::PlatformHost) gets this rather than
-    /// a panic, because the alternative is a guest that dies for a reason
-    /// belonging entirely to the embedding.
-    pub const ERR_NO_PLATFORM: Status = Status(-27);
-    /// The request was already sent. `fetch_send` is once per request.
-    pub const ERR_ALREADY_SENT: Status = Status(-28);
-}
-
-use status::*;
 
 /// What a store's data must offer for the platform imports to be registered.
 ///
@@ -285,19 +241,14 @@ impl PlatformCounters {
     }
 }
 
-/// A request as the guest names it.
-///
-/// The binding keeps its own id space rather than handing out
-/// [`blitz_platform_api::RequestId`] directly, because a guest builds a request
-/// before it is sent and the platform host only issues an id at send time. One
-/// id from `fetch_new` to `fetch_release` is what a guest can actually hold
-/// onto; two would mean the id changed under it halfway through.
-///
-/// Never reused, like handles and listener ids.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct RequestId(pub u32);
-
 /// A request the guest is still building, or one that has been sent.
+///
+/// Two id spaces meet here, and they are not the same thing.
+/// [`RequestId`](dom_abi::platform::RequestId) is what the *guest* holds, from
+/// `fetch_new` to `fetch_release`. [`PlatformRequestId`] is what
+/// `blitz-platform-api` issues, and only at send time. Handing the second one
+/// straight through would mean the id a guest holds changed halfway through the
+/// request's life, so this table maps between them.
 enum Request {
     /// Built but not sent. Mutable by `fetch_header` and `fetch_body`.
     ///
@@ -354,7 +305,7 @@ impl PlatformState {
 
     fn new_request(&mut self, request: FetchRequest) -> Result<RequestId, Status> {
         if self.next >= MAX_ID {
-            return Err(ERR_TOO_MANY_REQUESTS);
+            return Err(Status::ERR_TOO_MANY_REQUESTS);
         }
         let id = RequestId(self.next);
         self.next += 1;
@@ -365,16 +316,16 @@ impl PlatformState {
     fn draft_mut(&mut self, id: RequestId) -> Result<&mut FetchRequest, Status> {
         match self.requests.get_mut(&id) {
             Some(Request::Draft(request)) => Ok(request.as_mut()),
-            Some(Request::Sent(_)) => Err(ERR_ALREADY_SENT),
-            None => Err(ERR_BAD_REQUEST),
+            Some(Request::Sent(_)) => Err(Status::ERR_ALREADY_SENT),
+            None => Err(Status::ERR_BAD_REQUEST),
         }
     }
 
     fn platform_id(&self, id: RequestId) -> Result<PlatformRequestId, Status> {
         match self.requests.get(&id) {
             Some(Request::Sent(platform)) => Ok(*platform),
-            Some(Request::Draft(_)) => Err(ERR_REQUEST_PENDING),
-            None => Err(ERR_BAD_REQUEST),
+            Some(Request::Draft(_)) => Err(Status::ERR_REQUEST_PENDING),
+            None => Err(Status::ERR_BAD_REQUEST),
         }
     }
 }
@@ -478,7 +429,7 @@ fn out_buffer(ptr: i32, cap: i32) -> Result<OutBuffer, Status> {
 fn request_id(raw: i32) -> Result<RequestId, Status> {
     u32::try_from(raw)
         .map(RequestId)
-        .map_err(|_| ERR_BAD_REQUEST)
+        .map_err(|_| Status::ERR_BAD_REQUEST)
 }
 
 /// Run `body`, and turn any early `Status` into a recorded failing return.
@@ -498,9 +449,9 @@ fn guard<T: HasPlatform>(
     }
 }
 
-/// The platform host, or [`ERR_NO_PLATFORM`].
+/// The platform host, or [`Status::ERR_NO_PLATFORM`].
 fn platform<'a, T: HasPlatform>(caller: &'a Caller<'_, T>) -> Result<&'a PlatformHost, Status> {
-    caller.data().platform().ok_or(ERR_NO_PLATFORM)
+    caller.data().platform().ok_or(Status::ERR_NO_PLATFORM)
 }
 
 // -- the imports ----------------------------------------------------------
@@ -530,13 +481,14 @@ pub fn add_platform_to_linker<T: HasPlatform>(linker: &mut Linker<T>) -> Result<
                 let url_text = read_string(caller, url_ptr, url_len)?;
                 let copied = method_text.len() + url_text.len();
 
-                let method = Method::try_from(method_text.as_str()).map_err(|_| ERR_BAD_HEADER)?;
-                let url = Url::parse(&url_text).map_err(|_| ERR_BAD_URL)?;
+                let method =
+                    Method::try_from(method_text.as_str()).map_err(|_| Status::ERR_BAD_HEADER)?;
+                let url = Url::parse(&url_text).map_err(|_| Status::ERR_BAD_URL)?;
 
                 let state = caller.data_mut().platform_state();
                 state.record_in(PlatformOp::FetchNew, copied);
                 let id = state.new_request(FetchRequest::get(url).method(method))?;
-                i32::try_from(id.0).map_err(|_| ERR_TOO_MANY_REQUESTS)
+                i32::try_from(id.0).map_err(|_| Status::ERR_TOO_MANY_REQUESTS)
             })
         },
     )?;
@@ -559,9 +511,9 @@ pub fn add_platform_to_linker<T: HasPlatform>(linker: &mut Linker<T>) -> Result<
                 let copied = name.len() + value.len();
 
                 let name: blitz_traits::platform::http::HeaderName =
-                    name.parse().map_err(|_| ERR_BAD_HEADER)?;
+                    name.parse().map_err(|_| Status::ERR_BAD_HEADER)?;
                 let value: blitz_traits::platform::http::HeaderValue =
-                    value.parse().map_err(|_| ERR_BAD_HEADER)?;
+                    value.parse().map_err(|_| Status::ERR_BAD_HEADER)?;
 
                 let state = caller.data_mut().platform_state();
                 state.record_in(PlatformOp::FetchHeader, copied);
@@ -606,9 +558,9 @@ pub fn add_platform_to_linker<T: HasPlatform>(linker: &mut Linker<T>) -> Result<
                     Some(Request::Draft(request)) => *request,
                     Some(sent @ Request::Sent(_)) => {
                         caller.data_mut().platform_state().requests.insert(id, sent);
-                        return Err(ERR_ALREADY_SENT);
+                        return Err(Status::ERR_ALREADY_SENT);
                     }
-                    None => return Err(ERR_BAD_REQUEST),
+                    None => return Err(Status::ERR_BAD_REQUEST),
                 };
 
                 let platform_id = match platform(caller) {
@@ -640,12 +592,12 @@ pub fn add_platform_to_linker<T: HasPlatform>(linker: &mut Linker<T>) -> Result<
                     FetchState::Response => {
                         let status = platform(caller)?
                             .with_response(platform_id, |response| response.status.as_u16())
-                            .ok_or(ERR_FETCH)?;
+                            .ok_or(Status::ERR_FETCH)?;
                         Ok(i32::from(status))
                     }
-                    FetchState::Pending => Err(ERR_REQUEST_PENDING),
-                    FetchState::Failed(_) => Err(ERR_FETCH),
-                    FetchState::Unknown => Err(ERR_BAD_REQUEST),
+                    FetchState::Pending => Err(Status::ERR_REQUEST_PENDING),
+                    FetchState::Failed(_) => Err(Status::ERR_FETCH),
+                    FetchState::Unknown => Err(Status::ERR_BAD_REQUEST),
                 }
             })
         },
@@ -777,7 +729,7 @@ pub fn add_platform_to_linker<T: HasPlatform>(linker: &mut Linker<T>) -> Result<
                 let id = request_id(request)?;
                 let entry = caller.data_mut().platform_state().requests.remove(&id);
                 match entry {
-                    None => Err(ERR_BAD_REQUEST),
+                    None => Err(Status::ERR_BAD_REQUEST),
                     Some(Request::Draft(_)) => Ok(Status::OK.raw()),
                     Some(Request::Sent(platform_id)) => {
                         if let Ok(platform) = platform(caller) {
@@ -849,7 +801,7 @@ pub fn add_platform_to_linker<T: HasPlatform>(linker: &mut Linker<T>) -> Result<
 
                 platform(caller)?
                     .storage_set(&key, &value)
-                    .map_err(|_| ERR_STORAGE)?;
+                    .map_err(|_| Status::ERR_STORAGE)?;
                 Ok(Status::OK.raw())
             })
         },
@@ -894,11 +846,11 @@ pub fn add_platform_to_linker<T: HasPlatform>(linker: &mut Linker<T>) -> Result<
 /// request is known and one of these is true.
 fn pending_or_failed<T: HasPlatform>(caller: &Caller<'_, T>, id: PlatformRequestId) -> Status {
     match caller.data().platform().map(|platform| platform.state(id)) {
-        Some(FetchState::Pending) => ERR_REQUEST_PENDING,
-        Some(FetchState::Unknown) => ERR_BAD_REQUEST,
-        Some(FetchState::Failed(_)) => ERR_FETCH,
-        Some(FetchState::Response) => ERR_FETCH,
-        None => ERR_NO_PLATFORM,
+        Some(FetchState::Pending) => Status::ERR_REQUEST_PENDING,
+        Some(FetchState::Unknown) => Status::ERR_BAD_REQUEST,
+        Some(FetchState::Failed(_)) => Status::ERR_FETCH,
+        Some(FetchState::Response) => Status::ERR_FETCH,
+        None => Status::ERR_NO_PLATFORM,
     }
 }
 

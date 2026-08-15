@@ -19,7 +19,9 @@ use blitz_dom::{BaseDocument, DocumentConfig, NodeData, NodeId, qual_name};
 use blitz_dom_api::{document, element, node};
 use blitz_traits::events::DomEvent;
 use blitz_traits::shell::{ColorScheme, Viewport};
-use blitz_wasm::{Counters, Dispatched, Host, MODULE, OK, dispatch_dom_event};
+use blitz_wasm::{Counters, Dispatched, Host, MODULE, dispatch_dom_event};
+use dom_abi::host::{Handle, ListenerId, Status};
+use dom_abi::platform::status_name;
 use keyboard_types::Modifiers;
 use wasmi::{Engine, Instance, Linker, Module, Store};
 
@@ -131,9 +133,9 @@ fn counter() -> (Store<Host>, Instance) {
     let status = call(&mut store, &instance, "run");
     assert_eq!(
         status,
-        OK,
+        Status::OK.raw(),
         "the guest reported {}: {:?}",
-        blitz_wasm::status::name(status),
+        status_name(Status(status)),
         store.data().counters().last_dom_error
     );
     store.data_mut().document_mut().resolve(0.0);
@@ -468,7 +470,7 @@ fn a_removed_listener_stops_firing() {
     store
         .data_mut()
         .listeners_mut()
-        .remove(0)
+        .remove(ListenerId(0))
         .expect("the guest registered listener 0");
 
     let dispatched = click(&mut store, &instance, ".increment");
@@ -477,8 +479,8 @@ fn a_removed_listener_stops_firing() {
 
     // And a second removal is an error rather than a quiet success.
     assert_eq!(
-        store.data_mut().listeners_mut().remove(0),
-        Err(blitz_wasm::ERR_BAD_LISTENER)
+        store.data_mut().listeners_mut().remove(ListenerId(0)),
+        Err(Status::ERR_BAD_LISTENER)
     );
 }
 
@@ -594,7 +596,7 @@ fn echo(store: &mut Store<Host>, instance: &Instance) {
     let status = call(store, instance, "echo");
     assert_eq!(
         status,
-        OK,
+        Status::OK.raw(),
         "the guest's read-back reported {status}; last dom error {:?}",
         store.data().counters().last_dom_error
     );
@@ -904,7 +906,8 @@ fn a_forged_read_is_an_error_not_a_trap() {
 
     let status = call(&mut store, &instance, "probe_forged");
     assert_eq!(
-        status, OK,
+        status,
+        Status::OK.raw(),
         "the guest saw an unexpected status from a deliberately bad read; \
          see `probe_forged` in the demo guest for what each code means"
     );
@@ -941,14 +944,14 @@ fn a_forged_handle_is_an_error_not_a_trap() {
     // same path a forged guest handle takes.
     let issued = store.data().handles().len();
     assert_eq!(
-        store.data().handles().get(issued as u32 + 99),
-        Err(blitz_wasm::ERR_BAD_HANDLE)
+        store.data().handles().get(Handle(issued as u32 + 99)),
+        Err(Status::ERR_BAD_HANDLE)
     );
 
     // A listener id is a different namespace, and says so.
     assert_eq!(
-        store.data_mut().listeners_mut().remove(99),
-        Err(blitz_wasm::ERR_BAD_LISTENER)
+        store.data_mut().listeners_mut().remove(ListenerId(99)),
+        Err(Status::ERR_BAD_LISTENER)
     );
 
     // And the instance is still alive and usable afterwards, which is the

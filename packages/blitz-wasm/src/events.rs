@@ -52,15 +52,7 @@ use wasmi::{Instance, Store};
 
 use crate::Host;
 use crate::counters::Op;
-use crate::status::{ERR_BAD_LISTENER, ERR_TOO_MANY_LISTENERS};
-
-/// A registered listener, as the guest names it.
-///
-/// The guest never learns which node or event a listener id belongs to. It
-/// gave both, so it already knows; handing them back would be a second way to
-/// address a node, and one addressing scheme is the whole point of
-/// [`HandleTable`](crate::HandleTable).
-pub type ListenerId = u32;
+use dom_abi::host::{ListenerId, MAX_ID, Status};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Listener {
@@ -89,11 +81,12 @@ pub struct ListenerTable {
 impl ListenerTable {
     /// Register `event` on `node` and return the id the guest will be called
     /// back with.
-    pub fn add(&mut self, node: NodeId, event: AtomId) -> Result<ListenerId, i32> {
-        let id = ListenerId::try_from(self.slots.len()).map_err(|_| ERR_TOO_MANY_LISTENERS)?;
-        if id > i32::MAX as ListenerId {
-            return Err(ERR_TOO_MANY_LISTENERS);
+    pub fn add(&mut self, node: NodeId, event: AtomId) -> Result<ListenerId, Status> {
+        let next = u32::try_from(self.slots.len()).map_err(|_| Status::ERR_TOO_MANY_LISTENERS)?;
+        if next > MAX_ID {
+            return Err(Status::ERR_TOO_MANY_LISTENERS);
         }
+        let id = ListenerId(next);
         self.slots.push(Some(Listener { node, event }));
         self.by_node.entry(node).or_default().push(id);
         Ok(id)
@@ -102,13 +95,13 @@ impl ListenerTable {
     /// Unregister a listener. A second removal of the same id is
     /// [`ERR_BAD_LISTENER`], not a silent success: a guest that double-removes
     /// has a bug and should hear about it.
-    pub fn remove(&mut self, id: ListenerId) -> Result<(), i32> {
+    pub fn remove(&mut self, id: ListenerId) -> Result<(), Status> {
         let slot = self
             .slots
-            .get_mut(id as usize)
-            .ok_or(ERR_BAD_LISTENER)?
+            .get_mut(id.0 as usize)
+            .ok_or(Status::ERR_BAD_LISTENER)?
             .take()
-            .ok_or(ERR_BAD_LISTENER)?;
+            .ok_or(Status::ERR_BAD_LISTENER)?;
         if let Some(ids) = self.by_node.get_mut(&slot.node) {
             ids.retain(|candidate| *candidate != id);
             if ids.is_empty() {
@@ -125,7 +118,7 @@ impl ListenerTable {
     /// removed before it runs must not run. That is the one piece of DOM
     /// listener semantics deferred dispatch can still honour, so it does.
     pub fn is_live(&self, id: ListenerId) -> bool {
-        matches!(self.slots.get(id as usize), Some(Some(_)))
+        matches!(self.slots.get(id.0 as usize), Some(Some(_)))
     }
 
     /// The listeners registered on `node` for `event`, in registration order.
@@ -138,7 +131,7 @@ impl ListenerTable {
             .copied()
             .filter(move |id| {
                 self.slots
-                    .get(*id as usize)
+                    .get(id.0 as usize)
                     .and_then(|slot| slot.as_ref())
                     .is_some_and(|listener| listener.event == event)
             })
@@ -263,7 +256,7 @@ pub fn dispatch_dom_event(
                 continue;
             }
             store.data_mut().counters.record_call(Op::Dispatch);
-            let status = dispatch.call(&mut *store, id)?;
+            let status = dispatch.call(&mut *store, id.0)?;
             result.ran += 1;
             if status < 0 {
                 result.failed += 1;

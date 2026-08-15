@@ -75,7 +75,6 @@ pub mod counters;
 pub mod events;
 pub mod handles;
 pub mod platform;
-pub mod status;
 
 use blitz_dom::{BaseDocument, NodeId};
 use blitz_dom_api::{AtomId, DomError, Interner, document, element, node};
@@ -83,15 +82,19 @@ use blitz_platform_api::PlatformHost;
 use wasmi::{Caller, Extern, Linker, Memory};
 
 pub use counters::{Counters, Direction, Op, OpCounters};
-pub use events::{Dispatched, ListenerId, ListenerTable, dispatch_dom_event};
-pub use handles::{Handle, HandleTable, MOUNT};
+pub use events::{Dispatched, ListenerTable, dispatch_dom_event};
+pub use handles::HandleTable;
+
+/// The shared guest/host vocabulary, re-exported so an embedder does not need
+/// its own `dom-abi` dependency to name what this crate returns.
+///
+/// A re-export and not a redefinition: these are `dom-abi`'s types, and there
+/// is exactly one of each in the process. `dom-abi` is the source of truth for
+/// what they mean.
+pub use dom_abi::host::{Atom, Handle, ListenerId, MAX_ID, Status};
 pub use platform::{
     Completed, HasPlatform, PlatformCounters, PlatformOp, PlatformOpCounters, PlatformState,
     RequestId, add_platform_to_linker, dispatch_fetch_completions,
-};
-pub use status::{
-    ABSENT, ERR_BAD_ATOM, ERR_BAD_HANDLE, ERR_BAD_LISTENER, ERR_BAD_MEMORY, ERR_BAD_UTF8, ERR_DOM,
-    ERR_TOO_MANY_HANDLES, ERR_TOO_MANY_LISTENERS, OK,
 };
 
 /// The import module name every host function is registered under.
@@ -245,25 +248,30 @@ impl Host {
         self.redraw_requested = false;
     }
 
-    fn atom(&mut self, raw: i32) -> Result<AtomId, i32> {
-        let raw = u32::try_from(raw).map_err(|_| ERR_BAD_ATOM)?;
+    fn atom(&mut self, raw: i32) -> Result<AtomId, Status> {
+        let raw = u32::try_from(raw).map_err(|_| Status::ERR_BAD_ATOM)?;
         let atom = AtomId::from_u32(raw);
         // Validate against this instance's interner. An atom minted elsewhere
         // is the same class of forgery as a bad handle.
         self.names
             .resolve(atom)
             .map(|_| atom)
-            .map_err(|_| ERR_BAD_ATOM)
+            .map_err(|_| Status::ERR_BAD_ATOM)
     }
 
-    fn fail(&mut self, status: i32) -> i32 {
+    /// Record a failure and return the raw code the guest sees.
+    ///
+    /// The one place a [`Status`] becomes an `i32`. Everything above this works
+    /// in the typed vocabulary, so a call site cannot confuse a status with a
+    /// length or a handle, and the conversion happens once.
+    fn fail(&mut self, status: Status) -> i32 {
         self.counters.record_error(status);
-        status
+        status.raw()
     }
 
     fn fail_dom(&mut self, error: DomError) -> i32 {
         self.counters.record_dom_error(error);
-        ERR_DOM
+        Status::ERR_DOM.raw()
     }
 }
 
@@ -283,26 +291,48 @@ impl HasPlatform for Host {
     }
 }
 
+/// Narrow a guest-supplied `i32` to a [`Handle`].
+///
+/// The ABI's ids are non-negative, so a negative argument is a forged handle
+/// rather than a conversion problem. One function so the check reads the same
+/// at every call site.
+fn handle_from(raw: i32) -> Result<Handle, Status> {
+    u32::try_from(raw)
+        .map(Handle)
+        .map_err(|_| Status::ERR_BAD_HANDLE)
+}
+
+/// Narrow a guest-supplied `i32` to a [`ListenerId`].
+///
+/// A separate function from [`handle_from`] because they are separate
+/// namespaces: a guest that passes one where the other belongs should be told
+/// which one it got wrong.
+fn listener_from(raw: i32) -> Result<ListenerId, Status> {
+    u32::try_from(raw)
+        .map(ListenerId)
+        .map_err(|_| Status::ERR_BAD_LISTENER)
+}
+
 /// Copy a UTF-8 string out of guest linear memory.
 ///
 /// This function is where the reentrancy rule is enforced rather than merely
 /// stated: the borrow of guest memory ends when this returns, so the caller
 /// holds an owned `String` and nothing else by the time it touches the
 /// document. Writing it the other way round does not compile.
-fn read_string(caller: &Caller<'_, Host>, ptr: i32, len: i32) -> Result<String, i32> {
+fn read_string(caller: &Caller<'_, Host>, ptr: i32, len: i32) -> Result<String, Status> {
     let memory = caller
         .get_export("memory")
         .and_then(Extern::into_memory)
-        .ok_or(ERR_BAD_MEMORY)?;
-    let start = usize::try_from(ptr).map_err(|_| ERR_BAD_MEMORY)?;
-    let len = usize::try_from(len).map_err(|_| ERR_BAD_MEMORY)?;
-    let end = start.checked_add(len).ok_or(ERR_BAD_MEMORY)?;
+        .ok_or(Status::ERR_BAD_MEMORY)?;
+    let start = usize::try_from(ptr).map_err(|_| Status::ERR_BAD_MEMORY)?;
+    let len = usize::try_from(len).map_err(|_| Status::ERR_BAD_MEMORY)?;
+    let end = start.checked_add(len).ok_or(Status::ERR_BAD_MEMORY)?;
 
     let data = memory.data(caller);
-    let bytes = data.get(start..end).ok_or(ERR_BAD_MEMORY)?;
+    let bytes = data.get(start..end).ok_or(Status::ERR_BAD_MEMORY)?;
     core::str::from_utf8(bytes)
         .map(str::to_owned)
-        .map_err(|_| ERR_BAD_UTF8)
+        .map_err(|_| Status::ERR_BAD_UTF8)
 }
 
 /// A guest-supplied output buffer, validated.
@@ -325,16 +355,16 @@ struct GuestBuffer {
 ///
 /// A zero-capacity buffer is legal and is how a guest asks "how long is it?"
 /// without providing anywhere to put it — see [`deliver`].
-fn guest_buffer(caller: &Caller<'_, Host>, ptr: i32, cap: i32) -> Result<GuestBuffer, i32> {
+fn guest_buffer(caller: &Caller<'_, Host>, ptr: i32, cap: i32) -> Result<GuestBuffer, Status> {
     let memory = caller
         .get_export("memory")
         .and_then(Extern::into_memory)
-        .ok_or(ERR_BAD_MEMORY)?;
-    let start = usize::try_from(ptr).map_err(|_| ERR_BAD_MEMORY)?;
-    let cap = usize::try_from(cap).map_err(|_| ERR_BAD_MEMORY)?;
-    let end = start.checked_add(cap).ok_or(ERR_BAD_MEMORY)?;
+        .ok_or(Status::ERR_BAD_MEMORY)?;
+    let start = usize::try_from(ptr).map_err(|_| Status::ERR_BAD_MEMORY)?;
+    let cap = usize::try_from(cap).map_err(|_| Status::ERR_BAD_MEMORY)?;
+    let end = start.checked_add(cap).ok_or(Status::ERR_BAD_MEMORY)?;
     if end > memory.data(caller).len() {
-        return Err(ERR_BAD_MEMORY);
+        return Err(Status::ERR_BAD_MEMORY);
     }
     Ok(GuestBuffer { memory, start, cap })
 }
@@ -356,14 +386,14 @@ fn guest_buffer(caller: &Caller<'_, Host>, ptr: i32, cap: i32) -> Result<GuestBu
 fn host_view<'a>(
     caller: &'a mut Caller<'_, Host>,
     buffer: &GuestBuffer,
-) -> Result<(&'a mut [u8], &'a mut Host), i32> {
+) -> Result<(&'a mut [u8], &'a mut Host), Status> {
     let (memory, host) = buffer.memory.data_and_store_mut(caller);
     // `guest_buffer` already bounds-checked this range and no guest has run
     // since, so the `else` is unreachable. Reported rather than indexed,
     // because the ABI's rule is that nothing traps.
     let out = memory
         .get_mut(buffer.start..buffer.start + buffer.cap)
-        .ok_or(ERR_BAD_MEMORY)?;
+        .ok_or(Status::ERR_BAD_MEMORY)?;
     Ok((out, host))
 }
 
@@ -389,8 +419,8 @@ fn report_read(counters: &mut Counters, op: Op, len: usize, cap: usize) -> i32 {
     // ABI's one-return-value convention. Unreachable in practice — no guest
     // buffer is 2 GiB — but reported rather than silently truncated.
     let Ok(reported) = i32::try_from(len) else {
-        counters.record_error(ERR_BAD_MEMORY);
-        return ERR_BAD_MEMORY;
+        counters.record_error(Status::ERR_BAD_MEMORY);
+        return Status::ERR_BAD_MEMORY.raw();
     };
     if len <= cap {
         counters.record_write(op, len);
@@ -420,7 +450,7 @@ pub fn add_to_linker(linker: &mut Linker<Host>) -> Result<(), wasmi::Error> {
             let atom = host.names.intern(&text);
             match i32::try_from(atom.to_u32()) {
                 Ok(raw) => raw,
-                Err(_) => host.fail(ERR_BAD_ATOM),
+                Err(_) => host.fail(Status::ERR_BAD_ATOM),
             }
         },
     )?;
@@ -453,21 +483,21 @@ pub fn add_to_linker(linker: &mut Linker<Host>) -> Result<(), wasmi::Error> {
                 ..
             } = host;
             let Ok(tag) = names.resolve(atom) else {
-                counters.record_error(ERR_BAD_ATOM);
-                return ERR_BAD_ATOM;
+                counters.record_error(Status::ERR_BAD_ATOM);
+                return Status::ERR_BAD_ATOM.raw();
             };
             let node_id = match document::create_element(doc, tag) {
                 Ok(node_id) => node_id,
                 Err(error) => {
                     counters.record_dom_error(error);
-                    return ERR_DOM;
+                    return Status::ERR_DOM.raw();
                 }
             };
             match handles.insert(node_id) {
-                Ok(handle) => handle as i32,
+                Ok(handle) => handle.0 as i32,
                 Err(status) => {
                     counters.record_error(status);
-                    status
+                    status.raw()
                 }
             }
         },
@@ -494,7 +524,7 @@ pub fn add_to_linker(linker: &mut Linker<Host>) -> Result<(), wasmi::Error> {
                 Err(error) => return host.fail_dom(error),
             };
             match host.handles.insert(node_id) {
-                Ok(handle) => handle as i32,
+                Ok(handle) => handle.0 as i32,
                 Err(status) => host.fail(status),
             }
         },
@@ -509,12 +539,9 @@ pub fn add_to_linker(linker: &mut Linker<Host>) -> Result<(), wasmi::Error> {
         |mut caller: Caller<'_, Host>, parent: i32, child: i32| -> i32 {
             let host = caller.data_mut();
             host.counters.record_call(Op::AppendChild);
-            let (parent, child) = match (
-                u32::try_from(parent).map_err(|_| ERR_BAD_HANDLE),
-                u32::try_from(child).map_err(|_| ERR_BAD_HANDLE),
-            ) {
+            let (parent, child) = match (handle_from(parent), handle_from(child)) {
                 (Ok(parent), Ok(child)) => (parent, child),
-                _ => return host.fail(ERR_BAD_HANDLE),
+                _ => return host.fail(Status::ERR_BAD_HANDLE),
             };
             let parent_id = match host.handles.get(parent) {
                 Ok(id) => id,
@@ -527,7 +554,7 @@ pub fn add_to_linker(linker: &mut Linker<Host>) -> Result<(), wasmi::Error> {
             match node::append_child(&mut host.doc, parent_id, child_id) {
                 Ok(_) => {
                     host.mutated = true;
-                    OK
+                    Status::OK.raw()
                 }
                 Err(error) => host.fail_dom(error),
             }
@@ -544,9 +571,9 @@ pub fn add_to_linker(linker: &mut Linker<Host>) -> Result<(), wasmi::Error> {
         |mut caller: Caller<'_, Host>, node: i32, name: i32, value: i32| -> i32 {
             let host = caller.data_mut();
             host.counters.record_call(Op::SetAttribute);
-            let handle = match u32::try_from(node) {
+            let handle = match handle_from(node) {
                 Ok(handle) => handle,
-                Err(_) => return host.fail(ERR_BAD_HANDLE),
+                Err(_) => return host.fail(Status::ERR_BAD_HANDLE),
             };
             let node_id = match host.handles.get(handle) {
                 Ok(id) => id,
@@ -574,17 +601,17 @@ pub fn add_to_linker(linker: &mut Linker<Host>) -> Result<(), wasmi::Error> {
             } = host;
             let (Ok(name), Ok(value)) = (names.resolve(name_atom), names.resolve(value_atom))
             else {
-                counters.record_error(ERR_BAD_ATOM);
-                return ERR_BAD_ATOM;
+                counters.record_error(Status::ERR_BAD_ATOM);
+                return Status::ERR_BAD_ATOM.raw();
             };
             match element::set_attribute(doc, node_id, name, value) {
                 Ok(()) => {
                     *mutated = true;
-                    OK
+                    Status::OK.raw()
                 }
                 Err(error) => {
                     counters.record_dom_error(error);
-                    ERR_DOM
+                    Status::ERR_DOM.raw()
                 }
             }
         },
@@ -607,9 +634,9 @@ pub fn add_to_linker(linker: &mut Linker<Host>) -> Result<(), wasmi::Error> {
             };
             let host = caller.data_mut();
             host.counters.record_copy(Op::SetText, text.len());
-            let handle = match u32::try_from(node) {
+            let handle = match handle_from(node) {
                 Ok(handle) => handle,
-                Err(_) => return host.fail(ERR_BAD_HANDLE),
+                Err(_) => return host.fail(Status::ERR_BAD_HANDLE),
             };
             let node_id = match host.handles.get(handle) {
                 Ok(id) => id,
@@ -618,7 +645,7 @@ pub fn add_to_linker(linker: &mut Linker<Host>) -> Result<(), wasmi::Error> {
             match node::set_text_content(&mut host.doc, node_id, &text) {
                 Ok(()) => {
                     host.mutated = true;
-                    OK
+                    Status::OK.raw()
                 }
                 Err(error) => host.fail_dom(error),
             }
@@ -641,9 +668,9 @@ pub fn add_to_linker(linker: &mut Linker<Host>) -> Result<(), wasmi::Error> {
         |mut caller: Caller<'_, Host>, node: i32, event: i32| -> i32 {
             let host = caller.data_mut();
             host.counters.record_call(Op::AddListener);
-            let handle = match u32::try_from(node) {
+            let handle = match handle_from(node) {
                 Ok(handle) => handle,
-                Err(_) => return host.fail(ERR_BAD_HANDLE),
+                Err(_) => return host.fail(Status::ERR_BAD_HANDLE),
             };
             let node_id = match host.handles.get(handle) {
                 Ok(id) => id,
@@ -654,9 +681,9 @@ pub fn add_to_linker(linker: &mut Linker<Host>) -> Result<(), wasmi::Error> {
                 Err(status) => return host.fail(status),
             };
             match host.listeners.add(node_id, event) {
-                Ok(id) => match i32::try_from(id) {
+                Ok(id) => match i32::try_from(id.0) {
                     Ok(raw) => raw,
-                    Err(_) => host.fail(ERR_TOO_MANY_LISTENERS),
+                    Err(_) => host.fail(Status::ERR_TOO_MANY_LISTENERS),
                 },
                 Err(status) => host.fail(status),
             }
@@ -675,12 +702,12 @@ pub fn add_to_linker(linker: &mut Linker<Host>) -> Result<(), wasmi::Error> {
         |mut caller: Caller<'_, Host>, listener: i32| -> i32 {
             let host = caller.data_mut();
             host.counters.record_call(Op::RemoveListener);
-            let id = match u32::try_from(listener) {
+            let id = match listener_from(listener) {
                 Ok(id) => id,
-                Err(_) => return host.fail(ERR_BAD_LISTENER),
+                Err(_) => return host.fail(Status::ERR_BAD_LISTENER),
             };
             match host.listeners.remove(id) {
-                Ok(()) => OK,
+                Ok(()) => Status::OK.raw(),
                 Err(status) => host.fail(status),
             }
         },
@@ -710,9 +737,9 @@ pub fn add_to_linker(linker: &mut Linker<Host>) -> Result<(), wasmi::Error> {
                 Ok(both) => both,
                 Err(status) => return caller.data_mut().fail(status),
             };
-            let handle = match u32::try_from(node) {
+            let handle = match handle_from(node) {
                 Ok(handle) => handle,
-                Err(_) => return host.fail(ERR_BAD_HANDLE),
+                Err(_) => return host.fail(Status::ERR_BAD_HANDLE),
             };
             let node_id = match host.handles.get(handle) {
                 Ok(id) => id,
@@ -733,19 +760,19 @@ pub fn add_to_linker(linker: &mut Linker<Host>) -> Result<(), wasmi::Error> {
                 ..
             } = host;
             let Ok(name) = names.resolve(name_atom) else {
-                counters.record_error(ERR_BAD_ATOM);
-                return ERR_BAD_ATOM;
+                counters.record_error(Status::ERR_BAD_ATOM);
+                return Status::ERR_BAD_ATOM.raw();
             };
             match element::get_attribute_into(doc, node_id, name, out) {
                 // The DOM's `null`. Not an error and deliberately not recorded
                 // as one: an absent attribute is an answer, and a guest polling
                 // for an optional attribute would otherwise leave `last_error`
                 // permanently set to something nothing went wrong about.
-                Ok(None) => ABSENT,
+                Ok(None) => Status::ABSENT.raw(),
                 Ok(Some(len)) => report_read(counters, Op::GetAttribute, len, buffer.cap),
                 Err(error) => {
                     counters.record_dom_error(error);
-                    ERR_DOM
+                    Status::ERR_DOM.raw()
                 }
             }
         },
@@ -776,9 +803,9 @@ pub fn add_to_linker(linker: &mut Linker<Host>) -> Result<(), wasmi::Error> {
                 Ok(both) => both,
                 Err(status) => return caller.data_mut().fail(status),
             };
-            let handle = match u32::try_from(node) {
+            let handle = match handle_from(node) {
                 Ok(handle) => handle,
-                Err(_) => return host.fail(ERR_BAD_HANDLE),
+                Err(_) => return host.fail(Status::ERR_BAD_HANDLE),
             };
             let node_id = match host.handles.get(handle) {
                 Ok(id) => id,
@@ -789,7 +816,7 @@ pub fn add_to_linker(linker: &mut Linker<Host>) -> Result<(), wasmi::Error> {
                 Ok(len) => report_read(counters, Op::TextContent, len, buffer.cap),
                 Err(error) => {
                     counters.record_dom_error(error);
-                    ERR_DOM
+                    Status::ERR_DOM.raw()
                 }
             }
         },
@@ -813,9 +840,9 @@ pub fn add_to_linker(linker: &mut Linker<Host>) -> Result<(), wasmi::Error> {
         |mut caller: Caller<'_, Host>, node: i32, name: i32| -> i32 {
             let host = caller.data_mut();
             host.counters.record_call(Op::HasAttribute);
-            let handle = match u32::try_from(node) {
+            let handle = match handle_from(node) {
                 Ok(handle) => handle,
-                Err(_) => return host.fail(ERR_BAD_HANDLE),
+                Err(_) => return host.fail(Status::ERR_BAD_HANDLE),
             };
             let node_id = match host.handles.get(handle) {
                 Ok(id) => id,
@@ -832,15 +859,15 @@ pub fn add_to_linker(linker: &mut Linker<Host>) -> Result<(), wasmi::Error> {
                 ..
             } = host;
             let Ok(name) = names.resolve(name_atom) else {
-                counters.record_error(ERR_BAD_ATOM);
-                return ERR_BAD_ATOM;
+                counters.record_error(Status::ERR_BAD_ATOM);
+                return Status::ERR_BAD_ATOM.raw();
             };
             match element::has_attribute(doc, node_id, name) {
                 Ok(true) => 1,
                 Ok(false) => 0,
                 Err(error) => {
                     counters.record_dom_error(error);
-                    ERR_DOM
+                    Status::ERR_DOM.raw()
                 }
             }
         },
