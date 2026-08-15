@@ -227,11 +227,17 @@ impl BaseDocument {
         self.resolve_stylist(current_time_for_animations);
         timer.record_time("style");
 
+        self.paint_damage.begin_resolve();
+
         // Propagate damage flags (from mutation and restyles) up and down the tree
         if self.incremental_layout {
             self.propagate_damage_flags(root_node_id, RestyleDamage::empty());
             timer.record_time("damage");
         }
+        // Anything after this point sees propagated damage, in which every
+        // ancestor up to the root is marked. Recording repaints from there
+        // would describe every frame as a full-frame repaint.
+        self.paint_damage.end_propagation();
 
         // Fix up tree for layout (insert anonymous blocks as necessary, etc)
         self.resolve_layout_children();
@@ -309,6 +315,17 @@ impl BaseDocument {
         // Resolve transforms
         self.resolve_transforms(root_node_id);
         timer.record_time("transform");
+
+        // Boxes are final here, which is what the geometry half compares. It
+        // runs before the clearing loop below only because both walk the node
+        // list and doing them together saves nothing: this one needs `&nodes`
+        // while that one needs `&mut`.
+        if self.paint_damage.is_enabled() {
+            let mut tracker = std::mem::take(&mut self.paint_damage);
+            tracker.capture(&self.nodes);
+            self.paint_damage = tracker;
+            timer.record_time("paint_damage");
+        }
 
         // Clear all damage and dirty flags
         if self.incremental_layout {

@@ -60,6 +60,10 @@ name = "blitz_dom"
 blitz-traits = { workspace = true }
 stylo_taffy = { workspace = true, features = ["default"] }
 debug_timer = { workspace = true }
+# Keys are node ids this document allocated, never anything a page controls, so
+# there is nothing here for SipHash's collision resistance to defend. Paint
+# damage hashes every node once per frame, which is where that cost would land.
+rustc-hash = { workspace = true }
 
 # Servo dependencies
 style = { workspace = true }
