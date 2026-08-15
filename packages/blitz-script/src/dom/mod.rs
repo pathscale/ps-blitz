@@ -122,8 +122,17 @@ pub(crate) fn js_str(s: &str) -> JsValue {
 }
 
 /// Convert a JS value to a Rust `String` (via ECMAScript `ToString`)
+///
+/// This is the single point at which a string crosses from the JavaScript heap
+/// into the host, so it is also where that traffic is counted. See
+/// [`crate::script_stats::BoundaryCounters`]: the count is off unless deep
+/// profiling is on, and it exists because bytes across the boundary is the
+/// quantity a binding design changes, while a wall-clock number folds it
+/// together with everything else the call did.
 pub(crate) fn to_rust_string(value: &JsValue, context: &mut Context) -> JsResult<String> {
-    Ok(value.to_string(context)?.to_std_string_lossy())
+    let string = value.to_string(context)?.to_std_string_lossy();
+    crate::script_stats::record_boundary_string(string.len());
+    Ok(string)
 }
 
 type NativeFnPtr = fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>;
