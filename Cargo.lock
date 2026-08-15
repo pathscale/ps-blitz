@@ -945,6 +945,7 @@ name = "blitz-wasm"
 version = "0.3.0-beta.3"
 dependencies = [
  "blitz-dom-api",
+ "keyboard-types 0.7.0",
  "ps-blitz-dom",
  "ps-blitz-traits",
  "wasmi",
@@ -6108,6 +6109,7 @@ dependencies = [
  "ps-blitz-traits",
  "ps-taffy",
  "rayon",
+ "rustc-hash 2.1.3",
  "selectors",
  "skrifa 0.42.1",
  "slotmap",

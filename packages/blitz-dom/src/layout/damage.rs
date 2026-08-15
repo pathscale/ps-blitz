@@ -61,6 +61,13 @@ impl BaseDocument {
         } else {
             return RestyleDamage::empty();
         };
+        // Read before anything is folded in, which is the only moment "this
+        // node changed" is separable from "something under it changed". Paint
+        // damage needs the former: after the loop below, every ancestor up to
+        // the root carries its descendants' damage.
+        if !damage.is_empty() {
+            self.paint_damage.note_own_damage(node_id);
+        }
         damage |= damage_from_parent;
 
         // Flush updated pseudo-element styles to their anonymous nodes so that
