@@ -10,12 +10,14 @@
 //! when reading ABI.md: anything awkward here is evidence about the facade,
 //! not just about this binding.
 //!
-//! # The five operations, plus one
+//! # The five operations, plus one, plus events
 //!
 //! `create_element`, `create_text`, `append_child`, `set_attribute` and
 //! `set_text` are enough to build a page. `intern` is the sixth, and it is not
 //! optional: every one of the five takes names as atoms, and nothing else in
-//! the ABI produces an atom. See ABI.md.
+//! the ABI produces an atom. `add_listener` and `remove_listener` are the
+//! seventh and eighth, and they are what makes the page respond rather than
+//! merely exist. See ABI.md.
 //!
 //! # The reentrancy rule
 //!
@@ -25,8 +27,15 @@
 //! `BaseDocument`, and a host function reaches it only through
 //! `Caller::data_mut` for the duration of its own body. There is nowhere to
 //! put a `&mut BaseDocument` that outlives a call, because this crate never
-//! stores one. When event dispatch arrives and has to call a guest export, the
-//! borrow will already be gone, because there is no way to write it otherwise.
+//! stores one.
+//!
+//! Event dispatch is where that rule had to be paid for, and [`events`] is
+//! where it was paid: `EventHandler::handle_event` runs while the
+//! `EventDriver` holds the document, so the guest is not called from there at
+//! all. The handler queues listener ids; [`dispatch_dom_event`] drains the
+//! queue afterwards, with the document owned again. The handler is not
+//! *trusted* to avoid the guest — it is handed no `Store`, so it has no means
+//! to reach one.
 //!
 //! Reading a guest string is where the rule is visible: [`read_string`]
 //! borrows guest memory, copies out, and drops the borrow *before* the
@@ -42,6 +51,7 @@
 //! ABI.md, "Obligations this binding inherits".
 
 pub mod counters;
+pub mod events;
 pub mod handles;
 pub mod status;
 
@@ -50,9 +60,11 @@ use blitz_dom_api::{AtomId, DomError, Interner, document, element, node};
 use wasmi::{Caller, Extern, Linker};
 
 pub use counters::{Counters, Op, OpCounters};
+pub use events::{Dispatched, ListenerId, ListenerTable, dispatch_dom_event};
 pub use handles::{Handle, HandleTable, MOUNT};
 pub use status::{
-    ERR_BAD_ATOM, ERR_BAD_HANDLE, ERR_BAD_MEMORY, ERR_BAD_UTF8, ERR_DOM, ERR_TOO_MANY_HANDLES, OK,
+    ERR_BAD_ATOM, ERR_BAD_HANDLE, ERR_BAD_LISTENER, ERR_BAD_MEMORY, ERR_BAD_UTF8, ERR_DOM,
+    ERR_TOO_MANY_HANDLES, ERR_TOO_MANY_LISTENERS, OK,
 };
 
 /// The import module name every host function is registered under.
@@ -69,6 +81,16 @@ pub struct Host {
     handles: HandleTable,
     counters: Counters,
     mutated: bool,
+    /// Registered event listeners. See [`events`].
+    listeners: ListenerTable,
+    /// Listener ids propagation matched but the guest has not been called for
+    /// yet.
+    ///
+    /// This queue *is* the deferred-dispatch design. It exists so that
+    /// `EventHandler::handle_event` — which runs with the document borrowed —
+    /// has somewhere to put its answer that is not "call the guest".
+    pending: Vec<ListenerId>,
+    redraw_requested: bool,
 }
 
 impl Host {
@@ -85,6 +107,9 @@ impl Host {
             handles: HandleTable::with_mount(mount),
             counters: Counters::default(),
             mutated: false,
+            listeners: ListenerTable::default(),
+            pending: Vec::new(),
+            redraw_requested: false,
         }
     }
 
@@ -132,6 +157,37 @@ impl Host {
     /// Clear the dirty flag, after resolving layout.
     pub fn clear_mutated(&mut self) {
         self.mutated = false;
+    }
+
+    /// The listener table, mainly so a test can count what a guest registered.
+    pub fn listeners(&self) -> &ListenerTable {
+        &self.listeners
+    }
+
+    /// The listener table, mutably.
+    ///
+    /// Registering from here rather than from the guest is legitimate: an
+    /// embedder with a host-side widget wants the same queue, and it is the
+    /// same table either way. What it does *not* get is a handler — the guest
+    /// is still the only thing `dispatch` can reach, so an id registered here
+    /// that the guest does not know is a reported failure and not a trap.
+    pub fn listeners_mut(&mut self) -> &mut ListenerTable {
+        &mut self.listeners
+    }
+
+    /// Whether a frame has been asked for since this was last cleared.
+    ///
+    /// The second obligation `blitz-dom-api` leaves to its caller (see
+    /// ABI.md). There is no shell here, so a request is recorded rather than
+    /// sent; an embedder with one reads this after
+    /// [`dispatch_dom_event`] and asks its window for the frame.
+    pub fn redraw_requested(&self) -> bool {
+        self.redraw_requested
+    }
+
+    /// Clear the redraw request, after asking for the frame.
+    pub fn clear_redraw_request(&mut self) {
+        self.redraw_requested = false;
     }
 
     fn atom(&mut self, raw: i32) -> Result<AtomId, i32> {
@@ -401,6 +457,67 @@ pub fn add_to_linker(linker: &mut Linker<Host>) -> Result<(), wasmi::Error> {
                     OK
                 }
                 Err(error) => host.fail_dom(error),
+            }
+        },
+    )?;
+
+    // === add_listener(node, event_atom) -> listener_id | error ===
+    //
+    // Zero bytes copied: a handle and an atom, exactly like `set_attribute`.
+    // The event name is interned once and is an integer for the life of the
+    // instance, which is the same trade tag names get and for the same reason:
+    // "click" is drawn from a small fixed vocabulary.
+    //
+    // Registering a listener does not mutate the document. `mutated` stays
+    // where it is, because nothing about the tree or its styles has changed
+    // and a frame drawn now would be identical to the last one.
+    linker.func_wrap(
+        MODULE,
+        "add_listener",
+        |mut caller: Caller<'_, Host>, node: i32, event: i32| -> i32 {
+            let host = caller.data_mut();
+            host.counters.record_call(Op::AddListener);
+            let handle = match u32::try_from(node) {
+                Ok(handle) => handle,
+                Err(_) => return host.fail(ERR_BAD_HANDLE),
+            };
+            let node_id = match host.handles.get(handle) {
+                Ok(id) => id,
+                Err(status) => return host.fail(status),
+            };
+            let event = match host.atom(event) {
+                Ok(atom) => atom,
+                Err(status) => return host.fail(status),
+            };
+            match host.listeners.add(node_id, event) {
+                Ok(id) => match i32::try_from(id) {
+                    Ok(raw) => raw,
+                    Err(_) => host.fail(ERR_TOO_MANY_LISTENERS),
+                },
+                Err(status) => host.fail(status),
+            }
+        },
+    )?;
+
+    // === remove_listener(listener_id) -> OK | error ===
+    //
+    // Zero bytes copied. A listener id is not a handle: it indexes the
+    // listener table, not the node table, and passing one where the other
+    // belongs is `ERR_BAD_LISTENER` rather than a silent hit on an unrelated
+    // node.
+    linker.func_wrap(
+        MODULE,
+        "remove_listener",
+        |mut caller: Caller<'_, Host>, listener: i32| -> i32 {
+            let host = caller.data_mut();
+            host.counters.record_call(Op::RemoveListener);
+            let id = match u32::try_from(listener) {
+                Ok(id) => id,
+                Err(_) => return host.fail(ERR_BAD_LISTENER),
+            };
+            match host.listeners.remove(id) {
+                Ok(()) => OK,
+                Err(status) => host.fail(status),
             }
         },
     )?;

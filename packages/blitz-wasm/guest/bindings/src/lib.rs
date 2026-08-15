@@ -11,6 +11,14 @@
 //! and never an `extern "C"` block, a raw pointer, or a status code. The
 //! `unsafe` and the integer protocol live here, once.
 //!
+//! # Events
+//!
+//! [`Node::on`] registers a handler and keeps it on this side; the host is
+//! given an id and never sees a function. The host calls back through a
+//! `dispatch` export that this crate deliberately does not provide — see
+//! [`run_listener`] for why that last step belongs to the guest that knows
+//! what its framework considers "settled".
+//!
 //! # Atoms
 //!
 //! `Element::new` and `set_attribute` take `&str` and intern it for you, so
@@ -34,6 +42,7 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 // The raw imports. Everything below this is what makes them safe to use.
 // (A `///` comment here is dropped: rustdoc does not document extern blocks.)
@@ -45,6 +54,8 @@ unsafe extern "C" {
     fn append_child(parent: i32, child: i32) -> i32;
     fn set_attribute(node: i32, name: i32, value: i32) -> i32;
     fn set_text(node: i32, ptr: u32, len: u32) -> i32;
+    fn add_listener(node: i32, event: i32) -> i32;
+    fn remove_listener(listener: i32) -> i32;
 }
 
 /// A host status code that was not a success.
@@ -66,6 +77,8 @@ impl Error {
             -4 => "invalid utf-8",
             -5 => "dom error",
             -6 => "too many handles",
+            -7 => "bad listener id",
+            -8 => "too many listeners",
             _ => "unknown error",
         }
     }
@@ -152,6 +165,109 @@ impl Node {
         check(unsafe { set_text(self.0, text.as_ptr() as u32, text.len() as u32) })?;
         Ok(())
     }
+
+    /// Listen for `event` on this node.
+    ///
+    /// The event name is interned, so registering `"click"` on a thousand rows
+    /// copies five bytes once and nothing thereafter. `handler` stays on this
+    /// side of the boundary: the host is given an id and never sees a
+    /// function.
+    ///
+    /// The listener fires for events that reach this node by bubbling, not
+    /// only for events targeted at it directly. Note the limitation the host's
+    /// deferred dispatch imposes — see [`Listener`].
+    pub fn on(self, event: &str, handler: impl FnMut() + 'static) -> Result<Listener> {
+        let event = Atom::intern(event)?;
+        let id = check(unsafe { add_listener(self.0, event.raw()) })? as u32;
+        HANDLERS.with(|handlers| {
+            handlers
+                .borrow_mut()
+                .insert(id, Rc::new(RefCell::new(Box::new(handler) as Handler)))
+        });
+        Ok(Listener(id))
+    }
+}
+
+type Handler = Box<dyn FnMut()>;
+
+// The guest half of the listener registry. The host holds `(node, event) ->
+// id`; this holds `id -> closure`. Neither knows what the other stores, which
+// is what keeps a function pointer from ever needing to cross the boundary.
+//
+// `Rc<RefCell<..>>` rather than the closure inline, so a handler can be *taken
+// out* and run with no borrow of the map outstanding. A handler that registers
+// or removes a listener while running is ordinary — the counter demo's does
+// not, but a real framework's will — and with the map borrowed across the call
+// that would panic. This is the guest-side mirror of the host's reentrancy
+// rule, and it exists for the same reason.
+thread_local! {
+    static HANDLERS: RefCell<BTreeMap<u32, Rc<RefCell<Handler>>>> =
+        const { RefCell::new(BTreeMap::new()) };
+}
+
+/// A registered event listener.
+///
+/// # The one thing this cannot do
+///
+/// A handler cannot cancel the event. The host queues listener ids during
+/// propagation and calls the guest only after the `EventDriver` has finished
+/// and released the document, so by the time a handler runs, propagation is
+/// over and the default action has already happened. `preventDefault` and
+/// `stopPropagation` have nothing left to prevent or stop, so the ABI does not
+/// offer them rather than offering them broken. See the host's ABI.md,
+/// "Deferred dispatch and what it gives up".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Listener(u32);
+
+impl Listener {
+    /// The raw listener id, which is what the host calls `dispatch` with.
+    pub fn raw(self) -> u32 {
+        self.0
+    }
+
+    /// Unregister. The handler is dropped on this side and the id becomes an
+    /// error on the host's.
+    pub fn remove(self) -> Result<()> {
+        check(unsafe { remove_listener(self.0 as i32) })?;
+        HANDLERS.with(|handlers| handlers.borrow_mut().remove(&self.0));
+        Ok(())
+    }
+}
+
+/// Run the handler registered for `listener_id`, or `-7` (`ERR_BAD_LISTENER`)
+/// if this guest holds none.
+///
+/// # This is not the `dispatch` export
+///
+/// It is deliberately only half of it. The host's contract is that `dispatch`
+/// *completes* the handler: it runs it **and** drains whatever the guest's
+/// framework queued as a result, so that the DOM is settled before the host
+/// takes the document back and asks for a frame. Only the guest knows what
+/// that drain is — `solid_rs::flush()`, a microtask loop, nothing at all — and
+/// the moment this crate picks one, the ABI stops being framework-neutral and
+/// starts being that framework's ABI.
+///
+/// So the export lives in the guest that knows, and is three lines:
+///
+/// ```ignore
+/// #[unsafe(no_mangle)]
+/// pub extern "C" fn dispatch(listener_id: u32) -> i32 {
+///     let status = blitz_wasm_guest::run_listener(listener_id);
+///     solid_rs::flush();
+///     status
+/// }
+/// ```
+pub fn run_listener(listener_id: u32) -> i32 {
+    // Cloned out under a borrow that ends on this line. Running the handler
+    // with the map still borrowed would make "register a listener from a
+    // handler" a panic instead of a feature.
+    let handler = HANDLERS.with(|handlers| handlers.borrow().get(&listener_id).cloned());
+    let Some(handler) = handler else {
+        return -7; // ERR_BAD_LISTENER: the host knows an id this guest does not.
+    };
+    // The `Rc` keeps the closure alive even if the handler removes itself.
+    (handler.borrow_mut())();
+    0
 }
 
 /// An element, which is a [`Node`] with attribute operations.
@@ -194,6 +310,11 @@ impl Element {
     /// Append a child to this element.
     pub fn append(self, child: Node) -> Result<()> {
         self.0.append(child)
+    }
+
+    /// Listen for `event` on this element. See [`Node::on`].
+    pub fn on(self, event: &str, handler: impl FnMut() + 'static) -> Result<Listener> {
+        self.0.on(event, handler)
     }
 }
 

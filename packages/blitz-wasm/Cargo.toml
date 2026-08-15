@@ -19,6 +19,10 @@ name = "blitz_wasm"
 # Blitz dependencies
 blitz-dom-api = { workspace = true }
 blitz-dom = { workspace = true }
+# `DomEvent` and `EventState` live here, and `blitz-dom` does not re-export
+# them. `blitz-script` carries this dependency for exactly the same reason:
+# both crates implement `EventHandler`, and its signature mentions both types.
+blitz-traits = { workspace = true }
 
 # The wasm interpreter. It belongs to this crate and nothing below it:
 # `blitz-dom-api` must never reach a wasm runtime, and `blitz-script` must
@@ -30,7 +34,9 @@ blitz-dom = { workspace = true }
 wasmi = "1.1"
 
 [dev-dependencies]
-blitz-traits = { workspace = true }
+# `Modifiers`, for the synthetic click. `blitz-traits` takes its event types
+# from here and does not re-export this one.
+keyboard-types = { workspace = true }
 # The layout test measures text, so the test build needs real fonts.
 #
 # Without `system-fonts` parley finds no face, every line shapes to nothing,
