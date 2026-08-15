@@ -1,11 +1,15 @@
 //! Build the demo guest to `wasm32-unknown-unknown`, instantiate it under
-//! wasmi, run it against a real document, and assert both the resulting tree
-//! and the counters.
+//! wasmi, run it against a real document, and drive it with real events.
 //!
 //! Compiling to wasm32 proves the code type-checks. Instantiating proves it
 //! links: a missing panic handler, an unsatisfied import, an unsupported `std`
 //! surface all show up here and nowhere earlier. So the test builds a real
 //! `.wasm` rather than calling the guest crate as a library.
+//!
+//! And clicking proves the rest. A test that asserted only "dispatch returned
+//! OK" would pass against a guest whose handler does nothing at all, so every
+//! event test here ends at the DOM: the text node's content, read back out of
+//! the document, is the only evidence accepted.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -13,8 +17,10 @@ use std::sync::OnceLock;
 
 use blitz_dom::{BaseDocument, DocumentConfig, NodeData, NodeId, qual_name};
 use blitz_dom_api::{document, element, node};
+use blitz_traits::events::DomEvent;
 use blitz_traits::shell::{ColorScheme, Viewport};
-use blitz_wasm::{Host, MODULE, OK};
+use blitz_wasm::{Counters, Dispatched, Host, MODULE, OK, dispatch_dom_event};
+use keyboard_types::Modifiers;
 use wasmi::{Engine, Instance, Linker, Module, Store};
 
 /// Build the demo guest and return the module bytes.
@@ -25,7 +31,7 @@ use wasmi::{Engine, Instance, Linker, Module, Store};
 /// rather than fail, and a deadlocked test looks like a hung machine.
 fn build_guest() -> Vec<u8> {
     // Built once for the whole binary. Every test needs the module, cargo runs
-    // them on separate threads, and six concurrent `cargo build` invocations
+    // them on separate threads, and concurrent `cargo build` invocations
     // against one target directory race: cargo serialises on the lock, but a
     // test can still read the `.wasm` while another invocation is replacing
     // it. That produced exactly one spurious failure under load, which is the
@@ -55,7 +61,9 @@ fn build_guest_once() -> Vec<u8> {
         output.status.success(),
         "guest build failed.\n\
          If this says the wasm32-unknown-unknown target is missing, install it with\n\
-         `rustup target add wasm32-unknown-unknown`; this test will not do it for you.\n\n\
+         `rustup target add wasm32-unknown-unknown`; this test will not do it for you.\n\
+         If it says it could not fetch `solid_rs`, the guest's git dependency needs\n\
+         network access on the first build; `Cargo.lock` pins it thereafter.\n\n\
          stderr:\n{}",
         String::from_utf8_lossy(&output.stderr)
     );
@@ -110,8 +118,80 @@ fn call(store: &mut Store<Host>, instance: &Instance, name: &str) -> i32 {
         .unwrap_or_else(|err| panic!("`{name}` trapped, which the ABI forbids: {err}"))
 }
 
-/// The guest imports exactly the host functions this crate registers, from the
-/// module name it registers them under, and nothing else. No WASI, no JS glue.
+/// A built, mounted, laid-out counter, ready to be clicked.
+///
+/// Layout is resolved before returning because a synthetic click reads the
+/// node's box to place its coordinates. The event is delivered to an explicit
+/// target either way, so an unlaid-out document would still dispatch — it
+/// would just dispatch a click at (0, 0), which is a less honest simulation of
+/// the thing being tested.
+fn counter() -> (Store<Host>, Instance) {
+    let bytes = build_guest();
+    let (mut store, instance) = instantiate(&bytes);
+    let status = call(&mut store, &instance, "run");
+    assert_eq!(
+        status,
+        OK,
+        "the guest reported {}: {:?}",
+        blitz_wasm::status::name(status),
+        store.data().counters().last_dom_error
+    );
+    store.data_mut().document_mut().resolve(0.0);
+    (store, instance)
+}
+
+fn query(store: &Store<Host>, selector: &str) -> NodeId {
+    document::query_selector(store.data().document(), selector)
+        .unwrap()
+        .unwrap_or_else(|| panic!("no node matching {selector}"))
+}
+
+/// Synthesise a click on the node matching `selector` and drive it all the way
+/// through: propagation, the deferred guest dispatch, and the redraw request.
+fn click(store: &mut Store<Host>, instance: &Instance, selector: &str) -> Dispatched {
+    let target = query(store, selector);
+    let event = {
+        let doc = store.data().document();
+        DomEvent::new(
+            target,
+            doc.get_node(target)
+                .unwrap()
+                .synthetic_click_event(Modifiers::empty()),
+        )
+    };
+    dispatch_dom_event(store, instance, event).expect("dispatch should not trap")
+}
+
+/// What the counter currently reads, straight out of the document.
+fn readout(store: &Store<Host>) -> String {
+    node::text_content(store.data().document(), query(store, ".count")).unwrap()
+}
+
+fn counters(store: &Store<Host>) -> Counters {
+    store.data().counters().clone()
+}
+
+/// The whole ABI, in the order this file asserts it.
+const ABI: [&str; 8] = [
+    "add_listener",
+    "append_child",
+    "create_element",
+    "create_text",
+    "intern",
+    "remove_listener",
+    "set_attribute",
+    "set_text",
+];
+
+/// The guest imports nothing outside the ABI, from nowhere but the `blitz`
+/// module. No WASI, no JS glue.
+///
+/// Worth re-asserting now that the guest carries a reactive framework: a
+/// scheduler is exactly the sort of thing that reaches for a clock or a
+/// microtask queue from the platform, and this is what proves `solid_rs` does
+/// not — a `solid_rs` guest's import list is the same eight names as a guest
+/// with no framework at all, which is the sharpest statement of what the
+/// reactive core costs at the boundary. Nothing.
 #[test]
 fn the_guest_imports_only_the_blitz_module() {
     let bytes = build_guest();
@@ -124,149 +204,337 @@ fn the_guest_imports_only_the_blitz_module() {
         .collect();
     imports.sort();
 
-    assert_eq!(
-        imports,
-        vec![
-            format!("{MODULE}::append_child"),
-            format!("{MODULE}::create_element"),
-            format!("{MODULE}::create_text"),
-            format!("{MODULE}::intern"),
-            format!("{MODULE}::set_attribute"),
-            format!("{MODULE}::set_text"),
-        ],
-        "the guest reached for something outside the ABI"
-    );
+    let abi: Vec<String> = ABI.iter().map(|name| format!("{MODULE}::{name}")).collect();
+    for import in &imports {
+        assert!(
+            abi.contains(import),
+            "the guest reached for {import}, which is outside the ABI"
+        );
+    }
+
+    // Exactly the seven a counter uses. The eighth, `remove_listener`, is
+    // registered by the host and declared by the bindings, but this guest
+    // never calls it and `lto = true` drops the import — a module imports what
+    // it *calls*, not what its bindings declare. Asserting the exact set
+    // rather than a subset keeps this test able to notice a guest that quietly
+    // stops calling one.
+    let expected: Vec<String> = ABI
+        .iter()
+        .filter(|name| **name != "remove_listener")
+        .map(|name| format!("{MODULE}::{name}"))
+        .collect();
+    assert_eq!(imports, expected);
+}
+
+/// The guest exports what the host has to call.
+///
+/// `dispatch` is the one export the event path needs, and a guest missing it
+/// fails at the first click rather than at instantiation — wasm imports are
+/// checked when a module is instantiated, exports only when they are looked
+/// up. This is the check that turns "the eleventh click panics" into "the
+/// guest does not export dispatch".
+#[test]
+fn the_guest_exports_dispatch() {
+    let bytes = build_guest();
+    let (store, instance) = instantiate(&bytes);
+
+    instance
+        .get_typed_func::<u32, i32>(&store, "dispatch")
+        .expect("the guest should export `dispatch(u32) -> i32`");
 }
 
 #[test]
 fn the_guest_builds_a_tree_through_wasmi() {
-    let bytes = build_guest();
-    let (mut store, instance) = instantiate(&bytes);
+    let (store, _instance) = counter();
+    let doc = store.data().document();
 
-    let status = call(&mut store, &instance, "run");
-    assert_eq!(
-        status,
-        OK,
-        "the guest reported {}: {:?}",
-        blitz_wasm::status::name(status),
-        store.data().counters().last_dom_error
-    );
-
-    let host = store.data();
-    let doc = host.document();
-
-    // The panel is where the guest put it, with the attributes it set.
-    let panel = document::query_selector(doc, ".panel")
-        .unwrap()
-        .expect("the guest should have created a .panel");
-    assert_eq!(
-        element::get_attribute(doc, panel, "id").unwrap(),
-        Some("root".to_string())
-    );
+    let panel = query(&store, ".counter");
     assert_eq!(element::tag_name(doc, panel).unwrap(), "DIV");
 
     // Mounted under the body the host seeded, not floating detached.
     let body = document::body(doc).unwrap().expect("body");
     assert_eq!(node::parent_node(doc, panel).unwrap(), Some(body));
 
-    // Heading plus three rows, in order.
     let children = node::child_nodes(doc, panel).unwrap();
-    assert_eq!(children.len(), 4, "expected an h1 and three rows");
-    assert_eq!(element::tag_name(doc, children[0]).unwrap(), "H1");
-    assert_eq!(node::text_content(doc, children[0]).unwrap(), "Blitz");
-
-    let rows = document::query_selector_all(doc, ".row").unwrap();
-    assert_eq!(rows, children[1..].to_vec());
-    let labels: Vec<String> = rows
-        .iter()
-        .map(|row| node::text_content(doc, *row).unwrap())
-        .collect();
-    assert_eq!(labels, vec!["one", "two", "three"]);
+    assert_eq!(children.len(), 2, "expected a button and a readout");
+    assert_eq!(element::tag_name(doc, children[0]).unwrap(), "BUTTON");
+    assert_eq!(node::text_content(doc, children[0]).unwrap(), "+1");
+    assert_eq!(element::tag_name(doc, children[1]).unwrap(), "SPAN");
 
     // A text node, not an element with a text-shaped attribute.
-    let first_text = node::first_child(doc, rows[0]).unwrap().unwrap();
+    let count_text = node::first_child(doc, children[1]).unwrap().unwrap();
     assert!(matches!(
-        doc.get_node(first_text).map(|n| &n.data),
+        doc.get_node(count_text).map(|n| &n.data),
         Some(NodeData::Text(_))
     ));
+
+    // The guest created this node empty; the `0` is the effect's first run, on
+    // the flush at the end of `run`. So this assertion is already testing the
+    // reactive path, before a single click.
+    assert_eq!(readout(&store), "0");
+
+    // One listener, registered on the button.
+    assert_eq!(store.data().listeners().len(), 1);
 }
 
-/// The thesis, as an assertion rather than a claim.
+/// The whole point of the exercise.
+///
+/// `click -> host queue -> guest dispatch -> signal write -> microtask drain
+/// -> effect -> set_text -> redraw`, with no JavaScript anywhere in it, and
+/// asserted at the far end: the text node's content, not the return code.
+///
+/// This is also the empirical half of the reentrancy claim. The guest's effect
+/// calls `set_text` *while the host is mid-dispatch*, which reaches the
+/// document through `Caller::data_mut`. If any borrow of that document were
+/// still outstanding from propagation, this would not run — it would not have
+/// compiled. That the text below changed is the evidence that the borrow was
+/// released before the guest was called.
 #[test]
-fn an_interned_set_attribute_copies_nothing() {
-    let bytes = build_guest();
-    let (mut store, instance) = instantiate(&bytes);
-    assert_eq!(call(&mut store, &instance, "run"), OK);
+fn a_click_increments_the_counter() {
+    let (mut store, instance) = counter();
+    assert_eq!(readout(&store), "0");
 
-    let counters = store.data().counters().clone();
-
-    // Five `set_attribute` calls: class and id on the panel, then class on
-    // each of the three rows. Not one byte crossed the boundary for any of
-    // them, because every argument was a handle or an atom.
-    assert_eq!(counters.set_attribute.calls, 5);
+    let dispatched = click(&mut store, &instance, ".increment");
     assert_eq!(
-        counters.set_attribute.bytes_copied, 0,
-        "an interned set_attribute must copy nothing"
+        dispatched,
+        Dispatched {
+            queued: 1,
+            ran: 1,
+            failed: 0
+        },
+        "one listener matched and ran; guest status {:?}",
+        store.data().counters().last_guest_status
     );
-    assert_eq!(counters.set_attribute.host_allocs, 0);
+    assert_eq!(
+        readout(&store),
+        "1",
+        "the click never reached the signal, or the effect never reached the DOM"
+    );
 
-    // Same for element creation: the tag is an atom.
-    assert_eq!(counters.create_element.calls, 5, "div, h1, and three p");
-    assert_eq!(counters.create_element.bytes_copied, 0);
+    // Twice, because a guest that hardcoded "1" would pass the first
+    // assertion. This one only passes if the signal is actually holding state
+    // between dispatches.
+    click(&mut store, &instance, ".increment");
+    assert_eq!(readout(&store), "2");
 
-    // And for the tree edges.
-    assert_eq!(counters.append_child.bytes_copied, 0);
+    // And the mutation was recorded, so an embedder knows to lay out again.
+    assert!(store.data().mutated());
+    assert!(
+        store.data().redraw_requested(),
+        "a listener ran, so a frame should have been asked for"
+    );
+}
 
-    // What it did cost, stated rather than hidden. The names crossed once
-    // each, at intern time: div, class, panel, id, root, h1, p, row. Reporting
-    // set_attribute as free without this line would be a true number telling a
-    // false story.
-    let interned: usize = ["div", "class", "panel", "id", "root", "h1", "p", "row"]
-        .iter()
-        .map(|name| name.len())
-        .sum();
-    assert_eq!(counters.intern.calls, 8, "one call per distinct name");
-    assert_eq!(counters.intern.bytes_copied, interned as u64);
+/// Mounting the counter, measured. These are the numbers in ABI.md.
+///
+/// The interned tier is stated in full rather than summarised, because
+/// reporting `create_element` and `set_attribute` as free without also
+/// reporting what naming cost would be a true number telling a false story.
+#[test]
+fn mounting_the_counter_costs_the_names_and_the_content() {
+    let (store, _instance) = counter();
+    let c = counters(&store);
+
+    // The names, each crossing exactly once. Every later use is an integer.
+    let names = [
+        "div",
+        "class",
+        "counter",
+        "button",
+        "increment",
+        "span",
+        "count",
+        "click",
+    ];
+    let interned: usize = names.iter().map(|name| name.len()).sum();
+    assert_eq!(c.intern.calls, 8, "one call per distinct name");
+    assert_eq!(c.intern.bytes_copied, interned as u64, "44 bytes of names");
     assert_eq!(store.data().names().len(), 8);
 
-    // Text is the other tier and does copy, which is the correct trade: text
-    // is content, not a name from a small vocabulary.
-    assert_eq!(counters.create_text.calls, 4, "Blitz, one, two, three");
+    // The interned tier: three elements, three attributes, five tree edges and
+    // one listener, and not one byte between them.
+    assert_eq!(c.create_element.calls, 3, "div, button, span");
+    assert_eq!(c.create_element.bytes_copied, 0);
+    assert_eq!(c.create_element.host_allocs, 0);
+    assert_eq!(c.set_attribute.calls, 3);
+    assert_eq!(c.set_attribute.bytes_copied, 0);
+    assert_eq!(c.set_attribute.host_allocs, 0);
+    assert_eq!(c.append_child.calls, 5);
+    assert_eq!(c.append_child.bytes_copied, 0);
+    assert_eq!(c.add_listener.calls, 1);
+    assert_eq!(c.add_listener.bytes_copied, 0);
+
+    // The copied tier: the button's label, the empty node the effect owns,
+    // and the `0` the effect put in it. Three bytes, and all three of them are
+    // content rather than vocabulary.
+    assert_eq!(c.create_text.calls, 2, "`+1`, and the empty count node");
+    assert_eq!(c.create_text.bytes_copied, "+1".len() as u64);
+    assert_eq!(c.set_text.calls, 1, "the effect's first run");
+    assert_eq!(c.set_text.bytes_copied, "0".len() as u64);
+
+    // Read the two totals together: 47 is what a first paint costs including
+    // learning the vocabulary, 3 is what it costs once the names are known.
+    assert_eq!(c.total_calls(), 23);
+    assert_eq!(c.total_bytes_copied(), 47);
+    assert_eq!(c.bytes_copied_excluding_interning(), 3);
+}
+
+/// A click carries a listener id and nothing else.
+///
+/// This is the event half of the thesis the crate's byte counters exist to
+/// assert. It is stated as a delta rather than a total: what matters is not
+/// that the boundary is quiet overall, it is that *the click itself* is free
+/// and the only bytes that move are the ones carrying new content.
+#[test]
+fn a_click_copies_nothing_across_the_boundary() {
+    let (mut store, instance) = counter();
+
+    let before = counters(&store);
+    click(&mut store, &instance, ".increment");
+    let after = counters(&store);
+
+    // The host called into the guest exactly once, and that call carried a
+    // `u32`. There is no pointer in `dispatch`'s signature for anything else
+    // to travel through, which is why this counter can never be anything else.
+    assert_eq!(after.dispatch.calls, before.dispatch.calls + 1);
     assert_eq!(
-        counters.create_text.bytes_copied,
-        ("Blitz".len() + "one".len() + "two".len() + "three".len()) as u64
+        after.dispatch.bytes_copied, 0,
+        "an event must be a listener id, nothing more"
     );
 
-    // The steady state a running page is in: names already known, so the only
-    // bytes crossing are the ones that are genuinely new content.
+    // Registering the listener was free too: a handle and an atom.
+    assert_eq!(after.add_listener.calls, 1);
+    assert_eq!(after.add_listener.bytes_copied, 0);
+
+    // Nothing was interned by the click. "click" crossed once, at setup, and
+    // is an integer for the life of the instance.
+    assert_eq!(after.intern.calls, before.intern.calls);
+
+    // The only bytes that crossed for the whole click are the one byte of new
+    // text the effect wrote: `0` became `1`. Stated as the exact total rather
+    // than "small", because "small" is not a number a future change can fail.
     assert_eq!(
-        counters.bytes_copied_excluding_interning(),
-        counters.create_text.bytes_copied
+        after.total_bytes_copied() - before.total_bytes_copied(),
+        "1".len() as u64,
+        "the only new information in a click is the digit it produced"
+    );
+    assert_eq!(after.set_text.calls, before.set_text.calls + 1);
+}
+
+/// Ten clicks cost ten digits, and nothing else.
+///
+/// The steady state a running page is in. The vocabulary was learned once at
+/// mount; from here the boundary carries only content, and the per-click cost
+/// does not grow with the number of clicks, the size of the tree, or the
+/// number of listeners.
+#[test]
+fn clicking_repeatedly_costs_only_the_digits() {
+    let (mut store, instance) = counter();
+
+    let before = counters(&store);
+    for _ in 0..10 {
+        click(&mut store, &instance, ".increment");
+    }
+    let after = counters(&store);
+
+    assert_eq!(readout(&store), "10");
+    assert_eq!(after.dispatch.calls, before.dispatch.calls + 10);
+    assert_eq!(after.dispatch.bytes_copied, 0);
+    assert_eq!(
+        after.intern.calls, before.intern.calls,
+        "nothing new to name"
+    );
+
+    // Nine single digits and one "10".
+    assert_eq!(
+        after.total_bytes_copied() - before.total_bytes_copied(),
+        9 + 2,
     );
 }
 
-/// Handles survive across export calls, and the update path works.
+/// A removed listener stops firing, and its id stops being valid.
 #[test]
-fn the_guest_can_come_back_to_a_node_it_kept() {
-    let bytes = build_guest();
-    let (mut store, instance) = instantiate(&bytes);
-    assert_eq!(call(&mut store, &instance, "run"), OK);
+fn a_removed_listener_stops_firing() {
+    let (mut store, instance) = counter();
+    click(&mut store, &instance, ".increment");
+    assert_eq!(readout(&store), "1");
 
-    let before = store.data().counters().set_text.calls;
-    assert_eq!(call(&mut store, &instance, "update"), OK);
-    assert_eq!(store.data().counters().set_text.calls, before + 1);
+    // Removed from the host side, which is the same table `remove_listener`
+    // reaches. The guest's own copy of the handler is irrelevant: with no host
+    // registration, propagation matches nothing and the guest is never called.
+    store
+        .data_mut()
+        .listeners_mut()
+        .remove(0)
+        .expect("the guest registered listener 0");
 
-    let doc = store.data().document();
-    let rows = document::query_selector_all(doc, ".row").unwrap();
-    let labels: Vec<String> = rows
-        .iter()
-        .map(|row| node::text_content(doc, *row).unwrap())
-        .collect();
+    let dispatched = click(&mut store, &instance, ".increment");
+    assert_eq!(dispatched, Dispatched::default(), "nothing should have run");
+    assert_eq!(readout(&store), "1", "the counter should not have moved");
+
+    // And a second removal is an error rather than a quiet success.
     assert_eq!(
-        labels,
-        vec!["rewritten", "two", "three"],
-        "the guest should have rewritten the node it held a handle for"
+        store.data_mut().listeners_mut().remove(0),
+        Err(blitz_wasm::ERR_BAD_LISTENER)
     );
+}
+
+/// An event nobody listens for queues nothing, calls nobody, and asks for no
+/// frame.
+#[test]
+fn an_unlistened_event_does_not_reach_the_guest() {
+    let (mut store, instance) = counter();
+    store.data_mut().clear_redraw_request();
+
+    // The readout has no listener on it, and `click` does not bubble to the
+    // button from there — they are siblings.
+    let dispatched = click(&mut store, &instance, ".count");
+
+    assert_eq!(dispatched, Dispatched::default());
+    assert_eq!(store.data().counters().dispatch.calls, 0);
+    assert!(
+        !store.data().redraw_requested(),
+        "nothing ran, so nothing should have asked for a frame"
+    );
+}
+
+/// A click on the button bubbles to an ancestor listener too, in the order the
+/// DOM specifies: target first, then up.
+#[test]
+fn a_click_bubbles_to_ancestors() {
+    let (mut store, instance) = counter();
+
+    // Registered host-side rather than from the guest, because the guest has
+    // no handler for it — the point here is the *matching*, and a second
+    // listener the guest cannot service would just add a failed dispatch.
+    let panel = query(&store, ".counter");
+    let click_atom = store
+        .data()
+        .names()
+        .get("click")
+        .expect("the guest interned `click` when it registered its listener");
+    let ancestor = store
+        .data_mut()
+        .listeners_mut()
+        .add(panel, click_atom)
+        .unwrap();
+
+    let dispatched = click(&mut store, &instance, ".increment");
+    assert_eq!(
+        dispatched.queued, 2,
+        "the button's listener, then the panel's"
+    );
+
+    // The guest ran both — the second is an id it has no handler for, which it
+    // reports rather than trapping on.
+    assert_eq!(dispatched.ran, 2);
+    assert_eq!(dispatched.failed, 1);
+    assert_eq!(store.data().counters().last_guest_status, Some(-7));
+
+    // And the one the guest *does* know still did its job.
+    assert_eq!(readout(&store), "1");
+
+    store.data_mut().listeners_mut().remove(ancestor).unwrap();
 }
 
 /// The tree the guest built is a real document, so it lays out.
@@ -275,64 +543,63 @@ fn the_guest_can_come_back_to_a_node_it_kept() {
 /// of detached nodes would also satisfy.
 #[test]
 fn the_resulting_tree_lays_out() {
-    let bytes = build_guest();
-    let (mut store, instance) = instantiate(&bytes);
-    assert_eq!(call(&mut store, &instance, "run"), OK);
+    let (mut store, instance) = counter();
 
-    // The binding tracked that the guest mutated, which is the obligation
-    // `blitz-dom-api` leaves to its caller.
     assert!(
         store.data().mutated(),
         "the binding should have recorded that the document changed"
     );
+    store.data_mut().clear_mutated();
 
-    let host = store.data_mut();
-    host.document_mut().resolve(0.0);
-    host.clear_mutated();
+    let panel = query(&store, ".counter");
+    let button = query(&store, ".increment");
+    let count = query(&store, ".count");
 
     let doc = store.data().document();
-    let panel = document::query_selector(doc, ".panel").unwrap().unwrap();
-    let rect = blitz_dom_api::geometry::bounding_client_rect(doc, panel).unwrap();
+    let panel_rect = blitz_dom_api::geometry::bounding_client_rect(doc, panel).unwrap();
     assert!(
-        rect.width > 0.0 && rect.height > 0.0,
-        "the panel should have a box after layout, got {rect:?}"
+        panel_rect.width > 0.0 && panel_rect.height > 0.0,
+        "the panel should have a box after layout, got {panel_rect:?}"
     );
 
-    // Each row stacks under the one before it, which is what proves they are
-    // block children of the panel rather than four detached nodes that happen
-    // to exist.
-    let rows = document::query_selector_all(doc, ".row").unwrap();
-    let tops: Vec<f64> = rows
-        .iter()
-        .map(|row| {
-            blitz_dom_api::geometry::bounding_client_rect(doc, *row)
-                .unwrap()
-                .y
-        })
-        .collect();
+    // The button and the readout sit side by side, which is what proves they
+    // are laid-out children of the panel rather than two nodes that happen to
+    // exist.
+    let button_rect = blitz_dom_api::geometry::bounding_client_rect(doc, button).unwrap();
+    let count_rect = blitz_dom_api::geometry::bounding_client_rect(doc, count).unwrap();
     assert!(
-        tops.windows(2).all(|pair| pair[1] > pair[0]),
-        "rows should stack in order, got tops {tops:?}"
+        count_rect.x > button_rect.x,
+        "the readout should follow the button, got {button_rect:?} then {count_rect:?}"
     );
+
+    // A click makes the document dirty again, which is how an embedder knows
+    // one frame was not enough.
+    click(&mut store, &instance, ".increment");
+    assert!(store.data().mutated());
+    store.data_mut().document_mut().resolve(0.0);
 }
 
 /// A guest mistake is a status code, never a trap.
 #[test]
 fn a_forged_handle_is_an_error_not_a_trap() {
-    let bytes = build_guest();
-    let (mut store, instance) = instantiate(&bytes);
-    assert_eq!(call(&mut store, &instance, "run"), OK);
+    let (mut store, instance) = counter();
 
     // Reach past the end of the handle table from the host side, which is the
     // same path a forged guest handle takes.
     let issued = store.data().handles().len();
-    assert!(store.data().handles().get(issued as u32 + 99).is_err());
     assert_eq!(
         store.data().handles().get(issued as u32 + 99),
         Err(blitz_wasm::ERR_BAD_HANDLE)
     );
 
+    // A listener id is a different namespace, and says so.
+    assert_eq!(
+        store.data_mut().listeners_mut().remove(99),
+        Err(blitz_wasm::ERR_BAD_LISTENER)
+    );
+
     // And the instance is still alive and usable afterwards, which is the
     // property a trap would have destroyed.
-    assert_eq!(call(&mut store, &instance, "update"), OK);
+    click(&mut store, &instance, ".increment");
+    assert_eq!(readout(&store), "1");
 }

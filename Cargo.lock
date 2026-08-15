@@ -945,6 +945,7 @@ name = "blitz-wasm"
 version = "0.3.0-beta.3"
 dependencies = [
  "blitz-dom-api",
+ "keyboard-types 0.7.0",
  "ps-blitz-dom",
  "ps-blitz-traits",
  "wasmi",
