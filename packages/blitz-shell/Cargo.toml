@@ -26,6 +26,16 @@ svg = ["blitz-paint/svg"]
 # scrollbars costs nothing, but an embedder whose CSS sets `scrollbar-width` or
 # `scrollbar-color` gets neither the styling nor a thumb without it.
 scrollbars = ["blitz-paint/scrollbars", "blitz-dom/scrollbars"]
+# Shadow DOM attachment and slot distribution. Needed by any embedder whose
+# page uses custom elements with a shadow root.
+shadow-dom = ["blitz-dom/shadow-dom"]
+# CSS `float`. Off in taffy by default, so a floated element lays out as a
+# block without it, silently.
+floats = ["blitz-dom/floats"]
+# Synthetic bold for faces with no bold cut. `apple-font-embolden` matches
+# CoreText's own weighting and is the one to use on macOS.
+font-embolden = ["blitz-paint/font-embolden"]
+apple-font-embolden = ["blitz-paint/apple-font-embolden"]
 file-dialog = ["dep:rfd"]
 # Enables a data-uri-only NetProvider. Only needed if you aren't using the regular NetProvider
 data-uri = ["dep:data-url"]
