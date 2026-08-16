@@ -21,6 +21,11 @@ clipboard = ["dep:arboard"]
 tracing = ["dep:tracing", "blitz-dom/tracing"]
 debug-control = ["dep:blitz-script", "blitz-script/debug-control"]
 svg = ["blitz-paint/svg"]
+# Overlay scrollbars: the thumb painting in `blitz-paint` plus the drag and
+# hover tracking in `blitz-dom`. Off by default because a shell that draws no
+# scrollbars costs nothing, but an embedder whose CSS sets `scrollbar-width` or
+# `scrollbar-color` gets neither the styling nor a thumb without it.
+scrollbars = ["blitz-paint/scrollbars", "blitz-dom/scrollbars"]
 file-dialog = ["dep:rfd"]
 # Enables a data-uri-only NetProvider. Only needed if you aren't using the regular NetProvider
 data-uri = ["dep:data-url"]
