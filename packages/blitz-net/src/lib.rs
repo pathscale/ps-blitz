@@ -267,6 +267,128 @@ impl Provider {
 
         result
     }
+
+    /// Fetch, keeping the response metadata that [`Provider::fetch_async`]
+    /// discards.
+    ///
+    /// `fetch_async` returns `(String, Bytes)`: the final URL and the body. That
+    /// is the right shape for the overwhelmingly common case, a document or a
+    /// subresource whose bytes are the whole answer, and it stays as it is.
+    ///
+    /// What it cannot answer is what the server *said* the bytes were. An
+    /// embedder loading a WebAssembly module wants to reject
+    /// `Content-Type: text/html` before handing the bytes to a parser that will
+    /// report an offset into a file that is not a module at all. That check
+    /// needs headers, and the headers already exist: `fetch_http` reads them off
+    /// the response and drops them on the way out.
+    ///
+    /// Additive rather than a widening of `fetch_async`, deliberately. Changing
+    /// that return type touches every caller in every embedder for a need only
+    /// some of them have, and `HeaderMap` is a heap-allocated multimap the hot
+    /// path would then build and clone for every subresource. This allocates
+    /// only for the callers that ask.
+    ///
+    /// `data:` and `file:` URLs synthesise a response. A `data:` URL states its
+    /// own mime type, so that becomes a real `Content-Type`; a `file:` URL has
+    /// none, and a caller that requires one should read an absent header as
+    /// unknown rather than as a mismatch.
+    pub async fn fetch_response_async(
+        &self,
+        request: Request,
+    ) -> Result<FetchResponse, ProviderError> {
+        let url = request.url.clone();
+        match url.scheme() {
+            "data" => {
+                // Scoped so the borrow of `url` ends before it is moved into
+                // the response.
+                let (body, headers) = {
+                    let data_url = DataUrl::process(url.as_str())?;
+                    let decoded = data_url.decode_to_vec()?;
+                    let mut headers = HeaderMap::new();
+                    if let Ok(value) = data_url.mime_type().to_string().parse() {
+                        headers.insert(blitz_traits::platform::http::header::CONTENT_TYPE, value);
+                    }
+                    (Bytes::from(decoded.0), headers)
+                };
+                Ok(FetchResponse::new(url, StatusCode::OK)
+                    .headers(headers)
+                    .body(body))
+            }
+            "file" => {
+                let file_content = std::fs::read(url.path())?;
+                Ok(FetchResponse::new(url, StatusCode::OK).body(Bytes::from(file_content)))
+            }
+            _ => {
+                let client = self.client.clone();
+                let per_host_limits = self.per_host_limits.clone();
+                Self::fetch_http_response(client, request, per_host_limits).await
+            }
+        }
+    }
+
+    /// The HTTP half of [`Provider::fetch_response_async`].
+    ///
+    /// Deliberately a sibling of [`Provider::fetch_http`] rather than a wrapper
+    /// around it: that one consumes the response to get at the body and cannot
+    /// hand back what it read on the way. The per-host permit, the user agent
+    /// and the non-2xx handling are the same, so the two must be changed
+    /// together.
+    async fn fetch_http_response(
+        client: Client,
+        request: Request,
+        per_host_limits: HostLimits,
+    ) -> Result<FetchResponse, ProviderError> {
+        let host_key = request
+            .url
+            .host_str()
+            .map(str::to_owned)
+            .unwrap_or_default();
+        let semaphore = {
+            let mut map = per_host_limits.lock().unwrap();
+            map.entry(host_key)
+                .or_insert_with(|| Arc::new(Semaphore::new(PER_HOST_MAX_CONCURRENT)))
+                .clone()
+        };
+        let _permit = semaphore
+            .acquire()
+            .await
+            .expect("per-host semaphore was closed");
+
+        let mut req = client
+            .request(request.method, request.url)
+            .headers(request.headers)
+            .header("User-Agent", USER_AGENT);
+
+        if let Some(content_type) = request.content_type.as_ref() {
+            req = req.header("Content-Type", content_type);
+        }
+
+        let req = req
+            .apply_body(request.body, request.content_type.as_deref())
+            .await;
+        let response = req.send().await?;
+        let status = response.status();
+        let final_url = response.url().clone();
+
+        if !status.is_success() {
+            #[cfg(feature = "tracing")]
+            tracing::warn!(
+                url = final_url.as_str(),
+                status = status.as_u16(),
+                "HTTP error status"
+            );
+            return Err(ProviderError::HttpStatus {
+                status,
+                url: final_url.to_string(),
+            });
+        }
+
+        // Read before the body, because taking the body consumes the response.
+        let headers = response.headers().clone();
+        Ok(FetchResponse::new(final_url, status)
+            .headers(headers)
+            .body(response.bytes().await?))
+    }
 }
 
 /// The `fetch()` path.
@@ -602,4 +724,85 @@ impl ReqwestExt for RequestBuilder {
 struct DummyNetWaker;
 impl NetWaker for DummyNetWaker {
     fn wake(&self, _client_id: usize) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use blitz_traits::net::Url;
+
+    /// A `data:` URL states its own mime type, so the synthesised response
+    /// carries a real `Content-Type` rather than nothing.
+    ///
+    /// This is the case that makes the header meaningful for a caller checking
+    /// one: a module inlined as a `data:` URL is as legitimate as a fetched
+    /// one, and refusing it for having no type would be wrong.
+    #[tokio::test]
+    async fn a_data_url_reports_the_mime_type_it_declares() {
+        let provider = Provider::new(None);
+        let request = Request::get(
+            // "hello" as base64, typed as a wasm module.
+            Url::parse("data:application/wasm;base64,aGVsbG8=").unwrap(),
+        );
+
+        let response = provider
+            .fetch_response_async(request)
+            .await
+            .expect("a data URL resolves without a network");
+
+        assert_eq!(
+            response
+                .headers
+                .get(blitz_traits::platform::http::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("application/wasm"),
+        );
+        assert_eq!(response.body.as_ref(), b"hello");
+        assert_eq!(response.status, StatusCode::OK);
+    }
+
+    /// A `file:` URL has no server and therefore no headers. The absence has to
+    /// be an absence, not an empty string or a guess: a caller requiring a
+    /// `Content-Type` must be able to tell "nobody said" from "said the wrong
+    /// thing".
+    #[tokio::test]
+    async fn a_file_url_has_no_content_type_to_report() {
+        let path = std::env::temp_dir().join("blitz-net-fetch-response-test.txt");
+        std::fs::write(&path, b"file body").expect("a scratch file");
+
+        let provider = Provider::new(None);
+        let url = Url::from_file_path(&path).expect("an absolute path");
+        let response = provider
+            .fetch_response_async(Request::get(url))
+            .await
+            .expect("a file URL resolves without a network");
+
+        assert!(
+            response
+                .headers
+                .get(blitz_traits::platform::http::header::CONTENT_TYPE)
+                .is_none(),
+            "a file has no server to declare a type"
+        );
+        assert_eq!(response.body.as_ref(), b"file body");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// `fetch_async` is untouched by this addition, which is the point of
+    /// adding a method rather than widening it: every existing caller keeps the
+    /// cheap `(String, Bytes)` shape and allocates no `HeaderMap`.
+    #[tokio::test]
+    async fn fetch_async_still_returns_the_narrow_shape() {
+        let provider = Provider::new(None);
+        let (url, bytes) = provider
+            .fetch_async(Request::get(
+                Url::parse("data:text/plain;base64,aGVsbG8=").unwrap(),
+            ))
+            .await
+            .expect("a data URL resolves without a network");
+
+        assert!(url.starts_with("data:"));
+        assert_eq!(bytes.as_ref(), b"hello");
+    }
 }
