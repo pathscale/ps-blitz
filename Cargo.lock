@@ -6216,7 +6216,7 @@ dependencies = [
 [[package]]
 name = "ps-taffy"
 version = "0.13.0"
-source = "git+https://github.com/pathscale/ps-taffy.git?rev=4f86730bab59a1b1910fb5adb29a5dec6415d5f7#4f86730bab59a1b1910fb5adb29a5dec6415d5f7"
+source = "git+https://github.com/pathscale/ps-taffy.git?rev=4355471d36f1939109d36197bfb580a931231738#4355471d36f1939109d36197bfb580a931231738"
 dependencies = [
  "arrayvec",
  "serde",

@@ -21,6 +21,26 @@ clipboard = ["dep:arboard"]
 tracing = ["dep:tracing", "blitz-dom/tracing"]
 debug-control = ["dep:blitz-script", "blitz-script/debug-control"]
 svg = ["blitz-paint/svg"]
+# Overlay scrollbars: the thumb painting in `blitz-paint` plus the drag and
+# hover tracking in `blitz-dom`. Off by default because a shell that draws no
+# scrollbars costs nothing, but an embedder whose CSS sets `scrollbar-width` or
+# `scrollbar-color` gets neither the styling nor a thumb without it.
+scrollbars = ["blitz-paint/scrollbars", "blitz-dom/scrollbars"]
+# Shadow DOM attachment and slot distribution. Needed by any embedder whose
+# page uses custom elements with a shadow root.
+shadow-dom = ["blitz-dom/shadow-dom"]
+# CSS `float`. Off in taffy by default, so a floated element lays out as a
+# block without it, silently.
+floats = ["blitz-dom/floats"]
+# Dictionary-based line breaking, which is what Thai, Khmer, Lao and Burmese
+# need: they put no spaces between words, so finding a break point takes a
+# dictionary rather than a space scan. Without it that text does not wrap, or
+# wraps mid-word.
+complex-scripts = ["blitz-dom/complex-scripts"]
+# Synthetic bold for faces with no bold cut. `apple-font-embolden` matches
+# CoreText's own weighting and is the one to use on macOS.
+font-embolden = ["blitz-paint/font-embolden"]
+apple-font-embolden = ["blitz-paint/apple-font-embolden"]
 file-dialog = ["dep:rfd"]
 # Enables a data-uri-only NetProvider. Only needed if you aren't using the regular NetProvider
 data-uri = ["dep:data-url"]
