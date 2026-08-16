@@ -804,20 +804,47 @@ impl DebugController {
         // The buffer is sized to match, so the result is a device-pixel image
         // of the requested CSS viewport, the way a browser screenshot is.
         //
-        // What this does *not* fix is text overflowing its boxes in a
-        // screenshot, which looks like exactly this bug and is not: glyph size
-        // does not follow the paint scale. `tests/screenshot_scale.rs` pins
-        // that down so the next person starts somewhere else.
-        let scale = inner.viewport().scale_f64();
+        let previous = inner.viewport().clone();
+        let scale = previous.scale_f64();
         let (device_width, device_height) = (
             ((f64::from(width) * scale).round() as u32).max(1),
             ((f64::from(height) * scale).round() as u32).max(1),
         );
+
+        // Lay out for the size being painted, which is the fix for text
+        // overflowing its boxes in a screenshot.
+        //
+        // This used to paint into a `width * height` buffer while leaving the
+        // viewport at whatever the window was, so a screenshot requested at a
+        // size the window does not have laid the document out for one geometry
+        // and painted it into another. Text positioned for a wider viewport
+        // then ran past the edges of boxes drawn for a narrower one, which
+        // looks like a font or a scale fault and is neither.
+        //
+        // `tests/screenshot_scale.rs` had already ruled out glyph-versus-paint
+        // scale, correctly: a document laid out at 2.0 and painted at 1.0 keeps
+        // its text inside its boxes. What it did not vary was the viewport's
+        // *dimensions*, which is where the mismatch actually was.
+        //
+        // Restored below, because a screenshot must not reflow the live window.
+        // The relayout costs one `resolve` at each size; a screenshot is an
+        // explicit debugging request, not a per-frame cost.
+        inner.set_viewport(blitz_traits::shell::Viewport::new(
+            width,
+            height,
+            scale as f32,
+            previous.color_scheme,
+        ));
+        inner.resolve(0.0);
+
         let buffer = render_to_buffer::<VelloCpuImageRenderer, _>(
             |scene| paint_scene(scene, &mut inner, scale, device_width, device_height, 0, 0),
             device_width,
             device_height,
         );
+
+        inner.set_viewport(previous);
+        inner.resolve(0.0);
         drop(inner);
 
         let mut png = Vec::new();
