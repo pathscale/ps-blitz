@@ -11,6 +11,17 @@
 //! shipped stylesheet, so the answer is a number rather than an opinion.
 //!
 //!   cargo test -p blitz-tests --test glass_depth_cost -- --nocapture
+//!
+//! macOS only. Glass is a macOS effect: the depth axis drives
+//! `NSGlassEffectView` through `window-vibrancy`, a `target_os = "macos"`
+//! dependency of the runtime with no counterpart on Linux. What it costs to
+//! paint on a platform that cannot show it is not a question worth answering,
+//! and asking it broke the `Test (linux)` job:
+//! `raising_depth_does_not_blow_up_the_layer_count` counted six outset-shadow
+//! layers there where macOS counts none, so the whole suite went red on a
+//! measurement that does not apply.
+
+#![cfg(target_os = "macos")]
 
 use anyrender::render_to_buffer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
