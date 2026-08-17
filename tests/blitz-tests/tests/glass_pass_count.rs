@@ -7,8 +7,14 @@
 //! The plan was to batch by backdrop root - panels at one level that do not
 //! overlap all see the same thing behind them, so one snapshot serves all of
 //! them and six panels cost two passes rather than seven. These tests are that
-//! claim measured, and the headline is that it does not hold on AgencyZero's
-//! own geometry. See `six_panels_at_the_apps_own_spacing_cannot_batch`.
+//! claim measured.
+//!
+//! It did not hold on AgencyZero's own geometry for as long as the settings
+//! column used `gap-3`: 12px of clear space inside a 36px blur reach meant
+//! every panel took its own snapshot, seven passes for six panels. The column
+//! is `gap-10` now, 40px, which clears the reach and collapses it to two. See
+//! `six_panels_at_the_apps_own_spacing_batch_into_one_snapshot`, and
+//! `the_batch_threshold_is_the_blurs_reach` for where the transition sits.
 //!
 //! Measured through `anyrender::PlanningScene`, which paints nothing and only
 //! plans, so this runs on a machine with no GPU. Pass count is a property of
@@ -43,13 +49,13 @@ const SIGMA: f64 = 12.0;
 /// result - so there is no tolerance to be had by shading this number down.
 const REACH: f64 = 3.0;
 
-/// The gap between stacked panels in the settings column: Tailwind `gap-3`.
+/// The gap between stacked panels in the settings column: Tailwind `gap-10`.
 ///
 /// Named rather than inlined because it is the whole finding. See
 /// `apps/gui/frontend/src/features/settings/SettingsTab.tsx`, the
 /// `flex w-full max-w-[720px] flex-col gap-3` column that holds the Section
 /// panels.
-const APP_GAP: f64 = 12.0;
+const APP_GAP: f64 = 40.0;
 
 /// The application's `Panel`, from `components/Panel.tsx`, plus the one
 /// declaration this whole exercise is about.
@@ -161,13 +167,13 @@ fn panels_separated_by_more_than_the_blur_reaches_share_one_snapshot() {
 }
 
 /*
- * The finding this file exists to record.
+ * The finding this file exists to record, and what was done about it.
  *
  * The design that motivated all of this said six panels cost two passes. On
- * AgencyZero's own layout they cost seven, and no batching rule can change
+ * AgencyZero's own layout they cost seven, and no batching rule could change
  * that, because the panels genuinely read each other's pixels.
  *
- * The settings column stacks its Section panels with `gap-3`, twelve pixels.
+ * The settings column stacked its Section panels with `gap-3`, twelve pixels.
  * The blur the panels want is σ=12, which reaches 36px. So a panel's blur
  * samples 36px past its own edge, lands 24px inside its neighbour, and the
  * neighbour was painted after the snapshot the batch would share.
@@ -180,8 +186,7 @@ fn panels_separated_by_more_than_the_blur_reaches_share_one_snapshot() {
  * What follows from it:
  *
  *   - Batching is worth keeping. It is correct, it costs nothing when it does
- *     not apply, and it pays on any layout where glass is sparse. It is simply
- *     not the lever on this app.
+ *     not apply, and it pays on any layout where glass is sparse.
  *   - The lever has to be the other two multipliers. Downsampling (σ=12 at
  *     quarter resolution is σ=3 over 1/16th the texels) and caching keyed on
  *     what changed are both untouched by panel spacing, and a still frame
@@ -189,12 +194,17 @@ fn panels_separated_by_more_than_the_blur_reaches_share_one_snapshot() {
  *   - If two passes are wanted for their own sake, that is an application
  *     decision with a number attached: the panels need about 37px of clear
  *     space, or the blur needs to come down to about σ=4.
+ *
+ * The application took the first of those. The column is `gap-10` now, 40px,
+ * which clears the 36px reach, and the pass count for the same six panels is
+ * two. `APP_GAP` tracks the column, so if that spacing is ever tightened back
+ * inside the reach this file fails rather than the frame rate quietly halving.
  */
 #[test]
-fn six_panels_at_the_apps_own_spacing_cannot_batch() {
+fn six_panels_at_the_apps_own_spacing_batch_into_one_snapshot() {
     let mut doc = glass_column(APP_GAP);
 
-    println!("\n== {PANELS} panels at the app's own gap-3 ({APP_GAP}px), blur σ={SIGMA} ==");
+    println!("\n== {PANELS} panels at the app's own gap-10 ({APP_GAP}px), blur σ={SIGMA} ==");
     let plan = plan(&mut doc, 0);
     describe("app layout", &plan);
     println!(
@@ -204,9 +214,9 @@ fn six_panels_at_the_apps_own_spacing_cannot_batch() {
 
     assert_eq!(
         plan.render_passes(),
-        PANELS as u32 + 1,
-        "a gap of {APP_GAP}px is well inside a σ={SIGMA} blur's {}px reach, so \
-         every panel needs its own snapshot: {plan:?}",
+        2,
+        "a gap of {APP_GAP}px clears a σ={SIGMA} blur's {}px reach, so one \
+         snapshot serves every panel: {plan:?}",
         SIGMA * REACH
     );
     assert_eq!(plan.blur_passes() as usize, PANELS);
