@@ -974,6 +974,12 @@ impl<Rend: WindowRenderer> View<Rend> {
                     self.update_active_pointer(&event);
                 }
                 self.doc.handle_ui_event(UiEvent::PointerMove(event));
+                // Same omission as the wheel arm below: dispatched without ever
+                // asking for a frame. A pointer move is what drives hover
+                // feedback and, more visibly, a drag: a slider being dragged is
+                // a stream of these and nothing else, so the thumb only moved
+                // when some unrelated event happened to wake the loop.
+                self.request_redraw();
             }
             WindowEvent::PointerButton { button, state, primary, position, .. } => {
                 let id = button_source_to_blitz(&button);
@@ -1065,6 +1071,24 @@ impl<Rend: WindowRenderer> View<Rend> {
                 };
 
                 self.doc.handle_ui_event(UiEvent::Wheel(event));
+                // Every other input arm asks for a frame; this one did not.
+                //
+                // A wheel event changes `scroll_offset` on the document and
+                // nothing told the loop about it, so `about_to_wait` found no
+                // poll request and no animation deadline, set
+                // `ControlFlow::Wait`, and the window slept with the pre-scroll
+                // frame still on screen. The content is laid out correctly the
+                // whole time; it is simply never painted.
+                //
+                // It reads as "the pane went blank", because a scroll that ends
+                // on fresh content leaves the last painted frame showing
+                // whatever was there before, and it comes back the moment any
+                // other event arrives, since those arms do request a redraw.
+                // Measured on a wedged window: layout correct and on-screen
+                // (the "Appearance" heading at viewport y=159), 0% CPU, every
+                // thread parked in `nextEventMatchingMask`, and a single 1px
+                // synthetic scroll restored it.
+                self.request_redraw();
             }
             WindowEvent::Focused(_) => {}
             WindowEvent::TouchpadPressure { .. } => {}
