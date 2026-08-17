@@ -7,7 +7,9 @@ use crate::mutator::ViewportMut;
 use crate::net::{
     Resource, ResourceHandler, ResourceLoadResponse, StylesheetHandler, StylesheetLoader,
 };
-use crate::node::{ImageData, NodeFlags, RasterImageData, SpecialElementData, Status, TextBrush};
+use crate::node::{
+    ImageData, NodeFlags, RasterImageData, SpecialElementData, Status, TextBrush, TextGranularity,
+};
 use crate::selection::TextSelection;
 use crate::stylo_to_cursor_icon::stylo_to_cursor_icon;
 use crate::traversal::TreeTraverser;
@@ -3110,6 +3112,24 @@ root={:?} root_right={root_right:.1} root_w={:.1} lines={} layout_scale={:.2} vp
         let inline_root = hit_node.inline_root_ancestor()?;
         let byte_offset = inline_root.text_offset_at_point(hit.x, hit.y)?;
         Some((inline_root.id, byte_offset))
+    }
+
+    /// Find the word or line at a point, as `(inline_root_id, start, end)`.
+    ///
+    /// The multi-click counterpart of
+    /// [`find_text_position`](Self::find_text_position): that one answers where
+    /// a caret goes, this one answers what a double or triple click selects.
+    pub fn find_text_range(
+        &self,
+        x: f32,
+        y: f32,
+        granularity: TextGranularity,
+    ) -> Option<(NodeId, usize, usize)> {
+        let hit = self.hit(x, y)?;
+        let hit_node = self.get_node(hit.node_id)?;
+        let inline_root = hit_node.inline_root_ancestor()?;
+        let range = inline_root.text_range_at_point(hit.x, hit.y, granularity)?;
+        Some((inline_root.id, range.start, range.end))
     }
 
     /// Set the text selection range (creates a new selection from anchor to focus)
