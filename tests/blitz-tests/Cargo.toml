@@ -22,7 +22,15 @@ parallel-construct = ["blitz-dom/parallel-construct"]
 [dev-dependencies]
 # Blitz dependencies
 blitz-test-harness = { workspace = true }
-blitz-dom = { workspace = true, features = ["accessibility", "floats", "system-fonts"] }
+# `autofocus` is on because every embedder that runs script gets it anyway:
+# blitz-script enables it and cargo features are additive, so a suite without
+# it tests a configuration nothing ships.
+blitz-dom = { workspace = true, features = [
+    "accessibility",
+    "autofocus",
+    "floats",
+    "system-fonts",
+] }
 blitz-html = { workspace = true }
 blitz-traits = { workspace = true }
 blitz-paint = { workspace = true, features = ["scrollbars", "svg"] }
