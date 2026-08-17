@@ -11,11 +11,11 @@ use html_escape::encode_quoted_attribute_to_string;
 use keyboard_types::Modifiers;
 use kurbo::{Affine, Rect as KurboRect};
 use markup5ever::{LocalName, local_name};
-use parley::{BreakReason, Cluster, ClusterSide};
+use parley::{BreakReason, Cluster, ClusterSide, Selection};
 use selectors::matching::ElementSelectorFlags;
 use std::cell::{Cell, RefCell};
 use std::fmt::Write;
-use std::ops::Deref;
+use std::ops::{Deref, Range};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use style::Atom;
@@ -688,6 +688,31 @@ pub enum NodeKind {
     Text,
     Comment,
     ShadowRoot,
+}
+
+/// How much text one click selects.
+///
+/// Click count decides: a second click takes the word, a third takes the line,
+/// matching what a text input does and what every other platform does with the
+/// same gesture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextGranularity {
+    /// The word under the pointer, by Unicode word segmentation.
+    Word,
+    /// The whole hard line, so a soft-wrapped paragraph selects entire.
+    Line,
+}
+
+impl TextGranularity {
+    /// The granularity a click of this count selects, or `None` for a first
+    /// click, which places a caret rather than selecting anything.
+    pub fn from_click_count(count: u16) -> Option<Self> {
+        match count {
+            0 | 1 => None,
+            2 => Some(Self::Word),
+            _ => Some(Self::Line),
+        }
+    }
 }
 
 /// The encapsulation mode of a shadow root.
@@ -1546,6 +1571,49 @@ impl Node {
         };
 
         Some(offset)
+    }
+
+    /// The byte range of the word or line at a point, for a multi-click
+    /// selection.
+    ///
+    /// See [`TextGranularity`] for which click count maps to which unit. Coordinates are relative to this inline root's content box,
+    /// as for [`text_offset_at_point`](Self::text_offset_at_point).
+    ///
+    /// Parley owns the boundary rules (it is what an `<input>` already selects
+    /// with), so this asks it rather than scanning for spaces: word breaks are
+    /// a Unicode segmentation question, not a whitespace one.
+    pub fn text_range_at_point(
+        &self,
+        x: f32,
+        y: f32,
+        granularity: TextGranularity,
+    ) -> Option<Range<usize>> {
+        if !self.flags.is_inline_root() {
+            return None;
+        }
+
+        let element_data = self.element_data()?;
+        let inline_layout = element_data.inline_layout_data.as_ref()?;
+        let layout = &inline_layout.layout;
+        let scale = layout.scale();
+        let (x, y) = (x * scale, y * scale);
+
+        // Bail when the point misses the text entirely: `Selection` answers an
+        // out-of-range point with a collapsed cursor at the end of the text,
+        // which would read as "selected nothing at the very end" rather than
+        // as a miss.
+        Cluster::from_point(layout, x, y)?;
+
+        let selection = match granularity {
+            TextGranularity::Word => Selection::word_from_point(layout, x, y),
+            // The hard line, so a soft-wrapped paragraph selects as the whole
+            // paragraph. That is what a triple click does elsewhere, and it is
+            // what `select_hard_line_at_point` gives a text input.
+            TextGranularity::Line => Selection::hard_line_from_point(layout, x, y),
+        };
+
+        let range = selection.text_range();
+        if range.is_empty() { None } else { Some(range) }
     }
 
     /// Computes the Document-relative coordinates of the `Node`

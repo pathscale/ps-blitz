@@ -17,7 +17,7 @@ use taffy::AbsoluteAxis;
 
 use crate::{
     BaseDocument,
-    node::{ScrollbarRef, SpecialElementData},
+    node::{ScrollbarRef, SpecialElementData, TextGranularity},
 };
 
 use super::focus::generate_focus_events;
@@ -440,12 +440,35 @@ pub(crate) fn handle_pointerdown(
     match click_target {
         ClickTarget::Disabled => (),
         ClickTarget::SelectableText => {
-            // Handle text selection for non-input elements
-            if let Some((inline_root_id, byte_offset)) = doc.find_text_position(x, y) {
-                doc.set_text_selection(inline_root_id, byte_offset, inline_root_id, byte_offset);
-                doc.shell_provider.request_redraw();
-            } else {
-                doc.clear_text_selection();
+            // Handle text selection for non-input elements.
+            //
+            // Click count decides the unit, exactly as it does for a text
+            // input below. It used to be read only there, so a double click on
+            // ordinary document text collapsed to a caret like any other
+            // click, and since Cmd+C copies `get_selected_text()` there was
+            // then nothing to copy either.
+            match TextGranularity::from_click_count(doc.click_count) {
+                Some(granularity) => {
+                    if let Some((inline_root_id, start, end)) =
+                        doc.find_text_range(x, y, granularity)
+                    {
+                        doc.set_text_selection(inline_root_id, start, inline_root_id, end);
+                        doc.shell_provider.request_redraw();
+                    }
+                }
+                None => {
+                    if let Some((inline_root_id, byte_offset)) = doc.find_text_position(x, y) {
+                        doc.set_text_selection(
+                            inline_root_id,
+                            byte_offset,
+                            inline_root_id,
+                            byte_offset,
+                        );
+                        doc.shell_provider.request_redraw();
+                    } else {
+                        doc.clear_text_selection();
+                    }
+                }
             }
         }
         ClickTarget::TextInput {
