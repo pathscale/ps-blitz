@@ -15,7 +15,10 @@
 
 use blitz_dom::{Document, DocumentConfig};
 use blitz_html::{HtmlDocument, HtmlProvider};
-use blitz_traits::{node_id::NodeId, shell::{ColorScheme, Viewport}};
+use blitz_traits::{
+    node_id::NodeId,
+    shell::{ColorScheme, Viewport},
+};
 use std::sync::Arc;
 
 /// Whether `#field` is the focused node, in one document rather than two:
