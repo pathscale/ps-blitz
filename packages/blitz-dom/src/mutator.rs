@@ -1179,13 +1179,21 @@ impl<'doc> DocumentMutator<'doc> {
                 }
             }
 
+            // `autofocus` is a boolean attribute: present is true, whatever
+            // the value, and absent is the only false. Requiring the literal
+            // string "true" meant the one spelling almost nothing uses, since
+            // markup writes `<input autofocus>` and the parser stores that as
+            // the empty string. Every framework agrees: Solid's boolean
+            // attribute setter is `setAttribute(name, "")`.
+            //
+            // So a field marked autofocus in markup never took focus, and
+            // blitz-script papered over its own path by writing "true" from
+            // the property setter, which left the parsed path broken.
             #[cfg(feature = "autofocus")]
             if node.is_focussable() {
                 if let NodeData::Element(ref element) = node.data {
-                    if let Some(value) = element.attr(local_name!("autofocus")) {
-                        if value == "true" {
-                            self.node_to_autofocus = Some(node_id);
-                        }
+                    if element.attr(local_name!("autofocus")).is_some() {
+                        self.node_to_autofocus = Some(node_id);
                     }
                 }
             }
