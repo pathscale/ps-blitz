@@ -104,6 +104,16 @@ pub(crate) fn init_element_proto(proto: &JsObject, context: &mut Context) {
         None,
         context,
     );
+    define_accessor(proto, "offsetWidth", Some(get_offset_width), None, context);
+    define_accessor(
+        proto,
+        "offsetHeight",
+        Some(get_offset_height),
+        None,
+        context,
+    );
+    define_accessor(proto, "offsetLeft", Some(get_offset_left), None, context);
+    define_accessor(proto, "offsetTop", Some(get_offset_top), None, context);
 
     define_method(proto, "getAttribute", 1, get_attribute, context);
     define_method(proto, "setAttribute", 2, set_attribute, context);
@@ -1122,6 +1132,41 @@ fn get_client_width(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsR
 
 fn get_client_height(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     box_metric(this, context, |node| node.final_layout().size.height)
+}
+
+/// `offsetWidth` / `offsetHeight`: the border box, which is what every control
+/// that measures itself wants.
+///
+/// Absent until now, and absent is worse than wrong here. Reading a missing
+/// property yields `undefined`, and `undefined` in arithmetic is `NaN` rather
+/// than a throw, so the failure travels silently into whatever the value was
+/// for. The app's slider library computes
+/// `thumb.offsetWidth / 2 + (track.offsetHeight - thumb.offsetHeight) / 2` to
+/// find where the thumb's centre can travel; that was `NaN`, so the usable
+/// track length was `NaN` and every drag snapped to `NaN`. The result is a
+/// slider that renders and simply ignores the pointer, which is exactly how it
+/// was reported.
+///
+/// `final_layout().size` is the border box, so no padding or border arithmetic
+/// is needed. Both are unzoomed by `box_metric` for the same reason the client
+/// and scroll metrics are.
+fn get_offset_width(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    box_metric(this, context, |node| node.final_layout().size.width)
+}
+
+fn get_offset_height(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    box_metric(this, context, |node| node.final_layout().size.height)
+}
+
+/// `offsetLeft` / `offsetTop`: the border box's position within the offset
+/// parent's padding edge. blitz-dom already computes this for the CSSOM; it
+/// was simply never handed to script.
+fn get_offset_left(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    box_metric(this, context, |node| node.offset_top_left().x)
+}
+
+fn get_offset_top(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    box_metric(this, context, |node| node.offset_top_left().y)
 }
 
 fn get_bounding_client_rect(
