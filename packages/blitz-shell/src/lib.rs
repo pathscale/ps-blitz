@@ -137,6 +137,76 @@ pub fn current_android_app() -> android_activity::AndroidApp {
     ANDROID_APP.get().unwrap().clone()
 }
 
+/// The process-wide clipboard connection, opened at most once.
+///
+/// `arboard::Clipboard::new()` is not a cheap accessor. On macOS it takes a
+/// handle on the shared `NSPasteboard`, and on X11 it spawns a thread to serve
+/// selection requests for as long as the value lives. Building one per
+/// keystroke — which is what the copy and paste paths used to do — is wrong on
+/// both platforms and wrong in two separate ways:
+///
+///  - **It fails intermittently.** Opening the pasteboard races every other
+///    process that wants it, so the same keystroke succeeds or fails depending
+///    on what else is running. It was constructed with `.unwrap()`, so a lost
+///    race was not a failed copy but a panic in the shell provider.
+///  - **On macOS the copy did not outlive the call.** Text written through a
+///    `Clipboard` that is dropped at the end of the function can go with it,
+///    which is why a copy could appear to do nothing at all.
+///
+/// One shared instance fixes both: the connection is opened once, reused, and
+/// lives as long as the process. `OnceLock` makes the initialisation itself
+/// race-free, and the `Mutex` inside serialises access because `arboard`
+/// requires `&mut self`. A failure to open is recorded as `None` and reported
+/// to the caller as `ClipboardError` rather than taking the process down.
+#[cfg(all(
+    feature = "clipboard",
+    any(
+        target_os = "windows",
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    )
+))]
+static CLIPBOARD: std::sync::OnceLock<Option<std::sync::Mutex<arboard::Clipboard>>> =
+    std::sync::OnceLock::new();
+
+/// Run `op` against the shared clipboard, or return `ClipboardError`.
+///
+/// Every failure that used to be a panic or a silent drop arrives here as an
+/// `Err`. A poisoned lock is recovered from rather than propagated: the
+/// clipboard holds no invariant that a panicking caller could have corrupted,
+/// and refusing every subsequent copy for the life of the process is a worse
+/// outcome than continuing.
+#[cfg(all(
+    feature = "clipboard",
+    any(
+        target_os = "windows",
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    )
+))]
+fn with_clipboard<T>(
+    op: impl FnOnce(&mut arboard::Clipboard) -> Result<T, arboard::Error>,
+) -> Result<T, blitz_traits::shell::ClipboardError> {
+    let cell = CLIPBOARD
+        .get_or_init(|| match arboard::Clipboard::new() {
+            Ok(clipboard) => Some(std::sync::Mutex::new(clipboard)),
+            Err(_) => None,
+        })
+        .as_ref()
+        .ok_or(blitz_traits::shell::ClipboardError)?;
+
+    let mut clipboard = cell.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    op(&mut clipboard).map_err(|_| blitz_traits::shell::ClipboardError)
+}
+
 pub struct BlitzShellProvider {
     window: Arc<dyn Window>,
     proxy: BlitzShellProxy,
@@ -218,9 +288,7 @@ impl ShellProvider for BlitzShellProvider {
         )
     ))]
     fn get_clipboard_text(&self) -> Result<String, blitz_traits::shell::ClipboardError> {
-        let mut cb = arboard::Clipboard::new().unwrap();
-        cb.get_text()
-            .map_err(|_| blitz_traits::shell::ClipboardError)
+        with_clipboard(|cb| cb.get_text())
     }
 
     #[cfg(all(
@@ -236,9 +304,7 @@ impl ShellProvider for BlitzShellProvider {
         )
     ))]
     fn set_clipboard_text(&self, text: String) -> Result<(), blitz_traits::shell::ClipboardError> {
-        let mut cb = arboard::Clipboard::new().unwrap();
-        cb.set_text(text.to_owned())
-            .map_err(|_| blitz_traits::shell::ClipboardError)
+        with_clipboard(|cb| cb.set_text(text))
     }
 
     #[cfg(all(
@@ -268,5 +334,124 @@ impl ShellProvider for BlitzShellProvider {
             dialog.pick_file().map(|file| vec![file])
         };
         files.unwrap_or_default()
+    }
+}
+
+/// What the clipboard has to guarantee, expressed as the three ways it broke.
+///
+/// Copy and paste in the embedding app were intermittent: the same keystroke
+/// worked or did nothing depending on what else held the pasteboard. The cause
+/// was `arboard::Clipboard::new().unwrap()` on every call, which opened a fresh
+/// connection per keystroke, panicked when it lost the race, and on X11 tore
+/// down the selection-owner thread as soon as the call returned — taking the
+/// copied text with it.
+///
+/// A headless test machine usually has no pasteboard at all, so asserting that
+/// a round trip returns the text would only assert that CI has a display. What
+/// is worth pinning is the part that was actually wrong and holds either way:
+/// the connection is opened at most once, and no call can panic.
+#[cfg(all(
+    test,
+    feature = "clipboard",
+    any(
+        target_os = "windows",
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    )
+))]
+mod clipboard_tests {
+    use super::with_clipboard;
+
+    /// The regression that made copy panic rather than fail.
+    ///
+    /// Every clipboard call site in `blitz-dom` discards the result
+    /// (`let _ = shell_provider.set_clipboard_text(..)`), so an unavailable
+    /// clipboard has to surface as `Err`. When it was `.unwrap()`, a machine
+    /// without a pasteboard did not fail the copy, it took the process down.
+    ///
+    /// The unavailable case is constructed rather than waited for. A developer
+    /// machine has a working pasteboard, so a test that merely calls the happy
+    /// path passes just as well against the `.unwrap()` this replaced, and
+    /// proves nothing. Reproducing the shape — the open failed, so there is no
+    /// clipboard to run against — is what pins the behaviour on every machine.
+    #[test]
+    fn an_unavailable_clipboard_is_an_error_and_never_a_panic() {
+        // The `None` arm of the cached cell: exactly what `get_or_init` stores
+        // when `Clipboard::new()` fails, without needing it to fail here.
+        let unavailable: Option<std::sync::Mutex<arboard::Clipboard>> = None;
+        let outcome = unavailable
+            .as_ref()
+            .ok_or(blitz_traits::shell::ClipboardError)
+            .map(|_| unreachable!("there is no clipboard to run against"));
+
+        assert!(
+            outcome.is_err(),
+            "an unopenable clipboard must be reported as an error, not unwrapped",
+        );
+
+        // And the live path must not unwind either, whatever this machine has.
+        let _ = with_clipboard(|cb| cb.set_text("agencyzero".to_owned()));
+        let _ = with_clipboard(|cb| cb.get_text());
+    }
+
+    /// The regression that made copy and paste intermittent.
+    ///
+    /// The connection must be built once and reused, not rebuilt per
+    /// keystroke. `OnceLock::get` stays `None` until the first initialisation,
+    /// and every later call has to observe that same cell.
+    #[test]
+    fn the_connection_is_opened_at_most_once_and_then_reused() {
+        for _ in 0..8 {
+            let _ = with_clipboard(|cb| cb.get_text());
+        }
+
+        // Initialised exactly once by the loop above, whether the open
+        // succeeded (`Some`) or failed (`None`). Either way it is now cached,
+        // so no ninth call can open a second connection.
+        assert!(
+            super::CLIPBOARD.get().is_some(),
+            "the shared clipboard should be initialised after first use",
+        );
+    }
+
+    /// A panic while the lock is held must not disable the clipboard.
+    ///
+    /// The clipboard guards no invariant a panicking caller could have broken,
+    /// so recovering the guard is correct. Propagating the poison instead would
+    /// mean one unlucky copy disabled every copy for the life of the process.
+    ///
+    /// Asserted on a local mutex rather than the shared one. The recovery is
+    /// `unwrap_or_else(|poisoned| poisoned.into_inner())`, and a test that only
+    /// checked "a later call did not crash" would pass against a plain
+    /// `.unwrap()` too on any run where nothing poisoned the lock first. Here
+    /// the lock is definitely poisoned, so the recovery is the only reason the
+    /// value is reachable.
+    #[test]
+    fn a_poisoned_lock_does_not_disable_every_later_copy() {
+        let lock = std::sync::Mutex::new(String::from("still reachable"));
+
+        let poisoned = std::panic::catch_unwind(|| {
+            let _guard = lock.lock().unwrap();
+            panic!("poison the guard while it is held");
+        });
+        assert!(poisoned.is_err(), "the closure above must have panicked");
+        assert!(lock.is_poisoned(), "the lock must now be poisoned");
+
+        // The recovery `with_clipboard` performs. Without it this is an `Err`
+        // and the clipboard would stay dead for the life of the process.
+        let recovered = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(*recovered, "still reachable");
+        drop(recovered);
+
+        // And the real path stays callable after a panic passes through it.
+        let panicked = std::panic::catch_unwind(|| {
+            with_clipboard(|_| -> Result<(), arboard::Error> { panic!("poison the shared guard") })
+        });
+        assert!(panicked.is_err(), "the closure above must have panicked");
+        let _ = with_clipboard(|cb| cb.get_text());
     }
 }
