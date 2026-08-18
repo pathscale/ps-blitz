@@ -4,12 +4,24 @@ use blitz_traits::{
     SmolStr,
     events::{BlitzInputEvent, BlitzKeyEvent, DomEvent, DomEventData},
 };
-use keyboard_types::{Key, Modifiers};
+use keyboard_types::{Code, Key, Modifiers};
 use markup5ever::local_name;
 
 pub(super) enum KeyboardOrTextInputEvent {
     KeyPress(BlitzKeyEvent),
     AppleStandardKeyBinding(SmolStr),
+}
+
+/// Whether this keystroke is the Copy chord.
+///
+/// The physical key is checked first and the character second, so a layout that
+/// puts a different character on that key, or a modifier that rewrites it, still
+/// copies. Reading only the character is why Cmd+C could silently do nothing.
+///
+/// The caller has already established that a clipboard modifier is held.
+fn is_document_copy(event: &BlitzKeyEvent) -> bool {
+    event.code == Code::KeyC
+        || matches!(&event.key, Key::Character(c) if c.eq_ignore_ascii_case("c"))
 }
 
 pub(crate) fn handle_key_or_input_event<F: FnMut(DomEvent)>(
@@ -28,23 +40,40 @@ pub(crate) fn handle_key_or_input_event<F: FnMut(DomEvent)>(
             return;
         }
 
-        // Handle copy (Ctrl+C/Cmd+C) for text selection when no text input is focused
-        if event.state.is_pressed() {
-            if has_clipboard_modifier(event.modifiers) {
-                if let Key::Character(c) = &event.key {
-                    if c.to_lowercase() == "c" {
-                        // Check if we have a text selection (and no focused text input)
-                        let has_focused_text_input = doc.focus_node_id.is_some_and(|id| {
-                            doc.get_node(id)
-                                .and_then(|n| n.element_data())
-                                .is_some_and(|e| e.text_input_data().is_some())
-                        });
+        /*
+         * Copy a document selection: the transcript, a label, anything outside
+         * a text input.
+         *
+         * Matched on the physical `code` as well as the character, the same way
+         * `clipboard_command` does for text inputs. Reading only `key` meant a
+         * layout that puts something else on that key, or a modifier that
+         * rewrites the character, produced no copy at all — the keystroke
+         * simply did nothing, with no way to tell it apart from an empty
+         * selection.
+         *
+         * A focused text input no longer suppresses this. It used to: the
+         * assumption was that a focused field owns the keystroke, but an app
+         * whose composer holds focus permanently — which is the normal state of
+         * a chat window — could then never copy from its own transcript, and
+         * the selection the user could see highlighted was not what got copied.
+         * What decides now is where the selection actually is: a field with a
+         * selection of its own keeps the keystroke, and otherwise the document
+         * selection is copied.
+         */
+        if event.state.is_pressed() && has_clipboard_modifier(event.modifiers) {
+            if is_document_copy(event) {
+                let field_owns_the_keystroke = doc.focus_node_id.is_some_and(|id| {
+                    doc.get_node(id)
+                        .and_then(|n| n.element_data())
+                        .and_then(|e| e.text_input_data())
+                        .is_some_and(|input| !input.editor.raw_selection().text_range().is_empty())
+                });
 
-                        if !has_focused_text_input {
-                            if let Some(text) = doc.get_selected_text() {
-                                let _ = doc.shell_provider.set_clipboard_text(text);
-                                return;
-                            }
+                if !field_owns_the_keystroke {
+                    if let Some(text) = doc.get_selected_text() {
+                        if !text.is_empty() {
+                            let _ = doc.shell_provider.set_clipboard_text(text);
+                            return;
                         }
                     }
                 }
@@ -158,4 +187,75 @@ fn implicit_form_submission(doc: &BaseDocument, text_target: NodeId) {
     }
 
     doc.submit_form(*form_owner_id, *form_owner_id);
+}
+
+/// The Copy chord has to be recognised however the platform reports it.
+///
+/// Copying from the transcript was unreliable in a way that looked random: the
+/// keystroke was matched on the character alone, so anything that changed the
+/// character — a non-QWERTY layout, a modifier combination the platform folds
+/// into it — produced no copy and no error either.
+#[cfg(test)]
+mod copy_chord_tests {
+    use super::*;
+    use blitz_traits::events::KeyState;
+    use keyboard_types::Location;
+
+    fn event(key: Key, code: Code) -> BlitzKeyEvent {
+        BlitzKeyEvent {
+            key,
+            code,
+            modifiers: Modifiers::CONTROL,
+            location: Location::Standard,
+            is_auto_repeating: false,
+            is_composing: false,
+            state: KeyState::Pressed,
+            text: None,
+        }
+    }
+
+    #[test]
+    fn the_plain_character_is_a_copy() {
+        assert!(is_document_copy(&event(
+            Key::Character("c".into()),
+            Code::KeyC
+        )));
+    }
+
+    /// Ctrl+C arrives as the ETX control character on some platforms, and the
+    /// physical key is the only thing left that still says "C".
+    #[test]
+    fn a_control_character_is_a_copy_by_its_physical_key() {
+        assert!(is_document_copy(&event(
+            Key::Character("\u{3}".into()),
+            Code::KeyC
+        )));
+    }
+
+    /// A layout that puts another character on the C key still copies.
+    #[test]
+    fn a_remapped_character_is_a_copy_by_its_physical_key() {
+        assert!(is_document_copy(&event(
+            Key::Character("ç".into()),
+            Code::KeyC
+        )));
+    }
+
+    /// And the character still counts when the physical key is unknown, which
+    /// is what a synthesised or remapped event reports.
+    #[test]
+    fn an_unidentified_key_is_a_copy_by_its_character() {
+        assert!(is_document_copy(&event(
+            Key::Character("C".into()),
+            Code::Unidentified
+        )));
+    }
+
+    #[test]
+    fn another_key_is_not_a_copy() {
+        assert!(!is_document_copy(&event(
+            Key::Character("v".into()),
+            Code::KeyV
+        )));
+    }
 }

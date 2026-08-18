@@ -15,6 +15,218 @@ enum ClipboardCommand {
     Paste,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HistoryCommand {
+    Undo,
+    Redo,
+}
+
+/// Ctrl/Cmd+Z undoes, and Shift+Z or Ctrl+Y redoes.
+///
+/// Ctrl+Y is the Windows redo and is accepted everywhere rather than gated on
+/// the platform: it costs one arm, and a user who reaches for it on macOS gets
+/// a redo instead of a `y`.
+fn history_command(event: &BlitzKeyEvent) -> Option<HistoryCommand> {
+    if !has_clipboard_modifier(event.modifiers) {
+        return None;
+    }
+    let shift = event.modifiers.contains(Modifiers::SHIFT);
+    let is = |code: Code, ch: &str| {
+        event.code == code || matches!(&event.key, Key::Character(c) if c.eq_ignore_ascii_case(ch))
+    };
+
+    if is(Code::KeyZ, "z") {
+        return Some(if shift {
+            HistoryCommand::Redo
+        } else {
+            HistoryCommand::Undo
+        });
+    }
+    if is(Code::KeyY, "y") {
+        return Some(HistoryCommand::Redo);
+    }
+    None
+}
+
+/// One point a text input can be returned to.
+///
+/// The whole value, not a diff. A text input holds a single line or a short
+/// message rather than a document, so the simplest thing that is always correct
+/// beats a delta encoding that has to be right about every mutation path —
+/// typing, IME preedit, paste, cut, drag, and the Apple standard keybindings
+/// all reach the buffer through parley's driver, and a snapshot cannot miss one.
+///
+/// The selection travels with the text because restoring one without the other
+/// is the wrong behaviour: undoing a paste has to put the caret back where the
+/// text was inserted, not leave it wherever the caret happened to be.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TextEditSnapshot {
+    text: String,
+    /// Byte offsets, in the order the selection was made, so an undone
+    /// selection keeps the end the user was extending from.
+    anchor: usize,
+    focus: usize,
+}
+
+/// Undo and redo for one text input.
+///
+/// # Why this is here and not a crate
+///
+/// The obvious candidates do not fit. `undo` and `undoredo` are command-pattern
+/// or delta libraries: they want to own the mutation so they can invert it, but
+/// every mutation here already goes through `parley::PlainEditor`'s driver, so
+/// adopting one means rerouting every edit site through command objects to buy
+/// back what a snapshot gives for free. `loro`'s `UndoManager` is built for
+/// CRDT documents that have to skip *remote* peers' edits; a text field has no
+/// peers, and it costs 144 transitive crates and a second source of truth for
+/// the text. Snapshot-based crates are ruled out at the source: `PlainEditor`
+/// does not implement `Clone`.
+///
+/// So this is what a browser does, which is also what WebKit hands a normal
+/// Tauri app for free: remember the value and the selection, coalesce a run of
+/// typing into one entry, and cap the depth.
+#[derive(Debug, Default)]
+pub struct TextEditHistory {
+    /// States that can be returned to, oldest first. The last entry is the one
+    /// an undo restores; the state being left is pushed on the way out.
+    undo: Vec<TextEditSnapshot>,
+    /// States undone and not yet re-applied, most recently undone last.
+    redo: Vec<TextEditSnapshot>,
+    /// Where the editor was at the last recorded point, so the next edit can be
+    /// tested against it for continuation. Follows the editor.
+    current: Option<TextEditSnapshot>,
+    /// The state the in-flight run of typing began from, held still while the
+    /// run continues. This, not [`Self::current`], is what an undo restores —
+    /// otherwise undo walks back one character at a time.
+    burst: Option<TextEditSnapshot>,
+    /// Set while an undo or redo is applying, so restoring a snapshot cannot
+    /// record itself as a fresh edit.
+    applying: bool,
+}
+
+/// Deep enough that a session's editing is recoverable, bounded so a long-lived
+/// input cannot grow without limit. Chrome and Firefox both cap in this region.
+const MAX_UNDO_DEPTH: usize = 200;
+
+impl TextEditHistory {
+    /// Whether `next` continues the burst that produced `previous`.
+    ///
+    /// Typing is coalesced so one undo removes a word or a run, not a single
+    /// character: an undo per keystroke is technically faithful and unusable.
+    /// A run continues while text is only being appended at the caret and the
+    /// character added is not whitespace — a space or a newline ends the run,
+    /// which is what makes undo land on word and line boundaries.
+    ///
+    /// Anything else — a deletion, a paste, a caret move, a selection replaced —
+    /// starts a new entry, because those are the edits a user thinks of as one
+    /// action.
+    fn continues_burst(previous: &TextEditSnapshot, next: &TextEditSnapshot) -> bool {
+        // Only ever appending, and only at the caret.
+        if next.text.len() <= previous.text.len() {
+            return false;
+        }
+        if previous.anchor != previous.focus || next.anchor != next.focus {
+            return false;
+        }
+        // The insertion has to be at the previous caret, with everything before
+        // and after it untouched.
+        let caret = previous.focus;
+        if caret > previous.text.len() || next.focus <= caret {
+            return false;
+        }
+        let added = next.focus - caret;
+        if next.text.len() != previous.text.len() + added {
+            return false;
+        }
+        if previous.text.get(..caret) != next.text.get(..caret) {
+            return false;
+        }
+        if previous.text.get(caret..) != next.text.get(next.focus..) {
+            return false;
+        }
+
+        // A word or line boundary closes the run, so undo stops at one.
+        !next.text[caret..next.focus]
+            .chars()
+            .any(|c| c.is_whitespace())
+    }
+
+    /// Record the state the editor is in *before* an edit is applied.
+    ///
+    /// Called on the way into every mutation. The first call seeds `current`
+    /// without pushing, because there is nothing to return to yet; after that,
+    /// a state that does not continue the current burst is pushed as its own
+    /// undo entry.
+    fn record(&mut self, snapshot: TextEditSnapshot) {
+        if self.applying {
+            return;
+        }
+
+        let Some(previous) = self.current.clone() else {
+            // Nothing to return to yet: this is the state the first edit will
+            // be applied to, so it becomes the burst start.
+            self.current = Some(snapshot);
+            return;
+        };
+        if previous == snapshot {
+            return;
+        }
+
+        // Any real edit ends the redo branch, including one that merely
+        // continues a run of typing. Clearing this only when a run *ended* let
+        // a redo after "undo, then keep typing" resurrect the text that was
+        // typed over.
+        self.redo.clear();
+
+        // `burst` is the state the current run of typing began from, and it is
+        // what an undo has to restore. Advancing it per keystroke — which is
+        // what overwriting `current` here used to do — is why undo removed a
+        // single character instead of the whole word.
+        let burst = self.burst.as_ref().unwrap_or(&previous);
+        if Self::continues_burst(burst, &snapshot) {
+            // Still the same run. Hold the start, and let `current` follow the
+            // editor so the next keystroke is compared against where it is now.
+            self.burst = Some(burst.clone());
+            self.current = Some(snapshot);
+            return;
+        }
+
+        // The run ended, so the state it started from becomes an undo entry.
+        let entry = self.burst.take().unwrap_or(previous);
+        self.current = Some(snapshot);
+        self.undo.push(entry);
+        if self.undo.len() > MAX_UNDO_DEPTH {
+            self.undo.remove(0);
+        }
+    }
+
+    /// The state to restore for an undo, given where the editor is now.
+    fn undo(&mut self, now: TextEditSnapshot) -> Option<TextEditSnapshot> {
+        // A run of typing that has not been closed yet is still undoable, and
+        // the state to return to is where that run began. Without this, typing
+        // a word and pressing undo would skip over it to the entry before.
+        if let Some(burst) = self.burst.take() {
+            if burst != now {
+                self.undo.push(burst);
+            }
+        }
+        let restore = self.undo.pop()?;
+        self.redo.push(now);
+        self.current = Some(restore.clone());
+        Some(restore)
+    }
+
+    /// The state to restore for a redo, given where the editor is now.
+    fn redo(&mut self, now: TextEditSnapshot) -> Option<TextEditSnapshot> {
+        let restore = self.redo.pop()?;
+        self.undo.push(now);
+        // A redo lands on a settled state, so there is no run in flight.
+        self.burst = None;
+        self.current = Some(restore.clone());
+        Some(restore)
+    }
+}
+
 fn clipboard_command(event: &BlitzKeyEvent) -> Option<ClipboardCommand> {
     if !has_clipboard_modifier(event.modifiers) {
         return None;
@@ -156,6 +368,9 @@ pub struct TextInputData {
     pub editor: Box<parley::PlainEditor<TextBrush>>,
     /// Shaped placeholder text, painted only while the editable value is empty.
     pub placeholder_editor: Option<Box<parley::PlainEditor<TextBrush>>>,
+    /// Undo and redo for this input. Parley has no history of its own, so
+    /// without this Cmd+Z reached no handler and did nothing at all.
+    history: TextEditHistory,
     /// Whether the input is a singleline or multiline input
     pub is_multiline: bool,
     /// The scroll offset of the text content within the input, in CSS (unscaled) pixels.
@@ -180,10 +395,71 @@ impl TextInputData {
         Self {
             editor,
             placeholder_editor: None,
+            history: TextEditHistory::default(),
             is_multiline,
             scroll_offset: 0.0,
             layout_width: None,
         }
+    }
+
+    /// The editor's current value and selection, as an undo entry.
+    fn snapshot(&self) -> TextEditSnapshot {
+        let selection = self.editor.raw_selection();
+        TextEditSnapshot {
+            text: self.editor.raw_text().to_string(),
+            anchor: selection.anchor().index(),
+            focus: selection.focus().index(),
+        }
+    }
+
+    /// Remember where the editor is, before an edit changes it.
+    fn record_history(&mut self) {
+        let snapshot = self.snapshot();
+        self.history.record(snapshot);
+    }
+
+    /// Put the editor back to `snapshot`, text and selection together.
+    ///
+    /// `applying` is held for the duration so the restore cannot be recorded as
+    /// a new edit, which would make undo a no-op that toggles between two
+    /// states.
+    fn restore(
+        &mut self,
+        font_ctx: &mut FontContext,
+        layout_ctx: &mut LayoutContext<TextBrush>,
+        snapshot: &TextEditSnapshot,
+    ) {
+        self.history.applying = true;
+        self.editor.set_text(&snapshot.text);
+        let mut driver = self.editor.driver(font_ctx, layout_ctx);
+        // Byte offsets from a snapshot of this same buffer, but the text has
+        // just been replaced, so clamp rather than trust them: parley ignores a
+        // non-boundary index and the caret would silently stay put.
+        let len = snapshot.text.len();
+        let anchor = snapshot.anchor.min(len);
+        let focus = snapshot.focus.min(len);
+        if anchor == focus {
+            driver.move_to_byte(focus);
+        } else {
+            driver.select_byte_range(anchor, focus);
+        }
+        self.history.applying = false;
+    }
+
+    /// Apply an undo or a redo, if there is one to apply.
+    fn apply_history_command(
+        &mut self,
+        font_ctx: &mut FontContext,
+        layout_ctx: &mut LayoutContext<TextBrush>,
+        command: HistoryCommand,
+    ) -> Option<GeneratedTextInputEvent> {
+        let now = self.snapshot();
+        let restore = match command {
+            HistoryCommand::Undo => self.history.undo(now),
+            HistoryCommand::Redo => self.history.redo(now),
+        }?;
+        self.restore(font_ctx, layout_ctx, &restore);
+        Some(GeneratedTextInputEvent::Input)
     }
 
     /// The height of the laid out text, in CSS (unscaled) pixels.
@@ -386,6 +662,18 @@ impl TextInputData {
         if !event.state.is_pressed() {
             return None;
         }
+
+        // Undo and redo first: they are the one pair that must not be recorded
+        // as edits, and `history_command` is checked before anything mutates.
+        if let Some(command) = history_command(&event) {
+            return self.apply_history_command(font_ctx, layout_ctx, command);
+        }
+
+        // Every path below this point can change the buffer, so the state being
+        // left is recorded here rather than at each of them. A keystroke that
+        // turns out to only move the caret records a snapshot equal to the last
+        // one, which `record` discards.
+        self.record_history();
 
         let mods = event.modifiers;
         let shift = mods.contains(Modifiers::SHIFT);
@@ -592,6 +880,11 @@ impl TextInputData {
         shell_provider: &dyn ShellProvider,
         command: &str,
     ) -> Option<GeneratedTextInputEvent> {
+        // AppKit routes a large part of macOS text editing here rather than
+        // through `apply_keypress_event` — every delete, transpose and kill —
+        // so an undo stack fed only by keypresses would miss them.
+        self.record_history();
+
         let editor = &mut self.editor;
         let mut driver = editor.driver(font_ctx, layout_ctx);
         let is_multiline = self.is_multiline;
@@ -971,6 +1264,17 @@ impl TextInputData {
         layout_ctx: &mut LayoutContext<TextBrush>,
         event: BlitzImeEvent,
     ) -> Option<GeneratedTextInputEvent> {
+        // Only a commit, deliberately.
+        //
+        // A composition session emits a preedit per keystroke, and recording
+        // those would fill the stack with half-composed text: undoing after
+        // typing a Japanese word would walk back through its romaji rather than
+        // removing the word. The commit is the edit the user made, so it is the
+        // only point that becomes undoable.
+        if matches!(event, BlitzImeEvent::Commit(_)) {
+            self.record_history();
+        }
+
         let editor = &mut self.editor;
         let mut driver = editor.driver(font_ctx, layout_ctx);
 
@@ -1175,5 +1479,321 @@ mod shortcut_tests {
             Some(GeneratedTextInputEvent::Input)
         ));
         assert_eq!(data.editor.raw_text(), "typ");
+    }
+}
+
+/// Undo and redo, driven through the same entry point a keystroke takes.
+///
+/// Asserted end to end rather than against [`TextEditHistory`] directly: the
+/// part that was missing was not a stack, it was a stack wired to the editor,
+/// and a unit test of the stack alone would pass with nothing connected.
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+    use blitz_traits::events::{BlitzKeyEvent, KeyState};
+    use blitz_traits::shell::DummyShellProvider;
+    use keyboard_types::Location;
+
+    struct Input {
+        data: TextInputData,
+        font_ctx: FontContext,
+        layout_ctx: LayoutContext<TextBrush>,
+    }
+
+    impl Input {
+        fn new() -> Self {
+            Self {
+                data: TextInputData::new(true),
+                font_ctx: FontContext::default(),
+                layout_ctx: LayoutContext::new(),
+            }
+        }
+
+        fn press(&mut self, key: Key, code: Code, modifiers: Modifiers) {
+            let event = BlitzKeyEvent {
+                key,
+                code,
+                modifiers,
+                location: Location::Standard,
+                is_auto_repeating: false,
+                is_composing: false,
+                state: KeyState::Pressed,
+                text: None,
+            };
+            self.data.apply_keypress_event(
+                &mut self.font_ctx,
+                &mut self.layout_ctx,
+                &DummyShellProvider,
+                event,
+            );
+        }
+
+        /// Type `text` one character at a time, as a keyboard would.
+        fn type_text(&mut self, text: &str) {
+            for ch in text.chars() {
+                self.press(
+                    Key::Character(ch.to_string()),
+                    Code::Unidentified,
+                    Modifiers::empty(),
+                );
+            }
+        }
+
+        fn undo(&mut self) {
+            self.press(Key::Character("z".into()), Code::KeyZ, Modifiers::CONTROL);
+        }
+
+        fn redo(&mut self) {
+            self.press(
+                Key::Character("z".into()),
+                Code::KeyZ,
+                Modifiers::CONTROL | Modifiers::SHIFT,
+            );
+        }
+
+        fn text(&self) -> &str {
+            self.data.editor.raw_text()
+        }
+    }
+
+    /// The bug itself: Cmd+Z reached no handler, so it did nothing.
+    #[test]
+    fn undo_restores_the_text_from_before_the_edit() {
+        let mut input = Input::new();
+        input.type_text("first");
+        input.type_text(" second");
+
+        input.undo();
+
+        // "first " and not "first": the space closed the run, so the state the
+        // next run began from is the one with the separator already typed. That
+        // is where Chrome and Firefox land too — the boundary belongs to the
+        // text that preceded it, not to the word being started.
+        assert_eq!(
+            input.text(),
+            "first ",
+            "undo should remove the most recent word",
+        );
+    }
+
+    #[test]
+    fn redo_reapplies_what_undo_removed() {
+        let mut input = Input::new();
+        input.type_text("first");
+        input.type_text(" second");
+        let full = input.text().to_string();
+
+        input.undo();
+        input.redo();
+
+        assert_eq!(input.text(), full, "redo should restore the undone text");
+    }
+
+    /// One undo removes a word, not a keystroke.
+    ///
+    /// An undo per character is faithful to what happened and unusable, so a
+    /// run of typing coalesces and the whitespace closes it.
+    #[test]
+    fn a_run_of_typing_undoes_as_one_word_rather_than_per_character() {
+        let mut input = Input::new();
+        input.type_text("hello world");
+
+        input.undo();
+
+        assert_eq!(
+            input.text(),
+            "hello ",
+            "the burst should end at the space, not at the previous character",
+        );
+    }
+
+    /// Undo has to be reachable more than once.
+    #[test]
+    fn repeated_undo_walks_back_through_the_history() {
+        let mut input = Input::new();
+        input.type_text("one two three");
+
+        input.undo();
+        assert_eq!(input.text(), "one two ");
+        input.undo();
+        assert_eq!(input.text(), "one ");
+        input.undo();
+        assert_eq!(input.text(), "");
+    }
+
+    /// Undo on an untouched input must not panic or invent a state.
+    #[test]
+    fn undo_with_nothing_to_undo_leaves_the_text_alone() {
+        let mut input = Input::new();
+        input.type_text("only");
+
+        input.undo();
+        input.undo();
+        input.undo();
+
+        assert_eq!(input.text(), "");
+    }
+
+    /// Typing after an undo drops the redo branch, as every editor does.
+    #[test]
+    fn a_fresh_edit_after_an_undo_clears_the_redo_stack() {
+        let mut input = Input::new();
+        input.type_text("first");
+        input.type_text(" second");
+
+        input.undo();
+        assert_eq!(input.text(), "first ");
+        input.type_text("third");
+        input.redo();
+
+        assert_eq!(
+            input.text(),
+            "first third",
+            "redo must not resurrect a branch that was typed over",
+        );
+    }
+
+    /// Ctrl+Y is the Windows redo and is accepted on every platform.
+    #[test]
+    fn control_y_also_redoes() {
+        let mut input = Input::new();
+        input.type_text("first");
+        input.type_text(" second");
+        let full = input.text().to_string();
+
+        input.undo();
+        input.press(Key::Character("y".into()), Code::KeyY, Modifiers::CONTROL);
+
+        assert_eq!(input.text(), full);
+    }
+
+    /// The chord must not reach the buffer as text.
+    ///
+    /// `history_command` returns before any mutation, so undo cannot also
+    /// insert a `z` — which is what an unhandled chord would have done.
+    #[test]
+    fn the_undo_chord_does_not_type_its_own_character() {
+        let mut input = Input::new();
+        input.type_text("text");
+
+        input.undo();
+        input.redo();
+
+        assert!(
+            !input.text().contains('z'),
+            "the undo chord leaked into the buffer: {:?}",
+            input.text(),
+        );
+    }
+
+    /// Undo restores the caret, not just the string.
+    #[test]
+    fn undo_restores_the_selection_along_with_the_text() {
+        let mut input = Input::new();
+        input.type_text("alpha");
+        input.type_text(" beta");
+
+        input.undo();
+
+        let selection = input.data.editor.raw_selection();
+        assert_eq!(
+            selection.focus().index(),
+            input.text().len(),
+            "the caret should return to the end of the restored text",
+        );
+    }
+
+    /// The stack is bounded, so a long-lived input cannot grow without limit.
+    #[test]
+    fn the_history_is_capped_at_the_maximum_depth() {
+        let mut history = TextEditHistory::default();
+        for i in 0..(MAX_UNDO_DEPTH + 50) {
+            history.record(TextEditSnapshot {
+                text: format!("state {i}"),
+                anchor: 0,
+                focus: 0,
+            });
+        }
+
+        assert!(
+            history.undo.len() <= MAX_UNDO_DEPTH,
+            "history grew to {} entries, past the {MAX_UNDO_DEPTH} cap",
+            history.undo.len(),
+        );
+    }
+}
+
+/// Undo and redo under either action modifier.
+///
+/// macOS users can rebind the standard editing commands system-wide through
+/// `NSUserKeyEquivalents`, and a machine that maps Copy to Ctrl+C rather than
+/// Cmd+C is not exotic. Both modifiers are accepted for the same reason the
+/// clipboard accepts both: dropping one means the chord silently does nothing.
+#[cfg(test)]
+mod history_chord_tests {
+    use super::*;
+    use blitz_traits::events::{BlitzKeyEvent, KeyState};
+    use keyboard_types::Location;
+
+    fn event(key: Key, code: Code, modifiers: Modifiers) -> BlitzKeyEvent {
+        BlitzKeyEvent {
+            key,
+            code,
+            modifiers,
+            location: Location::Standard,
+            is_auto_repeating: false,
+            is_composing: false,
+            state: KeyState::Pressed,
+            text: None,
+        }
+    }
+
+    #[test]
+    fn undo_is_recognised_under_control_and_under_the_platform_modifier() {
+        for modifiers in [Modifiers::CONTROL, ACTION_MOD] {
+            assert_eq!(
+                history_command(&event(Key::Character("z".into()), Code::KeyZ, modifiers)),
+                Some(HistoryCommand::Undo),
+            );
+        }
+    }
+
+    #[test]
+    fn shift_z_redoes_under_either_modifier() {
+        for modifiers in [Modifiers::CONTROL, ACTION_MOD] {
+            assert_eq!(
+                history_command(&event(
+                    Key::Character("z".into()),
+                    Code::KeyZ,
+                    modifiers | Modifiers::SHIFT,
+                )),
+                Some(HistoryCommand::Redo),
+            );
+        }
+    }
+
+    /// A remapped layout still undoes, because the physical key is checked.
+    #[test]
+    fn a_remapped_character_still_undoes_by_its_physical_key() {
+        assert_eq!(
+            history_command(&event(
+                Key::Character("w".into()),
+                Code::KeyZ,
+                Modifiers::CONTROL,
+            )),
+            Some(HistoryCommand::Undo),
+        );
+    }
+
+    #[test]
+    fn the_chord_needs_a_modifier() {
+        assert_eq!(
+            history_command(&event(
+                Key::Character("z".into()),
+                Code::KeyZ,
+                Modifiers::empty(),
+            )),
+            None,
+        );
     }
 }
