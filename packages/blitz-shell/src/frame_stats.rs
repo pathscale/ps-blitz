@@ -361,7 +361,14 @@ mod tests {
 
     #[test]
     fn recording_publishes_to_the_process_global_log() {
-        blitz_traits::profiling::set_deep_profiling_enabled(true);
+        // Shared with the lifecycle tests in `lib.rs`: both move the same
+        // process-wide permission, consumer count and sample stores.
+        let _serial = crate::exclusive_profiling_state();
+        // Permission and a consumer: recording now requires both, so a test
+        // that only set the flag would record nothing and read as a broken
+        // collector.
+        blitz_traits::profiling::set_deep_profiling_permitted(true);
+        let session = blitz_traits::profiling::begin_deep_profiling().expect("permitted");
         clear_frame_stats();
         record_frame(
             Instant::now(),
@@ -372,7 +379,8 @@ mod tests {
         let stats = latest_frame_stats().expect("a frame was just recorded");
         assert!(stats.frames_total >= 1);
         assert!(stats.latest.total_ms >= 9.0);
-        blitz_traits::profiling::set_deep_profiling_enabled(false);
+        drop(session);
+        blitz_traits::profiling::set_deep_profiling_permitted(false);
         clear_frame_stats();
     }
 }

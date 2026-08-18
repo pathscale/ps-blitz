@@ -24,36 +24,108 @@ pub use crate::frame_stats::{
     FrameStatsSnapshot, FrameTimings, TimingStats, clear_frame_stats, latest_frame_stats,
 };
 
-/// Start or stop one process-wide deep-profiling capture window.
+/// Permit or forbid deep profiling for this process.
+///
+/// This is the owner's toggle and it starts no collection: sampling runs only
+/// while a consumer holds a guard from [`begin_deep_profiling`]. Withdrawing
+/// permission stops a live capture and releases what it collected, because a
+/// capability that is off should retain nothing.
 ///
 /// The concrete collectors live in the shell and script crates, so this is the
 /// lowest shared layer that can coordinate them without making `blitz-traits`
-/// depend on its consumers. A state transition always clears both stores:
-/// enabling begins an empty capture, and disabling retains nothing while the
-/// capability is dormant. Reapplying the current state is a no-op so a settings
-/// refresh cannot accidentally split an active user capture.
+/// depend on its consumers. Reapplying the current state is a no-op, so a
+/// settings refresh cannot split an active capture.
 #[cfg(feature = "debug-control")]
-pub fn set_deep_profiling_enabled(enabled: bool) {
-    if blitz_traits::profiling::deep_profiling_enabled() == enabled {
+pub fn set_deep_profiling_permitted(permitted: bool) {
+    if blitz_traits::profiling::deep_profiling_permitted() == permitted {
         return;
     }
 
-    // Stop collection before clearing. On enable, collection remains stopped
-    // until both stores are empty, so no section can enter the new window with
-    // a sample from the old one.
-    blitz_traits::profiling::set_deep_profiling_enabled(false);
+    blitz_traits::profiling::set_deep_profiling_permitted(permitted);
+    if !permitted {
+        // Forbidden means dormant, and dormant means holding nothing.
+        clear_capture_stores();
+    }
+}
+
+/// Ask for samples, for as long as the returned guard is held.
+///
+/// `None` when the profile does not permit sampling. The first consumer starts
+/// an empty capture window, so no section can enter it carrying a sample from
+/// the last one, and the last guard to drop releases the sample storage rather
+/// than parking it for a consumer that may never return.
+///
+/// The guard is returned rather than exposing `start()`/`stop()` so an early
+/// return or a panic cannot leave the collectors running for the life of the
+/// process.
+#[cfg(feature = "debug-control")]
+#[must_use = "sampling stops as soon as the guard is dropped"]
+pub fn begin_deep_profiling() -> Option<DeepProfilingSession> {
+    let inner = blitz_traits::profiling::begin_deep_profiling()?;
+    if blitz_traits::profiling::deep_profiling_consumers() == 1 {
+        clear_capture_stores();
+    }
+    Some(DeepProfilingSession { inner: Some(inner) })
+}
+
+/// Release both sample stores.
+///
+/// Each `clear` reassigns its log to the default rather than truncating it, so
+/// the backing allocations are dropped rather than retained at their high-water
+/// mark.
+#[cfg(feature = "debug-control")]
+fn clear_capture_stores() {
     clear_frame_stats();
     blitz_script::script_stats::clear();
-    blitz_traits::profiling::set_deep_profiling_enabled(enabled);
+}
+
+/// Holds a deep-profiling capture open across the shell and script collectors.
+///
+/// Wraps the `blitz-traits` guard so that dropping the *last* one also frees
+/// the samples. The inner guard alone only stops collection, and a stopped
+/// capture that still owns its buffers is the retention this change removes.
+#[cfg(feature = "debug-control")]
+#[derive(Debug)]
+pub struct DeepProfilingSession {
+    inner: Option<blitz_traits::profiling::DeepProfilingGuard>,
+}
+
+#[cfg(feature = "debug-control")]
+impl Drop for DeepProfilingSession {
+    fn drop(&mut self) {
+        // Drop the inner guard first: the count has to reach zero before the
+        // stores are cleared, or a section still in flight could append to the
+        // buffer between the clear and the stop.
+        drop(self.inner.take());
+        if blitz_traits::profiling::deep_profiling_consumers() == 0 {
+            clear_capture_stores();
+        }
+    }
+}
+
+/// One lock for every test that moves the process-wide profiling state.
+///
+/// Permission, the consumer count and both sample stores are global, and they
+/// are exercised from two modules: the lifecycle tests below and the recording
+/// test in `frame_stats`. Without a single lock shared by both, the suite
+/// passes or fails on thread scheduling, which is worse than no test at all.
+#[cfg(test)]
+pub(crate) static PROFILING_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+pub(crate) fn exclusive_profiling_state() -> std::sync::MutexGuard<'static, ()> {
+    PROFILING_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[cfg(all(test, feature = "debug-control"))]
 mod profiling_lifecycle_tests {
     use std::time::Duration;
 
-    #[test]
-    fn a_new_deep_capture_window_drops_all_previous_collector_samples() {
-        crate::set_deep_profiling_enabled(true);
+    use crate::exclusive_profiling_state as exclusive;
+
+    fn record_one_sample_of_each() {
         crate::frame_stats::record_frame(
             web_time::Instant::now(),
             Duration::from_millis(2),
@@ -61,15 +133,62 @@ mod profiling_lifecycle_tests {
             Duration::from_millis(4),
         );
         blitz_script::script_stats::record_poll(Duration::from_millis(5), true);
+    }
+
+    #[test]
+    fn a_new_deep_capture_window_drops_all_previous_collector_samples() {
+        let _serial = exclusive();
+        crate::set_deep_profiling_permitted(true);
+        let first = crate::begin_deep_profiling().expect("permitted");
+        record_one_sample_of_each();
         assert!(crate::latest_frame_stats().is_some());
         assert!(blitz_script::script_stats::latest_script_stats().is_some());
 
-        crate::set_deep_profiling_enabled(false);
-        crate::set_deep_profiling_enabled(true);
+        drop(first);
+        let _second = crate::begin_deep_profiling().expect("permitted");
 
         assert!(crate::latest_frame_stats().is_none());
         assert!(blitz_script::script_stats::latest_script_stats().is_none());
-        crate::set_deep_profiling_enabled(false);
+        crate::set_deep_profiling_permitted(false);
+    }
+
+    /// The memory half of the design: the last consumer leaving must give the
+    /// samples back, not park them for a reader that may never return.
+    #[test]
+    fn the_last_consumer_leaving_releases_the_samples() {
+        let _serial = exclusive();
+        crate::set_deep_profiling_permitted(true);
+        let session = crate::begin_deep_profiling().expect("permitted");
+        record_one_sample_of_each();
+        assert!(crate::latest_frame_stats().is_some());
+
+        drop(session);
+
+        assert!(
+            crate::latest_frame_stats().is_none(),
+            "dropping the last consumer must release the frame samples",
+        );
+        assert!(
+            blitz_script::script_stats::latest_script_stats().is_none(),
+            "dropping the last consumer must release the script samples",
+        );
+        crate::set_deep_profiling_permitted(false);
+    }
+
+    /// Permission on its own collects nothing, which is the whole change: the
+    /// toggle used to start sampling at boot for a reader that was not there.
+    #[test]
+    fn permission_without_a_consumer_records_nothing() {
+        let _serial = exclusive();
+        crate::set_deep_profiling_permitted(true);
+
+        record_one_sample_of_each();
+
+        assert!(
+            crate::latest_frame_stats().is_none(),
+            "no consumer is attached, so nothing should have been recorded",
+        );
+        crate::set_deep_profiling_permitted(false);
     }
 }
 pub use crate::window::{View, WindowConfig};
