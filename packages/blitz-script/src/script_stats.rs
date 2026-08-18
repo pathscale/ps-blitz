@@ -380,7 +380,18 @@ mod tests {
     /// worse than no test at all.
     static SERIAL: Mutex<()> = Mutex::new(());
 
-    fn reset() -> std::sync::MutexGuard<'static, ()> {
+    /// The serial lock, and a consumer holding sampling open for the test.
+    ///
+    /// Both are returned because both have to outlive the body: recording now
+    /// needs permission *and* an attached consumer, so a profiling guard
+    /// created and dropped inside this helper would stop collection before the
+    /// caller records anything.
+    struct TestCapture {
+        _serial: std::sync::MutexGuard<'static, ()>,
+        _sampling: blitz_traits::profiling::DeepProfilingGuard,
+    }
+
+    fn reset() -> TestCapture {
         let guard = SERIAL
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -388,8 +399,13 @@ mod tests {
         // The static buckets outlive the shared log, so clearing only the log
         // would leak the previous test's DOM samples into the next one.
         LOCAL_STATICS.with(|local| local.borrow_mut().clear());
-        blitz_traits::profiling::set_deep_profiling_enabled(true);
-        guard
+        blitz_traits::profiling::set_deep_profiling_permitted(true);
+        let sampling =
+            blitz_traits::profiling::begin_deep_profiling().expect("permission was just granted");
+        TestCapture {
+            _serial: guard,
+            _sampling: sampling,
+        }
     }
 
     #[test]
@@ -472,13 +488,13 @@ mod tests {
         document.set_poll_hook(|document, _| {
             // The poll selected profiling before this hook. Inner collectors
             // must keep that selection rather than rereading the global.
-            blitz_traits::profiling::set_deep_profiling_enabled(false);
+            blitz_traits::profiling::set_deep_profiling_permitted(false);
             document.eval("document.body.appendChild(document.createElement('div'))");
             true
         });
 
         assert!(document.poll(None));
-        blitz_traits::profiling::set_deep_profiling_enabled(true);
+        blitz_traits::profiling::set_deep_profiling_permitted(true);
 
         assert!(
             work_breakdown()
@@ -496,11 +512,11 @@ mod tests {
 
         let _serial = reset();
         clear();
-        blitz_traits::profiling::set_deep_profiling_enabled(false);
+        blitz_traits::profiling::set_deep_profiling_permitted(false);
         let mut document =
             crate::ScriptDocument::from_html("<body></body>", DocumentConfig::default());
         document.set_poll_hook(|document, _| {
-            blitz_traits::profiling::set_deep_profiling_enabled(true);
+            blitz_traits::profiling::set_deep_profiling_permitted(true);
             document.eval("document.body.appendChild(document.createElement('div'))");
             true
         });
