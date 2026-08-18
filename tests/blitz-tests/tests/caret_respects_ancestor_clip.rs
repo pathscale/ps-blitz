@@ -93,7 +93,10 @@ fn a_caret_does_not_paint_below_a_clipping_ancestor() {
 fn a_caret_still_paints_inside_the_clip() {
     let buffer = render_with_caret_shown();
 
-    let darkest = (0..16u32).map(|y| darkest_in_row(&buffer, y)).min().unwrap_or(255);
+    let darkest = (0..16u32)
+        .map(|y| darkest_in_row(&buffer, y))
+        .min()
+        .unwrap_or(255);
     assert!(
         darkest < 200,
         "no caret was painted inside the 16px wrapper at all (darkest channel \
