@@ -568,7 +568,23 @@ impl<Rend: WindowRenderer> View<Rend> {
     }
 
     pub fn redraw(&mut self) {
-        let profiling = blitz_traits::profiling::deep_profiling_enabled();
+        /*
+         * Permission, not an attached consumer.
+         *
+         * `deep_profiling_enabled` means permitted *and* somebody is reading,
+         * which is the right gate for the intrusive collectors: they cost
+         * something per section and nobody should pay for a reader who is not
+         * there. Frame timing is not that. It is four `Instant::now()` calls
+         * per frame feeding a bounded ring, and its readers are the
+         * `[blitz-frame]` log line, which writes to a local file, and the
+         * diagnostics endpoint, which connects per request and holds nothing.
+         *
+         * Gating it on a consumer meant the owner could turn both switches on
+         * and still see an empty ring: `blitz-bench` reported "no frames in
+         * window" from an application that was rendering at 120Hz, and the log
+         * file never got past its refresh-rate line.
+         */
+        let profiling = blitz_traits::profiling::deep_profiling_permitted();
         let frame_started = Instant::now();
         self.redraw_pending.set(false);
         #[cfg(target_os = "ios")]
