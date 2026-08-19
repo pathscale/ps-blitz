@@ -279,7 +279,13 @@ pub struct ScriptStatsSnapshot {
 /// than printing zeros that look like a measurement.
 #[must_use]
 pub fn latest_script_stats() -> Option<ScriptStatsSnapshot> {
-    if !blitz_traits::profiling::deep_profiling_enabled() {
+    // Permission, not an attached consumer: the same reason as
+    // `blitz_shell::frame_stats::latest_frame_stats`. Requiring a consumer to
+    // *read* what has already been recorded made the owner's toggle look inert,
+    // because the local `[blitz-frame]` log file has no consumer to attach.
+    // The recorders above stay gated on `deep_profiling_enabled`, which is the
+    // part that costs something per section.
+    if !blitz_traits::profiling::deep_profiling_permitted() {
         return None;
     }
     let guard = LOG.lock().ok()?;
