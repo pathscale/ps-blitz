@@ -129,22 +129,55 @@ impl ElementCx<'_, '_> {
     pub(super) fn draw_inset_box_shadow(&self, scene: &mut impl PaintScene) {
         let current_color = self.style.clone_color();
         let box_shadow = &self.style.get_effects().box_shadow.0;
-        let has_inset_shadow = box_shadow.iter().any(|s| s.inset);
-        if !has_inset_shadow {
+        /*
+         * A shadow that cannot change a pixel is not drawn, and more to the
+         * point costs no layers.
+         *
+         * The same fix as `draw_outset_box_shadow` above, for the same reason,
+         * which had not reached this half. The old guard was
+         * `shadow_color == Color::TRANSPARENT`, an exact comparison against a
+         * float that has been through colour parsing, a custom property and an
+         * sRGB conversion: see `is_visible_alpha` for why that is not reliable.
+         *
+         * It also sat *inside* the loop, after the padding box path had been
+         * built, and used `return` rather than `continue`, so a transparent
+         * shadow ahead of a visible one silently dropped the visible one.
+         *
+         * The layer cost is what makes this worth doing rather than tidy. Each
+         * inset shadow pushes two compositing groups, every frame, and vello
+         * gives every group scratch buffers that it pools by size class and
+         * never releases (`ResourcePool` in `wgpu_engine.rs` has no eviction
+         * path, on 0.9 or on master). A frame of AgencyZero peaked at 116
+         * layers, 74 of them inset shadows, and the residue was 52 pooled 8 MB
+         * blocks: 416 MB held for the life of the process. An application
+         * driving shadow alpha from a custom property has the declaration on
+         * every panel and the value at zero unless someone moved a slider, so
+         * paying two layers per panel to draw nothing is the default state
+         * rather than an edge case.
+         */
+        let visible = |shadow: &&style::values::computed::effects::BoxShadow| {
+            shadow.inset
+                && is_visible_alpha(
+                    shadow
+                        .base
+                        .color
+                        .resolve_to_absolute(&current_color)
+                        .as_srgb_color()
+                        .components[3],
+                )
+        };
+        if !box_shadow.iter().any(|s| visible(&s)) {
             return;
         }
 
         let padding_box = self.frame.padding_box_path();
 
-        for shadow in box_shadow.iter().filter(|s| s.inset) {
+        for shadow in box_shadow.iter().filter(|s| visible(s)) {
             let shadow_color = shadow
                 .base
                 .color
                 .resolve_to_absolute(&current_color)
                 .as_srgb_color();
-            if shadow_color == Color::TRANSPARENT {
-                return;
-            }
 
             // TODO draw shadows with matching individual radii instead of averaging
             let radius = self.frame.border_radii.average();
