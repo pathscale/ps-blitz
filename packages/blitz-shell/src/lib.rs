@@ -175,19 +175,30 @@ mod profiling_lifecycle_tests {
         crate::set_deep_profiling_permitted(false);
     }
 
-    /// Permission on its own collects nothing, which is the whole change: the
-    /// toggle used to start sampling at boot for a reader that was not there.
+    /// Permission on its own starts no *intrusive* collection, which is the
+    /// whole change: the toggle used to begin sampling at boot for a reader
+    /// that was not there.
+    ///
+    /// Asserted through `deep_profiling_enabled`, not through a reader. The two
+    /// are different questions and conflating them is a trap: the frame ring is
+    /// filled by `record_frame` unconditionally, because it is four durations
+    /// pushed into a bounded buffer and the `[blitz-frame]` log file reads it
+    /// with no consumer to attach. What a consumer gates is the intrusive
+    /// collectors that cost something per section.
     #[test]
-    fn permission_without_a_consumer_records_nothing() {
+    fn permission_without_a_consumer_starts_no_intrusive_collection() {
         let _serial = exclusive();
         crate::set_deep_profiling_permitted(true);
 
-        record_one_sample_of_each();
-
         assert!(
-            crate::latest_frame_stats().is_none(),
-            "no consumer is attached, so nothing should have been recorded",
+            blitz_traits::profiling::deep_profiling_permitted(),
+            "the owner's switch is on",
         );
+        assert!(
+            !blitz_traits::profiling::deep_profiling_enabled(),
+            "but no consumer is attached, so the intrusive collectors stay off",
+        );
+        assert_eq!(blitz_traits::profiling::deep_profiling_consumers(), 0);
         crate::set_deep_profiling_permitted(false);
     }
 }

@@ -172,8 +172,21 @@ pub(crate) fn record_frame(
 ///
 /// Returns `None` until the first frame has been presented, so that callers can
 /// report "no data yet" instead of reporting zeros as if they were measurements.
+///
+/// Gated on *permission*, not on an attached consumer. `deep_profiling_enabled`
+/// requires both, which is right for the intrusive collectors it was written
+/// for: they cost something per section and nobody should pay that for a reader
+/// who is not there. This is different. Recording a frame's timings is four
+/// durations pushed into a bounded ring that `record_frame` fills whether
+/// anything reads it or not, and one of the readers is the `[blitz-frame]` log
+/// line, which writes to a local file and has no consumer to attach.
+///
+/// Requiring a consumer here meant the owner's toggle appeared to do nothing:
+/// the setting went on, the ring kept filling, and every read returned `None`,
+/// so the log file stayed empty and the diagnostics endpoint reported no data
+/// from an application that was rendering normally.
 pub fn latest_frame_stats() -> Option<FrameStatsSnapshot> {
-    if !blitz_traits::profiling::deep_profiling_enabled() {
+    if !blitz_traits::profiling::deep_profiling_permitted() {
         return None;
     }
     let log = FRAME_LOG.lock().ok()?;
