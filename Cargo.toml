@@ -52,10 +52,10 @@ rust-version = "1.89.0"
 # Blitz dependencies(in-repo)
 blitz = { version = "=0.3.0-beta.4", path = "./packages/blitz" }
 blitz-dom = { package = "ps-blitz-dom", version = "=0.3.0-beta.4", path = "./packages/blitz-dom", default-features = false }
-blitz-html = { version = "=0.3.0-beta.4", path = "./packages/blitz-html", default-features = false }
+blitz-html = { package = "ps-blitz-html", version = "=0.3.0-beta.4", path = "./packages/blitz-html", default-features = false }
 blitz-script = { package = "ps-blitz-script", version = "=0.3.0-beta.4", path = "./packages/blitz-script", default-features = false }
 blitz-net = { package = "ps-blitz-net", version = "=0.3.0-beta.4", path = "./packages/blitz-net", default-features = false }
-blitz-paint = { version = "=0.3.0-beta.4", path = "./packages/blitz-paint", default-features = false }
+blitz-paint = { package = "ps-blitz-paint", version = "=0.3.0-beta.4", path = "./packages/blitz-paint", default-features = false }
 blitz-shell = { package = "ps-blitz-shell", version = "=0.3.0-beta.4", path = "./packages/blitz-shell", default-features = false }
 blitz-traits = { package = "ps-blitz-traits", version = "=0.3.0-beta.4", path = "./packages/blitz-traits", default-features = false }
 stylo_taffy = { package = "ps-stylo-taffy", version = "=0.3.0-beta.4", path = "./packages/stylo_taffy", default-features = false }
@@ -155,7 +155,7 @@ anyrender_skia = { version = "0.10.0" }
 anyrender_vello = { package = "ps-anyrender-vello", version = "^0.13.1" }
 anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", version = "^0.16.0" }
 anyrender_vello_hybrid = { package = "ps-anyrender-vello-hybrid", version = "^0.10.0" }
-anyrender_svg = { package = "ps-anyrender-svg", version = "^0.14.0" }
+anyrender_svg = { package = "ps-anyrender-svg", version = "^0.15.0" }
 wgpu_context = { version = "0.8.0" }
 
 # Linebender + Fontations + WGPU + SVG

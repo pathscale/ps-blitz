@@ -1,7 +1,11 @@
 [package]
-name = "blitz-paint"
+# Prefixed like the rest of the fork: `blitz-paint` on crates.io is DioxusLabs'.
+# This is already published as `ps-blitz-paint` up to 0.3.0-beta.3, so the
+# unprefixed name here also meant beta.4 could not go out under the name its own
+# earlier releases used. `[lib]` stays `blitz_paint`, so no path changes.
+name = "ps-blitz-paint"
 description = "Paint a Blitz Document using anyrender"
-documentation = "https://docs.rs/blitz-paint"
+documentation = "https://docs.rs/ps-blitz-paint"
 version.workspace = true
 license.workspace = true
 homepage.workspace = true
@@ -9,6 +13,9 @@ repository.workspace = true
 categories.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+
+[lib]
+name = "blitz_paint"
 
 [features]
 default = ["svg"]

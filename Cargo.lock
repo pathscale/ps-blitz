@@ -806,11 +806,11 @@ dependencies = [
 name = "blitz"
 version = "0.3.0-beta.4"
 dependencies = [
- "blitz-html",
- "blitz-paint",
  "ps-anyrender-vello",
  "ps-blitz-dom",
+ "ps-blitz-html",
  "ps-blitz-net",
+ "ps-blitz-paint",
  "ps-blitz-shell",
  "ps-blitz-traits",
  "tokio",
@@ -832,8 +832,6 @@ name = "blitz-examples"
 version = "0.0.1"
 dependencies = [
  "blitz",
- "blitz-html",
- "blitz-paint",
  "color",
  "dioxus",
  "env_logger",
@@ -846,7 +844,9 @@ dependencies = [
  "ps-anyrender-vello-cpu",
  "ps-anyrender-vello-hybrid",
  "ps-blitz-dom",
+ "ps-blitz-html",
  "ps-blitz-net",
+ "ps-blitz-paint",
  "ps-blitz-script",
  "ps-blitz-shell",
  "ps-blitz-traits",
@@ -855,37 +855,6 @@ dependencies = [
  "tokio",
  "tracing-subscriber",
  "url",
-]
-
-[[package]]
-name = "blitz-html"
-version = "0.3.0-beta.4"
-dependencies = [
- "html5ever",
- "ps-blitz-dom",
- "ps-blitz-traits",
- "tracing",
- "xml5ever",
-]
-
-[[package]]
-name = "blitz-paint"
-version = "0.3.0-beta.4"
-dependencies = [
- "color",
- "euclid",
- "kurbo",
- "parley",
- "peniko",
- "ps-anyrender",
- "ps-anyrender-svg",
- "ps-blitz-dom",
- "ps-blitz-traits",
- "ps-taffy",
- "ps-usvg",
- "smallvec",
- "stylo",
- "tracing",
 ]
 
 [[package]]
@@ -899,11 +868,11 @@ dependencies = [
 name = "blitz-test-harness"
 version = "0.3.0-beta.4"
 dependencies = [
- "blitz-html",
  "dioxus-core",
  "dioxus-native-dom",
  "keyboard-types 0.7.0",
  "ps-blitz-dom",
+ "ps-blitz-html",
  "ps-blitz-traits",
  "smol_str",
 ]
@@ -913,8 +882,6 @@ name = "blitz-tests"
 version = "0.3.0-beta.4"
 dependencies = [
  "accesskit",
- "blitz-html",
- "blitz-paint",
  "blitz-test-harness",
  "cursor-icon",
  "dioxus",
@@ -926,6 +893,8 @@ dependencies = [
  "ps-anyrender",
  "ps-anyrender-vello-cpu",
  "ps-blitz-dom",
+ "ps-blitz-html",
+ "ps-blitz-paint",
  "ps-blitz-traits",
  "ps-taffy",
  "ps-usvg",
@@ -1014,8 +983,6 @@ version = "0.0.0"
 dependencies = [
  "android-activity",
  "anyrender_serialize",
- "blitz-html",
- "blitz-paint",
  "browser-persistence",
  "image",
  "linebender_resource_handle",
@@ -1026,7 +993,9 @@ dependencies = [
  "ps-anyrender",
  "ps-anyrender-vello-cpu",
  "ps-blitz-dom",
+ "ps-blitz-html",
  "ps-blitz-net",
+ "ps-blitz-paint",
  "ps-blitz-script",
  "ps-blitz-traits",
  "ps-dioxus-native",
@@ -1652,9 +1621,9 @@ name = "counter"
 version = "0.1.0"
 dependencies = [
  "android-activity",
- "blitz-paint",
  "idna_adapter",
  "ps-blitz-dom",
+ "ps-blitz-paint",
  "ps-dioxus-native",
 ]
 
@@ -5792,15 +5761,15 @@ dependencies = [
 
 [[package]]
 name = "ps-anyrender-svg"
-version = "0.14.0"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "49d6f823f87ae615d3879af609d1a0316f5f1f9067e5ec75270b3a292bdd28cf"
+checksum = "46398b5d65887187d3d512aebdfc87bb8c22b13c4621e5b751f2984136b63307"
 dependencies = [
  "image",
  "kurbo",
  "peniko",
  "ps-anyrender",
- "usvg",
+ "ps-usvg",
 ]
 
 [[package]]
@@ -5915,6 +5884,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ps-blitz-html"
+version = "0.3.0-beta.4"
+dependencies = [
+ "html5ever",
+ "ps-blitz-dom",
+ "ps-blitz-traits",
+ "tracing",
+ "xml5ever",
+]
+
+[[package]]
 name = "ps-blitz-net"
 version = "0.3.0-beta.4"
 dependencies = [
@@ -5931,12 +5911,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "ps-blitz-paint"
+version = "0.3.0-beta.4"
+dependencies = [
+ "color",
+ "euclid",
+ "kurbo",
+ "parley",
+ "peniko",
+ "ps-anyrender",
+ "ps-anyrender-svg",
+ "ps-blitz-dom",
+ "ps-blitz-traits",
+ "ps-taffy",
+ "ps-usvg",
+ "smallvec",
+ "stylo",
+ "tracing",
+]
+
+[[package]]
 name = "ps-blitz-script"
 version = "0.3.0-beta.4"
 dependencies = [
  "base64 0.22.1",
- "blitz-html",
- "blitz-paint",
  "data-url",
  "getrandom 0.4.3",
  "image",
@@ -5946,6 +5944,8 @@ dependencies = [
  "ps-anyrender-vello-cpu",
  "ps-blitz-debug-control",
  "ps-blitz-dom",
+ "ps-blitz-html",
+ "ps-blitz-paint",
  "ps-blitz-traits",
  "ps-boa-engine",
  "ps-boa-gc",
@@ -5966,12 +5966,12 @@ dependencies = [
  "android-activity",
  "arboard",
  "atomic_refcell",
- "blitz-paint",
  "data-url",
  "futures-util",
  "keyboard-types 0.7.0",
  "ps-anyrender",
  "ps-blitz-dom",
+ "ps-blitz-paint",
  "ps-blitz-script",
  "ps-blitz-traits",
  "rfd",
@@ -6186,8 +6186,6 @@ version = "0.7.0"
 dependencies = [
  "android-activity",
  "anyrender_skia",
- "blitz-html",
- "blitz-paint",
  "cfg-if",
  "dioxus-asset-resolver",
  "dioxus-cli-config",
@@ -6210,7 +6208,9 @@ dependencies = [
  "ps-anyrender-vello-cpu",
  "ps-anyrender-vello-hybrid",
  "ps-blitz-dom",
+ "ps-blitz-html",
  "ps-blitz-net",
+ "ps-blitz-paint",
  "ps-blitz-shell",
  "ps-blitz-traits",
  "rustc-hash 2.1.3",
@@ -6514,8 +6514,6 @@ name = "rdme"
 version = "0.2.0"
 dependencies = [
  "anyrender_skia",
- "blitz-html",
- "blitz-paint",
  "comrak",
  "image",
  "notify",
@@ -6523,7 +6521,9 @@ dependencies = [
  "ps-anyrender-vello-cpu",
  "ps-anyrender-vello-hybrid",
  "ps-blitz-dom",
+ "ps-blitz-html",
  "ps-blitz-net",
+ "ps-blitz-paint",
  "ps-blitz-shell",
  "ps-blitz-traits",
  "pulldown-cmark",
@@ -8415,9 +8415,9 @@ name = "transparent"
 version = "0.1.0"
 dependencies = [
  "android-activity",
- "blitz-paint",
  "idna_adapter",
  "ps-blitz-dom",
+ "ps-blitz-paint",
  "ps-blitz-traits",
  "ps-dioxus-native",
 ]
@@ -8590,33 +8590,6 @@ dependencies = [
  "percent-encoding",
  "serde",
  "serde_derive",
-]
-
-[[package]]
-name = "usvg"
-version = "0.48.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "977d0a4abdef933f424a99fe09f95576e089b90aebc6f016a3bc813762493e91"
-dependencies = [
- "base64 0.23.1",
- "data-url",
- "fontdb",
- "harfrust 0.12.0",
- "imagesize",
- "kurbo",
- "log",
- "pico-args",
- "roxmltree 0.21.1",
- "simplecss",
- "siphasher",
- "skrifa 0.44.0",
- "strict-num",
- "svgtypes",
- "tiny-skia-path 0.12.0",
- "unicode-bidi",
- "unicode-script",
- "unicode-vo",
- "xmlwriter",
 ]
 
 [[package]]
@@ -8951,11 +8924,11 @@ dependencies = [
 name = "wasm_hello"
 version = "0.0.0"
 dependencies = [
- "blitz-html",
  "console_error_panic_hook",
  "parley",
  "ps-anyrender-vello-hybrid",
  "ps-blitz-dom",
+ "ps-blitz-html",
  "ps-blitz-shell",
  "tracing",
  "tracing-wasm",
@@ -9429,8 +9402,6 @@ dependencies = [
 name = "wgpu_texture"
 version = "0.0.0"
 dependencies = [
- "blitz-html",
- "blitz-paint",
  "bytemuck",
  "color",
  "peniko",
@@ -9439,6 +9410,8 @@ dependencies = [
  "ps-anyrender-vello",
  "ps-anyrender-vello-hybrid",
  "ps-blitz-dom",
+ "ps-blitz-html",
+ "ps-blitz-paint",
  "ps-blitz-shell",
  "ps-blitz-traits",
  "ps-dioxus-native",
@@ -10083,8 +10056,6 @@ version = "0.1.0"
 dependencies = [
  "atomic_float",
  "bitflags 2.13.0",
- "blitz-html",
- "blitz-paint",
  "data-url",
  "dify",
  "env_logger",
@@ -10102,6 +10073,8 @@ dependencies = [
  "ps-anyrender-vello",
  "ps-anyrender-vello-cpu",
  "ps-blitz-dom",
+ "ps-blitz-html",
+ "ps-blitz-paint",
  "ps-blitz-traits",
  "ps-taffy",
  "rayon",
@@ -10610,7 +10583,7 @@ version = "0.13.0"
 
 [[patch.unused]]
 name = "ps-anyrender-svg"
-version = "0.14.0"
+version = "0.15.0"
 
 [[patch.unused]]
 name = "ps-anyrender-vello"
