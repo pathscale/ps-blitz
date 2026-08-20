@@ -819,15 +819,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "blitz-dom-api"
-version = "0.3.0-beta.4"
-dependencies = [
- "markup5ever",
- "ps-blitz-dom",
- "ps-blitz-traits",
-]
-
-[[package]]
 name = "blitz-examples"
 version = "0.0.1"
 dependencies = [
@@ -855,13 +846,6 @@ dependencies = [
  "tokio",
  "tracing-subscriber",
  "url",
-]
-
-[[package]]
-name = "blitz-platform-api"
-version = "0.3.0-beta.4"
-dependencies = [
- "ps-blitz-traits",
 ]
 
 [[package]]
@@ -5884,6 +5868,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ps-blitz-dom-api"
+version = "0.3.0-beta.4"
+dependencies = [
+ "markup5ever",
+ "ps-blitz-dom",
+ "ps-blitz-traits",
+]
+
+[[package]]
 name = "ps-blitz-html"
 version = "0.3.0-beta.4"
 dependencies = [
@@ -5928,6 +5921,13 @@ dependencies = [
  "smallvec",
  "stylo",
  "tracing",
+]
+
+[[package]]
+name = "ps-blitz-platform-api"
+version = "0.3.0-beta.4"
+dependencies = [
+ "ps-blitz-traits",
 ]
 
 [[package]]
@@ -6001,11 +6001,11 @@ dependencies = [
 name = "ps-blitz-wasm"
 version = "0.3.0-beta.4"
 dependencies = [
- "blitz-dom-api",
- "blitz-platform-api",
  "dom-abi",
  "keyboard-types 0.7.0",
  "ps-blitz-dom",
+ "ps-blitz-dom-api",
+ "ps-blitz-platform-api",
  "ps-blitz-traits",
  "wasmi",
  "wat",

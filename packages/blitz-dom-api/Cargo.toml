@@ -1,10 +1,10 @@
 [package]
-name = "blitz-dom-api"
+# Reconciled: the package is prefixed like every other published crate here and
+# the `[lib]` keeps the brief's name, so `use blitz_dom_api::` is unchanged.
+# Held back until now because the two could not both be `blitz-dom-api`, which
+# also blocked `ps-blitz-wasm` from publishing above it.
+name = "ps-blitz-dom-api"
 description = "Runtime-agnostic DOM operations over blitz-dom"
-# Not published. The name is unprefixed because the brief for this crate names
-# it `blitz-dom-api`; every published package in this fork carries the `ps-`
-# prefix, so this one has to stay off crates.io until that is reconciled.
-publish = false
 version.workspace = true
 license.workspace = true
 homepage.workspace = true

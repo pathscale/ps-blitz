@@ -1,9 +1,9 @@
 [package]
-name = "blitz-platform-api"
+# Prefixed like every other published crate here; the `[lib]` below keeps the
+# brief's name, so `use blitz_platform_api::` is unchanged. Unprefixed it could
+# not be published, which blocked `ps-blitz-wasm` above it.
+name = "ps-blitz-platform-api"
 description = "Runtime-agnostic host platform APIs (fetch, storage) over blitz-traits providers"
-# Not published, for the same reason as blitz-dom-api and blitz-wasm: the name
-# is unprefixed while every published package in this fork carries `ps-`.
-publish = false
 version.workspace = true
 license.workspace = true
 homepage.workspace = true
