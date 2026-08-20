@@ -1,5 +1,8 @@
 [package]
-name = "stylo_taffy"
+# Published as `ps-*` because `stylo_taffy` on crates.io is DioxusLabs'. This
+# one is built against `ps-taffy`, so it is a different crate wearing the same
+# name. The `[lib]` name below stays `stylo_taffy`, so every path is unchanged.
+name = "ps-stylo-taffy"
 license = "MIT OR Apache-2.0 OR MPL-2.0"
 description = "Interop crate for the stylo and taffy crates"
 keywords = ["css", "layout"]
@@ -10,6 +13,8 @@ categories.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[lib]
+name = "stylo_taffy"
 
 [dependencies]
 taffy = { workspace = true }
