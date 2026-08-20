@@ -60,7 +60,7 @@ blitz-shell = { package = "ps-blitz-shell", version = "=0.3.0-beta.4", path = ".
 blitz-traits = { package = "ps-blitz-traits", version = "=0.3.0-beta.4", path = "./packages/blitz-traits", default-features = false }
 stylo_taffy = { package = "ps-stylo-taffy", version = "=0.3.0-beta.4", path = "./packages/stylo_taffy", default-features = false }
 dioxus-native = { package = "ps-dioxus-native", version = "0.7.0", path = "./packages/dioxus-native", default-features = false }
-dioxus-native-dom = { version = "0.7.0", path = "./packages/dioxus-native-dom", default-features = false }
+dioxus-native-dom = { package = "ps-dioxus-native-dom", version = "0.7.0", path = "./packages/dioxus-native-dom", default-features = false }
 debug_timer = { version = "0.1.2", path = "./packages/debug_timer" }
 accesskit_xplat = { version = "0.1", path = "./packages/accesskit_xplat", default-features = false }
 browser-persistence = { path = "./apps/browser/persistence" }

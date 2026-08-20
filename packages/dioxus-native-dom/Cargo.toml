@@ -1,13 +1,27 @@
 [package]
-name = "dioxus-native-dom"
+# Published as `ps-*` because `dioxus-native-dom` on crates.io is DioxusLabs',
+# and theirs depends on *their* `blitz-dom 0.2.4`. Left unprefixed, publishing
+# `ps-dioxus-native` resolved that one from the registry and failed with an
+# `image` version conflict that named neither repository:
+#
+#   failed to select a version for `image`
+#     ... required by package `blitz-dom v0.2.4`
+#     ... which satisfies dependency `blitz-dom = "^0.2.4"` of `dioxus-native-dom v0.7.0`
+#
+# which is two engines arguing over a transitive dependency. `[lib]` stays
+# `dioxus_native_dom`, so no path changes.
+name = "ps-dioxus-native-dom"
 version = "0.7.0"
 authors = ["Jonathan Kelley", "Nico Burns"]
 edition = "2024"
 description = "Core headless native renderer for Dioxus based on blitz"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/DioxusLabs/dioxus/"
+repository = "https://github.com/pathscale/ps-blitz"
 homepage = "https://dioxuslabs.com/learn/0.7/getting_started"
 keywords = ["dom", "ui", "gui", "react"]
+
+[lib]
+name = "dioxus_native_dom"
 
 [features]
 default = ["accessibility", "svg", "system-fonts"]
