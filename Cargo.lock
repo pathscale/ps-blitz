@@ -804,7 +804,7 @@ dependencies = [
 
 [[package]]
 name = "blitz"
-version = "0.3.0-beta.3"
+version = "0.3.0-beta.4"
 dependencies = [
  "blitz-html",
  "blitz-paint",
@@ -820,7 +820,7 @@ dependencies = [
 
 [[package]]
 name = "blitz-dom-api"
-version = "0.3.0-beta.3"
+version = "0.3.0-beta.4"
 dependencies = [
  "markup5ever",
  "ps-blitz-dom",
@@ -859,7 +859,7 @@ dependencies = [
 
 [[package]]
 name = "blitz-html"
-version = "0.3.0-beta.3"
+version = "0.3.0-beta.4"
 dependencies = [
  "html5ever",
  "ps-blitz-dom",
@@ -870,7 +870,7 @@ dependencies = [
 
 [[package]]
 name = "blitz-paint"
-version = "0.3.0-beta.3"
+version = "0.3.0-beta.4"
 dependencies = [
  "color",
  "euclid",
@@ -890,14 +890,14 @@ dependencies = [
 
 [[package]]
 name = "blitz-platform-api"
-version = "0.3.0-beta.3"
+version = "0.3.0-beta.4"
 dependencies = [
  "ps-blitz-traits",
 ]
 
 [[package]]
 name = "blitz-test-harness"
-version = "0.3.0-beta.3"
+version = "0.3.0-beta.4"
 dependencies = [
  "blitz-html",
  "dioxus-core",
@@ -910,7 +910,7 @@ dependencies = [
 
 [[package]]
 name = "blitz-tests"
-version = "0.3.0-beta.3"
+version = "0.3.0-beta.4"
 dependencies = [
  "accesskit",
  "blitz-html",
@@ -5862,7 +5862,7 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-debug-control"
-version = "0.3.0-beta.3"
+version = "0.3.0-beta.4"
 dependencies = [
  "getrandom 0.4.3",
  "serde",
@@ -5871,7 +5871,7 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-dom"
-version = "0.3.0-beta.3"
+version = "0.3.0-beta.4"
 dependencies = [
  "accesskit",
  "app_units",
@@ -5916,7 +5916,7 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-net"
-version = "0.3.0-beta.3"
+version = "0.3.0-beta.4"
 dependencies = [
  "data-url",
  "directories",
@@ -5932,7 +5932,7 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-script"
-version = "0.3.0-beta.3"
+version = "0.3.0-beta.4"
 dependencies = [
  "base64 0.22.1",
  "blitz-html",
@@ -5959,7 +5959,7 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-shell"
-version = "0.3.0-beta.3"
+version = "0.3.0-beta.4"
 dependencies = [
  "accesskit",
  "accesskit_xplat",
@@ -5984,7 +5984,7 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-traits"
-version = "0.3.0-beta.3"
+version = "0.3.0-beta.4"
 dependencies = [
  "atomic_refcell",
  "bitflags 2.13.0",
@@ -5999,7 +5999,7 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-wasm"
-version = "0.3.0-beta.3"
+version = "0.3.0-beta.4"
 dependencies = [
  "blitz-dom-api",
  "blitz-platform-api",
@@ -7686,7 +7686,7 @@ dependencies = [
 
 [[package]]
 name = "stylo_taffy"
-version = "0.3.0-beta.3"
+version = "0.3.0-beta.4"
 dependencies = [
  "ps-taffy",
  "stylo",

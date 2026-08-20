@@ -40,7 +40,7 @@ exclude = ["sites", "packages/blitz-wasm/guest"]
 resolver = "2"
 
 [workspace.package]
-version = "0.3.0-beta.3"
+version = "0.3.0-beta.4"
 license = "MIT OR Apache-2.0"
 homepage = "https://github.com/dioxuslabs/blitz"
 repository = "https://github.com/dioxuslabs/blitz"
@@ -50,15 +50,15 @@ rust-version = "1.89.0"
 
 [workspace.dependencies]
 # Blitz dependencies(in-repo)
-blitz = { version = "=0.3.0-beta.3", path = "./packages/blitz" }
-blitz-dom = { package = "ps-blitz-dom", version = "=0.3.0-beta.3", path = "./packages/blitz-dom", default-features = false }
-blitz-html = { version = "=0.3.0-beta.3", path = "./packages/blitz-html", default-features = false }
-blitz-script = { package = "ps-blitz-script", version = "=0.3.0-beta.3", path = "./packages/blitz-script", default-features = false }
-blitz-net = { package = "ps-blitz-net", version = "=0.3.0-beta.3", path = "./packages/blitz-net", default-features = false }
-blitz-paint = { version = "=0.3.0-beta.3", path = "./packages/blitz-paint", default-features = false }
-blitz-shell = { package = "ps-blitz-shell", version = "=0.3.0-beta.3", path = "./packages/blitz-shell", default-features = false }
-blitz-traits = { package = "ps-blitz-traits", version = "=0.3.0-beta.3", path = "./packages/blitz-traits", default-features = false }
-stylo_taffy = { version = "=0.3.0-beta.3", path = "./packages/stylo_taffy", default-features = false }
+blitz = { version = "=0.3.0-beta.4", path = "./packages/blitz" }
+blitz-dom = { package = "ps-blitz-dom", version = "=0.3.0-beta.4", path = "./packages/blitz-dom", default-features = false }
+blitz-html = { version = "=0.3.0-beta.4", path = "./packages/blitz-html", default-features = false }
+blitz-script = { package = "ps-blitz-script", version = "=0.3.0-beta.4", path = "./packages/blitz-script", default-features = false }
+blitz-net = { package = "ps-blitz-net", version = "=0.3.0-beta.4", path = "./packages/blitz-net", default-features = false }
+blitz-paint = { version = "=0.3.0-beta.4", path = "./packages/blitz-paint", default-features = false }
+blitz-shell = { package = "ps-blitz-shell", version = "=0.3.0-beta.4", path = "./packages/blitz-shell", default-features = false }
+blitz-traits = { package = "ps-blitz-traits", version = "=0.3.0-beta.4", path = "./packages/blitz-traits", default-features = false }
+stylo_taffy = { version = "=0.3.0-beta.4", path = "./packages/stylo_taffy", default-features = false }
 dioxus-native = { package = "ps-dioxus-native", version = "0.7.0", path = "./packages/dioxus-native", default-features = false }
 dioxus-native-dom = { version = "0.7.0", path = "./packages/dioxus-native-dom", default-features = false }
 debug_timer = { version = "0.1.2", path = "./packages/debug_timer" }
@@ -84,7 +84,7 @@ boa_engine = { package = "ps-boa-engine", version = "1.0.0-dev" }
 boa_runtime = { package = "ps-boa-runtime", version = "1.0.0-dev" }
 boa_gc = { package = "ps-boa-gc", version = "1.0.0-dev" }
 base64 = "0.22"
-blitz-debug-control = { package = "ps-blitz-debug-control", version = "=0.3.0-beta.3", path = "./packages/blitz-debug-control" }
+blitz-debug-control = { package = "ps-blitz-debug-control", version = "=0.3.0-beta.4", path = "./packages/blitz-debug-control" }
 getrandom = "0.4"
 serde_json = "1"
 cssparser = { version = "0.37.0" }
