@@ -1,5 +1,7 @@
 [package]
-name = "debug_timer"
+# Prefixed like the rest of the fork: `debug_timer` on crates.io is DioxusLabs'.
+# `[lib]` stays `debug_timer`, so `use debug_timer::` is unchanged.
+name = "ps-debug-timer"
 description = "Utilities for simple timings"
 version = "0.1.3"
 homepage = "https://github.com/dioxuslabs/blitz"

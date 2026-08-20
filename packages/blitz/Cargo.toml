@@ -1,5 +1,7 @@
 [package]
-name = "blitz"
+# Prefixed like the rest of the fork: `blitz` on crates.io is DioxusLabs'.
+# `[lib]` stays `blitz`, so `use blitz::` is unchanged.
+name = "ps-blitz"
 description = "High-level APIs for rendering HTML with Blitz"
 documentation = "https://docs.rs/blitz"
 version.workspace = true
