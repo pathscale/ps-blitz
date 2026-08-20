@@ -5890,9 +5890,9 @@ dependencies = [
  "peniko",
  "pollster",
  "ps-anyrender",
+ "ps-vello",
  "ps-wgpu-context",
  "rustc-hash 2.1.3",
- "vello",
  "wasm-bindgen-futures",
  "wgpu",
 ]
@@ -6230,6 +6230,46 @@ dependencies = [
  "serde",
  "slotmap",
  "smallvec",
+]
+
+[[package]]
+name = "ps-vello"
+version = "0.10.0"
+dependencies = [
+ "bytemuck",
+ "futures-intrusive",
+ "log",
+ "peniko",
+ "png 0.18.1",
+ "ps-vello-encoding",
+ "ps-vello-shaders",
+ "skrifa 0.44.0",
+ "static_assertions",
+ "thiserror 2.0.18",
+ "wgpu",
+]
+
+[[package]]
+name = "ps-vello-encoding"
+version = "0.10.0"
+dependencies = [
+ "bytemuck",
+ "guillotiere",
+ "log",
+ "peniko",
+ "skrifa 0.44.0",
+ "smallvec",
+]
+
+[[package]]
+name = "ps-vello-shaders"
+version = "0.10.0"
+dependencies = [
+ "bytemuck",
+ "log",
+ "naga",
+ "ps-vello-encoding",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -8657,25 +8697,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
-name = "vello"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "261359dbef879f8110ef7e1c442246c838d33d3d91cb05e0ea9288d432760c9f"
-dependencies = [
- "bytemuck",
- "futures-intrusive",
- "log",
- "peniko",
- "png 0.18.1",
- "skrifa 0.42.1",
- "static_assertions",
- "thiserror 2.0.18",
- "vello_encoding",
- "vello_shaders",
- "wgpu",
-]
-
-[[package]]
 name = "vello_common"
 version = "0.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8709,19 +8730,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "vello_encoding"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2346f5f0d7dccb3582fcd397b4a57b43165209f1424e0d76e85dd814db164af7"
-dependencies = [
- "bytemuck",
- "guillotiere",
- "peniko",
- "skrifa 0.42.1",
- "smallvec",
-]
-
-[[package]]
 name = "vello_hybrid"
 version = "0.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8737,19 +8745,6 @@ dependencies = [
  "vello_sparse_shaders",
  "web-sys",
  "wgpu",
-]
-
-[[package]]
-name = "vello_shaders"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9dd38937516fa4b47423d9255bb5e4a65e839ec9d57c38c4af6189ce56bf46b7"
-dependencies = [
- "bytemuck",
- "log",
- "naga",
- "thiserror 2.0.18",
- "vello_encoding",
 ]
 
 [[package]]
