@@ -807,10 +807,10 @@ name = "blitz"
 version = "0.3.0-beta.3"
 dependencies = [
  "blitz-html",
- "blitz-net",
  "blitz-paint",
  "ps-anyrender-vello",
  "ps-blitz-dom",
+ "ps-blitz-net",
  "ps-blitz-shell",
  "ps-blitz-traits",
  "tokio",
@@ -833,11 +833,9 @@ version = "0.0.1"
 dependencies = [
  "blitz",
  "blitz-html",
- "blitz-net",
  "blitz-paint",
  "color",
  "dioxus",
- "dioxus-native",
  "env_logger",
  "euclid",
  "image",
@@ -848,9 +846,11 @@ dependencies = [
  "ps-anyrender-vello-cpu",
  "ps-anyrender-vello-hybrid",
  "ps-blitz-dom",
+ "ps-blitz-net",
  "ps-blitz-script",
  "ps-blitz-shell",
  "ps-blitz-traits",
+ "ps-dioxus-native",
  "reqwest",
  "tokio",
  "tracing-subscriber",
@@ -866,22 +866,6 @@ dependencies = [
  "ps-blitz-traits",
  "tracing",
  "xml5ever",
-]
-
-[[package]]
-name = "blitz-net"
-version = "0.3.0-beta.3"
-dependencies = [
- "data-url",
- "directories",
- "http-cache",
- "http-cache-reqwest",
- "ps-blitz-traits",
- "reqwest",
- "reqwest-middleware",
- "tokio",
- "tracing",
- "wasm-bindgen-futures",
 ]
 
 [[package]]
@@ -945,20 +929,6 @@ dependencies = [
  "ps-blitz-traits",
  "ps-taffy",
  "usvg",
-]
-
-[[package]]
-name = "blitz-wasm"
-version = "0.3.0-beta.3"
-dependencies = [
- "blitz-dom-api",
- "blitz-platform-api",
- "dom-abi",
- "keyboard-types 0.7.0",
- "ps-blitz-dom",
- "ps-blitz-traits",
- "wasmi",
- "wat",
 ]
 
 [[package]]
@@ -1045,10 +1015,8 @@ dependencies = [
  "android-activity",
  "anyrender_serialize",
  "blitz-html",
- "blitz-net",
  "blitz-paint",
  "browser-persistence",
- "dioxus-native",
  "image",
  "linebender_resource_handle",
  "mimalloc",
@@ -1058,8 +1026,10 @@ dependencies = [
  "ps-anyrender",
  "ps-anyrender-vello-cpu",
  "ps-blitz-dom",
+ "ps-blitz-net",
  "ps-blitz-script",
  "ps-blitz-traits",
+ "ps-dioxus-native",
  "rfd",
  "tokio",
  "tracing",
@@ -1683,9 +1653,9 @@ version = "0.1.0"
 dependencies = [
  "android-activity",
  "blitz-paint",
- "dioxus-native",
  "idna_adapter",
  "ps-blitz-dom",
+ "ps-dioxus-native",
 ]
 
 [[package]]
@@ -2300,48 +2270,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tracing-wasm",
-]
-
-[[package]]
-name = "dioxus-native"
-version = "0.7.0"
-dependencies = [
- "android-activity",
- "anyrender_skia",
- "blitz-html",
- "blitz-net",
- "blitz-paint",
- "cfg-if",
- "dioxus-asset-resolver",
- "dioxus-cli-config",
- "dioxus-core",
- "dioxus-core-macro",
- "dioxus-devtools",
- "dioxus-document",
- "dioxus-history",
- "dioxus-hooks",
- "dioxus-html",
- "dioxus-native-dom",
- "dioxus-signals",
- "dioxus-stores",
- "futures-util",
- "keyboard-types 0.7.0",
- "manganis",
- "peniko",
- "ps-anyrender",
- "ps-anyrender-vello",
- "ps-anyrender-vello-cpu",
- "ps-anyrender-vello-hybrid",
- "ps-blitz-dom",
- "ps-blitz-shell",
- "ps-blitz-traits",
- "rustc-hash 2.1.3",
- "slotmap",
- "tokio",
- "tracing",
- "webbrowser",
- "wgpu_context",
- "winit",
 ]
 
 [[package]]
@@ -5987,6 +5915,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ps-blitz-net"
+version = "0.3.0-beta.3"
+dependencies = [
+ "data-url",
+ "directories",
+ "http-cache",
+ "http-cache-reqwest",
+ "ps-blitz-traits",
+ "reqwest",
+ "reqwest-middleware",
+ "tokio",
+ "tracing",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
 name = "ps-blitz-script"
 version = "0.3.0-beta.3"
 dependencies = [
@@ -6051,6 +5995,20 @@ dependencies = [
  "serde",
  "smol_str",
  "url",
+]
+
+[[package]]
+name = "ps-blitz-wasm"
+version = "0.3.0-beta.3"
+dependencies = [
+ "blitz-dom-api",
+ "blitz-platform-api",
+ "dom-abi",
+ "keyboard-types 0.7.0",
+ "ps-blitz-dom",
+ "ps-blitz-traits",
+ "wasmi",
+ "wat",
 ]
 
 [[package]]
@@ -6220,6 +6178,48 @@ dependencies = [
  "rustc-hash 2.1.3",
  "ryu-js",
  "static_assertions",
+]
+
+[[package]]
+name = "ps-dioxus-native"
+version = "0.7.0"
+dependencies = [
+ "android-activity",
+ "anyrender_skia",
+ "blitz-html",
+ "blitz-paint",
+ "cfg-if",
+ "dioxus-asset-resolver",
+ "dioxus-cli-config",
+ "dioxus-core",
+ "dioxus-core-macro",
+ "dioxus-devtools",
+ "dioxus-document",
+ "dioxus-history",
+ "dioxus-hooks",
+ "dioxus-html",
+ "dioxus-native-dom",
+ "dioxus-signals",
+ "dioxus-stores",
+ "futures-util",
+ "keyboard-types 0.7.0",
+ "manganis",
+ "peniko",
+ "ps-anyrender",
+ "ps-anyrender-vello",
+ "ps-anyrender-vello-cpu",
+ "ps-anyrender-vello-hybrid",
+ "ps-blitz-dom",
+ "ps-blitz-net",
+ "ps-blitz-shell",
+ "ps-blitz-traits",
+ "rustc-hash 2.1.3",
+ "slotmap",
+ "tokio",
+ "tracing",
+ "webbrowser",
+ "wgpu_context",
+ "winit",
 ]
 
 [[package]]
@@ -6477,7 +6477,6 @@ version = "0.2.0"
 dependencies = [
  "anyrender_skia",
  "blitz-html",
- "blitz-net",
  "blitz-paint",
  "comrak",
  "image",
@@ -6486,6 +6485,7 @@ dependencies = [
  "ps-anyrender-vello-cpu",
  "ps-anyrender-vello-hybrid",
  "ps-blitz-dom",
+ "ps-blitz-net",
  "ps-blitz-shell",
  "ps-blitz-traits",
  "pulldown-cmark",
@@ -7114,10 +7114,10 @@ name = "seven_guis"
 version = "0.1.0"
 dependencies = [
  "console_error_panic_hook",
- "dioxus-native",
  "futures-timer",
  "idna_adapter",
  "ps-anyrender-vello-hybrid",
+ "ps-dioxus-native",
  "wasm-bindgen",
 ]
 
@@ -8106,9 +8106,9 @@ version = "0.1.0"
 dependencies = [
  "android-activity",
  "console_error_panic_hook",
- "dioxus-native",
  "idna_adapter",
  "ps-anyrender-vello-hybrid",
+ "ps-dioxus-native",
  "tracing-subscriber",
  "wasm-bindgen",
 ]
@@ -8387,10 +8387,10 @@ version = "0.1.0"
 dependencies = [
  "android-activity",
  "blitz-paint",
- "dioxus-native",
  "idna_adapter",
  "ps-blitz-dom",
  "ps-blitz-traits",
+ "ps-dioxus-native",
 ]
 
 [[package]]
@@ -9404,7 +9404,6 @@ dependencies = [
  "blitz-paint",
  "bytemuck",
  "color",
- "dioxus-native",
  "peniko",
  "pollster",
  "ps-anyrender",
@@ -9413,6 +9412,7 @@ dependencies = [
  "ps-blitz-dom",
  "ps-blitz-shell",
  "ps-blitz-traits",
+ "ps-dioxus-native",
  "wgpu",
  "wgpu_context",
 ]
