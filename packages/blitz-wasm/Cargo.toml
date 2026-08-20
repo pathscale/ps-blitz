@@ -1,9 +1,10 @@
 [package]
-name = "blitz-wasm"
+# Prefixed, so it can be published: the note that used to sit here said this
+# was unpublishable because the name was unprefixed while every published
+# package in this fork carries `ps-`. That is a rename, not a reason to hold a
+# crate back, and consumers need it by version like the rest of the engine.
+name = "ps-blitz-wasm"
 description = "A wasmi host binding over blitz-dom-api, so a WebAssembly guest can drive the DOM"
-# Not published, for the same reason as blitz-dom-api: the name is unprefixed
-# while every published package in this fork carries `ps-`.
-publish = false
 version.workspace = true
 license.workspace = true
 homepage.workspace = true

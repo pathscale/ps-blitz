@@ -1,7 +1,12 @@
 [package]
-name = "blitz-net"
+# Published as `ps-*` because `blitz-net` on crates.io is DioxusLabs', and this
+# is a fork. Keeping the upstream name meant this crate could not be published
+# at all, and worse, that a dependent asking for `blitz-net` by version would
+# silently get upstream's. The `[lib]` name below stays `blitz_net`, so every
+# path in this workspace is unchanged.
+name = "ps-blitz-net"
 description = "Blitz networking"
-documentation = "https://docs.rs/blitz-net"
+documentation = "https://docs.rs/ps-blitz-net"
 version.workspace = true
 license.workspace = true
 homepage.workspace = true
@@ -9,6 +14,9 @@ repository.workspace = true
 categories.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+
+[lib]
+name = "blitz_net"
 
 [features]
 http2 = ["reqwest/http2"]
