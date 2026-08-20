@@ -882,10 +882,10 @@ dependencies = [
  "ps-blitz-dom",
  "ps-blitz-traits",
  "ps-taffy",
+ "ps-usvg",
  "smallvec",
  "stylo",
  "tracing",
- "usvg",
 ]
 
 [[package]]
@@ -928,7 +928,7 @@ dependencies = [
  "ps-blitz-dom",
  "ps-blitz-traits",
  "ps-taffy",
- "usvg",
+ "ps-usvg",
 ]
 
 [[package]]
@@ -1030,11 +1030,11 @@ dependencies = [
  "ps-blitz-script",
  "ps-blitz-traits",
  "ps-dioxus-native",
+ "ps-usvg",
  "rfd",
  "tokio",
  "tracing",
  "tracing-subscriber",
- "usvg",
  "webbrowser",
  "winit",
 ]
@@ -5895,6 +5895,7 @@ dependencies = [
  "ps-blitz-traits",
  "ps-stylo-taffy",
  "ps-taffy",
+ "ps-usvg",
  "rayon",
  "rustc-hash 2.1.3",
  "selectors",
@@ -5909,7 +5910,6 @@ dependencies = [
  "thread_local",
  "tracing",
  "url",
- "usvg",
  "web-time",
  "wuff",
 ]
@@ -6241,6 +6241,34 @@ dependencies = [
  "serde",
  "slotmap",
  "smallvec",
+]
+
+[[package]]
+name = "ps-usvg"
+version = "0.48.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5aa6416d61344c2d54bf38e4bb4374c3e1c3835e9e3c7bc900a96eb788ce8c56"
+dependencies = [
+ "base64 0.23.1",
+ "data-url",
+ "flate2",
+ "fontdb",
+ "harfrust 0.12.0",
+ "imagesize",
+ "kurbo",
+ "log",
+ "pico-args",
+ "roxmltree 0.21.1",
+ "simplecss",
+ "siphasher",
+ "skrifa 0.44.0",
+ "strict-num",
+ "svgtypes",
+ "tiny-skia-path 0.12.0",
+ "unicode-bidi",
+ "unicode-script",
+ "unicode-vo",
+ "xmlwriter",
 ]
 
 [[package]]
@@ -8567,11 +8595,11 @@ dependencies = [
 [[package]]
 name = "usvg"
 version = "0.48.1"
-source = "git+https://github.com/DioxusLabs/resvg?branch=devin%2F1785858271-intrinsic-dimensions#3289a9b0c3d3352692bf5acdf5f6e6949cdb57b5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "977d0a4abdef933f424a99fe09f95576e089b90aebc6f016a3bc813762493e91"
 dependencies = [
  "base64 0.23.1",
  "data-url",
- "flate2",
  "fontdb",
  "harfrust 0.12.0",
  "imagesize",

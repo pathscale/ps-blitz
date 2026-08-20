@@ -164,7 +164,14 @@ linebender_resource_handle = "0.1"
 peniko = "0.6.0"
 kurbo = "0.13.1"
 wgpu = "29"
-usvg = "0.48.1"
+# `ps-usvg`, not `usvg`: this graph needs `pub use svgtypes` and
+# `Tree::intrinsic_dimensions`, neither of which is on a published linebender
+# usvg. That used to be a `[patch.crates-io]` pointing at a resvg branch, which
+# builds but cannot publish - cargo ignores `[patch]` when packaging, so
+# `ps-blitz-dom` verified against the registry's usvg and failed with
+# `unresolved import usvg::svgtypes`, blocking the whole engine from crates.io.
+# The fork is published under its own name now, so this is an ordinary version.
+usvg = { package = "ps-usvg", version = "0.48.1" }
 
 # Windowing & Input
 raw-window-handle = "0.6.0"
@@ -309,13 +316,6 @@ peniko = { workspace = true }
 color = { workspace = true }
 env_logger = "0.11"
 tracing-subscriber = "0.3"
-
-# TODO: remove this patch once `usvg` releases `Tree::intrinsic_dimensions`.
-# It exists on no published usvg, only on the resvg branch below. The patched
-# version is 0.48.1, which is why every crate in this graph has to ask for
-# ^0.48: a dependent still on ^0.46 silently gets a second usvg instead.
-[patch.crates-io]
-usvg = { git = "https://github.com/DioxusLabs/resvg", branch = "devin/1785858271-intrinsic-dimensions" }
 
 # [patch.crates-io]
 # anyrender = { path = "../anyrender/crates/anyrender" }
