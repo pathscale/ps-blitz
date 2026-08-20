@@ -59,8 +59,8 @@ blitz-paint = { package = "ps-blitz-paint", version = "^0.3.0-beta.6", path = ".
 blitz-shell = { package = "ps-blitz-shell", version = "^0.3.0-beta.6", path = "./packages/blitz-shell", default-features = false }
 blitz-traits = { package = "ps-blitz-traits", version = "^0.3.0-beta.6", path = "./packages/blitz-traits", default-features = false }
 stylo_taffy = { package = "ps-stylo-taffy", version = "^0.3.0-beta.6", path = "./packages/stylo_taffy", default-features = false }
-dioxus-native = { package = "ps-dioxus-native", version = "0.7.1", path = "./packages/dioxus-native", default-features = false }
-dioxus-native-dom = { package = "ps-dioxus-native-dom", version = "0.7.1", path = "./packages/dioxus-native-dom", default-features = false }
+dioxus-native = { package = "ps-dioxus-native", version = "^0.7.2", path = "./packages/dioxus-native", default-features = false }
+dioxus-native-dom = { package = "ps-dioxus-native-dom", version = "^0.7.2", path = "./packages/dioxus-native-dom", default-features = false }
 # 0.1.3, because `packages/debug_timer` is 0.1.3 and this asked for 0.1.2.
 #
 # A path dependency ignores the mismatch, so nothing here noticed. A *published*
