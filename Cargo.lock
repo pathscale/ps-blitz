@@ -6163,7 +6163,7 @@ dependencies = [
 
 [[package]]
 name = "ps-debug-timer"
-version = "0.1.3"
+version = "0.1.4"
 
 [[package]]
 name = "ps-dioxus-native"
