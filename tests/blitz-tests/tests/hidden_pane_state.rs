@@ -75,11 +75,20 @@ fn switch_to(doc: &mut HtmlDocument, shown: usize, hidden: usize) {
 }
 
 /// How many elements deep inside the first pane still have computed styles.
+///
+/// Counted over every element in the pane, not `span` alone. The selector used
+/// to be `#col0 span` with a floor of 20, and the fixture holds 14 of them, so
+/// the guard tripped on its own precondition and the test could not run at all.
+/// It also measured the wrong thing: what the `clear_data` override has to keep
+/// is the *pane's* computed styles, and the fixture's substance is in its 21
+/// paragraphs, 16 divs and 15 list items as much as its spans. `*` counts what
+/// the assertion is actually about and does not need revisiting when the
+/// fixture is regenerated from a real transcript.
 fn styled_nodes(doc: &HtmlDocument) -> usize {
-    let ids = doc.query_selector_all("#col0 span").unwrap();
+    let ids = doc.query_selector_all("#col0 *").unwrap();
     assert!(
         ids.len() > 20,
-        "fixture: the pane holds many spans, found {}",
+        "fixture: the pane holds many elements, found {}",
         ids.len()
     );
     ids.iter()
