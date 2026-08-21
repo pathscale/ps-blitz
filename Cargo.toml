@@ -76,7 +76,14 @@ dioxus-native-dom = { package = "ps-dioxus-native-dom", version = "^0.7.2", path
 #
 # A caret keeps this in step with the crate it points at, the way the rest of
 # this table now does.
-debug_timer = { package = "ps-debug-timer", version = "^0.1.3", path = "./packages/debug_timer" }
+#
+# 0.1.4 is a floor, not just a bump. The 0.1.3 tarball on crates.io predates
+# `init_if`, `is_logging` and the `write_line as log_line` re-export: the code
+# gained them without a version change, so the registry kept serving the older
+# one under a number that already existed. `^0.1.3` therefore *permitted* the
+# broken tarball, and a consumer that resolved it hit the same two errors above
+# for a third time. Asking for 0.1.4 makes the version say which API is meant.
+debug_timer = { package = "ps-debug-timer", version = "^0.1.4", path = "./packages/debug_timer" }
 accesskit_xplat = { package = "ps-accesskit-xplat", version = "0.1.1", path = "./packages/accesskit_xplat", default-features = false }
 browser-persistence = { path = "./apps/browser/persistence" }
 blitz-test-harness = { path = "./packages/blitz-test-harness" }
