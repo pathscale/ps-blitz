@@ -1,10 +1,20 @@
 name: WPT
 
 on:
-  pull_request:
+  # Manual, and on `master` only.
+  #
+  # The full web-platform-test suite is the most expensive job here and its
+  # result is a score to compare over time, not a pass/fail on a change: running
+  # it per pull request spent most of the fork's CI minutes to tell nobody
+  # anything. `workflow_dispatch` is how you ask for a score, and a merge to
+  # `master` still records one.
+  #
+  # `push` said `main`, which this fork does not have, so this half never ran
+  # here at all.
   push:
     branches:
-      - main
+      - master
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

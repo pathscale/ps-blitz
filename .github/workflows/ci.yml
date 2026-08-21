@@ -4,7 +4,13 @@ on:
   pull_request:
   push:
     branches:
-      - main
+      # `master`, this fork's default branch, not upstream's `main`.
+      #
+      # This was inherited from DioxusLabs/blitz and never changed, so push CI
+      # fired for a branch this repository does not have: every merge to
+      # `master` ran nothing, and the only green push runs in the history belong
+      # to upstream's `main`. Pull requests still ran, which is what hid it.
+      - master
       - v0.*
   workflow_dispatch:
 
