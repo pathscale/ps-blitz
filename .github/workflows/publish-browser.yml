@@ -1,9 +1,12 @@
 name: Publish Browser
 on:
-  push:
-    branches:
-      - main
-      - ci-test/*
+  # Manual only. Publishing is a decision, not a side effect of merging.
+  #
+  # This ran on every push to `main`, so a browser build was shipped for each
+  # merge whether or not anyone wanted a release. It also named a branch this
+  # fork does not have, so what it actually did here was nothing, which is the
+  # only reason that was harmless. `ci-test/*` was a way to rehearse it without
+  # touching the default branch and `workflow_dispatch` covers that directly.
   workflow_dispatch:
     # inputs:
     #   post:
