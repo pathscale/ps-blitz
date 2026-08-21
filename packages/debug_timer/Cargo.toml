@@ -3,10 +3,25 @@
 # `[lib]` stays `debug_timer`, so `use debug_timer::` is unchanged.
 name = "ps-debug-timer"
 description = "Utilities for simple timings"
-version = "0.1.3"
-homepage = "https://github.com/dioxuslabs/blitz"
-repository = "https://github.com/dioxuslabs/blitz"
-documentation = "https://docs.rs/debug_timer"
+# 0.1.4, because 0.1.3 on crates.io is not this code.
+#
+# `init_if`, `is_logging` and the `write_line as log_line` re-export were added
+# without a version change, so the registry kept serving the older 0.1.3 tarball
+# that has none of them. `ps-blitz-dom` takes `^0.1.3` and calls all three, so
+# every consumer resolving from the registry failed to compile the moment it
+# enabled `log-phase-times`:
+#
+#     error[E0425]: cannot find function `log_line` in crate `debug_timer`
+#     error[E0599]: no associated function named `init_if` found for `RealDebugTimer`
+#
+# AgencyZero carried the feature disabled for a day because of it.
+version = "0.1.4"
+# The fork's own URLs. These pointed at dioxuslabs/blitz, so the crates.io page
+# for a pathscale crate sent readers to upstream, which does not carry these
+# changes and cannot answer a question about them.
+homepage = "https://github.com/pathscale/ps-blitz"
+repository = "https://github.com/pathscale/ps-blitz"
+documentation = "https://docs.rs/ps-debug-timer"
 license.workspace = true
 edition = "2021"
 
