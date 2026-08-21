@@ -36,7 +36,14 @@ fn dependency_tree(edges: &str) -> String {
             "--manifest-path",
             manifest,
             "--package",
-            "blitz-dom-api",
+            // `ps-blitz-dom-api`, the name the fork publishes under. `cargo
+            // tree -p` resolves against the workspace, so the unprefixed name
+            // failed the whole test with "package ID specification
+            // `blitz-dom-api` did not match any packages" before it could look
+            // at a single edge. The assertion below already spelled
+            // `ps-blitz-dom`, so the rename was applied to one half of this
+            // file and not the other.
+            "ps-blitz-dom-api",
             "--edges",
             edges,
             "--prefix",
