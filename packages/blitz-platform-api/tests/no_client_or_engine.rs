@@ -98,7 +98,12 @@ fn dependency_tree(edges: &str) -> String {
             "--manifest-path",
             manifest,
             "--package",
-            "blitz-platform-api",
+            // `ps-blitz-platform-api`, the name the fork publishes under. Same
+            // miss as `no_boa.rs`: `cargo tree -p` resolves against the
+            // workspace, so the unprefixed name failed both tests outright with
+            // "package ID specification `blitz-platform-api` did not match any
+            // packages" before either could inspect an edge.
+            "ps-blitz-platform-api",
             "--edges",
             edges,
             "--prefix",
