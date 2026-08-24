@@ -1626,8 +1626,8 @@ impl Node {
         // Recurse up the layout hierarchy
         self.layout_parent
             .get()
-            .map(|i| {
-                let parent = self.with(i);
+            .and_then(|id| self.tree().get(id))
+            .map(|parent| {
                 parent.absolute_position(
                     x - parent.scroll_offset().x as f32,
                     y - parent.scroll_offset().y as f32,
@@ -1753,6 +1753,38 @@ mod test {
     use style_dom::ElementState;
 
     use crate::{Attribute, BaseDocument, DocumentConfig, ElementData, NodeData, qual_name};
+
+    #[test]
+    fn absolute_position_tolerates_a_detached_layout_parent() {
+        let mut document = BaseDocument::new(DocumentConfig::default());
+        let parent = document.create_node(NodeData::Element(Box::new(ElementData::new(
+            qual_name!("section"),
+            vec![],
+        ))));
+        let child = document.create_node(NodeData::Element(Box::new(ElementData::new(
+            qual_name!("button"),
+            vec![],
+        ))));
+        document
+            .get_node(child)
+            .unwrap()
+            .layout_parent
+            .set(Some(parent));
+
+        // An event handler may detach its own ancestor before the renderer's
+        // default-action tail finishes computing event-relative coordinates.
+        // The child object can still be alive through that dispatch even though
+        // its recorded layout parent has already left the slot map.
+        document.remove_node_from_tree(parent);
+
+        assert_eq!(
+            document
+                .get_node(child)
+                .unwrap()
+                .absolute_position(4.0, 7.0),
+            crate::util::Point { x: 4.0, y: 7.0 },
+        );
+    }
 
     #[test]
     fn create_node_with_disabled_attr() {
