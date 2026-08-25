@@ -104,10 +104,11 @@ jobs:
           published=''
           skipped=''
           for crate in $crates; do
-            existing="$(curl -sS -H 'User-Agent: pathscale-ci' \
-              "https://crates.io/api/v1/crates/$crate/versions" \
-              | jq -r --arg v "$VERSION" '.versions[]? | select(.num == $v) | .num')"
-            if [ -n "$existing" ]; then
+            # `cargo info`, not the crates.io JSON API through curl and jq.
+            # It answers the same question with an exit code, using the
+            # toolchain the job already has, so there is no JSON to parse and
+            # no dependency on jq being present on the runner.
+            if cargo info "$crate@$VERSION" --registry crates-io >/dev/null 2>&1; then
               echo "$crate $VERSION is already published, skipping"
               skipped="$skipped $crate"
               continue
@@ -130,21 +131,17 @@ jobs:
                 fi
                 exit 1
               fi
-              # crates.io serves a new version a moment after the upload
-              # returns. Without this the next crate in the list resolves the
-              # previous one and gets a 404, which reads as a dependency
-              # failure rather than a race.
-              for _ in $(seq 1 60); do
-                found="$(curl -sS -H 'User-Agent: pathscale-ci' \
-                  "https://crates.io/api/v1/crates/$crate/versions" \
-                  | jq -r --arg v "$VERSION" '.versions[]? | select(.num == $v) | .num')"
-                [ -n "$found" ] && break
-                sleep 5
-              done
-              if [ -z "${found:-}" ]; then
-                echo "$crate $VERSION did not appear on the registry in five minutes" >&2
-                exit 1
-              fi
+              # No hand-rolled wait for the registry to catch up: cargo does
+              # it. The beta.11 log shows it plainly, once per crate --
+              #
+              #   note: waiting for ps-blitz-script v0.3.0-beta.11 to be
+              #         available at registry `crates-io`
+              #   Published ps-blitz-script v0.3.0-beta.11
+              #
+              # -- so `cargo publish` only returns once the version is
+              # servable, which is the condition the next crate in the list
+              # needs. Polling the JSON API afterwards re-answered a question
+              # cargo had already answered.
             fi
             echo '::endgroup::'
             published="$published $crate"
