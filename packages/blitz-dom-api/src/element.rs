@@ -22,7 +22,7 @@ pub(crate) fn read_attr(doc: &BaseDocument, node_id: NodeId, name: &str) -> Opti
         .attrs()
         .iter()
         .find(|attr| &*attr.name.local == name)
-        .map(|attr| attr.value.clone())
+        .map(|attr| attr.value.to_string())
 }
 
 /// `local == name.to_ascii_lowercase()`, without allocating the lowercased

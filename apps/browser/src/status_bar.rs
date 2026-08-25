@@ -29,7 +29,7 @@ where
                     .attrs()
                     .iter()
                     .find(|a| a.name.local.as_ref() == "href")
-                    .map(|a| a.value.clone());
+                    .map(|a| a.value.to_string());
             }
         }
         cur_id = node.layout_parent.get()?;

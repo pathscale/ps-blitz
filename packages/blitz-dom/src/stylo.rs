@@ -969,12 +969,13 @@ impl<'a> TElement for BlitzNode<'a> {
         // case-insensitively, as attribute keywords always are.
         let is_image_input = *tag == local_name!("input")
             && elem.attrs().iter().any(|attr| {
-                attr.name.local == local_name!("type") && attr.value.eq_ignore_ascii_case("image")
+                attr.name.local == local_name!("type")
+                    && attr.value.as_ref().eq_ignore_ascii_case("image")
             });
 
         for attr in elem.attrs() {
             let name = &attr.name.local;
-            let value = attr.value.as_str();
+            let value: &str = attr.value.as_ref();
 
             if *name == local_name!("align") {
                 use style::values::specified::TextAlign;
