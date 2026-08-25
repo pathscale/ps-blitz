@@ -84,7 +84,7 @@ dioxus-native-dom = { package = "ps-dioxus-native-dom", version = "^0.7.2", path
 # broken tarball, and a consumer that resolved it hit the same two errors above
 # for a third time. Asking for 0.1.4 makes the version say which API is meant.
 debug_timer = { package = "ps-debug-timer", version = "^0.1.4", path = "./packages/debug_timer" }
-accesskit_xplat = { package = "ps-accesskit-xplat", version = "0.1.1", path = "./packages/accesskit_xplat", default-features = false }
+accesskit_xplat = { package = "ps-accesskit-xplat", version = "^0.1.1", path = "./packages/accesskit_xplat", default-features = false }
 browser-persistence = { path = "./apps/browser/persistence" }
 blitz-test-harness = { path = "./packages/blitz-test-harness" }
 blitz-dom-api = { package = "ps-blitz-dom-api", version = "^0.3.0-beta.10", path = "./packages/blitz-dom-api" }
@@ -92,60 +92,60 @@ blitz-dom-api = { package = "ps-blitz-dom-api", version = "^0.3.0-beta.10", path
 # which tracks the workspace version. The `version` is what makes a
 # consumer outside this repo resolvable, and it is what caught the copy
 # that had drifted to `publish = false` and a workspace version.
-dom-abi = { version = "0.1.1", path = "./packages/dom-abi" }
+dom-abi = { version = "^0.1.1", path = "./packages/dom-abi" }
 blitz-platform-api = { package = "ps-blitz-platform-api", version = "^0.3.0-beta.10", path = "./packages/blitz-platform-api" }
 
 # Servo dependencies
-style = { version = "0.20.0", package = "stylo" }
-style_traits = { version = "0.20.0", package = "stylo_traits" }
-style_atoms = { version = "0.20.0", package = "stylo_atoms" }
-style_config = { version = "0.20.0", package = "stylo_static_prefs" }
-style_dom = { version = "0.20.0", package = "stylo_dom" }
-selectors = { version = "0.40.0", package = "selectors" }
-boa_engine = { package = "ps-boa-engine", version = "1.0.0-dev" }
-boa_runtime = { package = "ps-boa-runtime", version = "1.0.0-dev" }
-boa_gc = { package = "ps-boa-gc", version = "1.0.0-dev" }
-base64 = "0.22"
+style = { version = "^0.20.0", package = "stylo" }
+style_traits = { version = "^0.20.0", package = "stylo_traits" }
+style_atoms = { version = "^0.20.0", package = "stylo_atoms" }
+style_config = { version = "^0.20.0", package = "stylo_static_prefs" }
+style_dom = { version = "^0.20.0", package = "stylo_dom" }
+selectors = { version = "^0.40.0", package = "selectors" }
+boa_engine = { package = "ps-boa-engine", version = "^1.0.0-dev" }
+boa_runtime = { package = "ps-boa-runtime", version = "^1.0.0-dev" }
+boa_gc = { package = "ps-boa-gc", version = "^1.0.0-dev" }
+base64 = "^0.22"
 blitz-debug-control = { package = "ps-blitz-debug-control", version = "^0.3.0-beta.10", path = "./packages/blitz-debug-control" }
-getrandom = "0.4"
-serde_json = "1"
-cssparser = { version = "0.37.0" }
+getrandom = "^0.4"
+serde_json = "^1"
+cssparser = { version = "^0.37.0" }
 
 # HTML5ever dependencies
-markup5ever = "0.39.0" # needs to match stylo web_atoms version
-html5ever = "0.39.0"   # needs to match stylo web_atoms version
-xml5ever = "0.39.0"    # needs to match stylo web_atoms version
+markup5ever = "^0.39.0" # needs to match stylo web_atoms version
+html5ever = "^0.39.0"   # needs to match stylo web_atoms version
+xml5ever = "^0.39.0"    # needs to match stylo web_atoms version
 # Already in the graph under stylo and markup5ever, which is what `QualName` is
 # built from; named directly so attribute *values* can be interned too. Has to
 # resolve to the same version those pull, or an `Atom` handed between them is a
 # different type and will not compile.
-string_cache = "0.9.0"
+string_cache = "^0.9.0"
 
 # Other Servo dependencies
-euclid = "0.22"
-atomic_refcell = "0.1.13"
-app_units = "0.7.5"
-smallvec = "1"
-thin-vec = "0.2"
+euclid = "^0.22"
+atomic_refcell = "^0.1.13"
+app_units = "^0.7.5"
+smallvec = "^1"
+thin-vec = "^0.2"
 
 # DioxusLabs dependencies
-dioxus = { version = "0.7.3" }
-dioxus-core = { version = "0.7.3" }
-dioxus-html = { version = "0.7.3" }
-dioxus-hooks = { version = "0.7.3" }
-dioxus-signals = { version = "0.7.3" }
-dioxus-stores = { version = "0.7.3" }
-dioxus-asset-resolver = { version = "0.7.3" }
-manganis = { version = "0.7.3" }
-dioxus-document = { version = "0.7.3" }
-dioxus-history = { version = "0.7.3" }
+dioxus = { version = "^0.7.3" }
+dioxus-core = { version = "^0.7.3" }
+dioxus-html = { version = "^0.7.3" }
+dioxus-hooks = { version = "^0.7.3" }
+dioxus-signals = { version = "^0.7.3" }
+dioxus-stores = { version = "^0.7.3" }
+dioxus-asset-resolver = { version = "^0.7.3" }
+manganis = { version = "^0.7.3" }
+dioxus-document = { version = "^0.7.3" }
+dioxus-history = { version = "^0.7.3" }
 
 # Dioxus hot reload
-dioxus-devtools = { version = "0.7.3" }
-dioxus-cli-config = { version = "0.7.3" }
+dioxus-devtools = { version = "^0.7.3" }
+dioxus-cli-config = { version = "^0.7.3" }
 
 # Dioxus Prelude
-dioxus-core-macro = { version = "0.7.3" }
+dioxus-core-macro = { version = "^0.7.3" }
 
 # Taffy + Parley + Fontations
 taffy = { package = "ps-taffy", version = "^0.13.0", default-features = false, features = [
@@ -157,8 +157,8 @@ taffy = { package = "ps-taffy", version = "^0.13.0", default-features = false, f
     "calc",
     "detailed_layout_info",
 ] }
-parley = { version = "0.10", default-features = false, features = ["std"] }
-skrifa = { version = "0.42", default-features = false, features = [
+parley = { version = "^0.10", default-features = false, features = ["std"] }
+skrifa = { version = "^0.42", default-features = false, features = [
     "std",
 ] } # Should match parley and vello versions
 
@@ -177,20 +177,20 @@ skrifa = { version = "0.42", default-features = false, features = [
 # repository gets the same range rather than a second copy of anyrender pinned
 # somewhere else in the graph.
 anyrender = { package = "ps-anyrender", version = "^0.13.0" }
-anyrender_serialize = { version = "0.6.0" }
-anyrender_skia = { version = "0.10.0" }
+anyrender_serialize = { version = "^0.6.0" }
+anyrender_skia = { version = "^0.10.0" }
 anyrender_vello = { package = "ps-anyrender-vello", version = "^0.14.0" }
 anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", version = "^0.17.0" }
 anyrender_vello_hybrid = { package = "ps-anyrender-vello-hybrid", version = "^0.10.0" }
 anyrender_svg = { package = "ps-anyrender-svg", version = "^0.15.0" }
-wgpu_context = { version = "0.8.0" }
+wgpu_context = { version = "^0.8.0" }
 
 # Linebender + Fontations + WGPU + SVG
-color = "0.3"
-linebender_resource_handle = "0.1"
-peniko = "0.6.0"
-kurbo = "0.13.1"
-wgpu = "29"
+color = "^0.3"
+linebender_resource_handle = "^0.1"
+peniko = "^0.6.0"
+kurbo = "^0.13.1"
+wgpu = "^29"
 # `ps-usvg`, not `usvg`: this graph needs `pub use svgtypes` and
 # `Tree::intrinsic_dimensions`, neither of which is on a published linebender
 # usvg. That used to be a `[patch.crates-io]` pointing at a resvg branch, which
@@ -198,61 +198,61 @@ wgpu = "29"
 # `ps-blitz-dom` verified against the registry's usvg and failed with
 # `unresolved import usvg::svgtypes`, blocking the whole engine from crates.io.
 # The fork is published under its own name now, so this is an ordinary version.
-usvg = { package = "ps-usvg", version = "0.48.1" }
+usvg = { package = "ps-usvg", version = "^0.48.1" }
 
 # Windowing & Input
-raw-window-handle = "0.6.0"
+raw-window-handle = "^0.6.0"
 winit = { version = "=0.31.0-beta.2" }
-accesskit = "0.24"
-arboard = { version = "3.4.1", default-features = false }
-rfd = { version = "0.17.1", default-features = false }
-keyboard-types = "0.7"
-cursor-icon = "1"
+accesskit = "^0.24"
+arboard = { version = "^3.4.1", default-features = false }
+rfd = { version = "^0.17.1", default-features = false }
+keyboard-types = "^0.7"
+cursor-icon = "^1"
 
 # IO & Networking
-url = "2.5.0"
-http = "1.1.0"
-data-url = "0.3.1"
-tokio = "1.42"
-reqwest = { version = "0.13", default-features = false }
-reqwest-middleware = { version = "0.5.1", default-features = false }
+url = "^2.5.0"
+http = "^1.1.0"
+data-url = "^0.3.1"
+tokio = "^1.42"
+reqwest = { version = "^0.13", default-features = false }
+reqwest-middleware = { version = "^0.5.1", default-features = false }
 http-cache-reqwest = { version = "=1.0.0-alpha.6", default-features = false }
 http-cache = { version = "=1.0.0-alpha.6", default-features = false }
 
 # Media & Decoding
-image = { version = "0.25.6", default-features = false }
-wuff = "0.2"
-html-escape = "0.2.13"
-percent-encoding = "2.3.1"
-png = "0.18"
-serde = "1"
+image = { version = "^0.25.6", default-features = false }
+wuff = "^0.2"
+html-escape = "^0.2.13"
+percent-encoding = "^2.3.1"
+png = "^0.18"
+serde = "^1"
 
 # Dioxus Native
-webbrowser = "1.0"
-directories = "6.0.0"
+webbrowser = "^1.0"
+directories = "^6.0.0"
 
 # WASM
-wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4"
-tracing-wasm = "0.2.1"
-web-sys = "0.3.98"
-web-time = "1"
-console_error_panic_hook = "0.1"
+wasm-bindgen = "^0.2"
+wasm-bindgen-futures = "^0.4"
+tracing-wasm = "^0.2.1"
+web-sys = "^0.3.98"
+web-time = "^1"
+console_error_panic_hook = "^0.1"
 
 # Other dependencies
-rustc-hash = "2.1.2"
-bytes = "1.7.1"
-slotmap = "1.0.7"
-tracing = "0.1.40"
-tracing-subscriber = "0.3"
-futures-util = "0.3.30"
-futures-intrusive = "0.5.0"
-pollster = "0.4"
-smol_str = "0.3"
-bitflags = "2.8.0"
-bytemuck = "1"
-rayon = "1"
-thread_local = "1"
+rustc-hash = "^2.1.2"
+bytes = "^1.7.1"
+slotmap = "^1.0.7"
+tracing = "^0.1.40"
+tracing-subscriber = "^0.3"
+futures-util = "^0.3.30"
+futures-intrusive = "^0.5.0"
+pollster = "^0.4"
+smol_str = "^0.3"
+bitflags = "^2.8.0"
+bytemuck = "^1"
+rayon = "^1"
+thread_local = "^1"
 
 [profile.profile]
 inherits = "release"
