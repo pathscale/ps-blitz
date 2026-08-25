@@ -11,3 +11,8 @@
 /apps/wpt/output
 /sites
 .blitz-cache
+# Lockfiles are not tracked: every crate here is published, and a library's
+# lockfile is ignored by its consumers anyway. Dependency floors are expressed
+# as carets in Cargo.toml instead, so a consumer resolves the newest compatible
+# version rather than whatever this repository happened to build against.
+Cargo.lock
