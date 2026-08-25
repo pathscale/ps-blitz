@@ -1,15 +1,34 @@
 name: Publish crates
 
-# A workspace version bump is the release trigger. The renderer workspace has
-# many crates, but this repository currently ships the AgencyZero safety fix
-# through ps-blitz-dom; publishing it alone avoids unrelated crate churn.
+# A workspace version bump is the release trigger.
+#
+# This used to publish ps-blitz-dom alone, on the reasoning that consumers only
+# reach this workspace through it and publishing one crate "avoids unrelated
+# crate churn". That holds right up until a change alters a type another crate
+# in the workspace *constructs*, and then it ships a release nobody can use.
+#
+# 0.3.0-beta.10 is exactly that case. Attribute values became an interned
+# `AttrAtom` instead of a `String`, which is a breaking change to a public
+# field. ps-blitz-html builds an `Attribute` in `html_sink.rs`, so the beta.6
+# copy on the registry no longer compiles against beta.10 of blitz-dom:
+#
+#     error[E0308]: mismatched types
+#       ps-blitz-html-0.3.0-beta.6/src/html_sink.rs:22
+#       expected `Atom<EmptyStaticAtomSet>`, found `String`
+#
+# blitz-dom was published and every crate that depends on its API was left four
+# releases behind, so a consumer that took the new version could not build at
+# all. The fix in this tree was already correct; it simply never shipped.
+#
+# So: publish the whole dependency-connected set, in dependency order. Each
+# `cargo publish` waits for the registry to serve what it just uploaded before
+# the next one starts, because the next crate resolves it from crates.io.
 on:
   push:
     branches: [master]
     paths:
       - Cargo.toml
-      - Cargo.lock
-      - packages/blitz-dom/**
+      - packages/**
       - .github/workflows/publish.yml
   workflow_dispatch:
     inputs:
@@ -48,48 +67,80 @@ jobs:
           packages: libfontconfig-dev
           version: 1.0
 
-      - name: Check registry state
+      - name: Read the workspace version
         id: registry
         run: |
           version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
-          published="$(curl -sS -H 'User-Agent: pathscale-ci' \
-            'https://crates.io/api/v1/crates/ps-blitz-dom/versions' \
-            | jq -r --arg version "$version" \
-              '.versions[]? | select(.num == $version) | .num')"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          if [ -n "$published" ]; then
-            echo 'already=true' >> "$GITHUB_OUTPUT"
-            echo "ps-blitz-dom $version is already published"
-          else
-            echo 'already=false' >> "$GITHUB_OUTPUT"
-            echo "ps-blitz-dom $version is new"
-          fi
+          echo "workspace version is $version"
 
-      - name: Package
-        if: steps.registry.outputs.already == 'false'
-        run: cargo package -p ps-blitz-dom --locked
-
-      - name: Publish
-        if: steps.registry.outputs.already == 'false' && !inputs.dry_run
+      # Dependency order, not alphabetical. Each crate resolves the ones before
+      # it from crates.io, so a crate must be servable before the next is
+      # packaged.
+      #
+      # No `--locked` anywhere. There is no tracked lockfile any more, and a
+      # publish should resolve the newest version each caret permits rather
+      # than freeze whatever CI last happened to build. That is the whole point
+      # of expressing the floors as carets.
+      - name: Publish, in dependency order
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          VERSION: ${{ steps.registry.outputs.version }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          if [ -z "$CARGO_REGISTRY_TOKEN" ]; then
+          set -eu
+          if [ "$DRY_RUN" != 'true' ] && [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
             echo 'CARGO_REGISTRY_TOKEN is not set on this repository' >&2
             exit 1
           fi
-          cargo publish -p ps-blitz-dom --locked
 
-      - name: Summary
-        if: always()
-        run: |
-          if [ '${{ steps.registry.outputs.already }}' = 'true' ]; then
-            echo "Nothing to publish: ps-blitz-dom ${{ steps.registry.outputs.version }} already exists." \
-              >> "$GITHUB_STEP_SUMMARY"
-          elif [ '${{ inputs.dry_run }}' = 'true' ]; then
-            echo "Dry run: packaged ps-blitz-dom ${{ steps.registry.outputs.version }}." \
-              >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "Published ps-blitz-dom ${{ steps.registry.outputs.version }}." \
-              >> "$GITHUB_STEP_SUMMARY"
-          fi
+          # ps-debug-timer and dom-abi carry their own version lines rather
+          # than the workspace one, so they are released separately and are not
+          # in this list.
+          crates='ps-blitz-traits ps-stylo-taffy ps-blitz-dom ps-blitz-platform-api
+                  ps-blitz-dom-api ps-blitz-html ps-blitz-net ps-blitz-paint
+                  ps-blitz-debug-control ps-blitz-script'
+
+          published=''
+          skipped=''
+          for crate in $crates; do
+            existing="$(curl -sS -H 'User-Agent: pathscale-ci' \
+              "https://crates.io/api/v1/crates/$crate/versions" \
+              | jq -r --arg v "$VERSION" '.versions[]? | select(.num == $v) | .num')"
+            if [ -n "$existing" ]; then
+              echo "$crate $VERSION is already published, skipping"
+              skipped="$skipped $crate"
+              continue
+            fi
+
+            echo "::group::$crate $VERSION"
+            if [ "$DRY_RUN" = 'true' ]; then
+              cargo package -p "$crate"
+            else
+              cargo publish -p "$crate"
+              # crates.io serves a new version a moment after the upload
+              # returns. Without this the next crate in the list resolves the
+              # previous one and gets a 404, which reads as a dependency
+              # failure rather than a race.
+              for _ in $(seq 1 60); do
+                found="$(curl -sS -H 'User-Agent: pathscale-ci' \
+                  "https://crates.io/api/v1/crates/$crate/versions" \
+                  | jq -r --arg v "$VERSION" '.versions[]? | select(.num == $v) | .num')"
+                [ -n "$found" ] && break
+                sleep 5
+              done
+              if [ -z "${found:-}" ]; then
+                echo "$crate $VERSION did not appear on the registry in five minutes" >&2
+                exit 1
+              fi
+            fi
+            echo '::endgroup::'
+            published="$published $crate"
+          done
+
+          {
+            echo "Version \`$VERSION\`"
+            echo
+            [ -n "$published" ] && echo "Published:$published"
+            [ -n "$skipped" ] && echo "Already present:$skipped"
+          } >> "$GITHUB_STEP_SUMMARY"
