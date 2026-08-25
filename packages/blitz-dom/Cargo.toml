@@ -76,6 +76,7 @@ app_units = { workspace = true }
 euclid = { workspace = true }
 atomic_refcell = { workspace = true }
 markup5ever = { workspace = true }
+string_cache = { workspace = true }
 smallvec = { workspace = true }
 thin-vec = { workspace = true }
 

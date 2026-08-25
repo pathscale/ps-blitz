@@ -115,6 +115,11 @@ cssparser = { version = "0.37.0" }
 markup5ever = "0.39.0" # needs to match stylo web_atoms version
 html5ever = "0.39.0"   # needs to match stylo web_atoms version
 xml5ever = "0.39.0"    # needs to match stylo web_atoms version
+# Already in the graph under stylo and markup5ever, which is what `QualName` is
+# built from; named directly so attribute *values* can be interned too. Has to
+# resolve to the same version those pull, or an `Atom` handed between them is a
+# different type and will not compile.
+string_cache = "0.9.0"
 
 # Other Servo dependencies
 euclid = "0.22"

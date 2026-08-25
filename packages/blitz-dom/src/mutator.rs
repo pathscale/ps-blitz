@@ -1509,11 +1509,11 @@ impl<'doc> DocumentMutator<'doc> {
                 vec![
                     Attribute {
                         name: qual_name!("type", html),
-                        value: "button".to_string(),
+                        value: "button".into(),
                     },
                     Attribute {
                         name: qual_name!("tabindex", html),
-                        value: "-1".to_string(),
+                        value: "-1".into(),
                     },
                 ],
             );
@@ -1540,7 +1540,7 @@ fn set_input_checked_state(element: &mut ElementData, value: String) {
         // and the element's checked property being set from that
         SpecialElementData::None => element.attrs.push(Attribute {
             name: qual_name!("checked", html),
-            value: checked.to_string(),
+            value: checked.to_string().into(),
         }),
         _ => {}
     }

@@ -14,12 +14,17 @@ use html5ever::{
     tree_builder::{ElementFlags, NodeOrText, QuirksMode, TreeSink},
 };
 
-/// Convert an html5ever Attribute which uses tendril for its value to a blitz Attribute
-/// which uses String.
+/// Convert an html5ever Attribute, which uses tendril for its value, to a blitz
+/// Attribute, which interns its value.
+///
+/// This is the highest-volume construction site in the engine: every attribute
+/// of every element of every parsed document arrives here. It is therefore
+/// where interning pays off most, because a document's repeated `class` strings
+/// collapse as the tree is built rather than after it.
 fn html5ever_to_blitz_attr(attr: html5ever::Attribute) -> Attribute {
     Attribute {
         name: attr.name,
-        value: attr.value.to_string(),
+        value: attr.value.as_ref().into(),
     }
 }
 

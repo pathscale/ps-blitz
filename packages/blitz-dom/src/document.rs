@@ -1681,9 +1681,14 @@ impl BaseDocument {
                                 .split_ascii_whitespace()
                                 .map(Atom::from)
                                 .collect();
-                            AttrValue::TokenList(OnceLock::from(attr.value.clone()), classes)
+                            // Stylo's `AttrValue` owns a `String`, so the atom
+                            // is materialised here. This is the one place
+                            // interning is paid back out, and it is bounded:
+                            // once per snapshotted attribute, not per element
+                            // per frame.
+                            AttrValue::TokenList(OnceLock::from(attr.value.to_string()), classes)
                         } else {
-                            AttrValue::String(attr.value.clone())
+                            AttrValue::String(attr.value.to_string())
                         };
 
                         (ident, value)
@@ -3430,7 +3435,7 @@ mod hover_state_tests {
         let root_id = doc.root_node().id;
         let style = |value: &str| Attribute {
             name: qual_name!("style"),
-            value: value.to_string(),
+            value: value.into(),
         };
 
         let mut mutator = doc.mutate();

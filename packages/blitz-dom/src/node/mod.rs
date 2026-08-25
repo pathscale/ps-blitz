@@ -11,7 +11,7 @@ pub(crate) mod scrollbar;
 mod stylo_data;
 mod text;
 
-pub use attributes::{Attribute, Attributes};
+pub use attributes::{AttrAtom, Attribute, Attributes};
 #[cfg(feature = "shadow-dom")]
 pub use custom_element::{
     CustomElement, CustomElementCtx, CustomElementData, CustomElementDefinition,

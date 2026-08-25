@@ -124,7 +124,7 @@ impl DioxusDocument {
         // Create another virtual element to hold the root <div id="main"></div> under the html element
         let main_attr = blitz_dom::Attribute {
             name: qual_name("id", None),
-            value: "main".to_string(),
+            value: "main".into(),
         };
         let main_element_id = mutr.create_element(qual_name("main", None), vec![main_attr]);
         mutr.append_children(body_element_id, &[main_element_id]);
@@ -170,7 +170,7 @@ impl DioxusDocument {
             .iter()
             .map(|(name, value)| Attribute {
                 name: qual_name(name, None),
-                value: value.clone(),
+                value: value.as_str().into(),
             })
             .collect();
 

@@ -6,17 +6,19 @@
 //! rather than allocator waste or the GPU pool, and the question is which
 //! small allocation there are a million of.
 //!
-//! `node/attributes.rs` holds `Attribute { name: QualName, value: String }` in
-//! a plain `Vec<Attribute>` per element. One separately heap-allocated,
-//! separately owned `String` per attribute per element, with no sharing and no
-//! copy-on-write. Blink shares identical attribute sets through an
-//! `ElementDataCache` (`element_data.h:172`) and says why in a comment: "very
-//! common for many elements to have duplicate sets of attributes (ex. the same
-//! classes)".
+//! `node/attributes.rs` used to hold `Attribute { name: QualName, value:
+//! String }` in a plain `Vec<Attribute>` per element: one separately
+//! heap-allocated, separately owned `String` per attribute per element, with no
+//! sharing and no copy-on-write. Blink shares identical attribute sets through
+//! an `ElementDataCache` (`element_data.h:172`) and says why in a comment:
+//! "very common for many elements to have duplicate sets of attributes (ex. the
+//! same classes)".
 //!
 //! Our UI is Tailwind, so a class attribute is long and every row of a list
-//! carries a byte-identical copy of it. That is the hypothesis. This test
-//! measures it instead of asserting it, on the application's own markup:
+//! carries a byte-identical copy of it. That was the hypothesis, and this test
+//! is what confirmed it before the fix: **777 attribute values, 54 distinct**.
+//! `value` is now an interned `AttrAtom`, and this census stays as the standing
+//! evidence for why, measured on the application's own markup:
 //!
 //!   cargo test -p blitz-tests --test attribute_value_duplication -- --nocapture
 //!
@@ -27,6 +29,7 @@
 //! harness already knows how to build a real document from real markup.
 
 use blitz_dom::DocumentConfig;
+use blitz_dom::node::AttrAtom;
 use blitz_html::{HtmlDocument, HtmlProvider};
 use blitz_traits::shell::{ColorScheme, Viewport};
 use std::collections::HashMap;
@@ -101,7 +104,7 @@ fn attribute_values_are_mostly_duplicates() {
         };
         elements += 1;
         for attr in element.attrs() {
-            let value = attr.value.as_str();
+            let value: &str = attr.value.as_ref();
             total_values += 1;
             total_bytes += value.len();
             *occurrences.entry(value).or_default() += 1;
@@ -114,17 +117,26 @@ fn attribute_values_are_mostly_duplicates() {
     let distinct_values = occurrences.len();
     let distinct_bytes: usize = occurrences.keys().map(|value| value.len()).sum();
 
-    // What the current representation pays: every occurrence, header + heap.
-    let current = total_values * (size_of::<String>() + 0)
+    // What the old `String` representation paid: a 24-byte header inline in
+    // every `Attribute`, plus a separate heap allocation per occurrence.
+    let as_strings = total_values * size_of::<String>()
         + occurrences
             .iter()
             .map(|(value, count)| heap_cost(value) * count)
             .sum::<usize>();
-    // What interning would pay: one heap copy per distinct value, and a
-    // refcounted handle per occurrence. `Arc<str>` is a fat pointer, 16 bytes,
-    // against `String`'s 24, so the per-occurrence side shrinks too.
-    let interned = total_values * size_of::<*const u8>() * 2
-        + occurrences.keys().map(|value| heap_cost(value)).sum::<usize>();
+    // What the interned representation pays now: an 8-byte `Atom` per
+    // occurrence, and one heap copy per *distinct* value in the global table.
+    // Values of 7 bytes or fewer are stored inline in the atom itself and
+    // never reach the heap at all, which is why they drop out of the sum.
+    let as_atoms = total_values * size_of::<AttrAtom>()
+        + occurrences
+            .keys()
+            .filter(|value| value.len() > 7)
+            .map(|value| heap_cost(value))
+            .sum::<usize>();
+    // Named for the report below. `current` is what we ship today.
+    let current = as_strings;
+    let interned = as_atoms;
 
     println!("\n=== attribute value census, {REPEATS} transcript panes ===");
     println!("elements                {elements:>10}");
@@ -144,8 +156,8 @@ fn attribute_values_are_mostly_duplicates() {
         (total_bytes - distinct_bytes) as f64 / total_bytes.max(1) as f64 * 100.0,
     );
     println!("\n--- estimated footprint, header + 16-byte-granule heap ---");
-    println!("as stored today         {current:>10} bytes");
-    println!("interned (Arc<str>)     {interned:>10} bytes");
+    println!("as String (before)      {current:>10} bytes");
+    println!("as Atom (now)           {interned:>10} bytes");
     println!(
         "estimated saving        {:>10} bytes  ({:.1}%)",
         current.saturating_sub(interned),
@@ -168,7 +180,11 @@ fn attribute_values_are_mostly_duplicates() {
     println!("\n--- values whose repeats cost the most ---");
     for (bytes, count, value) in repeated.iter().take(6) {
         let shown: String = value.chars().take(64).collect();
-        let ellipsis = if value.chars().count() > 64 { "..." } else { "" };
+        let ellipsis = if value.chars().count() > 64 {
+            "..."
+        } else {
+            ""
+        };
         println!("{count:>5}x {bytes:>8} bytes  {shown}{ellipsis}");
     }
     println!();

@@ -89,7 +89,7 @@ impl<D: Document> Harness<D> {
         attrs
             .iter()
             .find(|a| *a.name.local == *attr)
-            .map(|a| a.value.clone())
+            .map(|a| a.value.to_string())
     }
 
     /// Hit-test page coordinates `(x, y)`

@@ -5836,6 +5836,7 @@ dependencies = [
  "skrifa 0.42.1",
  "slotmap",
  "smallvec",
+ "string_cache",
  "stylo",
  "stylo_dom",
  "stylo_static_prefs",

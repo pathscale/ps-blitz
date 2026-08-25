@@ -209,7 +209,7 @@ fn read_attr(ctx: &DomCtx, node_id: NodeId, name: &str) -> Option<String> {
         .attrs()
         .iter()
         .find(|attr| &*attr.name.local == name)
-        .map(|attr| attr.value.clone())
+        .map(|attr| attr.value.to_string())
 }
 
 fn write_attr(ctx: &DomCtx, node_id: NodeId, name: &str, value: &str) {
@@ -433,7 +433,7 @@ fn get_value(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<J
                     .attrs()
                     .iter()
                     .find(|attr| &*attr.name.local == "value")
-                    .map(|attr| attr.value.clone())
+                    .map(|attr| attr.value.to_string())
                     .unwrap_or_default(),
             })
             .unwrap_or_default()
