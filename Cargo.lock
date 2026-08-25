@@ -820,7 +820,7 @@ dependencies = [
 
 [[package]]
 name = "blitz-test-harness"
-version = "0.3.0-beta.7"
+version = "0.3.0-beta.8"
 dependencies = [
  "dioxus-core",
  "keyboard-types 0.7.0",
@@ -833,7 +833,7 @@ dependencies = [
 
 [[package]]
 name = "blitz-tests"
-version = "0.3.0-beta.7"
+version = "0.3.0-beta.8"
 dependencies = [
  "accesskit",
  "blitz-test-harness",
@@ -5780,7 +5780,7 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz"
-version = "0.3.0-beta.7"
+version = "0.3.0-beta.8"
 dependencies = [
  "ps-anyrender-vello",
  "ps-blitz-dom",
@@ -5796,7 +5796,7 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-debug-control"
-version = "0.3.0-beta.7"
+version = "0.3.0-beta.8"
 dependencies = [
  "getrandom 0.4.3",
  "serde",
@@ -5805,7 +5805,7 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-dom"
-version = "0.3.0-beta.7"
+version = "0.3.0-beta.8"
 dependencies = [
  "accesskit",
  "app_units",
@@ -5850,7 +5850,7 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-dom-api"
-version = "0.3.0-beta.7"
+version = "0.3.0-beta.8"
 dependencies = [
  "markup5ever",
  "ps-blitz-dom",
@@ -5859,7 +5859,7 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-html"
-version = "0.3.0-beta.7"
+version = "0.3.0-beta.8"
 dependencies = [
  "html5ever",
  "ps-blitz-dom",
@@ -5870,7 +5870,7 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-net"
-version = "0.3.0-beta.7"
+version = "0.3.0-beta.8"
 dependencies = [
  "data-url",
  "directories",
@@ -5886,7 +5886,7 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-paint"
-version = "0.3.0-beta.7"
+version = "0.3.0-beta.8"
 dependencies = [
  "color",
  "euclid",
@@ -5906,14 +5906,14 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-platform-api"
-version = "0.3.0-beta.7"
+version = "0.3.0-beta.8"
 dependencies = [
  "ps-blitz-traits",
 ]
 
 [[package]]
 name = "ps-blitz-script"
-version = "0.3.0-beta.7"
+version = "0.3.0-beta.8"
 dependencies = [
  "base64 0.22.1",
  "data-url",
@@ -5940,7 +5940,7 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-shell"
-version = "0.3.0-beta.7"
+version = "0.3.0-beta.8"
 dependencies = [
  "accesskit",
  "android-activity",
@@ -5965,7 +5965,7 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-traits"
-version = "0.3.0-beta.7"
+version = "0.3.0-beta.8"
 dependencies = [
  "atomic_refcell",
  "bitflags 2.13.0",
@@ -5980,7 +5980,7 @@ dependencies = [
 
 [[package]]
 name = "ps-blitz-wasm"
-version = "0.3.0-beta.7"
+version = "0.3.0-beta.8"
 dependencies = [
  "dom-abi",
  "keyboard-types 0.7.0",
@@ -6240,7 +6240,7 @@ dependencies = [
 
 [[package]]
 name = "ps-stylo-taffy"
-version = "0.3.0-beta.7"
+version = "0.3.0-beta.8"
 dependencies = [
  "ps-taffy",
  "stylo",
