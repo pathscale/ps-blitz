@@ -41,6 +41,13 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # ps-blitz-dom's system-fonts feature verifies against fontconfig on
+      # Linux. Keep publishing on the same native dependency baseline as CI.
+      - uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: libfontconfig-dev
+          version: 1.0
+
       - name: Check registry state
         id: registry
         run: |
