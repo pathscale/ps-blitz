@@ -182,6 +182,36 @@ jobs:
           version: 1.0
       - run: cargo clippy --workspace -- -D warnings
 
+  # Every other job builds default features only, so code behind a feature is
+  # never compiled here at all. `ps-blitz-script`'s `debug_control` module is
+  # gated on `debug-control`, which AgencyZero enables through
+  # `blitz-inspector` -- so 0.3.0-beta.10 shipped with two call sites that did
+  # not compile, and CI was green throughout. It was found by a consumer
+  # upgrading, which is the worst place to find it.
+  #
+  # Scoped to the crates a consumer actually takes rather than
+  # `--workspace --all-features`: the browser app pulls `dav1d-sys`, which
+  # needs a system codec library this runner does not have.
+  build-all-features:
+    name: "Build [all features]"
+    runs-on: ubicloud-standard-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # Restore the compiled dependency graph rather than rebuilding the
+      # whole workspace from source on every run.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: "all-features"
+          cache-all-crates: "true"
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - run: perl -pi.bak -e 's/opt-level = 2/opt-level = 0/g' Cargo.toml
+      - uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: libfontconfig-dev
+          version: 1.0
+      - run: cargo check -p ps-blitz-dom -p ps-blitz-html -p ps-blitz-script -p ps-blitz-paint -p ps-blitz-net --all-features
+
   doc:
     name: Documentation
     runs-on: ubicloud-standard-8
