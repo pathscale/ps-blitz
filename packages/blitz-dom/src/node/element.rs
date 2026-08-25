@@ -140,7 +140,26 @@ pub struct ElementData {
     /// told apart from a no-op. See `flush_styles_to_layout_impl`.
     pub style_source: Option<ServoArc<ComputedValues>>,
     pub display_constructed_as: StyloDisplay,
-    pub cache: Cache,
+    /// Taffy's layout cache, allocated on first use.
+    ///
+    /// `Box`ed rather than inline because it is **1616 bytes, 57% of this
+    /// whole struct**, and most nodes never use it. A `heap` census of a
+    /// running instance found 264,891 live allocations in the 3KB size class
+    /// totalling 814 MB, which is `ElementData` at 2848 bytes each; the cache
+    /// accounts for 428 MB of that.
+    ///
+    /// The cache is two fixed-size arrays (`measure_entries` and
+    /// `measure_inputs`, `CACHE_SIZE` slots each) plus a final-layout entry.
+    /// It is created for every node that can be addressed by taffy, but a
+    /// `display: none` subtree, a node that never reaches layout, and any
+    /// element before its first measurement all hold an entirely empty one.
+    ///
+    /// `None` means "no cache yet", which is observationally identical to an
+    /// empty cache: a lookup against an absent cache misses exactly as it
+    /// would against a present-but-empty one. Only the mutable accessor
+    /// allocates, so a node pays the 1616 bytes at the moment taffy first
+    /// stores a measurement for it, and never before.
+    cache: Option<Box<Cache>>,
     pub unrounded_layout: Layout,
     pub final_layout: Layout,
     pub scroll_offset: crate::Point<f64>,
@@ -174,7 +193,26 @@ pub struct DocumentData {
     /// out like an element, so it carries the same hazard.
     pub style_source: Option<ServoArc<ComputedValues>>,
     pub display_constructed_as: StyloDisplay,
-    pub cache: Cache,
+    /// Taffy's layout cache, allocated on first use.
+    ///
+    /// `Box`ed rather than inline because it is **1616 bytes, 57% of this
+    /// whole struct**, and most nodes never use it. A `heap` census of a
+    /// running instance found 264,891 live allocations in the 3KB size class
+    /// totalling 814 MB, which is `ElementData` at 2848 bytes each; the cache
+    /// accounts for 428 MB of that.
+    ///
+    /// The cache is two fixed-size arrays (`measure_entries` and
+    /// `measure_inputs`, `CACHE_SIZE` slots each) plus a final-layout entry.
+    /// It is created for every node that can be addressed by taffy, but a
+    /// `display: none` subtree, a node that never reaches layout, and any
+    /// element before its first measurement all hold an entirely empty one.
+    ///
+    /// `None` means "no cache yet", which is observationally identical to an
+    /// empty cache: a lookup against an absent cache misses exactly as it
+    /// would against a present-but-empty one. Only the mutable accessor
+    /// allocates, so a node pays the 1616 bytes at the moment taffy first
+    /// stores a measurement for it, and never before.
+    cache: Option<Box<Cache>>,
     pub unrounded_layout: Layout,
     pub final_layout: Layout,
     pub scroll_offset: crate::Point<f64>,
@@ -206,6 +244,25 @@ impl std::fmt::Debug for DocumentData {
 }
 
 impl DocumentData {
+    /// As [`ElementData::cache`](ElementData::cache). There is only one
+    /// document node, so this saves nothing by itself; it exists so both node
+    /// kinds present the same accessor and the forwarding on
+    /// [`Node`](super::Node) stays uniform.
+    #[inline]
+    pub fn cache(&self) -> &Cache {
+        self.cache.as_deref().unwrap_or(&EMPTY_CACHE)
+    }
+
+    #[inline]
+    pub fn cache_mut(&mut self) -> &mut Cache {
+        self.cache.get_or_insert_with(|| Box::new(Cache::new()))
+    }
+
+    #[inline]
+    pub fn cache_release(&mut self) {
+        self.cache = None;
+    }
+
     pub fn new() -> Self {
         Self {
             stylo_element_data: Default::default(),
@@ -219,7 +276,7 @@ impl DocumentData {
             style_source: None,
             subtree_hoists: false,
             display_constructed_as: StyloDisplay::Block,
-            cache: Cache::new(),
+            cache: None,
             unrounded_layout: Layout::new(),
             final_layout: Layout::new(),
             scroll_offset: crate::Point::ZERO,
@@ -307,7 +364,7 @@ impl Clone for ElementData {
             style_source: None,
             subtree_hoists: false,
             display_constructed_as: StyloDisplay::Block,
-            cache: Cache::new(),
+            cache: None,
             unrounded_layout: Layout::new(),
             final_layout: Layout::new(),
             scroll_offset: crate::Point::ZERO,
@@ -390,7 +447,44 @@ impl SpecialElementData {
     }
 }
 
+/// A shared empty cache, handed out when a node has never been laid out.
+///
+/// Returning a reference to this rather than allocating keeps `cache()` an
+/// infallible `&Cache` for callers, which is what lets the lazy allocation stay
+/// invisible above this module. It is only ever read: a lookup against it
+/// misses, which is the same answer an owned empty cache would give. Nothing
+/// can write through a shared reference, so the `is_empty` fast path inside
+/// taffy stays correct for every node pointing here.
+static EMPTY_CACHE: Cache = Cache::new();
+
 impl ElementData {
+    /// This node's layout cache, or a shared empty one if it has never been
+    /// laid out. See the [`cache`](Self::cache) field for why it is optional.
+    #[inline]
+    pub fn cache(&self) -> &Cache {
+        self.cache.as_deref().unwrap_or(&EMPTY_CACHE)
+    }
+
+    /// This node's layout cache, allocating it if this is the first use.
+    ///
+    /// Every caller of this is taffy storing or clearing a measurement, which
+    /// is exactly the moment a node stops being one that never lays out.
+    #[inline]
+    pub fn cache_mut(&mut self) -> &mut Cache {
+        self.cache.get_or_insert_with(|| Box::new(Cache::new()))
+    }
+
+    /// Drop the cache entirely rather than emptying it in place.
+    ///
+    /// `cache_clear` runs on every node whose layout is invalidated, and the
+    /// old code zeroed 1616 bytes there. Releasing the box instead returns the
+    /// memory, and a node that is cleared and never re-measured (a subtree that
+    /// became `display: none`, say) stops paying for the cache at all.
+    #[inline]
+    pub fn cache_release(&mut self) {
+        self.cache = None;
+    }
+
     pub fn new(name: QualName, attrs: Vec<Attribute>) -> Self {
         let id_attr_atom = attrs
             .iter()
@@ -427,7 +521,7 @@ impl ElementData {
             style_source: None,
             subtree_hoists: false,
             display_constructed_as: StyloDisplay::Block,
-            cache: Cache::new(),
+            cache: None,
             unrounded_layout: Layout::new(),
             final_layout: Layout::new(),
             scroll_offset: crate::Point::ZERO,
@@ -1036,8 +1130,49 @@ pub use file_data::FileData;
 
 #[cfg(test)]
 mod tests {
-    use super::TextInputData;
+    use super::{ElementData, TextInputData};
     use parley::{FontContext, LayoutContext};
+
+    /// `ElementData` is allocated once per element, so its size is a direct
+    /// multiplier on the DOM's footprint.
+    ///
+    /// A `heap` census of a running instance found 264,891 live allocations in
+    /// the 3KB malloc class totalling **814 MB**, which was this struct at
+    /// 2848 bytes each. Boxing the taffy cache took it to 1240 and out of that
+    /// size class entirely.
+    ///
+    /// The bound is deliberately loose and one-sided: it does not care what
+    /// the exact number is, only that nobody puts a kilobyte back inline
+    /// without noticing. If a field genuinely has to grow past this, raise the
+    /// bound and say why, rather than deleting the test.
+    #[test]
+    fn element_data_stays_out_of_the_large_size_classes() {
+        let size = std::mem::size_of::<ElementData>();
+        assert!(
+            size <= 1536,
+            "ElementData grew to {size} bytes. It is allocated per element, so \
+             this is a multiplier on the whole DOM's footprint: at 2848 bytes \
+             it was 814 MB of a live instance. Box the new field instead, as \
+             `cache` is."
+        );
+    }
+
+    /// The cache is what was boxed, so its absence has to stay cheap.
+    ///
+    /// If this ever fails, the `Option<Box<Cache>>` has been flattened back to
+    /// an inline `Cache` and the 428 MB is back.
+    #[test]
+    fn an_unlaid_out_element_carries_no_cache() {
+        let data = ElementData::new(
+            markup5ever::QualName::new(None, markup5ever::ns!(html), "div".into()),
+            Vec::new(),
+        );
+        assert!(
+            std::mem::size_of_val(&data) < std::mem::size_of::<taffy::Cache>() * 2,
+            "the cache must not be inline: a fresh element should be smaller \
+             than two caches"
+        );
+    }
 
     /// Build a [`TextInputData`] with the given text laid out at scale 1.0.
     fn make_input(is_multiline: bool, text: &str) -> TextInputData {

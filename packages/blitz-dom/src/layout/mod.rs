@@ -798,7 +798,11 @@ impl taffy::CacheTree for BaseDocument {
 
     #[inline]
     fn cache_clear(&mut self, node_id: NodeId) {
-        self.node_from_id_mut(node_id).cache_mut().clear();
+        // Release rather than empty in place. `clear()` would zero 1616 bytes
+        // and keep them; dropping the box hands the memory back, and a node
+        // that is invalidated and never re-measured stops paying for a cache
+        // it does not use. Re-measuring reallocates on the first store.
+        self.node_from_id_mut(node_id).cache_release();
     }
 }
 
