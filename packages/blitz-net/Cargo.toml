@@ -25,7 +25,26 @@ cookies = ["reqwest/cookies"]
 # for the codecs it was built with, so without these every response arrives
 # uncompressed and every page costs more bytes than it should.
 compression = ["reqwest/brotli", "reqwest/gzip", "reqwest/deflate", "reqwest/zstd"]
-multipart = ["reqwest/multipart", "reqwest/stream"]
+# `reqwest-middleware/multipart` as well as reqwest's own, and the `?` is what
+# makes that correct: it enables the feature only if something else has already
+# pulled `reqwest-middleware` in, rather than forcing that optional dependency
+# on every build that wants multipart.
+#
+# Without it this feature did not compile at all whenever `cache` was also on.
+# `cache` switches the `RequestBuilder` alias (`lib.rs:48`) to
+# `reqwest_middleware::RequestBuilder`, and that type's `multipart` method is
+# behind its own `multipart` feature, so `apply_body` called a method that had
+# been compiled out:
+#
+#     error[E0599]: no method named `multipart` found for struct
+#       `reqwest_middleware::RequestBuilder`
+#
+# Nothing caught it because every CI job builds default features only.
+multipart = [
+    "reqwest/multipart",
+    "reqwest/stream",
+    "reqwest-middleware?/multipart",
+]
 cache = ["dep:reqwest-middleware", "dep:http-cache-reqwest", "dep:directories", "dep:http-cache"]
 tracing = ["dep:tracing"]
 
