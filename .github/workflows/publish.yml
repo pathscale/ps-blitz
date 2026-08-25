@@ -117,7 +117,19 @@ jobs:
             if [ "$DRY_RUN" = 'true' ]; then
               cargo package -p "$crate"
             else
-              cargo publish -p "$crate"
+              # Name a rate limit when it is one. crates.io meters publishes
+              # and answers 429; without this the run dies further down with a
+              # message about a missing dependency, sending the reader after
+              # the wrong thing entirely. Re-running is safe and cheap: the
+              # crates already up are skipped by the check above.
+              if ! cargo publish -p "$crate" 2>&1 | tee /tmp/publish.log; then
+                if grep -qiE '429|too many requests|rate limit' /tmp/publish.log; then
+                  echo "::error::crates.io rate-limited $crate. Everything before" \
+                       "it is already published; re-run this job once the limit" \
+                       "resets and it will skip those and carry on from here."
+                fi
+                exit 1
+              fi
               # crates.io serves a new version a moment after the upload
               # returns. Without this the next crate in the list resolves the
               # previous one and gets a 404, which reads as a dependency
@@ -138,9 +150,14 @@ jobs:
             published="$published $crate"
           done
 
+          # `if`, not `[ ... ] && echo`. Under `set -e` a bare `&&` whose test
+          # fails is the last command in the block, so its status becomes the
+          # script's: the beta.11 release published all ten crates and then
+          # reported failure, purely because nothing had been skipped and
+          # `[ -n "$skipped" ]` returned 1.
           {
             echo "Version \`$VERSION\`"
             echo
-            [ -n "$published" ] && echo "Published:$published"
-            [ -n "$skipped" ] && echo "Already present:$skipped"
+            if [ -n "$published" ]; then echo "Published:$published"; fi
+            if [ -n "$skipped" ]; then echo "Already present:$skipped"; fi
           } >> "$GITHUB_STEP_SUMMARY"
