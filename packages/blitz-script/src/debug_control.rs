@@ -614,7 +614,7 @@ impl DebugController {
                     .iter()
                     .find(|attribute| &*attribute.name.local == name)
             })
-            .map(|attribute| attribute.value.clone());
+            .map(|attribute| attribute.value.to_string());
         success(value.map(Value::String).unwrap_or(Value::Null))
     }
 
@@ -882,7 +882,7 @@ impl DebugController {
                             .map(|attribute| {
                                 (
                                     attribute.name.local.to_string(),
-                                    Value::String(attribute.value.clone()),
+                                    Value::String(attribute.value.to_string()),
                                 )
                             })
                             .collect::<serde_json::Map<String, Value>>()
