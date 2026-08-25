@@ -102,7 +102,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: "true"
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/master' }}
           cache-bin: ${{ startsWith(matrix.platform.os, 'macos') }} # works around https://github.com/Swatinem/rust-cache/issues/341
 
       - name: Create Apple private key file
