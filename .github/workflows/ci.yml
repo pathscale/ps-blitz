@@ -38,6 +38,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.91
+      # Restore the compiled dependency graph rather than rebuilding the
+      # whole workspace from source on every run.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: "msrv-1.91"
+          cache-all-crates: "true"
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - run: perl -pi.bak -e 's/opt-level = 2/opt-level = 0/g' Cargo.toml
       - uses: awalsh128/cache-apt-pkgs-action@latest
         with:
@@ -52,6 +59,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # Restore the compiled dependency graph rather than rebuilding the
+      # whole workspace from source on every run.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: "default-features"
+          cache-all-crates: "true"
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - run: perl -pi.bak -e 's/opt-level = 2/opt-level = 0/g' Cargo.toml
       - uses: awalsh128/cache-apt-pkgs-action@latest
         with:
@@ -66,6 +80,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # Restore the compiled dependency graph rather than rebuilding the
+      # whole workspace from source on every run.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: "default-features"
+          cache-all-crates: "true"
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - run: perl -pi.bak -e 's/opt-level = 2/opt-level = 0/g' Cargo.toml
       - uses: awalsh128/cache-apt-pkgs-action@latest
         with:
@@ -79,6 +100,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # Restore the compiled dependency graph rather than rebuilding the
+      # whole workspace from source on every run.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: "counter"
+          cache-all-crates: "true"
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - run: perl -pi.bak -e 's/opt-level = 2/opt-level = 0/g' Cargo.toml
       - uses: awalsh128/cache-apt-pkgs-action@latest
         with:
@@ -98,6 +126,13 @@ jobs:
         with:
           toolchain: stable
           targets: wasm32-unknown-unknown
+      # Restore the compiled dependency graph rather than rebuilding the
+      # whole workspace from source on every run.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: "wasm"
+          cache-all-crates: "true"
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Build wasm_hello
         run: cargo build --target wasm32-unknown-unknown
         working-directory: examples/wasm_hello
@@ -115,6 +150,13 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt
+      # Restore the compiled dependency graph rather than rebuilding the
+      # whole workspace from source on every run.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: "lint"
+          cache-all-crates: "true"
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - run: cargo fmt --all --check
 
   clippy:
@@ -126,6 +168,13 @@ jobs:
         with:
           toolchain: stable
           components: clippy
+      # Restore the compiled dependency graph rather than rebuilding the
+      # whole workspace from source on every run.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: "lint"
+          cache-all-crates: "true"
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - run: perl -pi.bak -e 's/opt-level = 2/opt-level = 0/g' Cargo.toml
       - uses: awalsh128/cache-apt-pkgs-action@latest
         with:
@@ -139,6 +188,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # Restore the compiled dependency graph rather than rebuilding the
+      # whole workspace from source on every run.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: "doc"
+          cache-all-crates: "true"
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - run: cargo doc
 
   matrix_test:
@@ -209,11 +265,15 @@ jobs:
           large-packages: false
           swap-storage: false
 
+      # `save-if` was `refs/heads/main`. This repository's default branch is
+      # `master`, so the condition never held: nothing ever wrote a cache, and
+      # every run was a guaranteed miss against one that did not exist. The
+      # step looked like caching and did none.
       - uses: Swatinem/rust-cache@v2
         with:
           key: "${{ matrix.platform.target }}"
           cache-all-crates: "true"
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/master' }}
           cache-bin: ${{ matrix.platform.os != 'macos-latest' }} # works around https://github.com/Swatinem/rust-cache/issues/341
 
       - name: Install apt deps
