@@ -447,10 +447,10 @@ fn remove_child(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsRe
     let _parent_id = this_node_id(this)?;
     let child_id = arg_node_id(args, 0)?;
 
-    let mut doc = ctx.mutate_doc();
-    // Note: the node is detached rather than dropped so that JS wrappers
-    // referencing it (or its descendants) remain valid.
-    doc.mutate().remove_node(child_id);
+    // Detached when a wrapper still holds it, freed when none does. The node is
+    // returned either way, as the spec requires, and holding that return value
+    // is itself what keeps it alive.
+    super::remove_and_free_node(&ctx, child_id);
     Ok(args[0].clone())
 }
 
@@ -778,7 +778,16 @@ fn dispatch_event(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
                 listeners.retain(|listener| !listener.once);
             }
         }
-        if let Some(wrapper) = ctx.state.borrow().node_wrappers.get(&node_id).cloned() {
+        // Upgraded: the cache is weak, and a node whose wrapper has been
+        // collected cannot be carrying an `on<event>` handler, because holding
+        // one would have kept the wrapper alive.
+        if let Some(wrapper) = ctx
+            .state
+            .borrow()
+            .node_wrappers
+            .get(&node_id)
+            .and_then(boa_engine::object::WeakJsObject::upgrade)
+        {
             if let Some(handler) = wrapper.get(on_name.clone(), context)?.as_object()
                 && handler.is_callable()
             {

@@ -343,3 +343,13 @@ peniko = { workspace = true }
 color = { workspace = true }
 env_logger = "0.11"
 tracing-subscriber = "0.3"
+
+# Local Boa, until `JsObject::downgrade` is published.
+#
+# The DOM wrapper caches have to hold weak handles. A strong cache pins every
+# node script has ever touched, which is why a removed node could never be
+# freed: `createElement` caches a wrapper for all of them, so everything looked
+# reachable for ever.
+[patch.crates-io]
+ps-boa-engine = { path = "../ps-boa/core/engine" }
+ps-boa-gc = { path = "../ps-boa/core/gc" }

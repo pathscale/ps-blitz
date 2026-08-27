@@ -52,6 +52,14 @@ fn churning_rows_does_not_grow_the_document() {
     doc.poll(None);
     doc.inner_mut().resolve(0.0);
 
+    // Collect first. The wrapper cache is weak, so a removed node is freed once
+    // its wrapper is collected, and nothing here would otherwise trigger a
+    // collection: measuring immediately after the churn reports nodes that are
+    // unreachable but not yet swept, which is not the leak this is about.
+    boa_gc::force_collect();
+    doc.poll(None);
+    doc.inner_mut().resolve(0.0);
+
     let after = node_count(&doc);
 
     // A hundred rows, each a div plus its text, would be 200 abandoned nodes if

@@ -3,7 +3,7 @@
 
 use blitz_dom::NodeId;
 use blitz_dom::{LocalName, QualName};
-use boa_engine::object::{JsObject, ObjectInitializer, builtins::JsProxyBuilder};
+use boa_engine::object::{JsObject, ObjectInitializer, WeakJsObject, builtins::JsProxyBuilder};
 use boa_engine::property::{Attribute as PropAttribute, PropertyKey};
 use boa_engine::value::JsValue;
 use boa_engine::{Context, Finalize, JsData, JsNativeError, JsResult, Trace, js_string};
@@ -634,8 +634,16 @@ fn dataset_descriptor(_: &JsValue, args: &[JsValue], context: &mut Context) -> J
 fn get_dataset(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
-    if let Some(dataset) = ctx.state.borrow().dataset_wrappers.get(&node_id) {
-        return Ok(dataset.clone().into());
+    // Upgraded, not cloned: the cache is weak, so an entry whose wrapper
+        // nothing else kept has been collected and one is rebuilt below.
+        if let Some(dataset) = ctx
+            .state
+            .borrow()
+            .dataset_wrappers
+            .get(&node_id)
+            .and_then(WeakJsObject::upgrade)
+        {
+            return Ok(dataset.into());
     }
 
     let target = JsObject::from_proto_and_data(
@@ -654,7 +662,7 @@ fn get_dataset(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult
     ctx.state
         .borrow_mut()
         .dataset_wrappers
-        .insert(node_id, dataset.clone());
+        .insert(node_id, dataset.downgrade());
     Ok(dataset.into())
 }
 
@@ -810,8 +818,16 @@ fn class_list_to_string(
 fn get_class_list(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
-    if let Some(class_list) = ctx.state.borrow().class_list_wrappers.get(&node_id) {
-        return Ok(class_list.clone().into());
+    // Upgraded, not cloned: the cache is weak, so an entry whose wrapper
+        // nothing else kept has been collected and one is rebuilt below.
+        if let Some(class_list) = ctx
+            .state
+            .borrow()
+            .class_list_wrappers
+            .get(&node_id)
+            .and_then(WeakJsObject::upgrade)
+        {
+            return Ok(class_list.into());
     }
 
     let class_list = JsObject::from_proto_and_data(
@@ -842,7 +858,7 @@ fn get_class_list(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsRes
     ctx.state
         .borrow_mut()
         .class_list_wrappers
-        .insert(node_id, class_list.clone());
+        .insert(node_id, class_list.downgrade());
     Ok(class_list.into())
 }
 
