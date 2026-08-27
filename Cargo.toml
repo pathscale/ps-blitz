@@ -102,9 +102,9 @@ style_atoms = { version = "^0.20.0", package = "stylo_atoms" }
 style_config = { version = "^0.20.0", package = "stylo_static_prefs" }
 style_dom = { version = "^0.20.0", package = "stylo_dom" }
 selectors = { version = "^0.40.0", package = "selectors" }
-boa_engine = { package = "ps-boa-engine", version = "^1.0.2-dev" }
-boa_runtime = { package = "ps-boa-runtime", version = "^1.0.2-dev" }
-boa_gc = { package = "ps-boa-gc", version = "^1.0.2-dev" }
+boa_engine = { package = "ps-boa-engine", version = "^1.0.2" }
+boa_runtime = { package = "ps-boa-runtime", version = "^1.0.2" }
+boa_gc = { package = "ps-boa-gc", version = "^1.0.2" }
 base64 = "^0.22"
 blitz-debug-control = { package = "ps-blitz-debug-control", version = "^0.3.0", path = "./packages/blitz-debug-control" }
 getrandom = "^0.4"
