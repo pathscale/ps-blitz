@@ -635,15 +635,15 @@ fn get_dataset(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
     // Upgraded, not cloned: the cache is weak, so an entry whose wrapper
-        // nothing else kept has been collected and one is rebuilt below.
-        if let Some(dataset) = ctx
-            .state
-            .borrow()
-            .dataset_wrappers
-            .get(&node_id)
-            .and_then(WeakJsObject::upgrade)
-        {
-            return Ok(dataset.into());
+    // nothing else kept has been collected and one is rebuilt below.
+    if let Some(dataset) = ctx
+        .state
+        .borrow()
+        .dataset_wrappers
+        .get(&node_id)
+        .and_then(WeakJsObject::upgrade)
+    {
+        return Ok(dataset.into());
     }
 
     let target = JsObject::from_proto_and_data(
@@ -819,15 +819,15 @@ fn get_class_list(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsRes
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
     // Upgraded, not cloned: the cache is weak, so an entry whose wrapper
-        // nothing else kept has been collected and one is rebuilt below.
-        if let Some(class_list) = ctx
-            .state
-            .borrow()
-            .class_list_wrappers
-            .get(&node_id)
-            .and_then(WeakJsObject::upgrade)
-        {
-            return Ok(class_list.into());
+    // nothing else kept has been collected and one is rebuilt below.
+    if let Some(class_list) = ctx
+        .state
+        .borrow()
+        .class_list_wrappers
+        .get(&node_id)
+        .and_then(WeakJsObject::upgrade)
+    {
+        return Ok(class_list.into());
     }
 
     let class_list = JsObject::from_proto_and_data(

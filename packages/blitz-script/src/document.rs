@@ -504,6 +504,12 @@ impl ScriptDocument {
             self.poll_hook = Some(hook);
         }
 
+        // Reclaim what removal could not judge at the time. A node is detached
+        // while script may still hold its wrapper, and the answer only becomes
+        // knowable once the collector has run; this is the point where asking
+        // is cheap and the answer is current.
+        self.runtime.sweep_detached_nodes();
+
         self.arm_timer_thread();
         ran
     }
