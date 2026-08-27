@@ -849,7 +849,15 @@ impl ScriptRuntime {
                     listeners.retain(|l| !l.once);
                 }
             }
-            let wrapper = ctx.state.borrow().node_wrappers.get(&node_id).cloned();
+            // Upgraded: the cache is weak, and a wrapper the collector has
+            // taken cannot be carrying an `on<event>` handler, because holding
+            // one would have kept it alive.
+            let wrapper = ctx
+                .state
+                .borrow()
+                .node_wrappers
+                .get(&node_id)
+                .and_then(boa_engine::object::WeakJsObject::upgrade);
             if let Some(wrapper) = wrapper {
                 if let Ok(handler) = wrapper.get(on_name.clone(), context) {
                     if let Some(handler) = handler.as_object() {

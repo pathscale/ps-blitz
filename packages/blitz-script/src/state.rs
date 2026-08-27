@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use blitz_dom::BaseDocument;
-use boa_engine::object::JsObject;
+use boa_engine::object::{JsObject, WeakJsObject};
 use boa_engine::{Finalize, JsData, Trace};
 use rustc_hash::FxHashMap;
 
@@ -55,11 +55,23 @@ pub(crate) struct RuntimeState {
     /// so there is nothing here for HashDoS resistance to defend and the
     /// default SipHash is pure cost. This map is hit on every node touch, so
     /// that cost is paid thousands of times per mount.
-    pub node_wrappers: FxHashMap<NodeId, JsObject>,
+    /// Weak, so that the cache is not the reason a wrapper stays alive.
+    ///
+    /// Held strongly, this map pinned every node script had ever touched, and
+    /// `createElement` touches all of them. That made "can script still reach
+    /// this node" unanswerable, so `removeChild` kept every removed node for
+    /// the life of the document: measured on a real application, 98,646 nodes
+    /// where a fresh window holds 635, 91% of them detached and boxless.
+    ///
+    /// Weak handles hand the question to the collector, which already knows.
+    /// An entry whose wrapper has been collected upgrades to `None`, and
+    /// [`node_wrapper`](crate::dom::node_wrapper) rebuilds one on demand, so
+    /// identity still holds for every wrapper anything is actually holding.
+    pub node_wrappers: FxHashMap<NodeId, WeakJsObject>,
     /// Cache of `DOMStringMap` proxy objects returned by `Element.dataset`.
-    pub dataset_wrappers: FxHashMap<NodeId, JsObject>,
+    pub dataset_wrappers: FxHashMap<NodeId, WeakJsObject>,
     /// Cache of `DOMTokenList` objects returned by `Element.classList`.
-    pub class_list_wrappers: FxHashMap<NodeId, JsObject>,
+    pub class_list_wrappers: FxHashMap<NodeId, WeakJsObject>,
     /// Event listeners registered on nodes, keyed by node id then event type.
     pub node_listeners: FxHashMap<NodeId, ListenerMap>,
     /// Event listeners registered on `window`.

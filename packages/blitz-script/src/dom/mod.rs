@@ -16,7 +16,7 @@ pub(crate) mod style;
 use blitz_dom::NodeId;
 use blitz_dom::node::NodeData;
 use blitz_dom::{LocalName, Namespace, QualName};
-use boa_engine::object::{FunctionObjectBuilder, JsObject};
+use boa_engine::object::{FunctionObjectBuilder, JsObject, WeakJsObject};
 use boa_engine::property::{PropertyDescriptor, PropertyKey};
 use boa_engine::value::JsValue;
 use boa_engine::{
@@ -63,8 +63,18 @@ pub(crate) fn this_node_id(this: &JsValue) -> JsResult<NodeId> {
 /// Wrappers are cached in [`RuntimeState::node_wrappers`](crate::state::RuntimeState::node_wrappers)
 /// so that object identity (`===`) and expando properties behave as scripts expect.
 pub(crate) fn node_wrapper(ctx: &DomCtx, node_id: NodeId, _context: &mut Context) -> JsObject {
-    if let Some(wrapper) = ctx.state.borrow().node_wrappers.get(&node_id) {
-        return wrapper.clone();
+    // Upgraded rather than cloned: the cache holds weak handles, so an entry
+    // whose wrapper nothing else kept has been collected and a fresh one is
+    // built below. Identity still holds for every wrapper something is actually
+    // holding, which is the only case identity can be observed in.
+    if let Some(wrapper) = ctx
+        .state
+        .borrow()
+        .node_wrappers
+        .get(&node_id)
+        .and_then(WeakJsObject::upgrade)
+    {
+        return wrapper;
     }
 
     let proto = {
@@ -91,8 +101,64 @@ pub(crate) fn node_wrapper(ctx: &DomCtx, node_id: NodeId, _context: &mut Context
     ctx.state
         .borrow_mut()
         .node_wrappers
-        .insert(node_id, wrapper.clone());
+        .insert(node_id, wrapper.downgrade());
     wrapper
+}
+
+/// Detach a node, and free it when script can no longer reach it.
+///
+/// `remove_node` keeps a removed node alive so a wrapper still holding it stays
+/// usable, which is the right contract - `removeChild` returns the node and a
+/// browser keeps it working. Applying that to *every* removed node is what grew
+/// the document without bound, because the overwhelming majority are rows a
+/// framework built and dropped and no script will mention again.
+///
+/// The wrapper cache is weak now, so it answers this honestly: an entry that
+/// upgrades means something is still holding the wrapper, and one that does not
+/// means the collector has taken it and the node is unreachable.
+pub(crate) fn remove_and_free_node(ctx: &DomCtx, node_id: NodeId) {
+    let reachable = {
+        let state = ctx.state.borrow();
+        let doc = ctx.doc.borrow();
+        let mut stack = vec![node_id];
+        let mut reachable = false;
+        while let Some(id) = stack.pop() {
+            let held = state
+                .node_wrappers
+                .get(&id)
+                .and_then(WeakJsObject::upgrade)
+                .is_some();
+            if held || state.node_listeners.contains_key(&id) {
+                reachable = true;
+                break;
+            }
+            if let Some(node) = doc.get_node(id) {
+                stack.extend(node.children.iter().copied());
+            }
+        }
+        reachable
+    };
+
+    if reachable {
+        ctx.mutate_doc().mutate().remove_node(node_id);
+        return;
+    }
+
+    let mut freed = Vec::new();
+    ctx.mutate_doc()
+        .mutate()
+        .remove_and_drop_node_with(node_id, &mut |id| freed.push(id));
+
+    // The caches are keyed by id, so a freed id has to leave them: the slot can
+    // be reused, and a stale entry would hand out a wrapper for a different
+    // node entirely.
+    let mut state = ctx.state.borrow_mut();
+    for id in freed {
+        state.node_wrappers.remove(&id);
+        state.dataset_wrappers.remove(&id);
+        state.class_list_wrappers.remove(&id);
+        state.node_listeners.remove(&id);
+    }
 }
 
 /// Convert an optional node id to a JS value (wrapper object or `null`)
