@@ -74,6 +74,18 @@ pub(crate) struct RuntimeState {
     pub class_list_wrappers: FxHashMap<NodeId, WeakJsObject>,
     /// Event listeners registered on nodes, keyed by node id then event type.
     pub node_listeners: FxHashMap<NodeId, ListenerMap>,
+    /// Nodes detached from the document but not yet freed.
+    ///
+    /// A node is removed while script may still hold its wrapper, and whether
+    /// it does cannot be known at that instant: the wrapper is almost always
+    /// still alive right after the call that removed it. So the id is parked
+    /// here, and the sweep in [`ScriptDocument::poll`] drops the ones whose
+    /// wrapper the collector has since taken.
+    ///
+    /// Without this, every removed node stayed for the life of the document.
+    /// Measured on a real application: 98,646 nodes where a fresh window holds
+    /// 635, one abandoned subtree per list row that scrolled out of view.
+    pub detached_nodes: Vec<NodeId>,
     /// Event listeners registered on `window`.
     pub window_listeners: ListenerMap,
     /// Active Pointer Events capture target, keyed by the web-facing pointer id.

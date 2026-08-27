@@ -36,12 +36,12 @@ fn document(script: &str) -> ScriptDocument {
 
 #[test]
 fn churning_rows_does_not_grow_the_document() {
-    // Add a row and remove it, a hundred times over, holding no reference to
+    // Add a row and remove it, two thousand times over, holding no reference to
     // any of them. This is what a paged list does as its window slides.
     let mut doc = document(
         r#"
         const list = document.getElementById('list');
-        for (let turn = 0; turn < 100; turn += 1) {
+        for (let turn = 0; turn < 2000; turn += 1) {
           const row = document.createElement('div');
           row.textContent = 'row ' + turn;
           list.appendChild(row);
@@ -62,12 +62,12 @@ fn churning_rows_does_not_grow_the_document() {
 
     let after = node_count(&doc);
 
-    // A hundred rows, each a div plus its text, would be 200 abandoned nodes if
-    // none were freed. The baseline document is a handful, so the bound is
-    // generous and still nowhere near a leak.
+    // Two thousand rows, each a div plus its text, would be 4000 abandoned
+    // nodes if none were freed. The baseline document is a handful, so the
+    // bound is generous and still three orders of magnitude below the leak.
     assert!(
         after < 40,
-        "churning 100 rows left {after} nodes in the document; \
+        "churning 2000 rows left {after} nodes in the document; \
          removed nodes are not being freed"
     );
 }
@@ -93,7 +93,10 @@ fn a_removed_node_script_still_holds_stays_usable() {
     doc.poll(None);
     doc.inner_mut().resolve(0.0);
 
-    let text = doc.eval_json("globalThis.__keptText").unwrap_or_default().to_string();
+    let text = doc
+        .eval_json("globalThis.__keptText")
+        .unwrap_or_default()
+        .to_string();
     assert!(
         text.contains("after"),
         "a removed node that script still holds must stay usable, got {text:?}"

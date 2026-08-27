@@ -117,42 +117,77 @@ pub(crate) fn node_wrapper(ctx: &DomCtx, node_id: NodeId, _context: &mut Context
 /// upgrades means something is still holding the wrapper, and one that does not
 /// means the collector has taken it and the node is unreachable.
 pub(crate) fn remove_and_free_node(ctx: &DomCtx, node_id: NodeId) {
-    let reachable = {
-        let state = ctx.state.borrow();
-        let doc = ctx.doc.borrow();
-        let mut stack = vec![node_id];
-        let mut reachable = false;
-        while let Some(id) = stack.pop() {
-            let held = state
-                .node_wrappers
-                .get(&id)
-                .and_then(WeakJsObject::upgrade)
-                .is_some();
-            if held || state.node_listeners.contains_key(&id) {
-                reachable = true;
-                break;
-            }
-            if let Some(node) = doc.get_node(id) {
-                stack.extend(node.children.iter().copied());
-            }
-        }
-        reachable
-    };
+    ctx.mutate_doc().mutate().remove_node(node_id);
+    // Parked rather than judged. Asking "can script still reach this" right now
+    // always answers yes: the wrapper was alive a moment ago, because the call
+    // that removed the node went through it. `sweep_detached_nodes` asks later,
+    // once the collector has had a chance to disagree.
+    ctx.state.borrow_mut().detached_nodes.push(node_id);
+}
 
-    if reachable {
-        ctx.mutate_doc().mutate().remove_node(node_id);
+/// Free detached nodes whose wrappers the collector has taken.
+///
+/// This is the half that could not be written before wrappers were weak. A node
+/// is removed while script may still hold it, and that cannot be judged at the
+/// moment of removal; it can be judged later, and "later" is any point after a
+/// collection. An entry that still upgrades is a node something is holding on
+/// to, so it stays detached exactly as before.
+///
+/// Called from the poll loop, so the cost is bounded by how much was removed
+/// rather than by the size of the document.
+pub(crate) fn sweep_detached_nodes(ctx: &DomCtx) {
+    let candidates = std::mem::take(&mut ctx.state.borrow_mut().detached_nodes);
+    if candidates.is_empty() {
         return;
     }
 
+    let mut keep = Vec::new();
     let mut freed = Vec::new();
-    ctx.mutate_doc()
-        .mutate()
-        .remove_and_drop_node_with(node_id, &mut |id| freed.push(id));
+
+    for node_id in candidates {
+        let held = {
+            let state = ctx.state.borrow();
+            let doc = ctx.doc.borrow();
+            // Gone already, through a parent that was freed first.
+            if doc.get_node(node_id).is_none() {
+                continue;
+            }
+            let mut stack = vec![node_id];
+            let mut held = false;
+            while let Some(id) = stack.pop() {
+                let wrapper_alive = state
+                    .node_wrappers
+                    .get(&id)
+                    .and_then(WeakJsObject::upgrade)
+                    .is_some();
+                if wrapper_alive || state.node_listeners.contains_key(&id) {
+                    held = true;
+                    break;
+                }
+                if let Some(node) = doc.get_node(id) {
+                    stack.extend(node.children.iter().copied());
+                }
+            }
+            held
+        };
+
+        if held {
+            // Still reachable. Look again after the next collection: a
+            // framework often holds a row for a tick and then lets go.
+            keep.push(node_id);
+            continue;
+        }
+
+        ctx.mutate_doc()
+            .mutate()
+            .remove_and_drop_node_with(node_id, &mut |id| freed.push(id));
+    }
 
     // The caches are keyed by id, so a freed id has to leave them: the slot can
     // be reused, and a stale entry would hand out a wrapper for a different
     // node entirely.
     let mut state = ctx.state.borrow_mut();
+    state.detached_nodes = keep;
     for id in freed {
         state.node_wrappers.remove(&id);
         state.dataset_wrappers.remove(&id);

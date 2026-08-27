@@ -631,6 +631,16 @@ impl ScriptRuntime {
         self.ctx.state.borrow().timers.next_deadline()
     }
 
+    /// Free detached nodes whose wrappers script no longer holds.
+    ///
+    /// Removal cannot judge this at the time: the wrapper is alive at the
+    /// instant of the call that removed the node, because that call went
+    /// through it. Deciding later, once the collector has had its say, is what
+    /// stops a document growing by one abandoned subtree per removed row.
+    pub fn sweep_detached_nodes(&mut self) {
+        crate::dom::sweep_detached_nodes(&self.ctx);
+    }
+
     /// Run all timers that are currently due. Returns `true` if any JavaScript was run.
     pub fn run_due_timers(&mut self, profiling: bool) -> bool {
         let timers_started = profiling.then(std::time::Instant::now);
