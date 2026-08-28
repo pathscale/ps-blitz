@@ -120,6 +120,53 @@ fn a_fixed_child_survives_a_frame_that_skips_its_subtree() {
     );
 }
 
+/// A fixed child is inserted into the stacking context that owns its original
+/// subtree after that subtree has already been walked. If the owner is skipped
+/// on the next idle resolve, its retained context must not receive another copy
+/// of the same child.
+#[test]
+fn a_fixed_child_is_not_duplicated_across_idle_frames() {
+    let mut doc = document(
+        r#"<div id="stack" style="position:relative;isolation:isolate">
+             <span class="pinned">pinned</span>
+           </div>"#,
+    );
+
+    let before = hoisted_count(&doc, "#stack");
+    assert_eq!(before, 1, "fixture: the fixed child should be hoisted once");
+
+    for _ in 0..5 {
+        doc.resolve(0.0);
+    }
+
+    assert_eq!(
+        hoisted_count(&doc, "#stack"),
+        before,
+        "idle resolves duplicated the fixed child in its retained stacking context"
+    );
+}
+
+#[test]
+fn removing_a_fixed_child_clears_its_retained_context_entry() {
+    let mut doc = document(
+        r#"<div id="stack" style="position:relative;isolation:isolate">
+             <span class="pinned" id="pinned">pinned</span>
+           </div>"#,
+    );
+
+    assert_eq!(hoisted_count(&doc, "#stack"), 1, "fixture");
+
+    let pinned = doc.query_selector("#pinned").unwrap().unwrap();
+    doc.mutate().remove_and_drop_node(pinned);
+    doc.resolve(0.0);
+
+    assert_eq!(
+        hoisted_count(&doc, "#stack"),
+        0,
+        "the removed fixed child remained in its owner's stacking context"
+    );
+}
+
 /// Several idle frames in a row, because the bit is set while walking: if it is
 /// cleared on the frame that skips, the second frame loses what the first kept.
 #[test]
