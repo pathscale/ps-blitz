@@ -1027,6 +1027,21 @@ impl BaseDocument {
         context.sort();
         context.compute_content_size(self);
         self.nodes[host].stacking_context = Some(context);
+
+        // This context was mutated after its subtree had already been walked.
+        // Keep the path to the host out of the untouched-subtree fast path on
+        // the next flush so the host rebuilds the list before this fixed child
+        // is placed into it again. Marking only `host` is not enough: an
+        // unchanged ancestor would return before traversal ever reached it.
+        //
+        // Without the rebuild every idle resolve appends another copy of the
+        // child, and a box shadow darkens once per pointer-driven redraw. The
+        // rebuild also removes the retained entry after the fixed node leaves.
+        let mut current = Some(host);
+        while let Some(node_id) = current {
+            current = self.nodes[node_id].layout_parent.get();
+            *self.nodes[node_id].subtree_hoists_mut() = true;
+        }
     }
 
     /// The nearest ancestor of `node_id`, inclusive, that establishes a
