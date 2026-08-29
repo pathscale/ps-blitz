@@ -130,6 +130,7 @@ fn tracking_is_off_until_it_is_asked_for() {
 #[test]
 fn a_still_frame_reports_nothing_changed() {
     let mut doc = document();
+    let layout_generation = doc.paint_damage().layout_generation;
 
     for frame in 0..5 {
         doc.resolve(0.0);
@@ -139,6 +140,11 @@ fn a_still_frame_reports_nothing_changed() {
             "resolving an unchanged document reported damage on frame {frame}: {:?}",
             doc.paint_damage().regions()
         );
+        assert_eq!(
+            doc.paint_damage().layout_generation,
+            layout_generation,
+            "observing an unchanged layout must not manufacture a revision"
+        );
     }
 }
 
@@ -146,6 +152,8 @@ fn a_still_frame_reports_nothing_changed() {
 #[test]
 fn changing_one_element_does_not_damage_a_distant_one() {
     let mut doc = document();
+    let paint_generation = doc.paint_damage().generation;
+    let layout_generation = doc.paint_damage().layout_generation;
 
     restyle(
         &mut doc,
@@ -163,6 +171,12 @@ fn changing_one_element_does_not_damage_a_distant_one() {
         !doc.paint_damage().intersects(BOTTOM),
         "an element 400px away did not change: {:?}",
         doc.paint_damage().regions()
+    );
+    assert!(doc.paint_damage().generation > paint_generation);
+    assert_eq!(
+        doc.paint_damage().layout_generation,
+        layout_generation,
+        "a colour-only repaint is not a layout change"
     );
 }
 
@@ -222,6 +236,7 @@ fn removing_an_element_damages_where_it_was() {
 #[test]
 fn moving_an_element_damages_the_space_it_left() {
     let mut doc = document();
+    let layout_generation = doc.paint_damage().layout_generation;
 
     restyle(
         &mut doc,
@@ -241,6 +256,7 @@ fn moving_an_element_damages_the_space_it_left() {
         "the space it took must be damaged: {:?}",
         doc.paint_damage().regions()
     );
+    assert!(doc.paint_damage().layout_generation > layout_generation);
 }
 
 /*

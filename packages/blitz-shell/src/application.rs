@@ -53,19 +53,20 @@ impl<Rend: WindowRenderer> BlitzApplication<Rend> {
 
     #[cfg(feature = "debug-control")]
     fn service_debug_controller(&mut self, event_loop: &dyn ActiveEventLoop) {
-        let Some(controller) = self.debug_controller.as_mut() else {
+        let (Some(controller), windows) = (self.debug_controller.as_mut(), &mut self.windows)
+        else {
             return;
         };
-        let Some(document) = self
-            .windows
-            .values_mut()
-            .find_map(|view| view.try_downcast_doc_mut::<blitz_script::ScriptDocument>())
-        else {
+        let Some((animation_time, document)) = windows.values_mut().find_map(|view| {
+            let animation_time = view.current_animation_time();
+            view.try_downcast_doc_mut::<blitz_script::ScriptDocument>()
+                .map(|document| (animation_time, document))
+        }) else {
             // No document to run against yet. The request stays queued, and
             // whatever creates the window brings the loop round again.
             return;
         };
-        controller.service_pending(document);
+        controller.service_pending_at(document, animation_time);
         if controller.exit_requested() {
             event_loop.exit();
         }
@@ -102,11 +103,18 @@ impl<Rend: WindowRenderer> BlitzApplication<Rend> {
                 // The renderer fires `on_ready` after it has sent on the
                 // channel, so `complete_resume` should always succeed here.
                 // If a stale event survives a suspend, dropping it is safe.
-                if let Some(window) = self.windows.get_mut(&window_id)
+                let _paint_committed = if let Some(window) = self.windows.get_mut(&window_id)
                     && window.waker.is_none()
                 {
                     let ok = window.complete_resume();
                     debug_assert!(ok, "ResumeReady received but renderer not ready");
+                    ok
+                } else {
+                    false
+                };
+                #[cfg(feature = "debug-control")]
+                if _paint_committed && let Some(controller) = self.debug_controller.as_mut() {
+                    controller.note_paint_committed();
                 }
             }
             BlitzShellEvent::RequestRedraw { doc_id } => {
@@ -153,6 +161,8 @@ impl<Rend: WindowRenderer> BlitzApplication<Rend> {
 
 impl<Rend: WindowRenderer> ApplicationHandler for BlitzApplication<Rend> {
     fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
+        #[cfg(feature = "debug-control")]
+        let mut committed_frames = 0usize;
         // Resume existing windows
         for view in self.windows.values_mut() {
             view.resume();
@@ -160,6 +170,10 @@ impl<Rend: WindowRenderer> ApplicationHandler for BlitzApplication<Rend> {
             {
                 let ok = view.complete_resume();
                 debug_assert!(ok, "native renderer did not resume synchronously");
+                #[cfg(feature = "debug-control")]
+                if ok {
+                    committed_frames += 1;
+                }
             }
         }
 
@@ -174,8 +188,18 @@ impl<Rend: WindowRenderer> ApplicationHandler for BlitzApplication<Rend> {
             {
                 let ok = view.complete_resume();
                 debug_assert!(ok, "native renderer did not resume synchronously");
+                #[cfg(feature = "debug-control")]
+                if ok {
+                    committed_frames += 1;
+                }
             }
             self.windows.insert(view.window_id(), view);
+        }
+        #[cfg(feature = "debug-control")]
+        if let Some(controller) = self.debug_controller.as_mut() {
+            for _ in 0..committed_frames {
+                controller.note_paint_committed();
+            }
         }
     }
 
@@ -211,12 +235,19 @@ impl<Rend: WindowRenderer> ApplicationHandler for BlitzApplication<Rend> {
             return;
         }
 
-        if let Some(window) = self.windows.get_mut(&window_id) {
-            window.handle_winit_event(event);
+        let _paint_committed = if let Some(window) = self.windows.get_mut(&window_id) {
+            let committed = window.handle_winit_event(event);
             // Flag rather than a queued event and a wake: this runs on the
             // event loop's own thread, `about_to_wait` follows before the loop
             // sleeps, and a drag delivers hundreds of these a second.
             window.request_poll();
+            committed
+        } else {
+            false
+        };
+        #[cfg(feature = "debug-control")]
+        if _paint_committed && let Some(controller) = self.debug_controller.as_mut() {
+            controller.note_paint_committed();
         }
     }
 

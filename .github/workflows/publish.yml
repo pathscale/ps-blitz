@@ -50,7 +50,7 @@ env:
 
 jobs:
   publish:
-    name: Publish ps-blitz-dom
+    name: Publish Blitz workspace crates
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -99,7 +99,8 @@ jobs:
           # in this list.
           crates='ps-blitz-traits ps-stylo-taffy ps-blitz-dom ps-blitz-platform-api
                   ps-blitz-dom-api ps-blitz-html ps-blitz-net ps-blitz-paint
-                  ps-blitz-debug-control ps-blitz-script'
+                  ps-blitz-debug-control ps-blitz-script ps-blitz-shell
+                  ps-blitz-wasm ps-blitz'
 
           published=''
           skipped=''

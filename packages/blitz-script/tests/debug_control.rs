@@ -262,6 +262,15 @@ fn separate_process_controls_solid_without_fixed_sleeps() {
     );
     let idle = session_request(address, &session, "POST", "blitz/waitForIdle", json!({}));
     assert!(idle["value"]["layoutRevision"].as_u64().unwrap() > 0);
+    let repeated_idle = session_request(address, &session, "POST", "blitz/waitForIdle", json!({}));
+    assert_eq!(
+        repeated_idle["value"]["styleRevision"], idle["value"]["styleRevision"],
+        "reading a settled document must not manufacture a style revision"
+    );
+    assert_eq!(
+        repeated_idle["value"]["layoutRevision"], idle["value"]["layoutRevision"],
+        "reading a settled document must not manufacture a layout revision"
+    );
 
     let count = session_request(
         address,

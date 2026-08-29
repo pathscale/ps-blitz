@@ -1,16 +1,18 @@
 import { For, Show, createEffect, createSignal } from "solid-js";
-import { render } from "solid-js/web";
+import { render } from "@solidjs/web";
 
 function App() {
   const [count, setCount] = createSignal(0);
   const [items, setItems] = createSignal(["a", "b"]);
 
-  createEffect(() => {
-    const value = count();
+  createEffect(
+    () => count(),
+    (value) => {
     console.log("effect:", value);
     const output = document.getElementById("effect");
     if (output) output.textContent = `effect:${value}`;
-  });
+    },
+  );
 
   return (
     <main

@@ -2,6 +2,17 @@
 //!
 //! The server owns networking and session authentication. Renderer commands
 //! cross a serialized channel and must be executed by the UI/runtime thread.
+//!
+//! # Security boundary
+//!
+//! Enabling this server grants the holder of its per-process discovery token
+//! debugger-level control, including arbitrary JavaScript execution in the
+//! document. It deliberately has the same trust posture as a browser remote
+//! debugging port: loopback-only transport, an unpredictable token, and a
+//! descriptor created with owner-only permissions on Unix. It is not a sandbox
+//! or an authorization boundary against another process running as the same
+//! OS user and able to read that user's files. Production builds should leave
+//! the feature and its environment variables disabled.
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
@@ -388,7 +399,7 @@ fn route(
             .body
             .pointer("/capabilities/alwaysMatch/blitz:token")
             .and_then(Value::as_str);
-        if supplied_token != Some(token) {
+        if !token_matches(supplied_token, token) {
             return webdriver_error("invalid argument", "invalid blitz:token capability");
         }
         let session_id = match random_hex(16) {
@@ -447,6 +458,18 @@ fn route(
     }
 }
 
+/// Compare an attacker-controlled capability with the fixed-size discovery
+/// token without leaking how many prefix bytes matched.
+fn token_matches(supplied: Option<&str>, expected: &str) -> bool {
+    let supplied = supplied.unwrap_or_default().as_bytes();
+    let expected = expected.as_bytes();
+    let mut difference = supplied.len() ^ expected.len();
+    for (index, expected_byte) in expected.iter().enumerate() {
+        difference |= usize::from(*expected_byte ^ supplied.get(index).copied().unwrap_or(0));
+    }
+    difference == 0
+}
+
 fn session_path(path: &str) -> Option<(&str, &str)> {
     let remainder = path.strip_prefix("/session/")?;
     let (session_id, command) = remainder.split_once('/').unwrap_or((remainder, ""));
@@ -476,6 +499,15 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn token_comparison_rejects_prefixes_suffixes_and_missing_values() {
+        assert!(token_matches(Some("012345"), "012345"));
+        assert!(!token_matches(Some("01234x"), "012345"));
+        assert!(!token_matches(Some("0123456"), "012345"));
+        assert!(!token_matches(Some("01234"), "012345"));
+        assert!(!token_matches(None, "012345"));
+    }
 
     fn descriptor_path() -> PathBuf {
         let nonce = SystemTime::now()
