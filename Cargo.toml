@@ -10,7 +10,6 @@ members = [
     "packages/blitz-wasm",
     "packages/blitz-html",
     "packages/blitz-script",
-    "packages/blitz-debug-control",
     "packages/blitz-net",
     "packages/blitz-paint",
     "packages/blitz-shell",
@@ -106,7 +105,7 @@ boa_engine = { package = "ps-boa-engine", version = "^1.0.2" }
 boa_runtime = { package = "ps-boa-runtime", version = "^1.0.2" }
 boa_gc = { package = "ps-boa-gc", version = "^1.0.2" }
 base64 = "^0.22"
-blitz-debug-control = { package = "ps-blitz-debug-control", version = "^0.3.4", path = "./packages/blitz-debug-control" }
+blitz-debug-control = { package = "ps-blitz-debug-control", version = "^0.3" }
 getrandom = "^0.4"
 serde_json = "^1"
 cssparser = { version = "^0.37.0" }
