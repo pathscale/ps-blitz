@@ -219,53 +219,6 @@ fn animation_frame_interval_for_refresh(
     Duration::from_secs_f64(every_nth / refresh_hz)
 }
 
-#[cfg(test)]
-mod animation_pacing_tests {
-    use super::*;
-
-    #[test]
-    fn css_animation_frames_are_limited_to_fifteen_fps() {
-        assert_eq!(
-            animation_frame_interval_for_refresh(
-                blitz_dom::AnimationPacing::SlowCss,
-                Some(120_000),
-            ),
-            Duration::from_secs_f64(1.0 / 15.0),
-        );
-        assert_eq!(
-            animation_frame_interval_for_refresh(blitz_dom::AnimationPacing::SlowCss, Some(60_000),),
-            Duration::from_secs_f64(1.0 / 15.0),
-        );
-        assert_eq!(
-            animation_frame_interval_for_refresh(blitz_dom::AnimationPacing::SlowCss, None),
-            Duration::from_millis(67),
-        );
-    }
-
-    #[test]
-    fn interactive_animation_frames_remain_at_thirty_fps() {
-        assert_eq!(
-            animation_frame_interval_for_refresh(
-                blitz_dom::AnimationPacing::Interactive,
-                Some(120_000),
-            ),
-            Duration::from_secs_f64(1.0 / 30.0),
-        );
-        assert_eq!(
-            animation_frame_interval_for_refresh(blitz_dom::AnimationPacing::Interactive, None),
-            Duration::from_millis(33),
-        );
-    }
-
-    #[test]
-    fn caret_only_frames_run_at_blink_boundaries() {
-        assert_eq!(
-            animation_frame_interval_for_refresh(blitz_dom::AnimationPacing::Caret, Some(120_000)),
-            Duration::from_millis(500),
-        );
-    }
-}
-
 impl<Rend: WindowRenderer> Drop for View<Rend> {
     fn drop(&mut self) {
         // Release the renderer's window surface before the window is dropped.
@@ -569,7 +522,8 @@ impl<Rend: WindowRenderer> View<Rend> {
         }
     }
 
-    pub fn redraw(&mut self) {
+    /// Render the requested frame and report whether it was submitted.
+    pub fn redraw(&mut self) -> bool {
         /*
          * Permission, not an attached consumer.
          *
@@ -619,7 +573,8 @@ impl<Rend: WindowRenderer> View<Rend> {
 
         let mut paint_time = Duration::ZERO;
         let render_started = profiling.then(Instant::now);
-        if !is_blocked && is_visible {
+        let committed = !is_blocked && is_visible;
+        if committed {
             self.renderer.render(|scene| {
                 let paint_started = profiling.then(Instant::now);
                 blitz_paint::paint_scene_at_time(
@@ -662,6 +617,7 @@ impl<Rend: WindowRenderer> View<Rend> {
         } else {
             self.animation_frame_due.set(None);
         }
+        committed
     }
 
     /// Ask for the pending animation frame if it is due, and report when the
@@ -823,12 +779,14 @@ impl<Rend: WindowRenderer> View<Rend> {
         self.doc.handle_ui_event(event);
     }
 
-    pub fn handle_winit_event(&mut self, event: WindowEvent) {
+    /// Handle a window event and report an actual rendered frame commit.
+    pub fn handle_winit_event(&mut self, event: WindowEvent) -> bool {
         // Update accessibility focus and window size state in response to a Winit WindowEvent
         #[cfg(feature = "accessibility")]
         self.accessibility
             .process_window_event(&*self.window, &event);
 
+        let mut paint_committed = false;
         match event {
             WindowEvent::Destroyed => {}
             WindowEvent::ActivationTokenDone { .. } => {},
@@ -836,7 +794,7 @@ impl<Rend: WindowRenderer> View<Rend> {
                 // Currently handled at the level above in application.rs
             }
             WindowEvent::RedrawRequested => {
-                self.redraw();
+                paint_committed = self.redraw();
             }
             WindowEvent::Moved(_) => {}
             WindowEvent::Occluded(is_occluded) => {
@@ -1119,6 +1077,7 @@ impl<Rend: WindowRenderer> View<Rend> {
             WindowEvent::DragDropped { .. } => {},
             WindowEvent::DragLeft { .. } => {},
         }
+        paint_committed
     }
 }
 
@@ -1302,5 +1261,52 @@ impl FrameStats {
         self.paint_total = Duration::ZERO;
         self.renderer_total = Duration::ZERO;
         self.layers = blitz_paint::SceneLayerCounts::default();
+    }
+}
+
+#[cfg(test)]
+mod animation_pacing_tests {
+    use super::*;
+
+    #[test]
+    fn css_animation_frames_are_limited_to_fifteen_fps() {
+        assert_eq!(
+            animation_frame_interval_for_refresh(
+                blitz_dom::AnimationPacing::SlowCss,
+                Some(120_000),
+            ),
+            Duration::from_secs_f64(1.0 / 15.0),
+        );
+        assert_eq!(
+            animation_frame_interval_for_refresh(blitz_dom::AnimationPacing::SlowCss, Some(60_000)),
+            Duration::from_secs_f64(1.0 / 15.0),
+        );
+        assert_eq!(
+            animation_frame_interval_for_refresh(blitz_dom::AnimationPacing::SlowCss, None),
+            Duration::from_millis(67),
+        );
+    }
+
+    #[test]
+    fn interactive_animation_frames_remain_at_thirty_fps() {
+        assert_eq!(
+            animation_frame_interval_for_refresh(
+                blitz_dom::AnimationPacing::Interactive,
+                Some(120_000),
+            ),
+            Duration::from_secs_f64(1.0 / 30.0),
+        );
+        assert_eq!(
+            animation_frame_interval_for_refresh(blitz_dom::AnimationPacing::Interactive, None),
+            Duration::from_millis(33),
+        );
+    }
+
+    #[test]
+    fn caret_only_frames_run_at_blink_boundaries() {
+        assert_eq!(
+            animation_frame_interval_for_refresh(blitz_dom::AnimationPacing::Caret, Some(120_000)),
+            Duration::from_millis(500),
+        );
     }
 }

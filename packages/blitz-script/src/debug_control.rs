@@ -11,7 +11,6 @@ use base64::Engine;
 use blitz_debug_control::{ControlRequest, ControlResponse, DebugServer, ServerConfig};
 use blitz_dom::Document;
 use blitz_dom::NodeId;
-use blitz_paint::paint_scene;
 use blitz_traits::events::{
     BlitzImeEvent, BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, KeyState, MouseEventButton,
     MouseEventButtons, Point, PointerCoords, PointerDetails, UiEvent,
@@ -33,6 +32,7 @@ const EVENT_TRACE_CAPACITY: usize = 256;
 pub struct DebugController {
     server: DebugServer,
     requests: Receiver<ControlRequest>,
+    active_document_id: Option<usize>,
     document_generation: u64,
     document_revision: u64,
     style_revision: u64,
@@ -46,6 +46,8 @@ pub struct DebugController {
     action_pointer: (f32, f32),
     action_buttons: MouseEventButtons,
     exit_requested: bool,
+    clock_started: Instant,
+    resolution_time: f64,
 }
 
 impl DebugController {
@@ -54,6 +56,7 @@ impl DebugController {
         Ok(Self {
             server,
             requests,
+            active_document_id: None,
             document_generation: 1,
             document_revision: 1,
             style_revision: 0,
@@ -67,6 +70,8 @@ impl DebugController {
             action_pointer: (0.0, 0.0),
             action_buttons: MouseEventButtons::default(),
             exit_requested: false,
+            clock_started: Instant::now(),
+            resolution_time: 0.0,
         })
     }
 
@@ -113,6 +118,21 @@ impl DebugController {
 
     /// Service every request currently queued without blocking.
     pub fn service_pending(&mut self, document: &mut ScriptDocument) -> usize {
+        self.resolution_time = self.clock_started.elapsed().as_secs_f64();
+        self.service_pending_at(document, self.resolution_time)
+    }
+
+    /// Service queued requests using the embedder's animation clock.
+    ///
+    /// Windowed embedders must use the same time they pass to layout and paint,
+    /// otherwise an inspection request can rewind animations relative to the
+    /// frame the user is looking at.
+    pub fn service_pending_at(
+        &mut self,
+        document: &mut ScriptDocument,
+        animation_time: f64,
+    ) -> usize {
+        self.resolution_time = animation_time;
         let mut count = 0;
         loop {
             match self.requests.try_recv() {
@@ -131,6 +151,7 @@ impl DebugController {
         document: &mut ScriptDocument,
         timeout: Duration,
     ) -> Result<bool, RecvTimeoutError> {
+        self.resolution_time = self.clock_started.elapsed().as_secs_f64();
         match self.requests.recv_timeout(timeout) {
             Ok(request) => {
                 self.handle(document, request);
@@ -147,8 +168,37 @@ impl DebugController {
     }
 
     fn handle(&mut self, document: &mut ScriptDocument, request: ControlRequest) {
+        self.observe_document(document);
         let response = self.route(document, &request);
         let _ = request.respond(response);
+    }
+
+    fn observe_document(&mut self, document: &ScriptDocument) {
+        let document_id = document.inner().id();
+        match self.active_document_id.replace(document_id) {
+            Some(previous) if previous != document_id => {
+                self.document_generation = self.document_generation.wrapping_add(1);
+                self.document_revision = 1;
+                self.style_revision = 0;
+                self.layout_revision = 0;
+                self.paint_revision = 0;
+                self.latest_screenshot = None;
+            }
+            _ => {}
+        }
+    }
+
+    fn resolve(&mut self, document: &mut ScriptDocument) {
+        let mut inner = document.inner_mut();
+        inner.set_paint_damage_tracking(true);
+        inner.resolve(self.resolution_time);
+        self.style_revision = inner.paint_damage().generation;
+        self.layout_revision = inner.paint_damage().layout_generation;
+    }
+
+    /// Record a frame submitted by a windowed renderer.
+    pub fn note_paint_committed(&mut self) {
+        self.paint_revision = self.paint_revision.wrapping_add(1);
     }
 
     fn route(
@@ -207,8 +257,7 @@ impl DebugController {
         let Some(node_id) = self.resolve_element(document, reference) else {
             return error("stale element reference", "element is no longer attached");
         };
-        document.inner_mut().resolve(0.0);
-        self.style_revision += 1;
+        self.resolve(document);
         let inner = document.inner();
         let Some(properties) = inner
             .get_node(node_id)
@@ -226,8 +275,7 @@ impl DebugController {
     }
 
     fn layout_tree(&mut self, document: &mut ScriptDocument) -> ControlResponse {
-        document.inner_mut().resolve(0.0);
-        self.layout_revision += 1;
+        self.resolve(document);
         let inner = document.inner();
         let nodes = inner
             .tree()
@@ -258,7 +306,7 @@ impl DebugController {
     }
 
     fn svg_diagnostics(&mut self, document: &mut ScriptDocument) -> ControlResponse {
-        document.inner_mut().resolve(0.0);
+        self.resolve(document);
         let inner = document.inner();
         let entries = inner
             .tree()
@@ -574,7 +622,7 @@ impl DebugController {
                 success(Value::Null)
             }
             ("GET", "displayed") => {
-                document.inner_mut().resolve(0.0);
+                self.resolve(document);
                 let inner = document.inner();
                 let displayed = inner.get_node(node_id).is_some_and(|node| {
                     !node.is_display_none()
@@ -673,7 +721,7 @@ impl DebugController {
     }
 
     fn click(&mut self, document: &mut ScriptDocument, node_id: NodeId) -> ControlResponse {
-        document.inner_mut().resolve(0.0);
+        self.resolve(document);
         let Some(rect) = document.inner().get_client_bounding_rect(node_id) else {
             return error("element not interactable", "element has no layout box");
         };
@@ -729,7 +777,7 @@ impl DebugController {
         let Some(text) = text else {
             return invalid("send keys requires text or a string value array");
         };
-        document.inner_mut().resolve(0.0);
+        self.resolve(document);
         document.inner_mut().set_focus_to(node_id);
         document.handle_ui_event(UiEvent::Ime(BlitzImeEvent::Commit(text)));
         self.document_revision += 1;
@@ -755,9 +803,7 @@ impl DebugController {
                 );
             }
         }
-        document.inner_mut().resolve(0.0);
-        self.style_revision += 1;
-        self.layout_revision += 1;
+        self.resolve(document);
         if let Err(response) = self.commit_cpu_frame(document) {
             return response;
         }
@@ -835,16 +881,27 @@ impl DebugController {
             scale as f32,
             previous.color_scheme,
         ));
-        inner.resolve(0.0);
+        inner.resolve(self.resolution_time);
 
         let buffer = render_to_buffer::<VelloCpuImageRenderer, _>(
-            |scene| paint_scene(scene, &mut inner, scale, device_width, device_height, 0, 0),
+            |scene| {
+                blitz_paint::paint_scene_at_time(
+                    scene,
+                    &mut inner,
+                    scale,
+                    device_width,
+                    device_height,
+                    0,
+                    0,
+                    self.resolution_time,
+                )
+            },
             device_width,
             device_height,
         );
 
         inner.set_viewport(previous);
-        inner.resolve(0.0);
+        inner.resolve(self.resolution_time);
         drop(inner);
 
         let mut png = Vec::new();
@@ -973,5 +1030,56 @@ fn error(error: impl Into<String>, message: impl Into<String>) -> ControlRespons
         error: error.into(),
         message: message.into(),
         stacktrace: String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use blitz_dom::DocumentConfig;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn controller() -> DebugController {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        DebugController::start(ServerConfig {
+            bind_address: "127.0.0.1:0".parse().unwrap(),
+            descriptor_path: std::env::temp_dir().join(format!("blitz-generation-{nonce}.json")),
+            renderer_revision: "test".into(),
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn replacing_the_document_invalidates_old_element_handles() {
+        let mut controller = controller();
+        let first =
+            ScriptDocument::from_html("<main id='first'></main>", DocumentConfig::default());
+        let second =
+            ScriptDocument::from_html("<main id='second'></main>", DocumentConfig::default());
+
+        controller.observe_document(&first);
+        let first_id = first.inner().query_selector("#first").unwrap().unwrap();
+        let reference = controller.element_reference(first_id);
+        let reference = reference[ELEMENT_KEY].as_str().unwrap();
+        let initial_generation = controller.document_generation;
+
+        controller.observe_document(&second);
+        assert_eq!(
+            controller.document_generation,
+            initial_generation.wrapping_add(1)
+        );
+        assert!(controller.resolve_element(&second, reference).is_none());
+    }
+
+    #[test]
+    fn window_frame_commits_advance_the_paint_revision() {
+        let mut controller = controller();
+        assert_eq!(controller.paint_revision, 0);
+        controller.note_paint_committed();
+        controller.note_paint_committed();
+        assert_eq!(controller.paint_revision, 2);
     }
 }

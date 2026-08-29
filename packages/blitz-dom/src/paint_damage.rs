@@ -72,6 +72,14 @@ pub struct PaintDamage {
     /// wants "is this the same frame as last time" compares this and never
     /// looks at the rectangles.
     pub generation: u64,
+    /// Bumped once per resolve whose final box geometry differs from the
+    /// previous resolved frame.
+    ///
+    /// Unlike [`generation`](Self::generation), repaint-only changes such as a
+    /// colour update leave this counter alone. Debug and cache consumers can
+    /// therefore distinguish layout changes from paint changes without
+    /// treating observation itself as a mutation.
+    pub layout_generation: u64,
     /// Document-space rectangles that changed. Empty when nothing did.
     regions: Vec<Rect>,
 }
@@ -202,6 +210,7 @@ impl PaintDamageTracker {
 
         let mut origins = FxHashMap::with_capacity_and_hasher(nodes.len(), Default::default());
         let mut current = FxHashMap::with_capacity_and_hasher(nodes.len(), Default::default());
+        let mut layout_changed = false;
 
         for (node_id, node) in nodes.iter() {
             // Text and comment nodes carry no box of their own: their ink lives
@@ -220,11 +229,15 @@ impl PaintDamageTracker {
                 // Moved or resized: both the space it left and the space it
                 // took are different from last frame.
                 Some(old) => {
+                    layout_changed = true;
                     self.damage.add(old);
                     self.damage.add(rect);
                 }
                 // New.
-                None => self.damage.add(rect),
+                None => {
+                    layout_changed = true;
+                    self.damage.add(rect);
+                }
             }
             current.insert(node_id, rect);
         }
@@ -232,6 +245,7 @@ impl PaintDamageTracker {
         // Whatever is left was removed from the tree. Its pixels are as changed
         // as any others, and nothing else in this pass would have seen it.
         for (_, old) in self.previous.drain() {
+            layout_changed = true;
             self.damage.add(old);
         }
         self.previous = current;
@@ -249,6 +263,9 @@ impl PaintDamageTracker {
 
         if !self.damage.is_empty() {
             self.damage.generation = self.damage.generation.wrapping_add(1);
+        }
+        if layout_changed {
+            self.damage.layout_generation = self.damage.layout_generation.wrapping_add(1);
         }
     }
 }

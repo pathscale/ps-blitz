@@ -343,6 +343,51 @@ impl Timed {
     }
 }
 
+/// Print what the script runtime is costing, once a second, under
+/// `BLITZ_SCRIPT_STATS=1`.
+fn maybe_report(log: &Log) {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    if !*ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("BLITZ_SCRIPT_STATS").ok().as_deref(),
+            Some("1") | Some("true")
+        )
+    }) {
+        return;
+    }
+
+    static LAST: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+    let Ok(mut last) = LAST.lock() else { return };
+    let now = Instant::now();
+    if last.is_some_and(|time| now.duration_since(time) < Duration::from_secs(1)) {
+        return;
+    }
+    let elapsed = last.map(|time| now.duration_since(time));
+    *last = Some(now);
+    drop(last);
+
+    let spent_ms = log.spent.as_secs_f64() * 1000.0;
+    static PREV_SPENT: std::sync::Mutex<f64> = std::sync::Mutex::new(0.0);
+    let delta_ms = if let Ok(mut previous) = PREV_SPENT.lock() {
+        let delta = spent_ms - *previous;
+        *previous = spent_ms;
+        delta
+    } else {
+        0.0
+    };
+    let share = elapsed
+        .map(|duration| delta_ms / (duration.as_secs_f64() * 1000.0) * 100.0)
+        .unwrap_or(0.0);
+
+    eprintln!(
+        "[script] polls={} productive={} spent={spent_ms:.0}ms last_second={delta_ms:.1}ms ({share:.1}% of wall clock)",
+        log.total, log.productive,
+    );
+}
+
 #[cfg(feature = "dom-stats")]
 impl Drop for Timed {
     fn drop(&mut self) {
@@ -532,58 +577,4 @@ mod tests {
         assert!(work_breakdown().is_empty());
         assert!(latest_script_stats().is_none());
     }
-}
-
-/// Print what the script runtime is costing, once a second, under
-/// `BLITZ_SCRIPT_STATS=1`.
-///
-/// [`latest_script_stats`] existed with no caller anywhere in the workspace, so
-/// none of this was reachable from a running browser: the frame log accounts
-/// for resolve, paint and present on the main thread, and script ran in the gap
-/// between them with nothing measuring it. On a page whose frame loop never
-/// settles, that gap is where unexplained CPU hides.
-fn maybe_report(log: &Log) {
-    use std::sync::OnceLock;
-    use std::time::Instant;
-
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    if !*ENABLED.get_or_init(|| {
-        matches!(
-            std::env::var("BLITZ_SCRIPT_STATS").ok().as_deref(),
-            Some("1") | Some("true")
-        )
-    }) {
-        return;
-    }
-
-    static LAST: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
-    let Ok(mut last) = LAST.lock() else { return };
-    let now = Instant::now();
-    if last.is_some_and(|t| now.duration_since(t) < Duration::from_secs(1)) {
-        return;
-    }
-    let elapsed = last.map(|t| now.duration_since(t));
-    *last = Some(now);
-    drop(last);
-
-    // Share of wall clock spent inside the script runtime since the last line,
-    // which is the number that says whether script is the cost or a rounding
-    // error. Cumulative totals cannot answer that on a long-running page.
-    let spent_ms = log.spent.as_secs_f64() * 1000.0;
-    static PREV_SPENT: std::sync::Mutex<f64> = std::sync::Mutex::new(0.0);
-    let delta_ms = if let Ok(mut prev) = PREV_SPENT.lock() {
-        let d = spent_ms - *prev;
-        *prev = spent_ms;
-        d
-    } else {
-        0.0
-    };
-    let share = elapsed
-        .map(|e| delta_ms / (e.as_secs_f64() * 1000.0) * 100.0)
-        .unwrap_or(0.0);
-
-    eprintln!(
-        "[script] polls={} productive={} spent={spent_ms:.0}ms last_second={delta_ms:.1}ms ({share:.1}% of wall clock)",
-        log.total, log.productive,
-    );
 }

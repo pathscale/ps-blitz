@@ -2812,6 +2812,12 @@ impl BaseDocument {
         }
 
         let node = self.get_node(node_id)?;
+        if !matches!(
+            node.data,
+            NodeData::Element(_) | NodeData::AnonymousBlock(_) | NodeData::Document(_)
+        ) {
+            return None;
+        }
         let pos = node.absolute_position(0.0, 0.0);
 
         Some(BoundingRect {

@@ -5,10 +5,20 @@ const { pluginSolid } = require("@rsbuild/plugin-solid");
 
 const nodeModules =
   process.env.SOLID_PROBE_NODE_MODULES || path.resolve(__dirname, "node_modules");
+const solidVersion = require(path.join(nodeModules, "solid-js/package.json")).version;
+const webVersion = require(path.join(nodeModules, "@solidjs/web/package.json")).version;
+if (solidVersion !== webVersion || !solidVersion.startsWith("2.")) {
+  throw new Error(
+    `Solid probe requires one matching Solid 2 runtime; resolved solid-js=${solidVersion}, @solidjs/web=${webVersion}`,
+  );
+}
 
 module.exports = defineConfig({
   root: __dirname,
-  plugins: [pluginBabel({ include: /\.(?:jsx|tsx|ts)$/ }), pluginSolid()],
+  plugins: [
+    pluginBabel({ include: /\.(?:jsx|tsx|ts)$/ }),
+    pluginSolid({ solid: { moduleName: "@solidjs/web" } }),
+  ],
   source: {
     entry: {
       index: path.join(__dirname, "src/index.tsx"),
@@ -16,8 +26,8 @@ module.exports = defineConfig({
   },
   resolve: {
     alias: {
+      "@solidjs/web$": path.join(nodeModules, "@solidjs/web/dist/web.js"),
       "solid-js$": path.join(nodeModules, "solid-js/dist/solid.js"),
-      "solid-js/web$": path.join(nodeModules, "solid-js/web/dist/web.js"),
     },
   },
   html: {

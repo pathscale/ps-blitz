@@ -321,3 +321,27 @@ jobs:
       - name: test
         run: |
           ${{ env.RUST_CARGO_COMMAND }} ${{ matrix.platform.command }} ${{ matrix.platform.args }} --target ${{ matrix.platform.target }}
+
+  debug_control_e2e:
+    name: Debug control (Solid 2 process)
+    runs-on: ubicloud-standard-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: oven-sh/setup-bun@v2
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: "debug-control-e2e"
+          cache-all-crates: "true"
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: libfontconfig1-dev
+          version: 1.0
+      - name: Build the matching Solid 2 fixture without a lockfile
+        working-directory: examples/solid
+        run: |
+          bun install --no-save
+          bun run build
+      - name: Drive the fixture through the real process boundary
+        run: cargo test -p ps-blitz-script --features debug-control --test debug_control
