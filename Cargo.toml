@@ -202,7 +202,7 @@ usvg = { package = "ps-usvg", version = "^0.48.1" }
 
 # Windowing & Input
 raw-window-handle = "^0.6.0"
-winit = { version = "=0.31.0-beta.2" }
+winit = { version = "0.31.0-beta.2" }
 accesskit = "^0.24"
 arboard = { version = "^3.4.1", default-features = false }
 rfd = { version = "^0.17.1", default-features = false }
@@ -216,8 +216,8 @@ data-url = "^0.3.1"
 tokio = "^1.42"
 reqwest = { version = "^0.13", default-features = false }
 reqwest-middleware = { version = "^0.5.1", default-features = false }
-http-cache-reqwest = { version = "=1.0.0-alpha.6", default-features = false }
-http-cache = { version = "=1.0.0-alpha.6", default-features = false }
+http-cache-reqwest = { version = "1.0.0-alpha.6", default-features = false, features = ["reqwest-middleware"] }
+http-cache = { version = "1.0.0-alpha.6", default-features = false }
 
 # Media & Decoding
 image = { version = "^0.25.6", default-features = false }
