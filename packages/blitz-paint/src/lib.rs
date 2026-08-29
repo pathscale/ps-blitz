@@ -17,8 +17,41 @@ mod text;
 
 use std::collections::HashMap;
 
+/// A resolved document region painted into a smaller output surface.
+///
+/// Layout remains the layout of the full document. Only scene coordinates and
+/// culling change, so a diagnostic crop answers what the application actually
+/// drew at that position without rasterising unrelated window pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PaintRegion {
+    pub scale: f64,
+    pub width: u32,
+    pub height: u32,
+    scene_x: f64,
+    scene_y: f64,
+    document_clip: Rect,
+}
+
+impl PaintRegion {
+    /// Crop a CSS-pixel document rectangle into a device-pixel surface.
+    #[must_use]
+    pub fn crop(scale: f64, x: f64, y: f64, width: u32, height: u32) -> Self {
+        let left = x * scale;
+        let top = y * scale;
+        Self {
+            scale,
+            width,
+            height,
+            scene_x: -left,
+            scene_y: -top,
+            document_clip: Rect::new(left, top, left + f64::from(width), top + f64::from(height)),
+        }
+    }
+}
+
 use anyrender::{PaintScene, Scene};
 use blitz_dom::{BaseDocument, NodeId, util::Color};
+use kurbo::Rect;
 use render::BlitzDomPainter;
 
 const FONT_EMBOLDEN_ENABLED: bool = cfg!(any(
@@ -54,6 +87,15 @@ pub fn paint_scene(
     paint_scene_at_time(scene, doc, scale, width, height, x_offset, y_offset, 0.0)
 }
 
+/// Paint one resolved part of a document without laying the subtree out alone.
+pub fn paint_scene_region(
+    scene: &mut impl PaintScene,
+    doc: &mut BaseDocument,
+    region: PaintRegion,
+) {
+    paint_scene_region_at_time(scene, doc, region, 0.0);
+}
+
 // Eight arguments: the scene, the document, and six scalars describing the
 // target. `scale`, `width`, `height`, `x_offset` and `y_offset` would group
 // naturally into a viewport struct, which would take this to four and read
@@ -71,6 +113,28 @@ pub fn paint_scene_at_time(
     y_offset: u32,
     animation_time: f64,
 ) {
+    let region = PaintRegion {
+        scale,
+        width,
+        height,
+        scene_x: x_offset as f64,
+        scene_y: y_offset as f64,
+        document_clip: Rect::new(
+            0.0,
+            0.0,
+            f64::from(width) * scale,
+            f64::from(height) * scale,
+        ),
+    };
+    paint_scene_region_at_time(scene, doc, region, animation_time);
+}
+
+fn paint_scene_region_at_time(
+    scene: &mut impl PaintScene,
+    doc: &mut BaseDocument,
+    region: PaintRegion,
+    animation_time: f64,
+) {
     // Run `.paint()` on every custom widget in the document (and all subdocuments) ahead of time.
     // This helps us avoid borrow-checker issues as we recurse down the tree (`.paint()` require `&mut self`).
     //
@@ -78,15 +142,16 @@ pub fn paint_scene_at_time(
     #[allow(unused_mut)]
     let mut custom_widget_scenes: CustomWidgetSceneMap = HashMap::new();
     #[cfg(feature = "custom-widget")]
-    build_custom_widget_scenes(&mut custom_widget_scenes, doc, scene, scale);
+    build_custom_widget_scenes(&mut custom_widget_scenes, doc, scene, region.scale);
 
-    let generator = BlitzDomPainter::new(
+    let generator = BlitzDomPainter::new_with_clip(
         doc,
-        scale,
-        width,
-        height,
-        x_offset as f64,
-        y_offset as f64,
+        region.scale,
+        region.width,
+        region.height,
+        region.scene_x,
+        region.scene_y,
+        region.document_clip,
         &custom_widget_scenes,
         animation_time,
     );

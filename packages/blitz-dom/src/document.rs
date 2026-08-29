@@ -2666,6 +2666,16 @@ impl BaseDocument {
     }
 
     pub fn scroll_nearest_container_by(&mut self, node_id: NodeId, x: f64, y: f64) -> bool {
+        self.scroll_nearest_container_by_with_events(node_id, x, y, |_| {})
+    }
+
+    pub fn scroll_nearest_container_by_with_events<F: FnMut(DomEvent)>(
+        &mut self,
+        node_id: NodeId,
+        x: f64,
+        y: f64,
+        mut dispatch_event: F,
+    ) -> bool {
         let mut current = Some(node_id);
         for _ in 0..64 {
             let Some(id) = current else { break };
@@ -2675,7 +2685,7 @@ impl BaseDocument {
             let scrolls = node.style().overflow.x.is_scroll_container()
                 || node.style().overflow.y.is_scroll_container();
             if scrolls {
-                self.scroll_node_by(id, x, y, |_| {});
+                self.scroll_node_by(id, x, y, &mut dispatch_event);
                 return true;
             }
             current = node.parent;
@@ -2685,6 +2695,14 @@ impl BaseDocument {
     }
 
     pub fn scroll_to_node(&mut self, node_id: NodeId) {
+        self.scroll_to_node_with_events(node_id, |_| {});
+    }
+
+    pub fn scroll_to_node_with_events<F: FnMut(DomEvent)>(
+        &mut self,
+        node_id: NodeId,
+        mut dispatch_event: F,
+    ) {
         // Every scroll container between the node and the root, innermost
         // first. Scrolling only the viewport is not `scrollIntoView`: it does
         // nothing at all for a node inside a nested scroller, which is what an
@@ -2729,7 +2747,7 @@ impl BaseDocument {
             let dx = f64::from(box_.x - target.x);
             let dy = f64::from(box_.y - target.y);
             let _ = layout;
-            self.scroll_node_by(container, dx, dy, |_| {});
+            self.scroll_node_by(container, dx, dy, &mut dispatch_event);
         }
 
         // `absolute_position` gives the node's position in document space (it does not
@@ -2742,7 +2760,13 @@ impl BaseDocument {
 
         // `scroll_viewport_by` subtracts the delta from the current scroll offset, so pass
         // `current - target` in order to land on `target`.
-        self.scroll_viewport_by(current.x - target.x as f64, current.y - target.y as f64);
+        let dx = current.x - target.x as f64;
+        let dy = current.y - target.y as f64;
+        if let Some(root) = self.try_root_element().map(|element| element.id) {
+            self.scroll_node_by(root, dx, dy, dispatch_event);
+        } else {
+            self.scroll_viewport_by(dx, dy);
+        }
     }
 
     /// Scroll to the element targeted by the given URL fragment (the `#...` part of a URL).
@@ -3503,6 +3527,59 @@ mod hover_state_tests {
         assert!(!doc.hover_node_is_text);
         assert_eq!(doc.get_hover_node_id(), Some(container));
         assert_eq!(doc.get_cursor(), Some(CursorIcon::Default));
+    }
+}
+
+#[cfg(test)]
+mod control_scroll_tests {
+    use super::*;
+    use crate::{Attribute, qual_name};
+    use blitz_traits::shell::ColorScheme;
+
+    #[test]
+    fn controlled_scroll_dispatches_the_dom_scroll_event() {
+        let mut doc = BaseDocument::new(DocumentConfig {
+            viewport: Some(Viewport::new(400, 300, 1.0, ColorScheme::Light)),
+            ..Default::default()
+        });
+        let root_id = doc.root_node().id;
+        let style = |value: &str| Attribute {
+            name: qual_name!("style"),
+            value: value.into(),
+        };
+
+        let mut mutator = doc.mutate();
+        let html = mutator.create_element(qual_name!("html"), vec![]);
+        let body = mutator.create_element(qual_name!("body"), vec![style("margin:0")]);
+        let scroller = mutator.create_element(
+            qual_name!("div"),
+            vec![style("width:200px;height:100px;overflow-y:scroll")],
+        );
+        let spacer = mutator.create_element(qual_name!("div"), vec![style("height:400px")]);
+        let target = mutator.create_element(qual_name!("button"), vec![style("height:40px")]);
+        mutator.append_children(scroller, &[spacer, target]);
+        mutator.append_children(body, &[scroller]);
+        mutator.append_children(html, &[body]);
+        mutator.append_children(root_id, &[html]);
+        drop(mutator);
+        doc.resolve(0.0);
+
+        // The manual mutator deliberately bypasses the HTML/style parser used
+        // by loaded documents. Give the fixture explicit post-layout geometry
+        // so this unit test isolates event forwarding rather than CSS parsing.
+        doc.nodes[html].final_layout_mut().size.height = 300.0;
+        doc.nodes[html].final_layout_mut().content_size.height = 600.0;
+        doc.nodes[target].final_layout_mut().location.y = 400.0;
+
+        let mut events = Vec::new();
+        doc.scroll_to_node_with_events(target, |event| events.push(event));
+
+        assert!(doc.viewport_scroll.y > 0.0);
+        assert!(
+            events
+                .iter()
+                .any(|event| { event.target == html && event.name() == "scroll" })
+        );
     }
 }
 
