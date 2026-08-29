@@ -28,11 +28,22 @@ pub(crate) struct DomProtos {
 #[derive(Clone)]
 pub(crate) struct Listener {
     pub callback: JsObject,
-    pub capture: bool,
     pub once: bool,
 }
 
 pub(crate) type ListenerMap = HashMap<String, Vec<Listener>>;
+
+/// A node listener is owned by its JavaScript node wrapper, not by this native
+/// lookup index. Keeping a second strong callback here creates an uncollectable
+/// cycle when a closure captures its node: registry -> callback -> wrapper.
+#[derive(Clone)]
+pub(crate) struct NodeListener {
+    pub callback: WeakJsObject,
+    pub capture: bool,
+    pub once: bool,
+}
+
+pub(crate) type NodeListenerMap = HashMap<String, Vec<NodeListener>>;
 pub(crate) type IpcHandler = std::rc::Rc<dyn Fn(String)>;
 
 /// State owned by the script runtime but shared (via `Rc`) with the native
@@ -73,7 +84,11 @@ pub(crate) struct RuntimeState {
     /// Cache of `DOMTokenList` objects returned by `Element.classList`.
     pub class_list_wrappers: FxHashMap<NodeId, WeakJsObject>,
     /// Event listeners registered on nodes, keyed by node id then event type.
-    pub node_listeners: FxHashMap<NodeId, ListenerMap>,
+    pub node_listeners: FxHashMap<NodeId, NodeListenerMap>,
+    /// Strong roots for wrappers with listeners while their nodes are in the
+    /// live document. Detaching a subtree removes these roots after linking
+    /// its wrappers together inside Boa's heap.
+    pub listener_wrappers: FxHashMap<NodeId, JsObject>,
     /// Nodes detached from the document but not yet freed.
     ///
     /// A node is removed while script may still hold its wrapper, and whether

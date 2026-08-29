@@ -52,11 +52,9 @@ fn churning_rows_does_not_grow_the_document() {
     doc.poll(None);
     doc.inner_mut().resolve(0.0);
 
-    // Collect first. The wrapper cache is weak, so a removed node is freed once
-    // its wrapper is collected, and nothing here would otherwise trigger a
-    // collection: measuring immediately after the churn reports nodes that are
-    // unreachable but not yet swept, which is not the leak this is about.
-    boa_gc::force_collect();
+    // Ordinary polling must bound the detached backlog itself. Requiring an
+    // embedder or a test to force Boa's collector merely turns the permanent
+    // leak into an application-specific one.
     doc.poll(None);
     doc.inner_mut().resolve(0.0);
 
@@ -69,6 +67,94 @@ fn churning_rows_does_not_grow_the_document() {
         after < 40,
         "churning 2000 rows left {after} nodes in the document; \
          removed nodes are not being freed"
+    );
+}
+
+#[test]
+fn listeners_do_not_turn_removed_nodes_into_permanent_roots() {
+    // A listener is owned by the node. It must keep working while script owns
+    // that detached node, but the listener registry must not itself become an
+    // external root after every other reference is gone. Real component trees
+    // put listeners on nearly every button, so this distinction is the
+    // difference between bounded navigation and retaining an entire Solid
+    // owner graph on every remount.
+    let mut doc = document(
+        r#"
+        const list = document.getElementById('list');
+        for (let turn = 0; turn < 2000; turn += 1) {
+          const row = document.createElement('button');
+          row.addEventListener('click', () => {});
+          list.appendChild(row);
+          list.removeChild(row);
+        }
+        "#,
+    );
+    doc.poll(None);
+    doc.inner_mut().resolve(0.0);
+
+    let after = node_count(&doc);
+    assert!(
+        after < 40,
+        "churning listener-bearing rows left {after} nodes in the document; \
+         the listener registry is incorrectly rooting detached nodes"
+    );
+}
+
+#[test]
+fn every_dom_removal_path_is_reclaimed() {
+    let mut doc = document(
+        r#"
+        const list = document.getElementById('list');
+        for (let turn = 0; turn < 500; turn += 1) {
+          const byRemove = document.createElement('div');
+          list.appendChild(byRemove);
+          byRemove.remove();
+
+          const byReplaceChild = document.createElement('div');
+          list.appendChild(byReplaceChild);
+          list.replaceChild(document.createElement('span'), byReplaceChild);
+
+          const byReplaceChildren = document.createElement('div');
+          list.replaceChildren(byReplaceChildren);
+
+          const byTextContent = document.createElement('div');
+          byTextContent.appendChild(document.createElement('button'));
+          list.appendChild(byTextContent);
+          byTextContent.textContent = '';
+        }
+        list.replaceChildren();
+        "#,
+    );
+    doc.poll(None);
+    doc.inner_mut().resolve(0.0);
+
+    let after = node_count(&doc);
+    assert!(
+        after < 40,
+        "DOM removal APIs left {after} nodes in the document; one or more paths bypass reclamation"
+    );
+}
+
+#[test]
+fn a_listener_closure_capturing_its_node_is_not_an_external_root() {
+    let mut doc = document(
+        r#"
+        const list = document.getElementById('list');
+        for (let turn = 0; turn < 2000; turn += 1) {
+          const row = document.createElement('button');
+          row.addEventListener('click', () => row.textContent);
+          list.appendChild(row);
+          row.remove();
+        }
+        "#,
+    );
+    doc.poll(None);
+    doc.inner_mut().resolve(0.0);
+
+    let after = node_count(&doc);
+    assert!(
+        after < 40,
+        "listener closures capturing their node left {after} nodes in the document"
     );
 }
 
@@ -100,5 +186,40 @@ fn a_removed_node_script_still_holds_stays_usable() {
     assert!(
         text.contains("after"),
         "a removed node that script still holds must stay usable, got {text:?}"
+    );
+}
+
+#[test]
+fn a_held_detached_subtree_keeps_descendant_listeners_when_reinserted() {
+    let mut doc = document(
+        r#"
+        globalThis.__detachedClicks = 0;
+        (() => {
+          const root = document.createElement('div');
+          const child = document.createElement('button');
+          child.addEventListener('click', () => { globalThis.__detachedClicks += 1; });
+          root.appendChild(child);
+          document.body.appendChild(root);
+          root.remove();
+          globalThis.__keptDetachedRoot = root;
+        })();
+        "#,
+    );
+    boa_gc::force_collect();
+    doc.poll(None);
+
+    let clicks = doc
+        .eval_json(
+            r#"
+            document.body.appendChild(globalThis.__keptDetachedRoot);
+            globalThis.__keptDetachedRoot.firstChild.dispatchEvent(new Event('click'));
+            globalThis.__detachedClicks;
+            "#,
+        )
+        .unwrap_or_default();
+    assert_eq!(
+        clicks.as_u64(),
+        Some(1),
+        "a listener on a held detached descendant must survive reinsertion"
     );
 }
