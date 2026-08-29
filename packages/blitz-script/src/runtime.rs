@@ -854,11 +854,16 @@ impl ScriptRuntime {
                     .get_mut(&node_id)
                     .and_then(|map| map.get_mut(name))
                 {
-                    callbacks.extend(listeners.iter().map(|l| l.callback.clone()));
+                    callbacks.extend(
+                        listeners
+                            .iter()
+                            .filter_map(|listener| listener.callback.upgrade()),
+                    );
                     // `once` listeners are removed at dispatch time
                     listeners.retain(|l| !l.once);
                 }
             }
+            crate::dom::node::sync_node_listener_callbacks(&ctx, node_id, context);
             // Upgraded: the cache is weak, and a wrapper the collector has
             // taken cannot be carrying an `on<event>` handler, because holding
             // one would have kept it alive.
@@ -1349,7 +1354,6 @@ fn window_add_event_listener(
     {
         listeners.push(Listener {
             callback,
-            capture: false,
             once: false,
         });
     }

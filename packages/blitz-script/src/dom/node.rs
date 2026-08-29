@@ -13,7 +13,108 @@ use super::{
     node_wrapper, this_node_id, to_rust_string,
 };
 use crate::dom::event::{EventRef, set_event_path};
-use crate::state::Listener;
+use crate::state::NodeListener;
+
+const LISTENER_CALLBACKS_PROPERTY: &str = "__blitz_internal_listener_callbacks__";
+const DETACHED_SUBTREE_PROPERTY: &str = "__blitz_internal_detached_subtree__";
+
+fn node_is_connected(ctx: &crate::state::DomCtx, node_id: NodeId) -> bool {
+    ctx.doc
+        .borrow()
+        .get_node(node_id)
+        .is_some_and(|node| node.flags.is_in_document())
+}
+
+/// Make the JS wrapper the strong owner of callbacks. The native map is only
+/// a dispatch index and stores weak handles, otherwise a callback closing over
+/// its own node is rooted forever by Rust.
+pub(crate) fn sync_node_listener_callbacks(
+    ctx: &crate::state::DomCtx,
+    node_id: NodeId,
+    context: &mut Context,
+) {
+    let callbacks: Vec<JsValue> = ctx
+        .state
+        .borrow()
+        .node_listeners
+        .get(&node_id)
+        .into_iter()
+        .flat_map(|by_type| by_type.values())
+        .flatten()
+        .filter_map(|listener| listener.callback.upgrade())
+        .map(Into::into)
+        .collect();
+    let wrapper = ctx
+        .state
+        .borrow()
+        .node_wrappers
+        .get(&node_id)
+        .and_then(|wrapper| wrapper.upgrade());
+    if let Some(wrapper) = wrapper {
+        super::define_value(
+            &wrapper,
+            LISTENER_CALLBACKS_PROPERTY,
+            JsArray::from_iter(callbacks, context).into(),
+            context,
+        );
+        let connected = node_is_connected(ctx, node_id);
+        let mut state = ctx.state.borrow_mut();
+        if connected {
+            state.listener_wrappers.insert(node_id, wrapper);
+        } else {
+            state.listener_wrappers.remove(&node_id);
+        }
+    }
+}
+
+/// Move listener ownership wholly into Boa before native removal. Every extant
+/// wrapper in the subtree points at one wrapper group, so holding any node
+/// preserves all descendant listeners while an unreachable subtree remains a
+/// collectable JavaScript cycle.
+pub(crate) fn unroot_detached_listener_subtree(
+    ctx: &crate::state::DomCtx,
+    node_id: NodeId,
+    context: &mut Context,
+) {
+    let ids = {
+        let doc = ctx.doc.borrow();
+        let mut ids = Vec::new();
+        let mut stack = vec![node_id];
+        while let Some(id) = stack.pop() {
+            ids.push(id);
+            if let Some(node) = doc.get_node(id) {
+                stack.extend(node.children.iter().copied());
+            }
+        }
+        ids
+    };
+    let wrappers: Vec<JsObject> = {
+        let state = ctx.state.borrow();
+        ids.iter()
+            .filter_map(|id| {
+                state
+                    .node_wrappers
+                    .get(id)
+                    .and_then(|wrapper| wrapper.upgrade())
+            })
+            .collect()
+    };
+    if !wrappers.is_empty() {
+        let group = JsArray::from_iter(wrappers.iter().cloned().map(Into::into), context);
+        for wrapper in &wrappers {
+            super::define_value(
+                wrapper,
+                DETACHED_SUBTREE_PROPERTY,
+                group.clone().into(),
+                context,
+            );
+        }
+    }
+    let mut state = ctx.state.borrow_mut();
+    for id in ids {
+        state.listener_wrappers.remove(&id);
+    }
+}
 
 pub(crate) fn init_node_proto(proto: &JsObject, context: &mut Context) {
     define_accessor(proto, "nodeType", Some(node_type), None, context);
@@ -249,17 +350,25 @@ fn set_text_content(this: &JsValue, args: &[JsValue], context: &mut Context) -> 
         )
     };
 
-    let mut doc = ctx.mutate_doc();
-    let mut mutr = doc.mutate();
     if is_text_like {
+        let mut doc = ctx.mutate_doc();
+        let mut mutr = doc.mutate();
         mutr.set_node_text(node_id, &text);
     } else {
         // Detach (rather than drop) any existing children so that JS wrappers
         // referencing them remain valid.
-        for child_id in mutr.child_ids(node_id) {
-            mutr.remove_node(child_id);
+        let children = ctx
+            .doc
+            .borrow()
+            .get_node(node_id)
+            .map(|node| node.children.clone())
+            .unwrap_or_default();
+        for child_id in children {
+            super::remove_and_free_node(&ctx, child_id, context);
         }
         if !text.is_empty() {
+            let mut doc = ctx.mutate_doc();
+            let mut mutr = doc.mutate();
             let text_id = mutr.create_text_node(&text);
             mutr.append_children(node_id, &[text_id]);
         }
@@ -317,6 +426,7 @@ fn append_child(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsRe
     mutr.append_children(parent_id, &[child_id]);
     drop(mutr);
     drop(doc);
+    super::mark_node_reattached(&ctx, child_id);
 
     // An element created after its class was defined is upgraded on insertion,
     // which is also when `connectedCallback` is due. Without this only the
@@ -361,6 +471,7 @@ fn append(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<J
         mutr.append_children(parent_id, &[child_id]);
         drop(mutr);
         drop(doc);
+        super::mark_node_reattached(&ctx, child_id);
         super::custom_elements::upgrade_if_defined(&ctx, child_id, context)?;
     }
     Ok(JsValue::undefined())
@@ -387,6 +498,9 @@ fn prepend(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<
             Some(reference) => mutr.insert_nodes_before(reference, &[child_id]),
             None => mutr.append_children(parent_id, &[child_id]),
         }
+        drop(mutr);
+        drop(doc);
+        super::mark_node_reattached(&ctx, child_id);
     }
     Ok(JsValue::undefined())
 }
@@ -396,13 +510,15 @@ fn replace_children(this: &JsValue, args: &[JsValue], context: &mut Context) -> 
     let profiling_ctx = dom_ctx(context)?;
     let _t = crate::script_stats::Timed::new(&profiling_ctx, "dom:replaceChildren");
     let parent_id = this_node_id(this)?;
-    {
-        let ctx = dom_ctx(context)?;
-        let mut doc = ctx.mutate_doc();
-        let mut mutr = doc.mutate();
-        for child in mutr.child_ids(parent_id) {
-            mutr.remove_node(child);
-        }
+    let ctx = dom_ctx(context)?;
+    let children = ctx
+        .doc
+        .borrow()
+        .get_node(parent_id)
+        .map(|node| node.children.clone())
+        .unwrap_or_default();
+    for child in children {
+        super::remove_and_free_node(&ctx, child, context);
     }
     append(this, args, context)?;
     let _ = parent_id;
@@ -439,6 +555,9 @@ fn insert_before(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
         }
         _ => mutr.append_children(parent_id, &[new_id]),
     }
+    drop(mutr);
+    drop(doc);
+    super::mark_node_reattached(&ctx, new_id);
     Ok(args[0].clone())
 }
 
@@ -450,7 +569,7 @@ fn remove_child(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsRe
     // Detached when a wrapper still holds it, freed when none does. The node is
     // returned either way, as the spec requires, and holding that return value
     // is itself what keeps it alive.
-    super::remove_and_free_node(&ctx, child_id);
+    super::remove_and_free_node(&ctx, child_id, context);
     Ok(args[0].clone())
 }
 
@@ -467,7 +586,10 @@ fn replace_child(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
             mutr.remove_node(new_id);
         }
         mutr.insert_nodes_before(old_id, &[new_id]);
-        mutr.remove_node(old_id);
+        drop(mutr);
+        drop(doc);
+        super::mark_node_reattached(&ctx, new_id);
+        super::remove_and_free_node(&ctx, old_id, context);
     }
     Ok(args[1].clone())
 }
@@ -475,10 +597,13 @@ fn replace_child(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
 fn remove(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
-    let mut doc = ctx.mutate_doc();
-    let mut mutr = doc.mutate();
-    if mutr.node_has_parent(node_id) {
-        mutr.remove_node(node_id);
+    let has_parent = ctx
+        .doc
+        .borrow()
+        .get_node(node_id)
+        .is_some_and(|node| node.parent.is_some());
+    if has_parent {
+        super::remove_and_free_node(&ctx, node_id, context);
     }
     Ok(JsValue::undefined())
 }
@@ -689,16 +814,21 @@ fn add_event_listener(
         .or_default();
 
     // Duplicate listeners (same callback + capture flag) are ignored
-    if !listeners
-        .iter()
-        .any(|l| JsObject::equals(&l.callback, &callback) && l.capture == capture)
-    {
-        listeners.push(Listener {
-            callback,
+    if !listeners.iter().any(|listener| {
+        listener
+            .callback
+            .upgrade()
+            .is_some_and(|registered| JsObject::equals(&registered, &callback))
+            && listener.capture == capture
+    }) {
+        listeners.push(NodeListener {
+            callback: callback.downgrade(),
             capture,
             once,
         });
     }
+    drop(state);
+    sync_node_listener_callbacks(&ctx, node_id, context);
 
     Ok(JsValue::undefined())
 }
@@ -731,8 +861,16 @@ fn remove_event_listener(
         .get_mut(&node_id)
         .and_then(|map| map.get_mut(&event_type))
     {
-        listeners.retain(|l| !(JsObject::equals(&l.callback, &callback) && l.capture == capture));
+        listeners.retain(|listener| {
+            !listener
+                .callback
+                .upgrade()
+                .is_some_and(|registered| JsObject::equals(&registered, &callback))
+                || listener.capture != capture
+        });
     }
+    drop(state);
+    sync_node_listener_callbacks(&ctx, node_id, context);
 
     Ok(JsValue::undefined())
 }
@@ -774,10 +912,15 @@ fn dispatch_event(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
                 .get_mut(&node_id)
                 .and_then(|listeners| listeners.get_mut(&event_type))
             {
-                callbacks.extend(listeners.iter().map(|listener| listener.callback.clone()));
+                callbacks.extend(
+                    listeners
+                        .iter()
+                        .filter_map(|listener| listener.callback.upgrade()),
+                );
                 listeners.retain(|listener| !listener.once);
             }
         }
+        sync_node_listener_callbacks(&ctx, node_id, context);
         // Upgraded: the cache is weak, and a node whose wrapper has been
         // collected cannot be carrying an `on<event>` handler, because holding
         // one would have kept the wrapper alive.

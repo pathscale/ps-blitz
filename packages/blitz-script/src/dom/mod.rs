@@ -116,13 +116,50 @@ pub(crate) fn node_wrapper(ctx: &DomCtx, node_id: NodeId, _context: &mut Context
 /// The wrapper cache is weak now, so it answers this honestly: an entry that
 /// upgrades means something is still holding the wrapper, and one that does not
 /// means the collector has taken it and the node is unreachable.
-pub(crate) fn remove_and_free_node(ctx: &DomCtx, node_id: NodeId) {
+pub(crate) fn remove_and_free_node(ctx: &DomCtx, node_id: NodeId, context: &mut Context) {
+    node::unroot_detached_listener_subtree(ctx, node_id, context);
     ctx.mutate_doc().mutate().remove_node(node_id);
     // Parked rather than judged. Asking "can script still reach this" right now
     // always answers yes: the wrapper was alive a moment ago, because the call
     // that removed the node went through it. `sweep_detached_nodes` asks later,
     // once the collector has had a chance to disagree.
     ctx.state.borrow_mut().detached_nodes.push(node_id);
+}
+
+/// Stop treating a node as detached when script inserts it again before the
+/// collector judged it. DOM move operations commonly remove and append in one
+/// turn, and a later sweep must not drop the newly connected subtree.
+pub(crate) fn mark_node_reattached(ctx: &DomCtx, node_id: NodeId) {
+    let ids = {
+        let doc = ctx.doc.borrow();
+        let mut ids = Vec::new();
+        let mut stack = vec![node_id];
+        while let Some(id) = stack.pop() {
+            ids.push(id);
+            if let Some(node) = doc.get_node(id) {
+                stack.extend(node.children.iter().copied());
+            }
+        }
+        ids
+    };
+    let mut state = ctx.state.borrow_mut();
+    state
+        .detached_nodes
+        .retain(|candidate| *candidate != node_id);
+    for id in ids {
+        let has_listeners = state
+            .node_listeners
+            .get(&id)
+            .is_some_and(|by_type| by_type.values().any(|listeners| !listeners.is_empty()));
+        if has_listeners
+            && let Some(wrapper) = state
+                .node_wrappers
+                .get(&id)
+                .and_then(|wrapper| wrapper.upgrade())
+        {
+            state.listener_wrappers.insert(id, wrapper);
+        }
+    }
 }
 
 /// Free detached nodes whose wrappers the collector has taken.
@@ -136,6 +173,20 @@ pub(crate) fn remove_and_free_node(ctx: &DomCtx, node_id: NodeId) {
 /// Called from the poll loop, so the cost is bounded by how much was removed
 /// rather than by the size of the document.
 pub(crate) fn sweep_detached_nodes(ctx: &DomCtx) {
+    // Boa's automatic collector is allocation-driven, so a large application
+    // can repeatedly remount DOM trees without crossing its collection
+    // threshold soon enough. Weak wrappers only become observably dead after a
+    // collection; without this bound, detached nodes and their listener-owned
+    // Solid closures grow linearly while the visible tree remains flat.
+    //
+    // Do not collect on every removal. Small detached sets are normal DOM
+    // behavior and Boa may collect them naturally. Crossing this threshold is
+    // the signal that delayed collection is now more expensive than one GC.
+    const DETACHED_NODE_GC_THRESHOLD: usize = 256;
+    if ctx.state.borrow().detached_nodes.len() >= DETACHED_NODE_GC_THRESHOLD {
+        boa_gc::force_collect();
+    }
+
     let candidates = std::mem::take(&mut ctx.state.borrow_mut().detached_nodes);
     if candidates.is_empty() {
         return;
@@ -160,7 +211,13 @@ pub(crate) fn sweep_detached_nodes(ctx: &DomCtx) {
                     .get(&id)
                     .and_then(WeakJsObject::upgrade)
                     .is_some();
-                if wrapper_alive || state.node_listeners.contains_key(&id) {
+                // A listener belongs to its node; it is not an external root.
+                // Treating the listener table itself as reachability keeps
+                // every removed interactive subtree forever, because buttons
+                // necessarily have listeners. A live wrapper is the evidence
+                // that script outside the node still owns it. If no wrapper
+                // survives, the listeners are dropped with the node below.
+                if wrapper_alive {
                     held = true;
                     break;
                 }
@@ -193,6 +250,7 @@ pub(crate) fn sweep_detached_nodes(ctx: &DomCtx) {
         state.dataset_wrappers.remove(&id);
         state.class_list_wrappers.remove(&id);
         state.node_listeners.remove(&id);
+        state.listener_wrappers.remove(&id);
     }
 }
 
