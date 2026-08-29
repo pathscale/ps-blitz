@@ -1065,11 +1065,8 @@ impl BaseDocument {
         let tree_ptr = self.nodes.as_mut() as *mut NodeTree;
         let guard = self.guard.clone();
 
-        let id = self
-            .nodes
-            .insert_with_key(|id| Node::new(tree_ptr, id, guard, node_data));
-
-        id
+        self.nodes
+            .insert_with_key(|id| Node::new(tree_ptr, id, guard, node_data))
     }
 
     /// Remove a node from the node tree, clearing any interaction state
