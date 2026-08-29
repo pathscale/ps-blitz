@@ -59,6 +59,9 @@ pub struct BlitzDomPainter<'dom, 'a> {
     /// offset while its contents painted correctly.
     pub(crate) initial_x: f64,
     pub(crate) initial_y: f64,
+    /// Visible document-space rectangle. This differs from the output surface
+    /// when diagnostics translate a crop to the surface origin.
+    pub(crate) viewport_clip_rect: Rect,
     /// Seconds on the document animation clock.
     pub(crate) animation_time: f64,
     /// The id of the document's root element (cached to avoid re-resolving it for every element)
@@ -91,6 +94,36 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         custom_widget_scenes: &'a CustomWidgetSceneMap,
         animation_time: f64,
     ) -> Self {
+        Self::new_with_clip(
+            dom,
+            scale,
+            width,
+            height,
+            initial_x,
+            initial_y,
+            Rect::new(
+                0.0,
+                0.0,
+                f64::from(width) * scale,
+                f64::from(height) * scale,
+            ),
+            custom_widget_scenes,
+            animation_time,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_with_clip(
+        dom: &'dom BaseDocument,
+        scale: f64,
+        width: u32,
+        height: u32,
+        initial_x: f64,
+        initial_y: f64,
+        viewport_clip_rect: Rect,
+        custom_widget_scenes: &'a CustomWidgetSceneMap,
+        animation_time: f64,
+    ) -> Self {
         let selection_ranges: HashMap<NodeId, (usize, usize)> = dom
             .get_text_selection_ranges()
             .into_iter()
@@ -107,6 +140,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             height,
             initial_x,
             initial_y,
+            viewport_clip_rect,
             animation_time,
             root_element_id,
             #[cfg(feature = "scrollbars")]
@@ -194,13 +228,6 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         // the rectangle from the unscaled numbers culls everything past
         // `width / scale`, which on a HiDPI display silently drops the right
         // and bottom of the page.
-        let viewport_clip_rect = Rect::new(
-            0.0,
-            0.0,
-            self.width as f64 * self.scale,
-            self.height as f64 * self.scale,
-        );
-
         self.render_element(
             scene,
             root_id,
@@ -208,7 +235,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                 x: self.initial_x - (viewport_scroll.x * self.scale),
                 y: self.initial_y - (viewport_scroll.y * self.scale),
             }),
-            viewport_clip_rect,
+            self.viewport_clip_rect,
         );
 
         // Render debug overlay
