@@ -546,9 +546,11 @@ impl<Rend: WindowRenderer> View<Rend> {
                 #[cfg(feature = "accessibility")]
                 {
                     let inner = self.doc.inner();
-                    if inner.has_changes() {
-                        self.accessibility.update_tree(&inner);
-                    }
+                    // `poll()` already answered that the document changed.
+                    // The former `changed_nodes` guard was both inverted and
+                    // never cleared, so it suppressed this update while
+                    // retaining every node id the document had ever created.
+                    self.accessibility.update_tree(&inner);
                 }
 
                 self.request_redraw();

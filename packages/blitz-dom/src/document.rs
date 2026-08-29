@@ -333,9 +333,7 @@ pub struct BaseDocument {
     /// Load state (abort controller and in-flight request id) for each
     /// `<iframe>` element whose sub-document is loaded automatically
     pub(crate) iframe_loads: HashMap<NodeId, crate::iframe::IframeLoad>,
-    /// Set of changed nodes for updating the accessibility tree
-    pub(crate) changed_nodes: HashSet<NodeId>,
-    /// Set of changed nodes for updating the accessibility tree
+    /// Nodes whose layout construction is waiting for a later pass.
     pub(crate) deferred_construction_nodes: Vec<ConstructionTask>,
     /// Which parts of the document differ from the previously painted frame.
     ///
@@ -564,7 +562,6 @@ impl BaseDocument {
             #[cfg(feature = "shadow-dom")]
             custom_element_nodes: HashSet::new(),
 
-            changed_nodes: HashSet::new(),
             deferred_construction_nodes: Vec::new(),
             paint_damage: Default::default(),
             image_cache: HashMap::new(),
@@ -1072,8 +1069,6 @@ impl BaseDocument {
             .nodes
             .insert_with_key(|id| Node::new(tree_ptr, id, guard, node_data));
 
-        // Mark the new node as changed.
-        self.changed_nodes.insert(id);
         id
     }
 
@@ -1225,11 +1220,6 @@ impl BaseDocument {
         }
 
         self.remove_node_from_tree(anon_id);
-    }
-
-    /// Whether the document has been mutated
-    pub fn has_changes(&self) -> bool {
-        self.changed_nodes.is_empty()
     }
 
     pub fn create_text_node(&mut self, text: &str) -> NodeId {
