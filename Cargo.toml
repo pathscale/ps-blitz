@@ -40,7 +40,7 @@ exclude = ["sites", "packages/blitz-wasm/guest"]
 resolver = "2"
 
 [workspace.package]
-version = "0.3.1"
+version = "0.3.2"
 license = "MIT OR Apache-2.0"
 homepage = "https://github.com/pathscale/ps-blitz"
 repository = "https://github.com/pathscale/ps-blitz"
@@ -50,15 +50,15 @@ rust-version = "1.89.0"
 
 [workspace.dependencies]
 # Blitz dependencies(in-repo)
-blitz = { package = "ps-blitz", version = "^0.3.1", path = "./packages/blitz" }
-blitz-dom = { package = "ps-blitz-dom", version = "^0.3.1", path = "./packages/blitz-dom", default-features = false }
-blitz-html = { package = "ps-blitz-html", version = "^0.3.1", path = "./packages/blitz-html", default-features = false }
-blitz-script = { package = "ps-blitz-script", version = "^0.3.1", path = "./packages/blitz-script", default-features = false }
-blitz-net = { package = "ps-blitz-net", version = "^0.3.1", path = "./packages/blitz-net", default-features = false }
-blitz-paint = { package = "ps-blitz-paint", version = "^0.3.1", path = "./packages/blitz-paint", default-features = false }
-blitz-shell = { package = "ps-blitz-shell", version = "^0.3.1", path = "./packages/blitz-shell", default-features = false }
-blitz-traits = { package = "ps-blitz-traits", version = "^0.3.1", path = "./packages/blitz-traits", default-features = false }
-stylo_taffy = { package = "ps-stylo-taffy", version = "^0.3.1", path = "./packages/stylo_taffy", default-features = false }
+blitz = { package = "ps-blitz", version = "^0.3.2", path = "./packages/blitz" }
+blitz-dom = { package = "ps-blitz-dom", version = "^0.3.2", path = "./packages/blitz-dom", default-features = false }
+blitz-html = { package = "ps-blitz-html", version = "^0.3.2", path = "./packages/blitz-html", default-features = false }
+blitz-script = { package = "ps-blitz-script", version = "^0.3.2", path = "./packages/blitz-script", default-features = false }
+blitz-net = { package = "ps-blitz-net", version = "^0.3.2", path = "./packages/blitz-net", default-features = false }
+blitz-paint = { package = "ps-blitz-paint", version = "^0.3.2", path = "./packages/blitz-paint", default-features = false }
+blitz-shell = { package = "ps-blitz-shell", version = "^0.3.2", path = "./packages/blitz-shell", default-features = false }
+blitz-traits = { package = "ps-blitz-traits", version = "^0.3.2", path = "./packages/blitz-traits", default-features = false }
+stylo_taffy = { package = "ps-stylo-taffy", version = "^0.3.2", path = "./packages/stylo_taffy", default-features = false }
 dioxus-native = { package = "ps-dioxus-native", version = "^0.7.2", path = "./packages/dioxus-native", default-features = false }
 dioxus-native-dom = { package = "ps-dioxus-native-dom", version = "^0.7.2", path = "./packages/dioxus-native-dom", default-features = false }
 # 0.1.3, because `packages/debug_timer` is 0.1.3 and this asked for 0.1.2.
@@ -87,13 +87,13 @@ debug_timer = { package = "ps-debug-timer", version = "^0.1.4", path = "./packag
 accesskit_xplat = { package = "ps-accesskit-xplat", version = "^0.1.1", path = "./packages/accesskit_xplat", default-features = false }
 browser-persistence = { path = "./apps/browser/persistence" }
 blitz-test-harness = { path = "./packages/blitz-test-harness" }
-blitz-dom-api = { package = "ps-blitz-dom-api", version = "^0.3.1", path = "./packages/blitz-dom-api" }
+blitz-dom-api = { package = "ps-blitz-dom-api", version = "^0.3.2", path = "./packages/blitz-dom-api" }
 # Published to crates.io on its own 0.1 line, unlike everything else here,
 # which tracks the workspace version. The `version` is what makes a
 # consumer outside this repo resolvable, and it is what caught the copy
 # that had drifted to `publish = false` and a workspace version.
 dom-abi = { version = "^0.1.1", path = "./packages/dom-abi" }
-blitz-platform-api = { package = "ps-blitz-platform-api", version = "^0.3.1", path = "./packages/blitz-platform-api" }
+blitz-platform-api = { package = "ps-blitz-platform-api", version = "^0.3.2", path = "./packages/blitz-platform-api" }
 
 # Servo dependencies
 style = { version = "^0.20.0", package = "stylo" }
@@ -106,7 +106,7 @@ boa_engine = { package = "ps-boa-engine", version = "^1.0.2" }
 boa_runtime = { package = "ps-boa-runtime", version = "^1.0.2" }
 boa_gc = { package = "ps-boa-gc", version = "^1.0.2" }
 base64 = "^0.22"
-blitz-debug-control = { package = "ps-blitz-debug-control", version = "^0.3.1", path = "./packages/blitz-debug-control" }
+blitz-debug-control = { package = "ps-blitz-debug-control", version = "^0.3.2", path = "./packages/blitz-debug-control" }
 getrandom = "^0.4"
 serde_json = "^1"
 cssparser = { version = "^0.37.0" }
