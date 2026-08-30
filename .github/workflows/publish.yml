@@ -99,8 +99,19 @@ jobs:
           # in this list.
           crates='ps-blitz-traits ps-stylo-taffy ps-blitz-dom ps-blitz-platform-api
                   ps-blitz-dom-api ps-blitz-html ps-blitz-net ps-blitz-paint
-                  ps-blitz-debug-control ps-blitz-script ps-blitz-shell
+                  ps-blitz-script ps-blitz-shell
                   ps-blitz-wasm ps-blitz'
+
+          # Refactors can remove or move a workspace crate while leaving this
+          # dependency-ordered release list stale. Validate the complete plan
+          # before uploading anything so a typo cannot burn half a version.
+          cargo metadata --format-version 1 >/dev/null
+          for crate in $crates; do
+            cargo pkgid -p "$crate" >/dev/null || {
+              echo "publish plan names a crate outside this workspace: $crate" >&2
+              exit 1
+            }
+          done
 
           published=''
           skipped=''
