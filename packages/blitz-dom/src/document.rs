@@ -258,6 +258,13 @@ pub struct BaseDocument {
     /// The Stylo engine
     pub(crate) stylist: Stylist,
     pub(crate) animations: DocumentAnimationSet,
+    /// Monotonic animation clock used by the most recent resolve.
+    ///
+    /// Embedders may inspect or capture between window frames. A diagnostic
+    /// caller historically passed `0.0` and rewound every CSS transition in
+    /// the document; retaining the high-water mark makes that impossible at
+    /// the document boundary.
+    pub(crate) last_resolve_animation_time: f64,
     /// Stylo shared lock
     pub(crate) guard: SharedRwLock,
     /// Stylo invalidation map. We insert into this map prior to mutating nodes.
@@ -284,6 +291,12 @@ pub struct BaseDocument {
     pub(crate) hover_node_is_text: bool,
     /// The last known pointer position in client coordinates (viewport-relative, unscrolled).
     pub(crate) last_client_pointer_position: Option<taffy::Point<f32>>,
+    /// Exact DOM target selected by semantic automation.
+    ///
+    /// Window pointers leave this empty and are re-hit-tested after layout.
+    /// An inspector already resolved identity, so re-hit-testing its synthetic
+    /// centre coordinate would silently replace that target with an overlap.
+    pub(crate) semantic_hover_node_id: Option<NodeId>,
     /// The node which is currently focussed (if any)
     pub(crate) focus_node_id: Option<NodeId>,
     /// The node which is currently active (if any)
@@ -518,6 +531,7 @@ impl BaseDocument {
             root_node_id: NodeId::default(),
             stylist,
             animations: DocumentAnimationSet::default(),
+            last_resolve_animation_time: 0.0,
             snapshots,
             nodes_to_id,
             viewport,
@@ -541,6 +555,7 @@ impl BaseDocument {
             hover_hit_node_id: None,
             hover_node_is_text: false,
             last_client_pointer_position: None,
+            semantic_hover_node_id: None,
             focus_node_id: None,
             active_node_id: None,
             mousedown_node_id: None,
@@ -1919,6 +1934,7 @@ impl BaseDocument {
     }
 
     pub fn set_hover_to(&mut self, x: f32, y: f32) -> bool {
+        self.semantic_hover_node_id = None;
         // Record the pointer position in client (unscrolled) coordinates so
         // that `refresh_hover` can re-resolve hover state after layout or
         // scroll changes.
@@ -1956,6 +1972,39 @@ impl BaseDocument {
         let hover_node_id = hit_node_id.and_then(|id| self.nearest_non_anonymous_ancestor(id));
         let new_is_text = hit.map(|hit| hit.is_text).unwrap_or(false);
 
+        self.apply_hover_target(hit_node_id, hover_node_id, new_is_text, scrollbar_changed)
+    }
+
+    /// Move the authored hover state to an already-resolved DOM node.
+    ///
+    /// Semantic automation has selected a node by identity already. Repeating
+    /// hit testing at its centre can choose an overlapping child or overlay,
+    /// especially inside nested scrollers, and makes `Hover { node_id }`
+    /// target something other than the requested node. Pointer coordinates are
+    /// still recorded for event payloads and later layout refreshes.
+    pub fn set_hover_to_node(&mut self, node_id: NodeId, x: f32, y: f32) -> bool {
+        self.semantic_hover_node_id = Some(node_id);
+        self.last_client_pointer_position = Some(taffy::Point {
+            x: x - self.viewport_scroll.x as f32,
+            y: y - self.viewport_scroll.y as f32,
+        });
+
+        let hovered_scrollbar = self.hovered_scrollbar.take();
+        let scrollbar_changed = hovered_scrollbar.is_some();
+        if let Some(scrollbar) = hovered_scrollbar {
+            self.show_scrollbars(scrollbar.node_id);
+        }
+        let hover_node_id = self.nearest_non_anonymous_ancestor(node_id);
+        self.apply_hover_target(Some(node_id), hover_node_id, false, scrollbar_changed)
+    }
+
+    fn apply_hover_target(
+        &mut self,
+        hit_node_id: Option<NodeId>,
+        hover_node_id: Option<NodeId>,
+        new_is_text: bool,
+        scrollbar_changed: bool,
+    ) -> bool {
         let hit_changed =
             hit_node_id != self.hover_hit_node_id || new_is_text != self.hover_node_is_text;
         self.hover_hit_node_id = hit_node_id;
@@ -2001,6 +2050,7 @@ impl BaseDocument {
         // The pointer is no longer over the document, so stop re-resolving
         // hover state against it.
         self.last_client_pointer_position = None;
+        self.semantic_hover_node_id = None;
         self.hover_hit_node_id = None;
 
         let Some(hover_node_id) = self.hover_node_id else {
@@ -2030,6 +2080,13 @@ impl BaseDocument {
     /// TODO: synthesizing pointerenter/pointerleave DOM events for
     /// hover changes caused by layout shifts.
     pub fn refresh_hover(&mut self) -> bool {
+        if let Some(node_id) = self.semantic_hover_node_id {
+            if self.get_node(node_id).is_some() {
+                let hover_node_id = self.nearest_non_anonymous_ancestor(node_id);
+                return self.apply_hover_target(Some(node_id), hover_node_id, false, false);
+            }
+            self.semantic_hover_node_id = None;
+        }
         let Some(pos) = self.last_client_pointer_position else {
             return false;
         };
@@ -3504,6 +3561,26 @@ mod hover_state_tests {
             "expected the stored hover target to be the containing element"
         );
         assert_eq!(doc.get_cursor(), Some(CursorIcon::Text));
+    }
+
+    #[test]
+    fn semantic_hover_keeps_the_resolved_node_instead_of_hit_testing_again() {
+        let (mut doc, container) = make_doc();
+
+        // This coordinate is outside the 300px-wide container. A coordinate
+        // hit test therefore cannot select it, but semantic automation has
+        // already selected the container by id and must preserve that target.
+        doc.set_hover_to_node(container, 350.0, 250.0);
+
+        assert_eq!(doc.get_hover_node_id(), Some(container));
+        assert_eq!(doc.hover_hit_node_id, Some(container));
+
+        doc.resolve(0.0);
+        assert_eq!(
+            doc.get_hover_node_id(),
+            Some(container),
+            "a resolve must not turn semantic identity back into a coordinate hit"
+        );
     }
 
     /// Hovering the empty region of the anonymous block (right of the text) is

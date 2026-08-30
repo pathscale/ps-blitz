@@ -183,6 +183,13 @@ impl BaseDocument {
 
     /// Restyle the tree and then relayout it
     pub fn resolve(&mut self, current_time_for_animations: f64) {
+        if current_time_for_animations.is_finite() {
+            self.last_resolve_animation_time = self
+                .last_resolve_animation_time
+                .max(current_time_for_animations);
+        }
+        let current_time_for_animations = self.last_resolve_animation_time;
+
         if TDocument::as_node(&self.root_node())
             .first_element_child()
             .is_none()
@@ -283,6 +290,7 @@ impl BaseDocument {
         }
         #[cfg(target_arch = "wasm32")]
         self.resolve_layout();
+        self.resolve_hoisted_positions();
         self.correct_hoisted_fixed_positions();
         self.resolve_hoisted_clips();
         timer.record_time("layout");
@@ -303,6 +311,7 @@ impl BaseDocument {
             }
             self.flush_styles_to_layout(root_node_id);
             self.resolve_layout();
+            self.resolve_hoisted_positions();
             self.correct_hoisted_fixed_positions();
             self.resolve_hoisted_clips();
             self.repair_inline_line_breaks();
@@ -822,6 +831,55 @@ impl BaseDocument {
         }
     }
 
+    /// Recompute hoisted paint offsets from the layout that just finished.
+    ///
+    /// Stacking contexts are assembled while styles are flushed into Taffy,
+    /// before Taffy computes this frame's boxes. Accumulating ancestor
+    /// locations during that flush therefore reads zeroes on the first frame
+    /// and previous-frame positions after relayout. The next unrelated
+    /// restyle rebuilds the same context from current boxes, which made a
+    /// transformed flower repair itself on its first hover.
+    ///
+    /// A hoisted child is painted from the context host, then by this offset,
+    /// then by its own layout location. Its layout parent's document position
+    /// relative to the host is therefore the exact offset needed here. Fixed
+    /// children are the exception: their box tree was deliberately reparented
+    /// to the root and [`Self::correct_hoisted_fixed_positions`] restores their
+    /// authored stacking-context offset separately.
+    pub(crate) fn resolve_hoisted_positions(&mut self) {
+        let hosts: Vec<NodeId> = self
+            .nodes
+            .iter()
+            .filter_map(|(node_id, node)| node.stacking_context.is_some().then_some(node_id))
+            .collect();
+
+        for host in hosts {
+            let host_position = self.nodes[host].absolute_position(0.0, 0.0);
+            let Some(mut context) = self.nodes[host].stacking_context.take() else {
+                continue;
+            };
+
+            for child in context.children.iter_mut() {
+                let node = &self.nodes[child.node_id];
+                if node
+                    .primary_styles()
+                    .is_some_and(|styles| styles.clone_position() == Position::Fixed)
+                {
+                    continue;
+                }
+                let child_position = node.absolute_position(0.0, 0.0);
+                let child_layout_position = node.final_layout().location;
+                child.position = taffy::Point {
+                    x: child_position.x - host_position.x - child_layout_position.x,
+                    y: child_position.y - host_position.y - child_layout_position.y,
+                };
+            }
+
+            context.compute_content_size(self);
+            self.nodes[host].stacking_context = Some(context);
+        }
+    }
+
     /// Turn each hoisted child's clipping ancestors into rectangles paint can
     /// use, relative to the origin of the stacking context it paints in.
     ///
@@ -1005,5 +1063,18 @@ impl BaseDocument {
 
         // println!("\n\n");
         // taffy::print_tree(self, root_node_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{BaseDocument, DocumentConfig};
+
+    #[test]
+    fn resolving_for_inspection_cannot_rewind_the_animation_clock() {
+        let mut document = BaseDocument::new(DocumentConfig::default());
+        document.resolve(2.5);
+        document.resolve(0.0);
+        assert_eq!(document.last_resolve_animation_time, 2.5);
     }
 }

@@ -29,6 +29,8 @@ use style::shared_lock::SharedRwLock;
 use style::stylesheets::UrlExtraData;
 use style::values::computed::CSSPixelLength;
 use style::values::computed::Display as StyloDisplay;
+use style::values::computed::Rotate;
+use style::values::generics::transform::{Scale, Translate};
 use style::values::specified::box_::{DisplayInside, DisplayOutside};
 use style_dom::ElementState;
 use style_traits::values::ToCss;
@@ -1339,7 +1341,19 @@ impl Node {
             return true;
         }
 
-        if self.transform().is_some() {
+        // This runs while the stacking-context tree is built, before
+        // `resolve_transforms` populates the cached device-space matrix. Using
+        // that cache here makes the first frame treat a transformed node as an
+        // ordinary box, hoist its painted children into the parent, and only
+        // repair the tree after the first hover/restyle. The computed CSS value
+        // is already available and is the source of truth for whether the node
+        // establishes a stacking context.
+        let box_styles = style.get_box();
+        if !box_styles.transform.0.is_empty()
+            || !matches!(box_styles.translate, Translate::None)
+            || !matches!(box_styles.rotate, Rotate::None)
+            || !matches!(box_styles.scale, Scale::None)
+        {
             return true;
         }
 
@@ -1347,7 +1361,7 @@ impl Node {
         // without any other visual effect. Ignoring it lets a negative z-index
         // descendant escape to an ancestor context, where it is painted before
         // (and so underneath) the backgrounds of the boxes in between.
-        if style.get_box().isolation == Isolation::Isolate {
+        if box_styles.isolation == Isolation::Isolate {
             return true;
         }
 

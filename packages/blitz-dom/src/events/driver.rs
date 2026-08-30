@@ -53,6 +53,34 @@ impl<'doc, Handler: EventHandler> EventDriver<'doc, Handler> {
 
         drop(doc);
 
+        self.dispatch_pointer_move(event, prev_hover_node_id, hover_node_id, changed)
+    }
+
+    /// Dispatch pointer movement to a semantic node that the caller already
+    /// resolved, without selecting a second target by coordinate hit testing.
+    pub fn handle_pointer_move_to_node(
+        &mut self,
+        event: &BlitzPointerEvent,
+        node_id: NodeId,
+    ) -> Option<NodeId> {
+        let mut doc = self.doc.inner_mut();
+
+        let prev_hover_node_id = doc.hover_node_id;
+        let changed = doc.set_hover_to_node(node_id, event.page_x(), event.page_y());
+        let hover_node_id = doc.hover_node_id;
+
+        drop(doc);
+
+        self.dispatch_pointer_move(event, prev_hover_node_id, hover_node_id, changed)
+    }
+
+    fn dispatch_pointer_move(
+        &mut self,
+        event: &BlitzPointerEvent,
+        prev_hover_node_id: Option<NodeId>,
+        hover_node_id: Option<NodeId>,
+        changed: bool,
+    ) -> Option<NodeId> {
         if !changed {
             return prev_hover_node_id;
         }
