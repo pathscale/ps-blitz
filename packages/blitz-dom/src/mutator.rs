@@ -763,6 +763,33 @@ impl DocumentMutator<'_> {
         }
     }
 
+    /// Sever the cached box-tree edge before a DOM child is detached or freed.
+    ///
+    /// The layout tree is not always the DOM tree: inline content can sit
+    /// below an anonymous block, and fixed content can be hoisted. Hidden
+    /// subtrees deliberately retain their layout caches, so damage on the DOM
+    /// parent alone cannot make a stale cached child safe before rounding and
+    /// painting traverse it. Invalidating the actual layout parent at mutation
+    /// time prevents either pass from indexing a SlotMap key that was freed.
+    fn invalidate_layout_parent_edge(&mut self, node_id: NodeId) {
+        let Some(layout_parent_id) = self
+            .doc
+            .nodes
+            .get(node_id)
+            .and_then(|node| node.layout_parent.get())
+        else {
+            return;
+        };
+        if let Some(layout_parent) = self.doc.nodes.get_mut(layout_parent_id) {
+            layout_parent.layout_children.get_mut().take();
+            layout_parent.paint_children.get_mut().take();
+            layout_parent.insert_damage(ALL_DAMAGE);
+        }
+        if let Some(node) = self.doc.nodes.get(node_id) {
+            node.layout_parent.set(None);
+        }
+    }
+
     /// Zero the layout of a node and everything under it.
     fn clear_layout_of_subtree(doc: &mut BaseDocument, node_id: NodeId) {
         let mut stack = vec![node_id];
@@ -798,6 +825,7 @@ impl DocumentMutator<'_> {
         // deliberately not dropped, so JS wrappers stay valid, but nothing
         // outside the document should occupy space in it.
         Self::clear_layout_of_subtree(self.doc, node_id);
+        self.invalidate_layout_parent_edge(node_id);
 
         let node = &mut self.doc.nodes[node_id];
 
@@ -826,6 +854,7 @@ impl DocumentMutator<'_> {
     ) -> Option<Node> {
         let node_is_in_document = self.doc.nodes[node_id].flags.is_in_document();
         self.process_removed_subtree(node_id);
+        self.invalidate_layout_parent_edge(node_id);
 
         let node = self.doc.drop_node_ignoring_parent_with(node_id, on_drop);
         self.mutations_occurred |= node_is_in_document;
@@ -875,6 +904,7 @@ impl DocumentMutator<'_> {
         self.mutations_occurred |= parent_is_in_doc && !children.is_empty();
         for child_id in children {
             self.process_removed_subtree(child_id);
+            self.invalidate_layout_parent_edge(child_id);
             let _ = self.doc.drop_node_ignoring_parent(child_id);
         }
         self.maybe_record_node(node_id);
@@ -931,6 +961,7 @@ impl DocumentMutator<'_> {
         // parent's child list, and anchor indices would be computed against a
         // child list that still contains the moved nodes.
         for child_id in child_ids.iter().copied() {
+            self.invalidate_layout_parent_edge(child_id);
             let child = &mut self.doc.nodes[child_id];
             let child_was_in_doc = child.flags.is_in_document();
             self.mutations_occurred |= child_was_in_doc;
@@ -1674,6 +1705,50 @@ mod test {
             document.mousedown_node_id, None,
             "a removed node must not stay the pressed node"
         );
+    }
+
+    #[test]
+    fn dropping_a_child_clears_a_hidden_retained_layout_edge() {
+        let mut document = BaseDocument::new(DocumentConfig {
+            viewport: Some(Viewport::new(800, 600, 1.0, ColorScheme::Light)),
+            ..Default::default()
+        });
+        let root = document.root_node().id;
+        let (parent, child) = {
+            let mut mutator = document.mutate();
+            let parent = mutator.create_element(qual_name!("div"), vec![]);
+            let child = mutator.create_element(qual_name!("button"), vec![]);
+            mutator.set_style_property(parent, "width", "200px");
+            mutator.set_style_property(parent, "height", "100px");
+            mutator.append_children(parent, &[child]);
+            mutator.append_children(root, &[parent]);
+            (parent, child)
+        };
+
+        document.resolve(0.0);
+        {
+            let mut mutator = document.mutate();
+            mutator.set_style_property(parent, "display", "none");
+        }
+        document.resolve(0.0);
+        assert!(
+            document.nodes[parent]
+                .layout_children
+                .borrow()
+                .as_ref()
+                .is_some_and(|children| children.contains(&child)),
+            "the hidden subtree should retain the layout edge that makes this regression possible"
+        );
+
+        document.mutate().remove_and_drop_node(child);
+        assert!(document.get_node(child).is_none(), "the child was freed");
+        assert!(
+            document.nodes[parent].layout_children.borrow().is_none(),
+            "the surviving layout parent must not retain the freed key"
+        );
+
+        // This used to panic in Taffy's rounding pass after indexing `child`.
+        document.resolve(0.0);
     }
 
     #[test]

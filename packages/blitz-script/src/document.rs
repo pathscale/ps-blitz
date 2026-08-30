@@ -10,7 +10,7 @@ use blitz_dom::{
     BaseDocument, DEFAULT_CSS, DocGuard, DocGuardMut, Document, DocumentConfig, EventDriver, NodeId,
 };
 use blitz_html::{DocumentHtmlParser, HtmlProvider};
-use blitz_traits::events::{DomEvent, UiEvent};
+use blitz_traits::events::{BlitzPointerEvent, DomEvent, UiEvent};
 use url::Url;
 use web_time::Instant;
 
@@ -447,6 +447,26 @@ impl Document for ScriptDocument {
 }
 
 impl ScriptDocument {
+    /// Move a semantic automation pointer to the exact resolved DOM node.
+    ///
+    /// Normal window input remains coordinate hit-tested through
+    /// [`Document::handle_ui_event`]. Debug-control callers already selected a
+    /// node by id, so routing those coordinates through hit testing again can
+    /// silently select an overlapping descendant or retained overlay.
+    pub fn handle_pointer_move_to_node(&mut self, event: BlitzPointerEvent, node_id: NodeId) {
+        let profiling_boundary = self.runtime.ctx.enter_profiling_boundary();
+        let profiling = profiling_boundary.enabled();
+        let handler = ScriptEventHandler {
+            runtime: &mut self.runtime,
+            profiling,
+        };
+        let mut driver = EventDriver::new(&mut self.inner, handler);
+        driver.handle_pointer_move_to_node(&event, node_id);
+
+        self.request_redraw();
+        self.arm_timer_thread();
+    }
+
     /// The real poll. Split out so every exit path is timed by the wrapper
     /// above rather than by a stopwatch threaded through each early return.
     fn poll_inner(&mut self, task_context: Option<TaskContext>, profiling: bool) -> bool {
