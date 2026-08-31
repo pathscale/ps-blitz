@@ -1522,6 +1522,14 @@ impl BaseDocument {
                 let node_id = res.node_id.unwrap();
                 self.add_stylesheet_for_node(css, node_id);
             }
+            Resource::ImportSheet(import_rule, sheet) => {
+                // The write that used to happen on the network worker. Here it
+                // is on the thread that owns styling, so it cannot collide
+                // with a concurrent read of the same lock.
+                let mut guard = self.guard.write();
+                import_rule.write_with(&mut guard).stylesheet =
+                    style::stylesheets::import_rule::ImportSheet::Sheet(sheet);
+            }
             Resource::Image(_kind, width, height, image_data) => {
                 // Create the ImageData and cache it
                 let image = ImageData::Raster(RasterImageData::new(width, height, image_data));
