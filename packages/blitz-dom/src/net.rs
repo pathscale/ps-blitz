@@ -63,6 +63,15 @@ pub enum Resource {
     Font(Bytes, FontFaceOverrides),
     /// HTML fetched for an `<iframe>` element's `src`
     DocumentSrc(String),
+    /// A stylesheet fetched for an `@import` rule, and the rule it belongs to.
+    ///
+    /// Carried back rather than attached where it was parsed. Attaching means
+    /// taking stylo's document-wide `SharedRwLock` for writing, and this
+    /// arrives on a network worker while the document thread may be holding
+    /// the same lock for reading to resolve style. That lock is an
+    /// `AtomicRefCell`, so the two do not queue: the writer panics with
+    /// "already immutably borrowed" and takes the page with it.
+    ImportSheet(ServoArc<Locked<ImportRule>>, ServoArc<Stylesheet>),
     None,
 }
 
@@ -275,11 +284,10 @@ impl NetHandler for ResourceHandler<NestedStylesheetHandler> {
             self.data.loader.abort_signal.as_ref(),
         );
 
-        let mut guard = self.data.lock.write();
-        self.data.import_rule.write_with(&mut guard).stylesheet = ImportSheet::Sheet(sheet);
-        drop(guard);
-
-        self.respond(resolved_url, Ok(Resource::None))
+        // Attached by the document thread, which is the only one that may take
+        // this lock for writing. See `Resource::ImportSheet`.
+        let import_rule = self.data.import_rule.clone();
+        self.respond(resolved_url, Ok(Resource::ImportSheet(import_rule, sheet)))
     }
 }
 
