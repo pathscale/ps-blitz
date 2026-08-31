@@ -7,6 +7,15 @@
 //!
 //! It is capable of running real-world JavaScript frameworks such as [Preact](https://preactjs.com/).
 //!
+//! ### Modules
+//!
+//! `<script type="module">` is parsed in module goal and its imports are
+//! resolved and fetched through the same [`ScriptFetcher`] as classic
+//! `<script src>`, so a module graph blocks the document thread the same way a
+//! classic script already does. `<script type="importmap">`, `import.meta.url`,
+//! dynamic `import()` and JSON modules (`with { type: "json" }`) are supported;
+//! import-map `integrity` and module workers are not.
+//!
 //! ### Example
 //!
 //! ```rust
