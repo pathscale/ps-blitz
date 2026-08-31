@@ -32,7 +32,16 @@ use http_cache_reqwest::{
     CACacheManager, Cache, CacheMode, CacheOptions, HttpCache, HttpCacheOptions,
 };
 
-const USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:60.0) Gecko/20100101 Firefox/81.0";
+/// The `User-Agent` sent when a caller does not choose one.
+///
+/// Kept as it was so that existing consumers see no change in what servers
+/// send them. It is worth knowing that this string is a 2020 Firefox on Linux,
+/// and that a large share of the popular web serves a degraded page, a
+/// challenge stub or nothing at all to a client it does not recognise. A
+/// consumer that wants the page a current browser would get has to say so with
+/// [`Provider::with_user_agent`].
+pub const DEFAULT_USER_AGENT: &str =
+    "Mozilla/5.0 (X11; Linux x86_64; rv:60.0) Gecko/20100101 Firefox/81.0";
 
 /// Matches real browsers' per-origin cap of 6.
 const PER_HOST_MAX_CONCURRENT: usize = 6;
@@ -81,11 +90,23 @@ pub struct Provider {
     client: Client,
     waker: Arc<dyn NetWaker>,
     per_host_limits: HostLimits,
+    user_agent: Arc<str>,
     #[cfg(feature = "cache")]
     cache_manager: CACacheManager,
 }
 impl Provider {
     pub fn new(waker: Option<Arc<dyn NetWaker>>) -> Self {
+        Self::with_user_agent(waker, DEFAULT_USER_AGENT)
+    }
+
+    /// A provider that identifies itself as `user_agent`.
+    ///
+    /// The string is sent verbatim on document, subresource and script
+    /// requests alike, because a server that decides what to serve from the
+    /// `User-Agent` will do so on every one of them, and a client that agreed
+    /// with itself on only some would fetch a page assembled for two different
+    /// browsers.
+    pub fn with_user_agent(waker: Option<Arc<dyn NetWaker>>, user_agent: &str) -> Self {
         let builder = reqwest::Client::builder();
         #[cfg(feature = "cookies")]
         let builder = builder.cookie_store(true);
@@ -122,12 +143,23 @@ impl Provider {
             client,
             waker,
             per_host_limits: Arc::new(Mutex::new(HashMap::new())),
+            user_agent: Arc::from(user_agent),
             #[cfg(feature = "cache")]
             cache_manager,
         }
     }
     pub fn shared(waker: Option<Arc<dyn NetWaker>>) -> Arc<dyn NetProvider> {
         Arc::new(Self::new(waker))
+    }
+    pub fn shared_with_user_agent(
+        waker: Option<Arc<dyn NetWaker>>,
+        user_agent: &str,
+    ) -> Arc<dyn NetProvider> {
+        Arc::new(Self::with_user_agent(waker, user_agent))
+    }
+    /// What this provider identifies itself as.
+    pub fn user_agent(&self) -> &str {
+        &self.user_agent
     }
     pub fn is_empty(&self) -> bool {
         Arc::strong_count(&self.waker) == 1
@@ -151,6 +183,7 @@ impl Provider {
         client: Client,
         request: Request,
         per_host_limits: HostLimits,
+        user_agent: Arc<str>,
     ) -> Result<(String, Bytes), ProviderError> {
         match request.url.scheme() {
             "data" => {
@@ -162,7 +195,7 @@ impl Provider {
                 let file_content = std::fs::read(request.url.path())?;
                 Ok((request.url.to_string(), Bytes::from(file_content)))
             }
-            _ => Self::fetch_http(client, request, per_host_limits).await,
+            _ => Self::fetch_http(client, request, per_host_limits, user_agent).await,
         }
     }
 
@@ -170,6 +203,7 @@ impl Provider {
         client: Client,
         request: Request,
         per_host_limits: HostLimits,
+        user_agent: Arc<str>,
     ) -> Result<(String, Bytes), ProviderError> {
         // Acquire a per-host permit, held for the duration of the request, to
         // keep total in-flight requests per origin bounded.
@@ -192,7 +226,7 @@ impl Provider {
         let mut req = client
             .request(request.method, request.url)
             .headers(request.headers)
-            .header("User-Agent", USER_AGENT);
+            .header("User-Agent", &*user_agent);
 
         if let Some(content_type) = request.content_type.as_ref() {
             req = req.header("Content-Type", content_type);
@@ -232,8 +266,9 @@ impl Provider {
 
         let client = self.client.clone();
         let per_host_limits = self.per_host_limits.clone();
+        let user_agent = self.user_agent.clone();
         spawn(async move {
-            let result = Self::fetch_inner(client, request, per_host_limits).await;
+            let result = Self::fetch_inner(client, request, per_host_limits, user_agent).await;
 
             #[cfg(feature = "tracing")]
             if let Err(e) = &result {
@@ -254,7 +289,8 @@ impl Provider {
 
         let client = self.client.clone();
         let per_host_limits = self.per_host_limits.clone();
-        let result = Self::fetch_inner(client, request, per_host_limits).await;
+        let user_agent = self.user_agent.clone();
+        let result = Self::fetch_inner(client, request, per_host_limits, user_agent).await;
 
         #[cfg(feature = "tracing")]
         if let Err(e) = &result {
@@ -321,7 +357,8 @@ impl Provider {
             _ => {
                 let client = self.client.clone();
                 let per_host_limits = self.per_host_limits.clone();
-                Self::fetch_http_response(client, request, per_host_limits).await
+                let user_agent = self.user_agent.clone();
+                Self::fetch_http_response(client, request, per_host_limits, user_agent).await
             }
         }
     }
@@ -337,6 +374,7 @@ impl Provider {
         client: Client,
         request: Request,
         per_host_limits: HostLimits,
+        user_agent: Arc<str>,
     ) -> Result<FetchResponse, ProviderError> {
         let host_key = request
             .url
@@ -357,7 +395,7 @@ impl Provider {
         let mut req = client
             .request(request.method, request.url)
             .headers(request.headers)
-            .header("User-Agent", USER_AGENT);
+            .header("User-Agent", &*user_agent);
 
         if let Some(content_type) = request.content_type.as_ref() {
             req = req.header("Content-Type", content_type);
@@ -403,11 +441,14 @@ impl Provider {
         client: Client,
         request: FetchRequest,
         per_host_limits: HostLimits,
+        user_agent: Arc<str>,
     ) -> Result<FetchResponse, FetchError> {
         match request.url.scheme() {
             "data" => Self::platform_fetch_data(request),
             "file" => Self::platform_fetch_file(request),
-            "http" | "https" => Self::platform_fetch_http(client, request, per_host_limits).await,
+            "http" | "https" => {
+                Self::platform_fetch_http(client, request, per_host_limits, user_agent).await
+            }
             scheme => Err(FetchError::UnsupportedScheme(scheme.to_owned())),
         }
     }
@@ -465,6 +506,7 @@ impl Provider {
         client: Client,
         request: FetchRequest,
         per_host_limits: HostLimits,
+        user_agent: Arc<str>,
     ) -> Result<FetchResponse, FetchError> {
         // The same per-origin permit the page's own loads take, so a guest
         // cannot open more connections to a host than a browser would.
@@ -487,7 +529,7 @@ impl Provider {
         let mut req = client
             .request(request.method, request.url)
             .headers(request.headers)
-            .header("User-Agent", USER_AGENT);
+            .header("User-Agent", &*user_agent);
 
         if let Some(body) = request.body {
             req = req.body(body);
@@ -515,12 +557,14 @@ impl FetchProvider for Provider {
     fn fetch(&self, request: FetchRequest, handler: Box<dyn FetchHandler>) {
         let client = self.client.clone();
         let per_host_limits = self.per_host_limits.clone();
+        let user_agent = self.user_agent.clone();
 
         #[cfg(feature = "tracing")]
         let url = request.url.to_string();
 
         spawn(async move {
-            let result = Self::platform_fetch_inner(client, request, per_host_limits).await;
+            let result =
+                Self::platform_fetch_inner(client, request, per_host_limits, user_agent).await;
 
             #[cfg(feature = "tracing")]
             match &result {
@@ -541,6 +585,7 @@ impl NetProvider for Provider {
     fn fetch(&self, doc_id: usize, mut request: Request, handler: Box<dyn NetHandler>) {
         let client = self.client.clone();
         let per_host_limits = self.per_host_limits.clone();
+        let user_agent = self.user_agent.clone();
 
         #[cfg(feature = "tracing")]
         tracing::info!(url = request.url.as_str(), "Fetching");
@@ -554,13 +599,13 @@ impl NetProvider for Provider {
             let result = if let Some(signal) = signal {
                 AbortFetch::new(
                     signal,
-                    Box::pin(
-                        async move { Self::fetch_inner(client, request, per_host_limits).await },
-                    ),
+                    Box::pin(async move {
+                        Self::fetch_inner(client, request, per_host_limits, user_agent).await
+                    }),
                 )
                 .await
             } else {
-                Self::fetch_inner(client, request, per_host_limits).await
+                Self::fetch_inner(client, request, per_host_limits, user_agent).await
             };
 
             waker.wake(doc_id);
@@ -737,6 +782,85 @@ mod tests {
     /// This is the case that makes the header meaningful for a caller checking
     /// one: a module inlined as a `data:` URL is as legitimate as a fetched
     /// one, and refusing it for having no type would be wrong.
+    /// Serve exactly one HTTP request on loopback and hand back what was sent.
+    ///
+    /// A real socket rather than a mock, because the thing under test is a
+    /// header on the wire. Asserting that the provider stored the string it was
+    /// given would pass just as happily with the header never attached, which
+    /// is the failure this exists to catch.
+    fn capture_one_request() -> (Url, std::thread::JoinHandle<String>) {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback is available");
+        let port = listener
+            .local_addr()
+            .expect("the socket has an address")
+            .port();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("the provider connects");
+            let mut seen = Vec::new();
+            let mut byte = [0u8; 1];
+            // Read only the head. Reading to EOF would block: the client keeps
+            // the connection open waiting for the response that follows.
+            while !seen.ends_with(b"\r\n\r\n") {
+                match stream.read(&mut byte) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => seen.push(byte[0]),
+                }
+            }
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+            let _ = stream.flush();
+            String::from_utf8_lossy(&seen).to_string()
+        });
+
+        let url = Url::parse(&format!("http://127.0.0.1:{port}/")).expect("a valid loopback URL");
+        (url, handle)
+    }
+
+    /// A caller that names a user agent has it sent.
+    ///
+    /// Sites decide what markup to serve from this header, so a browser that
+    /// cannot choose one is served whatever the default is taken for, and on a
+    /// large share of the popular web that is a challenge page rather than the
+    /// document.
+    #[tokio::test]
+    async fn a_chosen_user_agent_reaches_the_server() {
+        let (url, server) = capture_one_request();
+        let provider = Provider::with_user_agent(None, "Chuzz/1.0 (a stated identity)");
+
+        let _ = provider.fetch_async(Request::get(url)).await;
+
+        let request = server
+            .join()
+            .expect("the server thread finishes")
+            .to_lowercase();
+        assert!(
+            request.contains("user-agent: chuzz/1.0 (a stated identity)"),
+            "the chosen user agent should be on the wire, got:\n{request}"
+        );
+    }
+
+    /// A caller that names none is unchanged by this being configurable.
+    #[tokio::test]
+    async fn the_default_user_agent_is_still_sent_when_none_is_chosen() {
+        let (url, server) = capture_one_request();
+        let provider = Provider::new(None);
+
+        let _ = provider.fetch_async(Request::get(url)).await;
+
+        let request = server
+            .join()
+            .expect("the server thread finishes")
+            .to_lowercase();
+        assert!(
+            request.contains(&format!(
+                "user-agent: {}",
+                DEFAULT_USER_AGENT.to_lowercase()
+            )),
+            "the default user agent should be on the wire, got:\n{request}"
+        );
+    }
+
     #[tokio::test]
     async fn a_data_url_reports_the_mime_type_it_declares() {
         let provider = Provider::new(None);
