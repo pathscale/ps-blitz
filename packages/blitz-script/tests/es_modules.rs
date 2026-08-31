@@ -337,3 +337,106 @@ fn a_nomodule_fallback_is_skipped() {
 
     assert_eq!(eval_string(&mut doc, "globalThis.ran"), "module");
 }
+
+/// A bare specifier resolves through the page's import map.
+///
+/// This is what a page that ships unbundled modules is built on:
+/// `import { h } from "preact"` names nothing at all without the map, so the
+/// graph stops at the first dependency of the entry point.
+#[test]
+fn an_import_map_resolves_a_bare_specifier() {
+    let (origin, server) = serve_modules(vec![
+        (
+            "/app.js",
+            r#"import { greeting } from "shared";
+               globalThis.result = greeting;"#
+                .to_owned(),
+        ),
+        (
+            "/vendor/shared.js",
+            r#"export const greeting = "mapped";"#.to_owned(),
+        ),
+    ]);
+
+    let mut doc = ScriptDocument::from_html(
+        r#"<script type="importmap">
+             {"imports": {"shared": "/vendor/shared.js"}}
+           </script>
+           <script type="module" src="/app.js"></script>"#,
+        config_with_base(&format!("{origin}/index.html")),
+    )
+    .with_fetcher(LoopbackFetcher);
+    doc.execute_scripts();
+
+    assert_eq!(eval_string(&mut doc, "globalThis.result"), "mapped");
+
+    let requested = server.join().expect("the server thread finishes");
+    assert!(
+        requested.iter().any(|path| path == "/vendor/shared.js"),
+        "the mapped URL should have been fetched, saw: {requested:?}"
+    );
+}
+
+/// Dynamic `import()` from a classic script resolves against that script.
+///
+/// A bundle served from `/assets/` that splits its chunks calls
+/// `import("./chunk.js")`, and resolving that against the document instead of
+/// the script looks for the chunk beside the HTML, where it is not.
+#[test]
+fn dynamic_import_from_a_classic_script_resolves_against_the_script() {
+    let (origin, server) = serve_modules(vec![
+        (
+            "/assets/entry.js",
+            r#"globalThis.ready = import("./chunk.js").then((m) => {
+                 globalThis.result = m.value;
+               });"#
+                .to_owned(),
+        ),
+        (
+            "/assets/chunk.js",
+            r#"export const value = "dynamic";"#.to_owned(),
+        ),
+    ]);
+
+    let mut doc = ScriptDocument::from_html(
+        r#"<script src="/assets/entry.js"></script>"#,
+        config_with_base(&format!("{origin}/index.html")),
+    )
+    .with_fetcher(LoopbackFetcher);
+    doc.execute_scripts();
+
+    assert_eq!(eval_string(&mut doc, "globalThis.result"), "dynamic");
+
+    let requested = server.join().expect("the server thread finishes");
+    assert!(
+        requested.iter().any(|path| path == "/assets/chunk.js"),
+        "the chunk should be resolved beside its script, saw: {requested:?}"
+    );
+}
+
+/// An unresolvable bare specifier says so, rather than 404ing on an invented
+/// URL the page never wrote.
+///
+/// The diagnostic is the deliverable here: this is the failure mode a page with
+/// a missing or misspelled import map entry actually hits.
+#[test]
+fn an_unmapped_bare_specifier_reports_what_is_wrong() {
+    let mut doc = ScriptDocument::from_html(
+        r#"<script type="module">
+             globalThis.error = "";
+             try {
+               await import("preact");
+             } catch (e) {
+               globalThis.error = String(e);
+             }
+           </script>"#,
+        config_with_base("https://example.invalid/index.html"),
+    );
+    doc.execute_scripts();
+
+    let error = eval_string(&mut doc, "globalThis.error");
+    assert!(
+        error.contains("bare module specifier") && error.contains("preact"),
+        "the error should name the specifier and the reason, got: {error}"
+    );
+}
