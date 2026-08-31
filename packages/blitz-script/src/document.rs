@@ -22,15 +22,24 @@ use crate::runtime::ScriptRuntime;
 type PollHook =
     Box<dyn for<'a> FnMut(&mut ScriptDocument, Option<&TaskContext<'a>>) -> bool + 'static>;
 
+/// What a `<script>` element's `type` says it holds.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ScriptKind {
+    Classic,
+    /// `type="module"`. Parsed in module goal and given a loader; a module run
+    /// as a classic script fails on its own first `import` statement.
+    Module,
+    /// `type="importmap"`. Not code: the JSON that gives bare specifiers their
+    /// meaning, and it has to be installed before any module resolves one.
+    ImportMap,
+}
+
 /// A `<script>` element found in the document
 struct PendingScript {
     node_id: NodeId,
     src: Option<String>,
     inline_text: String,
-    /// `type="module"`. Modules are parsed in module goal and get a loader;
-    /// classic scripts do not, and running a module as one fails on its first
-    /// `import` statement.
-    is_module: bool,
+    kind: ScriptKind,
 }
 
 /// A [`Document`] which executes the JavaScript contained in the document's
@@ -185,6 +194,9 @@ impl ScriptDocument {
     pub fn external_script_urls(&self) -> Vec<Url> {
         self.collect_scripts()
             .iter()
+            // An import map is inline-only per the HTML spec, so a `src` on one
+            // names nothing an embedder should prefetch.
+            .filter(|script| script.kind != ScriptKind::ImportMap)
             .filter_map(|script| script.src.as_deref())
             .filter_map(|src| self.resolve_script_url(src))
             .collect()
@@ -284,11 +296,25 @@ impl ScriptDocument {
             .filter(|script| !self.executed_scripts.contains(&script.node_id))
             .collect();
 
+        // Import maps first, across the whole batch. A page is free to write
+        // its map after the module that needs it, and a map installed too late
+        // is the same as no map at all: the module has already failed to
+        // resolve its first bare specifier.
+        for script in &pending {
+            if script.kind == ScriptKind::ImportMap && !script.inline_text.trim().is_empty() {
+                self.runtime
+                    .set_import_map(&script.inline_text, self.base_url.as_ref());
+            }
+        }
+
         for script in pending {
             // Marked before running, not after: a script that appends another
             // copy of itself, or that throws, must not be retried on every
             // poll for the life of the page.
             self.executed_scripts.insert(script.node_id);
+            if script.kind == ScriptKind::ImportMap {
+                continue;
+            }
             match script.src {
                 Some(src) => {
                     let Some(url) = self.resolve_script_url(&src) else {
@@ -299,10 +325,10 @@ impl ScriptDocument {
                     let fetcher = Rc::clone(&self.fetcher.borrow());
                     match fetcher.fetch(&url) {
                         Ok(code) => {
-                            if script.is_module {
+                            if script.kind == ScriptKind::Module {
                                 self.runtime.eval_module(&code, Some(&url), url.as_str());
                             } else {
-                                self.runtime.eval(&code, url.as_str());
+                                self.runtime.eval_at(&code, Some(&url), url.as_str());
                             }
                             self.runtime.dispatch_node_event(script.node_id, "load");
                         }
@@ -314,18 +340,22 @@ impl ScriptDocument {
                 }
                 None => {
                     if !script.inline_text.trim().is_empty() {
-                        if script.is_module {
-                            // An inline module has no URL of its own, so its
-                            // relative imports and `import.meta.url` resolve
-                            // against the document, exactly as in a browser.
-                            let base_url = self.base_url.clone();
+                        // An inline script has no URL of its own, so its
+                        // relative imports and `import.meta.url` resolve
+                        // against the document, exactly as in a browser.
+                        let base_url = self.base_url.clone();
+                        if script.kind == ScriptKind::Module {
                             self.runtime.eval_module(
                                 &script.inline_text,
                                 base_url.as_ref(),
                                 "<inline module>",
                             );
                         } else {
-                            self.runtime.eval(&script.inline_text, "<inline script>");
+                            self.runtime.eval_at(
+                                &script.inline_text,
+                                base_url.as_ref(),
+                                "<inline script>",
+                            );
                         }
                     }
                 }
@@ -352,28 +382,31 @@ impl ScriptDocument {
                         .unwrap_or("")
                         .trim()
                         .to_ascii_lowercase();
-                    let is_module = script_type == "module";
-                    let is_js = is_module
-                        || matches!(
-                            script_type.as_str(),
-                            "" | "text/javascript" | "application/javascript"
-                        );
+                    let kind = match script_type.as_str() {
+                        "module" => Some(ScriptKind::Module),
+                        "importmap" => Some(ScriptKind::ImportMap),
+                        "" | "text/javascript" | "application/javascript" => {
+                            // `nomodule` marks the classic fallback a page
+                            // ships for engines without module support. Now
+                            // that modules run, taking the fallback as well
+                            // would mount the same application twice.
+                            if element.attr(blitz_dom::local_name!("nomodule")).is_some() {
+                                None
+                            } else {
+                                Some(ScriptKind::Classic)
+                            }
+                        }
+                        _ => None,
+                    };
 
-                    // `nomodule` marks the classic fallback a page ships for
-                    // engines without module support. Running modules and the
-                    // fallback would execute the same application twice, which
-                    // is worse than running neither.
-                    let is_nomodule_fallback =
-                        !is_module && element.attr(blitz_dom::local_name!("nomodule")).is_some();
-
-                    if is_js && !is_nomodule_fallback {
+                    if let Some(kind) = kind {
                         scripts.push(PendingScript {
                             node_id,
                             src: element
                                 .attr(blitz_dom::local_name!("src"))
                                 .map(str::to_string),
                             inline_text: node.text_content(),
-                            is_module,
+                            kind,
                         });
                     }
                     continue;

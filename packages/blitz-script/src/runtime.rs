@@ -587,8 +587,37 @@ impl ScriptRuntime {
     /// Evaluate a script, logging (but not propagating) any uncaught errors,
     /// then drain the microtask queue.
     pub fn eval(&mut self, code: &str, description: &str) {
-        self.eval_internal(code, description);
+        self.eval_at(code, None, description);
+    }
+
+    /// Evaluate a classic script that has a URL of its own.
+    ///
+    /// The URL is not decoration: a classic script may still call dynamic
+    /// `import()`, and the specifier in that call resolves against the script,
+    /// not the document. Without it, `import("./chunk.js")` from a bundle
+    /// served out of `/assets/` would look for the chunk beside the HTML.
+    pub fn eval_at(&mut self, code: &str, url: Option<&Url>, description: &str) {
+        let path = url.map(|url| url.as_str().to_owned());
+        let source = Source::from_bytes(code.as_bytes());
+        let source = match &path {
+            Some(path) => source.with_path(Path::new(path)),
+            None => source,
+        };
+
+        if let Err(error) = self.context.eval(source) {
+            report_js_error(&self.diagnostics, description, &error);
+        }
         self.run_jobs(description);
+    }
+
+    /// Install the page's `<script type="importmap">`.
+    ///
+    /// Bare specifiers (`import "preact"`) have no meaning without one, so a
+    /// page that ships unbundled modules stops at its first dependency until
+    /// this is set.
+    pub fn set_import_map(&self, json: &str, base_url: Option<&Url>) {
+        self.module_loader
+            .set_import_map(crate::module::ImportMap::parse(json, base_url));
     }
 
     /// Evaluate a `<script type="module">`.

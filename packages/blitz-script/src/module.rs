@@ -29,6 +29,10 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
 
+mod import_map;
+
+pub(crate) use import_map::ImportMap;
+
 use boa_engine::module::{ModuleLoader, ModuleRequest, Referrer};
 use boa_engine::{Context, JsNativeError, JsResult, JsString, Module, Source, js_string};
 use url::Url;
@@ -57,6 +61,8 @@ pub(crate) struct BlitzModuleLoader {
     /// instantiate the shared dependency twice and each half of the page would
     /// see its own copy of that module's state.
     cache: RefCell<HashMap<String, Module>>,
+    /// The page's `<script type="importmap">`, if it has one.
+    import_map: RefCell<ImportMap>,
 }
 
 impl BlitzModuleLoader {
@@ -65,6 +71,20 @@ impl BlitzModuleLoader {
             fetcher,
             base_url,
             cache: RefCell::new(HashMap::new()),
+            import_map: RefCell::new(ImportMap::default()),
+        }
+    }
+
+    /// Install the page's import map.
+    ///
+    /// Only the first one is honoured, as in a browser: a second map arriving
+    /// after a module has already resolved a bare specifier could not be
+    /// applied retroactively, and applying it only to later imports would give
+    /// one name two meanings within a page.
+    pub(crate) fn set_import_map(&self, map: ImportMap) {
+        let mut installed = self.import_map.borrow_mut();
+        if installed.is_empty() {
+            *installed = map;
         }
     }
 
@@ -88,6 +108,18 @@ impl BlitzModuleLoader {
     /// string).
     fn resolve(&self, referrer: &Referrer, specifier: &JsString) -> JsResult<Url> {
         let specifier = specifier.to_std_string_escaped();
+        let referrer_url = Self::module_url(referrer.path());
+
+        // The import map is consulted first, and for every specifier rather
+        // than only bare ones: a map is allowed to remap `/a.js` and `./a.js`
+        // too, which is how a page pins or shims a file it does not control.
+        if let Some(url) = self
+            .import_map
+            .borrow()
+            .resolve(&specifier, referrer_url.as_ref().or(self.base_url.as_ref()))
+        {
+            return Ok(url);
+        }
 
         // An absolute specifier needs no base at all, which is also the only
         // form that works when neither the referrer nor the document has a URL.
@@ -95,7 +127,7 @@ impl BlitzModuleLoader {
             return Ok(url);
         }
 
-        let base = Self::module_url(referrer.path()).or_else(|| self.base_url.clone());
+        let base = referrer_url.or_else(|| self.base_url.clone());
         let Some(base) = base else {
             return Err(JsNativeError::typ()
                 .with_message(format!(
@@ -104,13 +136,14 @@ impl BlitzModuleLoader {
                 .into());
         };
 
-        // Bare specifiers ("react") are not resolvable without an import map,
-        // and joining one produces a plausible-looking URL that 404s much later
-        // with a confusing message. Say what is actually wrong instead.
+        // Bare specifiers ("react") have no meaning outside an import map, and
+        // joining one produces a plausible-looking URL that 404s much later
+        // with a message naming a path the page never wrote. Say what is
+        // actually wrong instead.
         if !specifier.starts_with('/') && !specifier.starts_with('.') {
             return Err(JsNativeError::typ()
                 .with_message(format!(
-                    "cannot resolve bare module specifier {specifier:?}: import maps are not supported"
+                    "cannot resolve bare module specifier {specifier:?}: no import map entry matches it"
                 ))
                 .into());
         }
