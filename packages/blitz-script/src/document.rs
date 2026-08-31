@@ -40,6 +40,12 @@ struct PendingScript {
     src: Option<String>,
     inline_text: String,
     kind: ScriptKind,
+    /// Runs after every non-deferred script in the same batch.
+    ///
+    /// True for module scripts, which are deferred by definition, and for
+    /// `<script defer src>`. `async` takes it back off both: an async script
+    /// runs whenever its fetch lands, which here is immediately.
+    deferred: bool,
 }
 
 /// A [`Document`] which executes the JavaScript contained in the document's
@@ -307,7 +313,20 @@ impl ScriptDocument {
             }
         }
 
-        for script in pending {
+        // Two passes, because a module is a deferred script and a browser runs
+        // every non-deferred classic script before any of them. Measured
+        // against Chromium on a page mixing all five forms: the parser-blocking
+        // classics run first in document order, then modules and `defer`
+        // scripts together, also in document order.
+        //
+        // Document order alone was right until modules existed. It is now
+        // wrong in a way that bites: an inline classic script writing
+        // `window.__CONFIG__` after a module tag runs *before* that module in
+        // a browser, and the module reads the config it expects.
+        let (deferred, immediate): (Vec<_>, Vec<_>) =
+            pending.into_iter().partition(|script| script.deferred);
+
+        for script in immediate.into_iter().chain(deferred) {
             // Marked before running, not after: a script that appends another
             // copy of itself, or that throws, must not be retried on every
             // poll for the life of the page.
@@ -400,13 +419,30 @@ impl ScriptDocument {
                     };
 
                     if let Some(kind) = kind {
+                        let src = element
+                            .attr(blitz_dom::local_name!("src"))
+                            .map(str::to_string);
+                        let is_async = element.attr(blitz_dom::local_name!("async")).is_some();
+
+                        // `defer` is only meaningful on an external classic
+                        // script; the spec ignores it on an inline one. A
+                        // module is deferred whether or not it says so.
+                        let deferred = !is_async
+                            && match kind {
+                                ScriptKind::Module => true,
+                                ScriptKind::Classic => {
+                                    src.is_some()
+                                        && element.attr(blitz_dom::local_name!("defer")).is_some()
+                                }
+                                ScriptKind::ImportMap => false,
+                            };
+
                         scripts.push(PendingScript {
                             node_id,
-                            src: element
-                                .attr(blitz_dom::local_name!("src"))
-                                .map(str::to_string),
+                            src,
                             inline_text: node.text_content(),
                             kind,
+                            deferred,
                         });
                     }
                     continue;
