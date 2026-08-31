@@ -440,3 +440,64 @@ fn an_unmapped_bare_specifier_reports_what_is_wrong() {
         "the error should name the specifier and the reason, got: {error}"
     );
 }
+
+/// `import config from "./config.json" with { type: "json" }`.
+///
+/// A JSON module is data, not source: running it through the JavaScript parser
+/// would reject the object literal most JSON files begin with.
+#[test]
+fn a_json_module_exports_its_document_as_the_default() {
+    let (origin, server) = serve_modules(vec![
+        (
+            "/app.js",
+            r#"import config from "./config.json" with { type: "json" };
+               globalThis.result = config.title;"#
+                .to_owned(),
+        ),
+        ("/config.json", r#"{"title": "from json"}"#.to_owned()),
+    ]);
+
+    let mut doc = ScriptDocument::from_html(
+        r#"<script type="module" src="/app.js"></script>"#,
+        config_with_base(&format!("{origin}/index.html")),
+    )
+    .with_fetcher(LoopbackFetcher);
+    doc.execute_scripts();
+
+    assert_eq!(eval_string(&mut doc, "globalThis.result"), "from json");
+    let _ = server.join();
+}
+
+/// A module whose top-level `await` waits on a timer is not a failure.
+///
+/// Its evaluation promise is still pending when the script returns, and a
+/// browser settles it on a later turn of the event loop. Reporting that as an
+/// error at evaluation time would fire against every module on the modern web
+/// that waits for anything.
+#[test]
+fn a_module_awaiting_a_timer_settles_on_a_later_poll() {
+    use blitz_dom::Document as _;
+
+    let mut doc = ScriptDocument::from_html(
+        r#"<script type="module">
+             await new Promise((resolve) => setTimeout(resolve, 1));
+             globalThis.result = "settled";
+           </script>"#,
+        DocumentConfig::default(),
+    );
+    doc.execute_scripts();
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        doc.poll(None);
+        if matches!(
+            doc.eval_json("globalThis.result"),
+            Ok(serde_json::Value::String(_))
+        ) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    assert_eq!(eval_string(&mut doc, "globalThis.result"), "settled");
+}

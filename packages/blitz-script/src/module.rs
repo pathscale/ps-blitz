@@ -26,15 +26,15 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 mod import_map;
 
 pub(crate) use import_map::ImportMap;
 
-use boa_engine::module::{ModuleLoader, ModuleRequest, Referrer};
-use boa_engine::{Context, JsNativeError, JsResult, JsString, Module, Source, js_string};
+use boa_engine::module::{ModuleLoader, ModuleRequest, Referrer, SyntheticModuleInitializer};
+use boa_engine::{Context, JsNativeError, JsResult, JsString, JsValue, Module, Source, js_string};
 use url::Url;
 
 use crate::fetch::ScriptFetcher;
@@ -64,6 +64,14 @@ pub(crate) struct BlitzModuleLoader {
     /// The page's `<script type="importmap">`, if it has one.
     import_map: RefCell<ImportMap>,
 }
+
+/// How many distinct modules one document may fetch.
+///
+/// Module fetches are synchronous on the document thread, so an unbounded graph
+/// is an unbounded hang with a blank window and no error — the browser looks
+/// broken rather than the page. A real application's graph is in the hundreds
+/// unbundled; this is well clear of that and still terminates.
+const MAX_MODULES_PER_DOCUMENT: usize = 4096;
 
 impl BlitzModuleLoader {
     pub(crate) fn new(fetcher: SharedFetcher, base_url: Option<Url>) -> Self {
@@ -171,6 +179,18 @@ impl BlitzModuleLoader {
             return Ok(module.clone());
         }
 
+        // Bounded, because the fetch below is synchronous on the document
+        // thread: a page whose imports generate URLs would otherwise hang the
+        // window with nothing on screen and nothing in the console.
+        if self.cache.borrow().len() >= MAX_MODULES_PER_DOCUMENT {
+            return Err(JsNativeError::typ()
+                .with_message(format!(
+                    "refusing to load {url}: this document has already loaded \
+                     {MAX_MODULES_PER_DOCUMENT} modules"
+                ))
+                .into());
+        }
+
         // Synchronous, on the document thread, exactly as a classic
         // `<script src>` already is. A module graph is therefore as blocking as
         // the deepest import chain: embedders that cannot afford that should
@@ -181,11 +201,15 @@ impl BlitzModuleLoader {
         })?;
 
         let path = url.as_str().to_owned();
-        let module = Module::parse(
-            Source::from_bytes(source.as_bytes()).with_path(Path::new(&path)),
-            None,
-            context,
-        )?;
+        let module = if requests_json(request) {
+            parse_json_module(&source, &url, &path, context)?
+        } else {
+            Module::parse(
+                Source::from_bytes(source.as_bytes()).with_path(Path::new(&path)),
+                None,
+                context,
+            )?
+        };
 
         // Cached before linking, not after: a cycle re-enters this hook for a
         // module still being loaded, and only an already-recorded entry breaks
@@ -193,6 +217,43 @@ impl BlitzModuleLoader {
         self.cache.borrow_mut().insert(path, module.clone());
         Ok(module)
     }
+}
+
+/// `import config from "./config.json" with { type: "json" }`.
+fn requests_json(request: &ModuleRequest) -> bool {
+    request.attributes().iter().any(|attribute| {
+        attribute.key().to_std_string_escaped() == "type"
+            && attribute.value().to_std_string_escaped() == "json"
+    })
+}
+
+/// Build a JSON module: one default export holding the parsed document.
+///
+/// Not a source-text module. JSON is data, and running it through the
+/// JavaScript parser would accept things JSON does not (comments, trailing
+/// commas, `undefined`) and reject an object literal at statement position,
+/// which is the shape most JSON files have.
+fn parse_json_module(
+    source: &str,
+    url: &Url,
+    path: &str,
+    context: &mut Context,
+) -> JsResult<Module> {
+    let json: serde_json::Value = serde_json::from_str(source).map_err(|error| {
+        JsNativeError::typ().with_message(format!("{url} is not valid JSON: {error}"))
+    })?;
+    let value = JsValue::from_json(&json, context)?;
+
+    Ok(Module::synthetic(
+        &[js_string!("default")],
+        SyntheticModuleInitializer::from_copy_closure_with_captures(
+            |module, value, _context| module.set_export(&js_string!("default"), value.clone()),
+            value,
+        ),
+        Some(PathBuf::from(path)),
+        None,
+        context,
+    ))
 }
 
 impl ModuleLoader for BlitzModuleLoader {

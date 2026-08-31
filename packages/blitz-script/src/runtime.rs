@@ -150,6 +150,14 @@ pub(crate) struct ScriptRuntime {
     pub ctx: DomCtx,
     diagnostics: Rc<RefCell<RuntimeDiagnostics>>,
     module_loader: Rc<BlitzModuleLoader>,
+    /// Module evaluations that had not settled when their script ran.
+    ///
+    /// Top-level `await` makes this ordinary rather than exceptional: a module
+    /// that opens with `await fetch(...)` is pending until a timer or a network
+    /// completion resolves it, which happens on a later poll. Treating that as
+    /// a failure at evaluation time would report an error against every module
+    /// on the modern web that waits for anything.
+    pending_modules: Vec<(JsPromise, String)>,
 }
 
 impl ScriptRuntime {
@@ -339,6 +347,7 @@ impl ScriptRuntime {
             ctx,
             diagnostics,
             module_loader,
+            pending_modules: Vec::new(),
         };
 
         // Small JS bootstrap for APIs that are easiest to define in JS
@@ -661,18 +670,39 @@ impl ScriptRuntime {
             PromiseState::Rejected(error) => {
                 report_js_error(&self.diagnostics, description, &JsError::from_opaque(error));
             }
-            // Reachable only if a module's graph is still waiting on work the
-            // job queue cannot finish. Silence here reads exactly like a module
-            // that ran and did nothing, which is the failure that cost the most
-            // time to diagnose the first time around.
-            PromiseState::Pending => {
-                let error = JsError::from_opaque(
-                    JsString::from("module evaluation did not settle: an import is still pending")
-                        .into(),
-                );
-                report_js_error(&self.diagnostics, description, &error);
+            // Not a failure. A module with top-level `await` is pending until
+            // whatever it waits on completes, and that happens on a later poll.
+            // Kept so that when it does reject, the rejection is still
+            // attributed to the module rather than vanishing.
+            PromiseState::Pending => self.pending_modules.push((promise, description.to_owned())),
+        }
+    }
+
+    /// Report module evaluations that have since failed, and forget those that
+    /// have since succeeded.
+    ///
+    /// Without this, a module whose top-level `await` eventually rejects fails
+    /// silently: the page half-mounts and there is nothing anywhere saying why.
+    pub fn poll_module_evaluations(&mut self) {
+        if self.pending_modules.is_empty() {
+            return;
+        }
+
+        let mut still_pending = Vec::new();
+        for (promise, description) in std::mem::take(&mut self.pending_modules) {
+            match promise.state() {
+                PromiseState::Pending => still_pending.push((promise, description)),
+                PromiseState::Fulfilled(_) => {}
+                PromiseState::Rejected(error) => {
+                    report_js_error(
+                        &self.diagnostics,
+                        &description,
+                        &JsError::from_opaque(error),
+                    );
+                }
             }
         }
+        self.pending_modules = still_pending;
     }
 
     pub fn eval_json(
