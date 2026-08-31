@@ -584,6 +584,11 @@ impl ScriptDocument {
 
         ran |= self.runtime.run_due_timers(profiling);
 
+        // A module that opened with a top-level `await` may have settled since
+        // the last turn. Checking here is what turns a silent half-mounted page
+        // into a reported rejection.
+        self.runtime.poll_module_evaluations();
+
         if let Some(mut hook) = self.poll_hook.take() {
             // The embedder's per-poll work. For a Solid application this is
             // where reactive updates and DOM mutation actually happen, so it is
