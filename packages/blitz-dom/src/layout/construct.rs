@@ -641,7 +641,7 @@ pub(crate) fn collect_layout_children(
                 container_node_id,
                 out,
                 false,
-                block_item_needs_wrap,
+                &block_item_needs_wrap,
             );
         }
         DisplayInside::Flex | DisplayInside::Grid => {
@@ -674,7 +674,7 @@ pub(crate) fn collect_layout_children(
                 container_node_id,
                 out,
                 true,
-                flex_or_grid_item_needs_wrap,
+                &flex_or_grid_item_needs_wrap,
             );
         }
 
@@ -881,7 +881,25 @@ fn collect_complex_layout_children(
     container_node_id: NodeId,
     out: &mut LayoutChildren,
     hide_whitespace: bool,
-    needs_wrap: impl Fn(NodeKind, DisplayOutside) -> bool,
+    needs_wrap: &dyn Fn(NodeKind, DisplayOutside) -> bool,
+) {
+    collect_complex_layout_children_inner(doc, container_node_id, out, hide_whitespace, needs_wrap);
+
+    // If anonymous block node only contains whitespace then delete it, else push it
+    out.maybe_push_anon_block(doc);
+}
+
+/// The classification loop, without closing the open anonymous block.
+///
+/// Split out so a `display: contents` child can be recursed into without
+/// ending the anonymous box being filled. Text either side of such a child
+/// belongs in one anonymous item, and closing it here would split it in two.
+fn collect_complex_layout_children_inner(
+    doc: &mut BaseDocument,
+    container_node_id: NodeId,
+    out: &mut LayoutChildren,
+    hide_whitespace: bool,
+    needs_wrap: &dyn Fn(NodeKind, DisplayOutside) -> bool,
 ) {
     doc.iter_layout_children_and_pseudos_mut(container_node_id, |child_id, doc| {
         // Get node kind (text, element, comment, etc)
@@ -908,9 +926,31 @@ fn collect_complex_layout_children(
         if child_node_kind == NodeKind::Comment || (hide_whitespace && is_whitespace_node) {
             // return;
         }
-        // Recurse into `Display::Contents` nodes
+        // Recurse into `Display::Contents` nodes.
+        //
+        // Through this same loop, not through `collect_layout_children`. A
+        // `display: contents` element generates no box and its children join
+        // *this* container's formatting context, so this container's wrapping
+        // rule is the one that applies to them. Hoisting them by the general
+        // path skipped that rule, and a flex container whose contents child
+        // held raw text got the text as a direct flex item. Text carries no
+        // style, so taffy asking that item for one panicked with "`style` is
+        // not available on this node kind". Four lines of HTML reproduce it:
+        //
+        // ```html
+        // <div style="display:flex"><span style="display:contents">t</span></div>
+        // ```
+        //
+        // The preparation `collect_layout_children` would have done for the
+        // hoisted node is repeated here, because its children are read below
+        // and its pseudo-elements have to exist before they can be.
         else if display_inside == DisplayInside::Contents {
-            collect_layout_children(doc, child_id, out)
+            doc.nodes[child_id].flags.reset_construction_flags();
+            if let Some(element_data) = doc.nodes[child_id].element_data_mut() {
+                element_data.take_inline_layout();
+            }
+            flush_pseudo_elements(doc, child_id);
+            collect_complex_layout_children_inner(doc, child_id, out, hide_whitespace, needs_wrap);
         }
         // Push nodes that need wrapping into the current "anonymous block container".
         // If there is not an open one then we create one.
@@ -922,9 +962,6 @@ fn collect_complex_layout_children(
             out.push(child_id, doc);
         }
     });
-
-    // If anonymous block node only contains whitespace then delete it, else push it
-    out.maybe_push_anon_block(doc);
 }
 
 fn create_text_editor(doc: &mut BaseDocument, input_element_id: NodeId, is_multiline: bool) {
