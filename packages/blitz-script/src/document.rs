@@ -16,6 +16,7 @@ use web_time::Instant;
 
 use crate::event_handler::ScriptEventHandler;
 use crate::fetch::{DefaultScriptFetcher, ScriptFetcher};
+use crate::module::SharedFetcher;
 use crate::runtime::ScriptRuntime;
 
 type PollHook =
@@ -26,6 +27,10 @@ struct PendingScript {
     node_id: NodeId,
     src: Option<String>,
     inline_text: String,
+    /// `type="module"`. Modules are parsed in module goal and get a loader;
+    /// classic scripts do not, and running a module as one fails on its first
+    /// `import` statement.
+    is_module: bool,
 }
 
 /// A [`Document`] which executes the JavaScript contained in the document's
@@ -40,7 +45,13 @@ pub struct ScriptDocument {
     inner: Rc<RefCell<BaseDocument>>,
     runtime: ScriptRuntime,
     base_url: Option<Url>,
-    fetcher: Box<dyn ScriptFetcher>,
+    /// Shared with the module loader inside the script context.
+    ///
+    /// The loader is fixed at context construction, which happens in
+    /// `from_html`, while an embedder installs its fetcher afterwards through
+    /// [`with_fetcher`](Self::with_fetcher). The cell is what lets the later
+    /// call reach the earlier object.
+    fetcher: SharedFetcher,
     scripts_executed: bool,
     /// Which `<script>` nodes have already run.
     ///
@@ -86,13 +97,14 @@ impl ScriptDocument {
         drop(mutr);
 
         let inner = Rc::new(RefCell::new(doc));
-        let runtime = ScriptRuntime::new(Rc::clone(&inner), base_url.as_ref());
+        let fetcher: SharedFetcher = Rc::new(RefCell::new(Rc::new(DefaultScriptFetcher)));
+        let runtime = ScriptRuntime::new(Rc::clone(&inner), base_url.as_ref(), Rc::clone(&fetcher));
 
         Self {
             inner,
             runtime,
             base_url,
-            fetcher: Box::new(DefaultScriptFetcher),
+            fetcher,
             scripts_executed: false,
             executed_scripts: std::collections::HashSet::new(),
             poll_hook: None,
@@ -103,8 +115,8 @@ impl ScriptDocument {
 
     /// Override the [`ScriptFetcher`] used to load external (`src="..."`) scripts.
     /// The default fetcher supports `file:` and `data:` URLs.
-    pub fn with_fetcher(mut self, fetcher: impl ScriptFetcher) -> Self {
-        self.fetcher = Box::new(fetcher);
+    pub fn with_fetcher(self, fetcher: impl ScriptFetcher) -> Self {
+        *self.fetcher.borrow_mut() = Rc::new(fetcher);
         self
     }
 
@@ -284,9 +296,14 @@ impl ScriptDocument {
                         self.runtime.dispatch_node_event(script.node_id, "error");
                         continue;
                     };
-                    match self.fetcher.fetch(&url) {
+                    let fetcher = Rc::clone(&self.fetcher.borrow());
+                    match fetcher.fetch(&url) {
                         Ok(code) => {
-                            self.runtime.eval(&code, url.as_str());
+                            if script.is_module {
+                                self.runtime.eval_module(&code, Some(&url), url.as_str());
+                            } else {
+                                self.runtime.eval(&code, url.as_str());
+                            }
                             self.runtime.dispatch_node_event(script.node_id, "load");
                         }
                         Err(error) => {
@@ -297,7 +314,19 @@ impl ScriptDocument {
                 }
                 None => {
                     if !script.inline_text.trim().is_empty() {
-                        self.runtime.eval(&script.inline_text, "<inline script>");
+                        if script.is_module {
+                            // An inline module has no URL of its own, so its
+                            // relative imports and `import.meta.url` resolve
+                            // against the document, exactly as in a browser.
+                            let base_url = self.base_url.clone();
+                            self.runtime.eval_module(
+                                &script.inline_text,
+                                base_url.as_ref(),
+                                "<inline module>",
+                            );
+                        } else {
+                            self.runtime.eval(&script.inline_text, "<inline script>");
+                        }
                     }
                 }
             }
@@ -318,23 +347,33 @@ impl ScriptDocument {
             if let Some(element) = node.element_data() {
                 if element.name.local == blitz_dom::local_name!("script") {
                     // Skip non-JavaScript script types (e.g. JSON data blocks).
-                    // `module` scripts are treated as classic scripts for now.
                     let script_type = element
                         .attr(blitz_dom::local_name!("type"))
                         .unwrap_or("")
                         .trim()
                         .to_ascii_lowercase();
-                    let is_js = matches!(
-                        script_type.as_str(),
-                        "" | "text/javascript" | "application/javascript" | "module"
-                    );
-                    if is_js {
+                    let is_module = script_type == "module";
+                    let is_js = is_module
+                        || matches!(
+                            script_type.as_str(),
+                            "" | "text/javascript" | "application/javascript"
+                        );
+
+                    // `nomodule` marks the classic fallback a page ships for
+                    // engines without module support. Running modules and the
+                    // fallback would execute the same application twice, which
+                    // is worse than running neither.
+                    let is_nomodule_fallback =
+                        !is_module && element.attr(blitz_dom::local_name!("nomodule")).is_some();
+
+                    if is_js && !is_nomodule_fallback {
                         scripts.push(PendingScript {
                             node_id,
                             src: element
                                 .attr(blitz_dom::local_name!("src"))
                                 .map(str::to_string),
                             inline_text: node.text_content(),
+                            is_module,
                         });
                     }
                     continue;
