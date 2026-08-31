@@ -35,6 +35,7 @@ mod document;
 mod dom;
 mod event_handler;
 mod fetch;
+mod module;
 mod runtime;
 pub mod script_stats;
 mod state;

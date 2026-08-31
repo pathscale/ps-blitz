@@ -3,17 +3,21 @@
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::LazyLock;
 
 use blitz_dom::BaseDocument;
 use blitz_dom::NodeId;
 use blitz_traits::events::{BlitzPointerId, DomEvent, DomEventData, EventState};
+use boa_engine::builtins::promise::PromiseState;
 use boa_engine::object::builtins::JsPromise;
 use boa_engine::object::{JsObject, ObjectInitializer};
 use boa_engine::property::Attribute;
 use boa_engine::value::JsValue;
-use boa_engine::{Context, JsNativeError, JsResult, JsString, NativeFunction, Source, js_string};
+use boa_engine::{
+    Context, JsError, JsNativeError, JsResult, JsString, Module, NativeFunction, Source, js_string,
+};
 use boa_gc::{Finalize, Trace};
 use boa_runtime::Console;
 use boa_runtime::console::{ConsoleState, DefaultLogger, Logger};
@@ -22,6 +26,7 @@ use web_time::{Duration, Instant};
 
 use crate::dom::event::{EventRef, create_event, create_event_for_dom_event, set_event_path};
 use crate::dom::{define_accessor, dom_ctx, node_wrapper};
+use crate::module::{BlitzModuleLoader, SharedFetcher};
 use crate::state::{DomCtx, Listener};
 
 const DIAGNOSTIC_CAPACITY: usize = 1_000;
@@ -144,11 +149,25 @@ pub(crate) struct ScriptRuntime {
     pub context: Context,
     pub ctx: DomCtx,
     diagnostics: Rc<RefCell<RuntimeDiagnostics>>,
+    module_loader: Rc<BlitzModuleLoader>,
 }
 
 impl ScriptRuntime {
-    pub fn new(doc: Rc<RefCell<BaseDocument>>, base_url: Option<&Url>) -> Self {
-        let mut context = Context::default();
+    pub fn new(
+        doc: Rc<RefCell<BaseDocument>>,
+        base_url: Option<&Url>,
+        fetcher: SharedFetcher,
+    ) -> Self {
+        // A module loader can only be given to a context at construction, so
+        // this cannot be `Context::default()` any more. The default is not
+        // merely "no loader" either: it is a filesystem loader rooted at the
+        // process's working directory, which for a browser is both useless and
+        // the wrong thing to expose to a page.
+        let module_loader = Rc::new(BlitzModuleLoader::new(fetcher, base_url.cloned()));
+        let mut context = Context::builder()
+            .module_loader(Rc::clone(&module_loader))
+            .build()
+            .expect("building the script context should not fail");
         let ctx = DomCtx::new(doc);
         context.insert_data(ctx.clone());
         let diagnostics = Rc::new(RefCell::new(RuntimeDiagnostics::default()));
@@ -319,6 +338,7 @@ impl ScriptRuntime {
             context,
             ctx,
             diagnostics,
+            module_loader,
         };
 
         // Small JS bootstrap for APIs that are easiest to define in JS
@@ -569,6 +589,61 @@ impl ScriptRuntime {
     pub fn eval(&mut self, code: &str, description: &str) {
         self.eval_internal(code, description);
         self.run_jobs(description);
+    }
+
+    /// Evaluate a `<script type="module">`.
+    ///
+    /// `url` is the module's own URL: the resolved `src` for an external
+    /// module, or the document's URL for an inline one. It is what relative
+    /// imports and `import.meta.url` resolve against, so a module without one
+    /// can still run but cannot import anything relative.
+    pub fn eval_module(&mut self, code: &str, url: Option<&Url>, description: &str) {
+        let path = url.map(|url| url.as_str().to_owned());
+        let source = Source::from_bytes(code.as_bytes());
+        let source = match &path {
+            Some(path) => source.with_path(Path::new(path)),
+            None => source,
+        };
+
+        let module = match Module::parse(source, None, &mut self.context) {
+            Ok(module) => module,
+            Err(error) => {
+                report_js_error(&self.diagnostics, description, &error);
+                return;
+            }
+        };
+
+        // Registered under its own URL before it runs, so that a module which
+        // is both loaded by a `<script src>` and imported by a sibling is one
+        // module with one set of bindings, not two.
+        if let Some(url) = url {
+            self.module_loader.register(url, module.clone());
+        }
+
+        // Loading, linking and evaluating are all asynchronous, and the
+        // returned promise only settles once the job queue has been drained.
+        // Draining it here keeps a module script as synchronous from the
+        // document's point of view as the classic script it replaces.
+        let promise = module.load_link_evaluate(&mut self.context);
+        self.run_jobs(description);
+
+        match promise.state() {
+            PromiseState::Fulfilled(_) => {}
+            PromiseState::Rejected(error) => {
+                report_js_error(&self.diagnostics, description, &JsError::from_opaque(error));
+            }
+            // Reachable only if a module's graph is still waiting on work the
+            // job queue cannot finish. Silence here reads exactly like a module
+            // that ran and did nothing, which is the failure that cost the most
+            // time to diagnose the first time around.
+            PromiseState::Pending => {
+                let error = JsError::from_opaque(
+                    JsString::from("module evaluation did not settle: an import is still pending")
+                        .into(),
+                );
+                report_js_error(&self.diagnostics, description, &error);
+            }
+        }
     }
 
     pub fn eval_json(
