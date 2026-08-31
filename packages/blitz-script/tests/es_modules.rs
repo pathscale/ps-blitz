@@ -18,8 +18,13 @@ use url::Url;
 ///
 /// A server blocking in `accept()` forever turns "the loader stopped calling
 /// the fetcher" into a hung test suite with no output, which is strictly worse
-/// than a failure. Every accept loop here has a deadline for that reason.
-const SERVE_TIMEOUT: Duration = Duration::from_secs(10);
+/// than a failure. Every deadline in this file exists for that reason.
+///
+/// Generous rather than tight. These are loopback sockets that always answer,
+/// so a timeout here never means what the test is asking about — it means the
+/// machine was busy compiling. One run of the full suite failed that way before
+/// these were widened.
+const SERVE_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn config_with_base(base_url: &str) -> DocumentConfig {
     DocumentConfig {
@@ -75,7 +80,7 @@ fn serve_modules(
                 Err(_) => break,
             };
             stream
-                .set_read_timeout(Some(Duration::from_secs(2)))
+                .set_read_timeout(Some(Duration::from_secs(15)))
                 .expect("the stream can time out");
 
             let mut head = Vec::new();
@@ -114,6 +119,17 @@ fn serve_modules(
             };
             let _ = stream.write_all(response.as_bytes());
             let _ = stream.flush();
+
+            // Stop as soon as every route has been asked for once. The
+            // deadline is the backstop for a regression that stops fetching;
+            // waiting for it on the happy path would add SERVE_TIMEOUT to
+            // every passing run, because the test joins this thread.
+            if routes
+                .iter()
+                .all(|(route, _)| requested.iter().any(|seen| seen == route))
+            {
+                break;
+            }
         }
 
         requested
@@ -139,7 +155,7 @@ impl ScriptFetcher for LoopbackFetcher {
 
         let mut stream = TcpStream::connect((host, port)).map_err(FetchError::Io)?;
         stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
+            .set_read_timeout(Some(Duration::from_secs(30)))
             .map_err(FetchError::Io)?;
         stream
             .write_all(
@@ -487,7 +503,7 @@ fn a_module_awaiting_a_timer_settles_on_a_later_poll() {
     );
     doc.execute_scripts();
 
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline {
         doc.poll(None);
         if matches!(
@@ -500,4 +516,61 @@ fn a_module_awaiting_a_timer_settles_on_a_later_poll() {
     }
 
     assert_eq!(eval_string(&mut doc, "globalThis.result"), "settled");
+}
+
+/// Modules and `defer` run after every parser-blocking classic script.
+///
+/// Document order alone was right until modules existed. It is now wrong in a
+/// way that bites: an inline classic script writing `window.__CONFIG__` after a
+/// module tag runs *before* that module in a real engine, and the module reads
+/// the config it expects.
+///
+/// The expected sequence below is not transcribed from the spec text. This
+/// exact markup was served to a stock engine over loopback and the order
+/// recorded is what it produced.
+#[test]
+fn deferred_scripts_run_after_the_parser_blocking_ones() {
+    let (origin, server) = serve_modules(vec![
+        (
+            "/m.js",
+            r#"globalThis.order.push("m.js external module");"#.to_owned(),
+        ),
+        (
+            "/c.js",
+            r#"globalThis.order.push("c.js external classic");"#.to_owned(),
+        ),
+        (
+            "/d.js",
+            r#"globalThis.order.push("d.js external classic defer");"#.to_owned(),
+        ),
+    ]);
+
+    let mut doc = ScriptDocument::from_html(
+        r#"<script>globalThis.order = [];</script>
+           <script type="module">globalThis.order.push("A inline module");</script>
+           <script>globalThis.order.push("B inline classic");</script>
+           <script type="module" src="/m.js"></script>
+           <script src="/c.js"></script>
+           <script defer src="/d.js"></script>
+           <script>globalThis.order.push("C inline classic after everything");</script>
+           <script type="module">globalThis.order.push("D inline module last");</script>"#,
+        config_with_base(&format!("{origin}/index.html")),
+    )
+    .with_fetcher(LoopbackFetcher);
+    doc.execute_scripts();
+
+    assert_eq!(
+        eval_string(&mut doc, "globalThis.order.join('|')"),
+        [
+            "B inline classic",
+            "c.js external classic",
+            "C inline classic after everything",
+            "A inline module",
+            "m.js external module",
+            "d.js external classic defer",
+            "D inline module last",
+        ]
+        .join("|")
+    );
+    let _ = server.join();
 }
