@@ -1098,6 +1098,10 @@ pub(crate) fn find_inline_layout_embedded_boxes(
         node.layout_parent.set(Some(parent_id));
 
         match &node.data {
+            // A fragment generates no box. It has no parent by definition, so
+            // it is never reached from a document walk; the arm exists because
+            // the match is exhaustive, not because it can happen.
+            NodeData::DocumentFragment => {}
             NodeData::Element(element_data) | NodeData::AnonymousBlock(element_data) => {
                 // if the input type is hidden, hide it
                 if *element_data.name.local == *"input" {
@@ -1289,6 +1293,10 @@ pub(crate) fn build_inline_layout_into(
             .unwrap_or(TextTransform::NONE);
 
         match &node.data {
+            // A fragment generates no box. It has no parent by definition, so
+            // it is never reached from a document walk; the arm exists because
+            // the match is exhaustive, not because it can happen.
+            NodeData::DocumentFragment => {}
             NodeData::Element(element_data) | NodeData::AnonymousBlock(element_data) => {
                 // if the input type is hidden, hide it
                 if *element_data.name.local == *"input" {

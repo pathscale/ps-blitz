@@ -123,6 +123,8 @@ pub fn walk_tree(indent: usize, node: &Node) {
     match &node.data {
         NodeData::Document(_) => println!("#Document {id}"),
 
+        NodeData::DocumentFragment => println!("#DocumentFragment {id}"),
+
         NodeData::Text(data) => {
             if data.content.chars().all(|c| c.is_ascii_whitespace()) {
                 println!("{id} #text: <whitespace>");

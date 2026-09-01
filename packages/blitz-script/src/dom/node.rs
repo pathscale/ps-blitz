@@ -206,8 +206,9 @@ fn node_type(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<J
         Some(NodeData::Element(_)) | Some(NodeData::AnonymousBlock(_)) => 1,
         Some(NodeData::Text(_)) => 3,
         Some(NodeData::Comment { .. }) => 8,
-        // A shadow root is a DocumentFragment as far as the DOM is concerned.
-        Some(NodeData::ShadowRoot(_)) => 11,
+        // A shadow root is a DocumentFragment as far as the DOM is concerned,
+        // and a fragment is one literally. Both are node type 11.
+        Some(NodeData::ShadowRoot(_)) | Some(NodeData::DocumentFragment) => 11,
         None => 0,
     };
     Ok(JsValue::from(node_type))
@@ -224,7 +225,9 @@ fn node_name(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<J
         }
         Some(NodeData::Text(_)) => "#text".to_string(),
         Some(NodeData::Comment { .. }) => "#comment".to_string(),
-        Some(NodeData::ShadowRoot(_)) => "#document-fragment".to_string(),
+        Some(NodeData::ShadowRoot(_)) | Some(NodeData::DocumentFragment) => {
+            "#document-fragment".to_string()
+        }
         None => String::new(),
     };
     Ok(js_str(&name))

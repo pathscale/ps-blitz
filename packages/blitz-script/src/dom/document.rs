@@ -33,6 +33,13 @@ pub(crate) fn init_document_proto(proto: &JsObject, context: &mut Context) {
     define_method(proto, "importNode", 2, import_node, context);
     define_method(proto, "getSelection", 0, get_selection, context);
     define_method(proto, "createComment", 1, create_comment, context);
+    define_method(
+        proto,
+        "createDocumentFragment",
+        0,
+        create_document_fragment,
+        context,
+    );
     define_method(proto, "getElementById", 1, get_element_by_id, context);
     define_method(proto, "querySelector", 1, query_selector, context);
     define_method(proto, "querySelectorAll", 1, query_selector_all, context);
@@ -276,6 +283,34 @@ fn create_comment(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
     let node_id = {
         let mut doc = ctx.doc.borrow_mut();
         doc.mutate().create_comment_node(&text)
+    };
+    Ok(node_wrapper(&ctx, node_id, context).into())
+}
+
+/// `document.createDocumentFragment()`.
+///
+/// jQuery calls this during initialisation:
+///
+/// ```js
+/// xe = C.createDocumentFragment().appendChild(C.createElement("div"))
+/// ```
+///
+/// Without it the call threw `TypeError: not a callable function` and the
+/// library died before defining `jQuery`, so every page depending on it lost
+/// its scripting. Eight sites in a hundred-site corpus failed exactly there,
+/// across four jQuery versions on four CDNs, and every one of them reported it
+/// downstream as `jQuery is not defined` — a missing global that was never
+/// missing.
+fn create_document_fragment(
+    this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let _ = this_node_id(this)?;
+    let node_id = {
+        let mut doc = ctx.doc.borrow_mut();
+        doc.mutate().create_document_fragment()
     };
     Ok(node_wrapper(&ctx, node_id, context).into())
 }

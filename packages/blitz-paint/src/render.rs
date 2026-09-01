@@ -690,6 +690,10 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             NodeData::Document(_) => {}
             // NodeData::Doctype => {}
             NodeData::Comment { .. } => {} // NodeData::ProcessingInstruction { .. } => {}
+            // A fragment has no parent and never enters the box tree, so paint
+            // cannot reach one. The arm exists for exhaustiveness, and doing
+            // nothing is also what it would mean if it could.
+            NodeData::DocumentFragment => {}
             // Shadow roots are transparent: a shadow host's flattened children
             // are the shadow root's children, so the root node itself is never
             // visited during painting.

@@ -154,6 +154,18 @@ impl DocumentMutator<'_> {
         self.doc.create_text_node(text)
     }
 
+    /// A `DocumentFragment`: a parentless container that never appears in a box
+    /// tree and whose children are what gets inserted when it is.
+    ///
+    /// jQuery builds one during initialisation, so without this the library
+    /// throws before it defines `jQuery` and every page depending on it loses
+    /// its scripting. Eight sites in a hundred-site corpus failed that way, and
+    /// they reported it as `jQuery is not defined` — the missing method itself
+    /// says only `not a callable function`, which names nothing.
+    pub fn create_document_fragment(&mut self) -> NodeId {
+        self.doc.create_node(NodeData::DocumentFragment)
+    }
+
     pub fn create_element(&mut self, name: QualName, attrs: Vec<Attribute>) -> NodeId {
         let mut data = ElementData::new(name, attrs);
         data.flush_style_attribute(self.doc.guard(), &self.doc.url.url_extra_data());
@@ -952,6 +964,32 @@ impl DocumentMutator<'_> {
         child_ids: &[NodeId],
         insert_children_fn: &dyn Fn(&mut Node, &[NodeId]),
     ) {
+        // A fragment inserts its children, not itself. Flattened here rather
+        // than in each caller because this is the one place `appendChild` and
+        // `insertBefore` both pass through, so they cannot disagree about it.
+        //
+        // The fragment is emptied as it is expanded, which is what the spec
+        // requires: after insertion a fragment has no children, and leaving
+        // them behind would give every child two parents.
+        let child_ids: Vec<NodeId> = if child_ids
+            .iter()
+            .any(|id| matches!(self.doc.nodes[*id].data, NodeData::DocumentFragment))
+        {
+            let mut flattened = Vec::with_capacity(child_ids.len());
+            for id in child_ids.iter().copied() {
+                if matches!(self.doc.nodes[id].data, NodeData::DocumentFragment) {
+                    let moved = std::mem::take(&mut self.doc.nodes[id].children);
+                    flattened.extend(moved);
+                } else {
+                    flattened.push(id);
+                }
+            }
+            flattened
+        } else {
+            child_ids.to_vec()
+        };
+        let child_ids = child_ids.as_slice();
+
         let new_parent_is_in_document = self.doc.nodes[parent_id].flags.is_in_document();
         self.mutations_occurred |= new_parent_is_in_document && !child_ids.is_empty();
         // Detach the children from their old parents *before* inserting them into

@@ -784,6 +784,7 @@ pub enum NodeKind {
     AnonymousBlock,
     Text,
     Comment,
+    DocumentFragment,
     ShadowRoot,
 }
 
@@ -874,6 +875,10 @@ pub enum NodeData {
         contents: String,
     },
 
+    /// A `DocumentFragment`: a parentless container whose children move when
+    /// it is inserted, and which never appears in the box tree itself.
+    DocumentFragment,
+
     /// The root of a shadow tree attached to a host element.
     ShadowRoot(ShadowRootData),
     // /// A `DOCTYPE` with name, public id, and system id. See
@@ -928,6 +933,7 @@ impl NodeData {
             NodeData::AnonymousBlock(_) => NodeKind::AnonymousBlock,
             NodeData::Text(_) => NodeKind::Text,
             NodeData::Comment { .. } => NodeKind::Comment,
+            NodeData::DocumentFragment => NodeKind::DocumentFragment,
             NodeData::ShadowRoot(_) => NodeKind::ShadowRoot,
         }
     }
@@ -1126,6 +1132,7 @@ impl Node {
 
         match &self.data {
             NodeData::Document(_) => write!(s, "DOCUMENT"),
+            NodeData::DocumentFragment => write!(s, "FRAGMENT"),
             // NodeData::Doctype { name, .. } => write!(s, "DOCTYPE {name}"),
             NodeData::Text(data) => {
                 let bytes = data.content.as_bytes();
@@ -1236,6 +1243,10 @@ impl Node {
             NodeData::Comment { .. } => {}
             NodeData::AnonymousBlock(_) => {}
             NodeData::ShadowRoot(_) => {}
+            // A fragment serialises as nothing of its own: the spec says its
+            // children are what gets inserted, and it is never in a document
+            // to be serialised from in the first place.
+            NodeData::DocumentFragment => {}
             // NodeData::Doctype { name, .. } => write!(s, "DOCTYPE {name}"),
             NodeData::Text(data) => {
                 if matches!(style, OutputStyle::Pretty) {

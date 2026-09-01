@@ -92,7 +92,10 @@ pub(crate) fn node_wrapper(ctx: &DomCtx, node_id: NodeId, _context: &mut Context
             // A shadow root is not exposed through any of the specific
             // prototypes: script reaches it only via `element.shadowRoot`,
             // which is not implemented, so the plain Node prototype is right.
-            Some(NodeData::ShadowRoot(_)) => protos.node.clone(),
+            // A fragment is reached only through the reference the page kept
+            // from `createDocumentFragment`, and needs nothing beyond the node
+            // methods, so it takes the same plain prototype.
+            Some(NodeData::ShadowRoot(_)) | Some(NodeData::DocumentFragment) => protos.node.clone(),
             None => protos.node.clone(),
         }
     };

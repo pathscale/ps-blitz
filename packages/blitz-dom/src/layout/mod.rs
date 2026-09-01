@@ -908,6 +908,7 @@ impl PrintTree for BaseDocument {
             // NodeData::Doctype { .. } => return "DOCTYPE",
             NodeData::Text { .. } => node.node_debug_str().leak(),
             NodeData::Comment { .. } => "COMMENT",
+            NodeData::DocumentFragment => "FRAGMENT",
             NodeData::ShadowRoot(_) => "SHADOW ROOT",
             NodeData::AnonymousBlock(_) => "ANONYMOUS BLOCK",
             NodeData::Element(_) => {
