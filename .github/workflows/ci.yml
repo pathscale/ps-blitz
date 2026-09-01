@@ -347,6 +347,16 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+      # These jobs build the same fontconfig-dependent crates as the rest but
+      # never installed the library; they passed only while a warm cache made
+      # the build script unnecessary. See the note on the other jobs.
+      - name: Ensure fontconfig is actually present
+        run: |
+          pkg-config --exists fontconfig && exit 0
+          echo "fontconfig missing; installing it" >&2
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libfontconfig-dev
+          pkg-config --exists fontconfig
       - name: install stable
         uses: dtolnay/rust-toolchain@master
         with:
@@ -405,6 +415,16 @@ jobs:
     runs-on: ubicloud-standard-8
     steps:
       - uses: actions/checkout@v4
+      # These jobs build the same fontconfig-dependent crates as the rest but
+      # never installed the library; they passed only while a warm cache made
+      # the build script unnecessary. See the note on the other jobs.
+      - name: Ensure fontconfig is actually present
+        run: |
+          pkg-config --exists fontconfig && exit 0
+          echo "fontconfig missing; installing it" >&2
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libfontconfig-dev
+          pkg-config --exists fontconfig
       - uses: dtolnay/rust-toolchain@stable
       - uses: oven-sh/setup-bun@v2
       - uses: Swatinem/rust-cache@v2
