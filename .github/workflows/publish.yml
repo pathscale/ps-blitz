@@ -128,6 +128,47 @@ jobs:
             }
           done
 
+          # And the other direction, which is the one that actually went wrong.
+          # The check above catches a name in the list that is not a crate; it
+          # says nothing about a crate that is not in the list. That is how
+          # `ps-dioxus-native` and `ps-dioxus-native-dom` stopped being released
+          # while this job reported success on every run: they were simply
+          # absent, and nothing was looking for them.
+          #
+          # A publishable workspace member is one that is not `publish = false`.
+          # If a new one appears and nobody adds it here, this fails loudly on
+          # the release rather than silently a version later, when a consumer
+          # cannot build against an engine the crate has fallen behind.
+          # Released on their own cadence, deliberately, and each is on its own
+          # version line rather than the workspace one:
+          #
+          #   ps-debug-timer, dom-abi   pre-existing exclusions, see the note
+          #                             above the list
+          #   ps-accesskit-xplat        0.1.x, an independent support crate
+          #   rdme                      apps/readme, a tool rather than part of
+          #                             the engine
+          #
+          # Naming them is the point. An exclusion anyone can read is a decision;
+          # a crate quietly absent from a list is the bug this check exists to
+          # find.
+          released_separately='ps-debug-timer dom-abi ps-accesskit-xplat rdme'
+
+          publishable="$(cargo metadata --format-version 1 --no-deps \
+            | jq -r '.packages[] | select(.publish == null) | .name')"
+          missing=''
+          for crate in $publishable; do
+            case " $crates $released_separately " in
+              *" $crate "*) ;;
+              *) missing="$missing $crate" ;;
+            esac
+          done
+          if [ -n "$missing" ]; then
+            echo "publishable workspace crates missing from the release list:$missing" >&2
+            echo "add them in dependency order, name them in released_separately," >&2
+            echo "or set publish = false" >&2
+            exit 1
+          fi
+
           # Each crate publishes at the version in its own manifest, read from
           # cargo rather than assumed to be the workspace one. A crate on its
           # own version line is then released by exactly the same path as every
