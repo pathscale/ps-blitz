@@ -25,6 +25,8 @@ pub(crate) fn init_document_proto(proto: &JsObject, context: &mut Context) {
     define_accessor(proto, "body", Some(body), None, context);
     define_accessor(proto, "head", Some(head), None, context);
     define_accessor(proto, "activeElement", Some(active_element), None, context);
+    define_accessor(proto, "implementation", Some(implementation), None, context);
+    define_accessor(proto, "title", Some(title), None, context);
     define_accessor(proto, "defaultView", Some(default_view), None, context);
 
     define_method(proto, "createElement", 1, create_element, context);
@@ -45,51 +47,84 @@ pub(crate) fn init_document_proto(proto: &JsObject, context: &mut Context) {
     define_method(proto, "querySelectorAll", 1, query_selector_all, context);
 }
 
-fn find_tag(ctx: &DomCtx, tag: blitz_dom::LocalName) -> Option<NodeId> {
+/// The first element with `tag` inside `root_id`'s subtree.
+///
+/// Scoped to `root_id` rather than the page, because `createHTMLDocument`
+/// makes a second document in the same arena. A page-wide search answered
+/// `newDoc.body` with the live page's `body`, which is worse than answering
+/// `null`: jQuery writes two `<form>` elements into whatever it gets back.
+fn find_tag_within(ctx: &DomCtx, root_id: NodeId, tag: blitz_dom::LocalName) -> Option<NodeId> {
     let doc = ctx.doc.borrow();
-    let root = doc.try_root_element()?;
-    if root.data.is_element_with_tag_name(&tag) {
-        return Some(root.id);
-    }
-    root.children
+
+    // `document > html > body` is the shape in nearly every case, so try the
+    // root element and its children before walking anything. Without this,
+    // reading `document.body` scans the whole of `head` first, every time.
+    let root_element = doc
+        .get_node(root_id)?
+        .children
         .iter()
         .copied()
-        .find(|child_id| {
+        .find(|id| doc.get_node(*id).is_some_and(|child| child.is_element()));
+    if let Some(element_id) = root_element {
+        let element = doc.get_node(element_id)?;
+        if element.data.is_element_with_tag_name(&tag) {
+            return Some(element_id);
+        }
+        if let Some(found) = element.children.iter().copied().find(|child_id| {
             doc.get_node(*child_id)
                 .is_some_and(|child| child.data.is_element_with_tag_name(&tag))
-        })
-        .or_else(|| {
-            // Fall back to a full tree search
-            let mut stack = vec![doc.root_node().id];
-            while let Some(node_id) = stack.pop() {
-                let node = doc.get_node(node_id)?;
-                if node.data.is_element_with_tag_name(&tag) {
-                    return Some(node_id);
-                }
-                stack.extend(node.children.iter().rev().copied());
-            }
-            None
-        })
+        }) {
+            return Some(found);
+        }
+    }
+
+    // Otherwise walk. A missing node is skipped rather than ending the search:
+    // returning `None` from inside the loop would abandon siblings that are
+    // still there.
+    let mut stack = vec![root_id];
+    while let Some(node_id) = stack.pop() {
+        let Some(node) = doc.get_node(node_id) else {
+            continue;
+        };
+        if node.data.is_element_with_tag_name(&tag) {
+            return Some(node_id);
+        }
+        stack.extend(node.children.iter().rev().copied());
+    }
+    None
 }
 
 fn document_element(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
-    let _ = this_node_id(this)?;
+    let this_id = this_node_id(this)?;
     let root_id = ctx.doc.borrow().try_root_element().map(|root| root.id);
+    // A created document answers with its own root element; the page document
+    // keeps the cached root it already had.
+    let root_id = if Some(this_id) == ctx.doc.borrow().root_node().id.into() {
+        root_id
+    } else {
+        let doc = ctx.doc.borrow();
+        doc.get_node(this_id).and_then(|node| {
+            node.children
+                .iter()
+                .copied()
+                .find(|id| doc.get_node(*id).is_some_and(|c| c.is_element()))
+        })
+    };
     Ok(node_or_null(&ctx, root_id, context))
 }
 
 fn body(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
-    let _ = this_node_id(this)?;
-    let body_id = find_tag(&ctx, local_name!("body"));
+    let this_id = this_node_id(this)?;
+    let body_id = find_tag_within(&ctx, this_id, local_name!("body"));
     Ok(node_or_null(&ctx, body_id, context))
 }
 
 fn head(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
-    let _ = this_node_id(this)?;
-    let head_id = find_tag(&ctx, local_name!("head"));
+    let this_id = this_node_id(this)?;
+    let head_id = find_tag_within(&ctx, this_id, local_name!("head"));
     Ok(node_or_null(&ctx, head_id, context))
 }
 
@@ -352,4 +387,67 @@ fn query_selector_all(
         .map(|match_id| node_wrapper(&ctx, match_id, context).into())
         .collect();
     Ok(JsArray::from_iter(wrappers, context).into())
+}
+
+/// `document.implementation`.
+///
+/// Only `createHTMLDocument` is implemented. `hasFeature` was deprecated to a
+/// constant `true` long ago and nothing reads `createDocument` in the corpus,
+/// so neither is here; adding a stub that answers plausibly would be worse
+/// than the absent property, which at least fails where the caller can see it.
+fn implementation(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let _ = this_node_id(this)?;
+    let object = ObjectInitializer::new(context)
+        .function(
+            NativeFunction::from_fn_ptr(create_html_document),
+            js_string!("createHTMLDocument"),
+            1,
+        )
+        .build();
+    Ok(object.into())
+}
+
+/// The text of this document's `<title>`, or the empty string.
+fn title(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let this_id = this_node_id(this)?;
+    let text = find_tag_within(&ctx, this_id, local_name!("title"))
+        .and_then(|title_id| {
+            let doc = ctx.doc.borrow();
+            let title = doc.get_node(title_id)?;
+            Some(
+                title
+                    .children
+                    .iter()
+                    .filter_map(|child_id| doc.get_node(*child_id))
+                    .filter_map(|child| child.text_data().map(|text| text.content.clone()))
+                    .collect::<String>(),
+            )
+        })
+        .unwrap_or_default();
+    Ok(JsString::from(text.as_str()).into())
+}
+
+/// `document.implementation.createHTMLDocument(title)`.
+///
+/// The new document is detached, so it never lays out or paints, and it lives
+/// in this document's arena rather than a second `BaseDocument`.
+fn create_html_document(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let title = match args.first() {
+        // `createHTMLDocument()` with no argument is not the same call as
+        // `createHTMLDocument(undefined)`: the first has no title at all, the
+        // second stringifies to "undefined". jQuery passes "".
+        None => String::new(),
+        Some(value) => to_rust_string(value, context)?,
+    };
+    let node_id = {
+        let mut doc = ctx.doc.borrow_mut();
+        doc.mutate().create_html_document(&title)
+    };
+    Ok(node_wrapper(&ctx, node_id, context).into())
 }

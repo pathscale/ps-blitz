@@ -166,6 +166,40 @@ impl DocumentMutator<'_> {
         self.doc.create_node(NodeData::DocumentFragment)
     }
 
+    /// A detached HTML document: `html > head > title`, and `body`.
+    ///
+    /// This backs `document.implementation.createHTMLDocument`, which jQuery
+    /// calls during initialisation to decide whether it can parse markup
+    /// through a second document. Reading `createHTMLDocument` off an absent
+    /// `implementation` threw before jQuery had assigned itself to `window`,
+    /// so every site depending on it reported `jQuery is not defined` -- a
+    /// global that was never missing.
+    ///
+    /// The node lives in this document's arena but is attached to nothing, so
+    /// it never lays out or paints. That is what makes it cheap: no second
+    /// `BaseDocument`, no second style engine, no second arena.
+    pub fn create_html_document(&mut self, title: &str) -> NodeId {
+        let doc_id = self.doc.create_node(NodeData::Document(Box::default()));
+
+        let html = self.create_element(html_tag("html"), Vec::new());
+        let head = self.create_element(html_tag("head"), Vec::new());
+        let title_el = self.create_element(html_tag("title"), Vec::new());
+        let body = self.create_element(html_tag("body"), Vec::new());
+
+        // An empty title argument still gets an element, because the DOM has
+        // one either way; it simply has no text child.
+        if !title.is_empty() {
+            let text = self.create_text_node(title);
+            self.append_children(title_el, &[text]);
+        }
+
+        self.append_children(head, &[title_el]);
+        self.append_children(html, &[head, body]);
+        self.append_children(doc_id, &[html]);
+
+        doc_id
+    }
+
     pub fn create_element(&mut self, name: QualName, attrs: Vec<Attribute>) -> NodeId {
         let mut data = ElementData::new(name, attrs);
         data.flush_style_attribute(self.doc.guard(), &self.doc.url.url_extra_data());
@@ -1662,6 +1696,11 @@ impl Drop for ViewportMut<'_> {
             self.doc.shell_provider.request_redraw();
         }
     }
+}
+
+/// A qualified name in the HTML namespace.
+fn html_tag(name: &str) -> markup5ever::QualName {
+    markup5ever::QualName::new(None, markup5ever::ns!(html), name.into())
 }
 
 #[cfg(test)]

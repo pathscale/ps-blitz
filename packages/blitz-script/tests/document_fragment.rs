@@ -7,11 +7,16 @@
 //! ```
 //!
 //! Without the method that threw `TypeError: not a callable function`, and the
-//! library died before defining `jQuery`. Eight sites in a hundred-site corpus
-//! failed exactly there — across four jQuery versions on four different CDNs —
-//! and every one reported it downstream as `jQuery is not defined`, a missing
-//! global that was never missing. The method that was actually absent says
-//! nothing about itself in the error, which is why it went unranked.
+//! library died before defining `jQuery`, reporting it downstream as
+//! `jQuery is not defined` — a global that was never missing.
+//!
+//! This was once credited with the whole `jQuery is not defined` cluster in a
+//! hundred-site corpus. It was not: measured before and after this landed, the
+//! cluster did not move (7 sites either way) while `createDocumentFragment is
+//! not defined` went to zero. The method is needed and is exercised here, but
+//! the initialisation failure those sites hit is
+//! `document.implementation.createHTMLDocument`, which runs earlier in the
+//! same feature-detect block. See `document_implementation.rs`.
 
 use blitz_script::ScriptDocument;
 
