@@ -251,6 +251,12 @@ impl ScriptRuntime {
         let location = build_location(base_url, &mut context);
         register_global(&mut context, "location", location);
 
+        // On the global rather than only on `window`: pages call it bare as
+        // often as they qualify it.
+        let computed_style =
+            NativeFunction::from_fn_ptr(get_computed_style).to_js_function(context.realm());
+        register_global(&mut context, "getComputedStyle", computed_style.into());
+
         // `navigator`, including the async clipboard.
         //
         // Without `navigator.clipboard` every "copy" button in an embedding app
@@ -1190,6 +1196,97 @@ impl ScriptRuntime {
             self.run_jobs("event microtasks");
         }
         any_called
+    }
+}
+
+/// `getComputedStyle(element)`.
+///
+/// Backed by the engine's own computed values rather than a stub returning
+/// empty strings. That distinction matters: a page reading `display` off a stub
+/// gets `""`, believes the element is not hidden, and lays itself out wrongly —
+/// harder to diagnose than the `getComputedStyle is not defined` this replaces,
+/// which at least stopped loudly. Three sites in a hundred-site corpus died on
+/// that error.
+///
+/// The returned object carries a fixed set of properties as own keys and a
+/// `getPropertyValue` that reads them. A property outside the set returns the
+/// empty string, which is what a real browser returns for one it does not
+/// recognise, so a caller cannot tell an unsupported property from an unset
+/// one. That is the honest limit of this: it answers well for what it covers
+/// and says nothing for the rest.
+fn get_computed_style(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let Some(node_id) = args.first().and_then(crate::dom::node_id_of_value) else {
+        return Err(JsNativeError::typ()
+            .with_message("getComputedStyle expects an element")
+            .into());
+    };
+
+    let properties = {
+        let ctx = dom_ctx(context)?;
+        let doc = ctx.doc.borrow();
+        doc.get_node(node_id)
+            .and_then(|node| node.computed_style_properties())
+            .unwrap_or_default()
+    };
+
+    let mut declaration = ObjectInitializer::new(context);
+    for (name, value) in &properties {
+        // Both spellings, because scripts read `style.fontSize` as often as
+        // they call `getPropertyValue("font-size")`.
+        let camel: String = {
+            let mut out = String::with_capacity(name.len());
+            let mut upper = false;
+            for ch in name.chars() {
+                if ch == '-' {
+                    upper = true;
+                } else if upper {
+                    out.extend(ch.to_uppercase());
+                    upper = false;
+                } else {
+                    out.push(ch);
+                }
+            }
+            out
+        };
+        declaration.property(
+            js_string!(*name),
+            JsValue::from(js_string!(value.as_str())),
+            Attribute::all(),
+        );
+        if camel != *name {
+            declaration.property(
+                js_string!(camel.as_str()),
+                JsValue::from(js_string!(value.as_str())),
+                Attribute::all(),
+            );
+        }
+    }
+    declaration.function(
+        NativeFunction::from_fn_ptr(get_property_value),
+        js_string!("getPropertyValue"),
+        1,
+    );
+    Ok(declaration.build().into())
+}
+
+/// `CSSStyleDeclaration.getPropertyValue(name)` over the object built above.
+fn get_property_value(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let name = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .to_string(context)?;
+    let Some(object) = this.as_object() else {
+        return Ok(JsValue::from(js_string!("")));
+    };
+    match object.get(name, context) {
+        Ok(value) if !value.is_undefined() => Ok(value),
+        // A property this does not carry reads as unset, which is what a real
+        // browser answers for one it does not recognise.
+        _ => Ok(JsValue::from(js_string!(""))),
     }
 }
 

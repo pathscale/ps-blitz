@@ -402,6 +402,63 @@ impl Node {
     }
 
     /// A compact computed-style view for renderer diagnostics.
+    /// Computed values for the properties a page is most likely to read.
+    ///
+    /// Deliberately a fixed set rather than every property stylo computes.
+    /// `getComputedStyle` in a real browser answers for all of them, and this
+    /// does not; a caller asking for something outside this list gets an empty
+    /// string, which is what an unsupported property returns anyway.
+    ///
+    /// The alternative was to keep throwing `getComputedStyle is not defined`,
+    /// which stops the whole script. Measured over a hundred-site corpus, three
+    /// sites died on exactly that. A page that reads `display` and gets the
+    /// right answer is strictly better off, and one that reads something absent
+    /// is no worse off than before.
+    ///
+    /// Grow the list when a page is found needing more. It is cheap: every
+    /// entry is one `clone_*` call stylo already provides.
+    pub fn computed_style_properties(&self) -> Option<Vec<(&'static str, String)>> {
+        let style = self.primary_styles()?;
+        let layout = *self.final_layout();
+        Some(vec![
+            ("display", style.clone_display().to_css_string()),
+            ("position", style.clone_position().to_css_string()),
+            ("visibility", style.clone_visibility().to_css_string()),
+            ("opacity", style.clone_opacity().to_css_string()),
+            ("color", style.clone_color().to_css_string()),
+            (
+                "background-color",
+                style.clone_background_color().to_css_string(),
+            ),
+            (
+                "font-size",
+                format!("{}px", style.clone_font_size().computed_size().px()),
+            ),
+            ("font-weight", style.clone_font_weight().to_css_string()),
+            ("font-style", style.clone_font_style().to_css_string()),
+            ("font-family", style.clone_font_family().to_css_string()),
+            ("text-align", style.clone_text_align().to_css_string()),
+            ("overflow-x", style.clone_overflow_x().to_css_string()),
+            ("overflow-y", style.clone_overflow_y().to_css_string()),
+            ("z-index", style.clone_z_index().to_css_string()),
+            ("box-sizing", style.clone_box_sizing().to_css_string()),
+            (
+                "flex-direction",
+                style.clone_flex_direction().to_css_string(),
+            ),
+            (
+                "justify-content",
+                style.clone_justify_content().to_css_string(),
+            ),
+            ("align-items", style.clone_align_items().to_css_string()),
+            // The used values, not the specified ones. A page reading `width`
+            // off `getComputedStyle` is nearly always asking how wide the box
+            // ended up, and `auto` is not an answer it can use.
+            ("width", format!("{}px", layout.size.width)),
+            ("height", format!("{}px", layout.size.height)),
+        ])
+    }
+
     pub fn diagnostic_computed_style(&self) -> Option<Vec<(&'static str, String)>> {
         let style = self.primary_styles()?;
         Some(vec![
