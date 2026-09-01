@@ -45,8 +45,14 @@ fn number_format_follows_the_locale() {
     let mut doc = page();
     doc.execute_scripts();
 
-    let en = eval_string(&mut doc, "new Intl.NumberFormat('en-US').format(1234567.89)");
-    let de = eval_string(&mut doc, "new Intl.NumberFormat('de-DE').format(1234567.89)");
+    let en = eval_string(
+        &mut doc,
+        "new Intl.NumberFormat('en-US').format(1234567.89)",
+    );
+    let de = eval_string(
+        &mut doc,
+        "new Intl.NumberFormat('de-DE').format(1234567.89)",
+    );
 
     assert_eq!(en, "1,234,567.89");
     assert_eq!(de, "1.234.567,89");
