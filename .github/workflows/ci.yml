@@ -50,6 +50,19 @@ jobs:
         with:
           packages: libfontconfig-dev
           version: 1.0
+      # The cache action restores a tarball rather than installing, and on this
+      # runner image it has silently restored nothing: every job then died in
+      # `yeslogic-fontconfig-sys`'s build script with `pkg-config exited with
+      # status code 1`, which reads as a dependency problem rather than a
+      # missing system library. Ask pkg-config directly and install if it is
+      # not there. A no-op when the cache worked.
+      - name: Ensure fontconfig is actually present
+        run: |
+          pkg-config --exists fontconfig && exit 0
+          echo "fontconfig missing after the cache step; installing it" >&2
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libfontconfig-dev
+          pkg-config --exists fontconfig
       - run: cargo build --workspace
 
   build-features-default:
@@ -71,6 +84,19 @@ jobs:
         with:
           packages: libfontconfig-dev
           version: 1.0
+      # The cache action restores a tarball rather than installing, and on this
+      # runner image it has silently restored nothing: every job then died in
+      # `yeslogic-fontconfig-sys`'s build script with `pkg-config exited with
+      # status code 1`, which reads as a dependency problem rather than a
+      # missing system library. Ask pkg-config directly and install if it is
+      # not there. A no-op when the cache worked.
+      - name: Ensure fontconfig is actually present
+        run: |
+          pkg-config --exists fontconfig && exit 0
+          echo "fontconfig missing after the cache step; installing it" >&2
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libfontconfig-dev
+          pkg-config --exists fontconfig
       - run: cargo build --workspace
 
   test-features-default:
@@ -92,6 +118,19 @@ jobs:
         with:
           packages: libfontconfig-dev
           version: 1.0
+      # The cache action restores a tarball rather than installing, and on this
+      # runner image it has silently restored nothing: every job then died in
+      # `yeslogic-fontconfig-sys`'s build script with `pkg-config exited with
+      # status code 1`, which reads as a dependency problem rather than a
+      # missing system library. Ask pkg-config directly and install if it is
+      # not there. A no-op when the cache worked.
+      - name: Ensure fontconfig is actually present
+        run: |
+          pkg-config --exists fontconfig && exit 0
+          echo "fontconfig missing after the cache step; installing it" >&2
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libfontconfig-dev
+          pkg-config --exists fontconfig
       - run: cargo test --workspace
 
   build-counter:
@@ -112,6 +151,19 @@ jobs:
         with:
           packages: libfontconfig-dev
           version: 1.0
+      # The cache action restores a tarball rather than installing, and on this
+      # runner image it has silently restored nothing: every job then died in
+      # `yeslogic-fontconfig-sys`'s build script with `pkg-config exited with
+      # status code 1`, which reads as a dependency problem rather than a
+      # missing system library. Ask pkg-config directly and install if it is
+      # not there. A no-op when the cache worked.
+      - name: Ensure fontconfig is actually present
+        run: |
+          pkg-config --exists fontconfig && exit 0
+          echo "fontconfig missing after the cache step; installing it" >&2
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libfontconfig-dev
+          pkg-config --exists fontconfig
       - run: cargo build -p counter
 
   # wasm_hello is a standalone workspace; seven_guis and todomvc are workspace
@@ -180,6 +232,19 @@ jobs:
         with:
           packages: libfontconfig-dev
           version: 1.0
+      # The cache action restores a tarball rather than installing, and on this
+      # runner image it has silently restored nothing: every job then died in
+      # `yeslogic-fontconfig-sys`'s build script with `pkg-config exited with
+      # status code 1`, which reads as a dependency problem rather than a
+      # missing system library. Ask pkg-config directly and install if it is
+      # not there. A no-op when the cache worked.
+      - name: Ensure fontconfig is actually present
+        run: |
+          pkg-config --exists fontconfig && exit 0
+          echo "fontconfig missing after the cache step; installing it" >&2
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libfontconfig-dev
+          pkg-config --exists fontconfig
       - run: cargo clippy --workspace -- -D warnings
 
   # Every other job builds default features only, so code behind a feature is
@@ -211,6 +276,19 @@ jobs:
         with:
           packages: libfontconfig-dev
           version: 1.0
+      # The cache action restores a tarball rather than installing, and on this
+      # runner image it has silently restored nothing: every job then died in
+      # `yeslogic-fontconfig-sys`'s build script with `pkg-config exited with
+      # status code 1`, which reads as a dependency problem rather than a
+      # missing system library. Ask pkg-config directly and install if it is
+      # not there. A no-op when the cache worked.
+      - name: Ensure fontconfig is actually present
+        run: |
+          pkg-config --exists fontconfig && exit 0
+          echo "fontconfig missing after the cache step; installing it" >&2
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libfontconfig-dev
+          pkg-config --exists fontconfig
       - run: cargo check -p ps-blitz-dom -p ps-blitz-html -p ps-blitz-script -p ps-blitz-paint -p ps-blitz-net --all-features
 
   doc:
