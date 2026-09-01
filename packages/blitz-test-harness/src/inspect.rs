@@ -159,6 +159,10 @@ fn write_node(out: &mut String, doc: &blitz_dom::BaseDocument, node: &Node, dept
             }
             writeln!(out, "{:?}", truncate(content, 60)).unwrap();
         }
+        // A fragment has no parent, so an inspection walk from the document
+        // root cannot reach one. Named rather than swept into a catch-all so
+        // that the next node kind added has to be thought about here too.
+        NodeData::DocumentFragment => writeln!(out, "#document-fragment").unwrap(),
         NodeData::Comment { contents } => {
             writeln!(out, "<!-- {:?} -->", truncate(contents.trim(), 60)).unwrap();
         }
