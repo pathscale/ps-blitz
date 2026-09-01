@@ -30,6 +30,19 @@ debug-control = [
     "dep:image",
     "blitz-dom/svg",
 ]
+# `Intl`: locale-aware dates, numbers, sorting, plurals and segmentation.
+#
+# Off by default because it embeds CLDR data. The data is stored brotli'd and
+# decompressed per service on first use, so the cost is 3.2MB of binary and
+# nothing at runtime for a page that never calls `Intl` -- but 3.2MB is still
+# the wrong default for an embedder rendering its own UI, which is what most
+# consumers of this crate are. A browser wants it; a Dioxus app does not.
+#
+# This has to be `intl_bundled` rather than `intl`. Bare `intl` compiles the
+# builtins but supplies no data, and Boa then fails context construction with
+# "missing Intl provider for context" -- so it is not a smaller working
+# configuration, it is a broken one.
+intl = ["boa_engine/intl_bundled"]
 system-fonts = ["blitz-dom/system-fonts"]
 tracing = ["dep:tracing", "blitz-dom/tracing"]
 
