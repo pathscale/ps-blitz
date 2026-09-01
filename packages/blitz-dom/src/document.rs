@@ -1526,9 +1526,30 @@ impl BaseDocument {
                 // The write that used to happen on the network worker. Here it
                 // is on the thread that owns styling, so it cannot collide
                 // with a concurrent read of the same lock.
-                let mut guard = self.guard.write();
-                import_rule.write_with(&mut guard).stylesheet =
-                    style::stylesheets::import_rule::ImportSheet::Sheet(sheet);
+                //
+                // Scoped, because the `@font-face` scan below needs a read of
+                // the same lock and this is an `AtomicRefCell`: holding the
+                // write across it would deadlock against itself rather than
+                // wait.
+                {
+                    let mut guard = self.guard.write();
+                    import_rule.write_with(&mut guard).stylesheet =
+                        style::stylesheets::import_rule::ImportSheet::Sheet(sheet.clone());
+                }
+
+                // The same scan `add_stylesheet_for_node` does for a top-level
+                // sheet. An imported sheet may declare fonts too, and until now
+                // nothing fetched them from a thread allowed to read the lock.
+                crate::net::fetch_font_face(
+                    self.tx.clone(),
+                    self.id,
+                    res.node_id,
+                    &sheet,
+                    &self.net_provider,
+                    &self.shell_provider,
+                    &self.guard.read(),
+                    self.abort_signal.as_ref(),
+                );
             }
             Resource::Image(_kind, width, height, image_data) => {
                 // Create the ImageData and cache it

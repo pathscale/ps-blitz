@@ -233,7 +233,6 @@ impl ServoStylesheetLoader for StylesheetLoader {
                     lock: lock.clone(),
                     media,
                     import_rule: import.clone(),
-                    net_provider: self.net_provider.clone(),
                 },
             ),
         );
@@ -248,7 +247,6 @@ struct NestedStylesheetHandler {
     url: ServoArc<Url>,
     media: ServoArc<Locked<MediaList>>,
     import_rule: ServoArc<Locked<ImportRule>>,
-    net_provider: Arc<dyn NetProvider>,
 }
 
 impl NetHandler for ResourceHandler<NestedStylesheetHandler> {
@@ -272,20 +270,12 @@ impl NetHandler for ResourceHandler<NestedStylesheetHandler> {
             AllowImportRules::Yes,
         ));
 
-        // Fetch @font-face fonts
-        fetch_font_face(
-            self.tx.clone(),
-            self.doc_id,
-            self.node_id,
-            &sheet,
-            &self.data.net_provider,
-            &self.shell_provider,
-            &self.data.lock.read(),
-            self.data.loader.abort_signal.as_ref(),
-        );
-
-        // Attached by the document thread, which is the only one that may take
-        // this lock for writing. See `Resource::ImportSheet`.
+        // `@font-face` is scanned by the document thread too, for the same
+        // reason the attach is: reading the sheet needs this lock, the document
+        // thread writes it while styling, and an `AtomicRefCell` panics rather
+        // than waiting. Doing it here left a read on a network worker racing a
+        // write on the document thread — the same defect one line further down,
+        // and it would have panicked the same way.
         let import_rule = self.data.import_rule.clone();
         self.respond(resolved_url, Ok(Resource::ImportSheet(import_rule, sheet)))
     }
