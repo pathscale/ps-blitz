@@ -94,13 +94,28 @@ jobs:
             exit 1
           fi
 
-          # ps-debug-timer and dom-abi carry their own version lines rather
-          # than the workspace one, so they are released separately and are not
-          # in this list.
+          # Dependency order. Every publishable member belongs here, whether it
+          # tracks the workspace version or carries its own: the version each
+          # one publishes at is read from its own manifest below, so a crate on
+          # a separate line is no longer a reason to leave it out.
+          #
+          # It used to be one. `ps-dioxus-native` and `ps-dioxus-native-dom` sit
+          # on 0.7.x rather than the workspace version, were therefore omitted,
+          # and silently stopped being released. When the engine went to 0.4 the
+          # last published 0.7.2 still expected the pre-0.4 DOM, so every
+          # consumer that moved to 0.4 failed to compile inside a crate nobody
+          # had edited:
+          #
+          #     expected `Atom<EmptyStaticAtomSet>`, found `String`
+          #       ps-dioxus-native-dom-0.7.2/src/dioxus_document.rs:127
+          #
+          # The job reported success throughout, because it published exactly
+          # the list it was given.
           crates='ps-blitz-traits ps-stylo-taffy ps-blitz-dom ps-blitz-platform-api
                   ps-blitz-dom-api ps-blitz-html ps-blitz-net ps-blitz-paint
                   ps-blitz-script ps-blitz-shell
-                  ps-blitz-wasm ps-blitz'
+                  ps-blitz-wasm ps-blitz
+                  ps-dioxus-native-dom ps-dioxus-native'
 
           # Refactors can remove or move a workspace crate while leaving this
           # dependency-ordered release list stale. Validate the complete plan
@@ -113,19 +128,36 @@ jobs:
             }
           done
 
+          # Each crate publishes at the version in its own manifest, read from
+          # cargo rather than assumed to be the workspace one. A crate on its
+          # own version line is then released by exactly the same path as every
+          # other, which is the whole point: the previous version of this job
+          # compared every crate against the workspace version, so a crate
+          # versioned separately could never match and could never be released.
+          manifest_version() {
+            cargo metadata --format-version 1 --no-deps \
+              | jq -r --arg c "$1" '.packages[] | select(.name == $c) | .version'
+          }
+
           published=''
           skipped=''
           for crate in $crates; do
+            crate_version="$(manifest_version "$crate")"
+            if [ -z "$crate_version" ]; then
+              echo "cannot read a version for $crate from cargo metadata" >&2
+              exit 1
+            fi
+
             existing="$(curl -sS -H 'User-Agent: pathscale-ci' \
               "https://crates.io/api/v1/crates/$crate/versions" \
-              | jq -r --arg v "$VERSION" '.versions[]? | select(.num == $v) | .num')"
+              | jq -r --arg v "$crate_version" '.versions[]? | select(.num == $v) | .num')"
             if [ -n "$existing" ]; then
-              echo "$crate $VERSION is already published, skipping"
+              echo "$crate $crate_version is already published, skipping"
               skipped="$skipped $crate"
               continue
             fi
 
-            echo "::group::$crate $VERSION"
+            echo "::group::$crate $crate_version"
             if [ "$DRY_RUN" = 'true' ]; then
               cargo package -p "$crate"
             else
@@ -137,12 +169,12 @@ jobs:
               for _ in $(seq 1 60); do
                 found="$(curl -sS -H 'User-Agent: pathscale-ci' \
                   "https://crates.io/api/v1/crates/$crate/versions" \
-                  | jq -r --arg v "$VERSION" '.versions[]? | select(.num == $v) | .num')"
+                  | jq -r --arg v "$crate_version" '.versions[]? | select(.num == $v) | .num')"
                 [ -n "$found" ] && break
                 sleep 5
               done
               if [ -z "${found:-}" ]; then
-                echo "$crate $VERSION did not appear on the registry in five minutes" >&2
+                echo "$crate $crate_version did not appear on the registry in five minutes" >&2
                 exit 1
               fi
             fi
@@ -156,7 +188,10 @@ jobs:
           # successfully, still reported failure: nothing had been skipped, so
           # the second line exited 1 after all the work was done.
           {
-            echo "Version \`$VERSION\`"
+            echo "Workspace version \`$VERSION\`"
+            echo
+            echo "Crates on their own version line publish at that version, not"
+            echo "this one, so read the per-crate lines below rather than assuming."
             echo
             if [ -n "$published" ]; then
               echo "Published:$published"
