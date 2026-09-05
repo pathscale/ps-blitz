@@ -157,10 +157,16 @@ jobs:
             | jq -r '.packages[] | select(.publish == null) | .name')"
           missing=''
           for crate in $publishable; do
-            case " $crates $released_separately " in
-              *" $crate "*) ;;
-              *) missing="$missing $crate" ;;
-            esac
+            listed=false
+            for planned in $crates $released_separately; do
+              if [ "$crate" = "$planned" ]; then
+                listed=true
+                break
+              fi
+            done
+            if [ "$listed" = false ]; then
+              missing="$missing $crate"
+            fi
           done
           if [ -n "$missing" ]; then
             echo "publishable workspace crates missing from the release list:$missing" >&2
