@@ -28,8 +28,8 @@ pub(crate) fn color_scheme_to_theme(scheme: ColorScheme) -> Theme {
     }
 }
 
-pub(crate) fn winit_ime_to_blitz(event: Ime) -> BlitzImeEvent {
-    match event {
+pub(crate) fn winit_ime_to_blitz(event: Ime) -> Option<BlitzImeEvent> {
+    Some(match event {
         Ime::Enabled => BlitzImeEvent::Enabled,
         Ime::Disabled => BlitzImeEvent::Disabled,
         Ime::Preedit(text, cursor) => BlitzImeEvent::Preedit(text, cursor),
@@ -41,7 +41,8 @@ pub(crate) fn winit_ime_to_blitz(event: Ime) -> BlitzImeEvent {
             before_bytes,
             after_bytes,
         },
-    }
+        _ => return None,
+    })
 }
 
 pub(crate) fn winit_key_event_to_blitz(
@@ -73,6 +74,7 @@ pub(crate) fn pointer_source_to_blitz(source: &PointerSource) -> BlitzPointerId 
         // TODO: TabletTool and Unknown events
         PointerSource::TabletTool { .. } => BlitzPointerId::Pen,
         PointerSource::Unknown => BlitzPointerId::Mouse,
+        _ => BlitzPointerId::Mouse,
     }
 }
 
@@ -84,6 +86,7 @@ pub(crate) fn pointer_kind_to_blitz(kind: &PointerKind) -> BlitzPointerId {
         // TODO: TabletTool and Unknown events
         PointerKind::TabletTool(_) => BlitzPointerId::Pen,
         PointerKind::Unknown => BlitzPointerId::Mouse,
+        _ => BlitzPointerId::Mouse,
     }
 }
 
@@ -97,6 +100,7 @@ pub(crate) fn button_source_to_blitz(source: &ButtonSource) -> BlitzPointerId {
 
         // TODO: Unknown events
         ButtonSource::Unknown(_) => BlitzPointerId::Mouse,
+        _ => BlitzPointerId::Mouse,
     }
 }
 
@@ -120,6 +124,7 @@ pub(crate) fn pointer_source_to_blitz_details(source: &PointerSource) -> Pointer
             altitude: data.angle.map(|angle| angle.altitude).unwrap_or(0.0),
             azimuth: data.angle.map(|angle| angle.azimuth).unwrap_or(0.0),
         },
+        _ => PointerDetails::default(),
     }
 }
 

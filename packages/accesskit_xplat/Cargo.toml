@@ -43,5 +43,5 @@ accesskit_android = { version = "0.7.0", optional = true, features = ["embedded-
 android-activity = { version = "0.6.0" }
 
 [dev-dependencies]
-winit-core = { version = "0.31.0-beta.2"}
+winit-core = { version = "^0.31.0-beta.3"}
 raw-window-handle = { version = "0.6"}

@@ -835,7 +835,9 @@ impl<Rend: WindowRenderer> View<Rend> {
                 inner.viewport_mut().color_scheme = color_scheme;
             }
             WindowEvent::Ime(ime_event) => {
-                self.doc.handle_ui_event(UiEvent::Ime(winit_ime_to_blitz(ime_event)));
+                if let Some(ime_event) = winit_ime_to_blitz(ime_event) {
+                    self.doc.handle_ui_event(UiEvent::Ime(ime_event));
+                }
                 self.request_redraw();
             },
             WindowEvent::ModifiersChanged(new_state) => {
@@ -1036,6 +1038,7 @@ impl<Rend: WindowRenderer> View<Rend> {
                 let blitz_delta = match delta {
                     winit::event::MouseScrollDelta::LineDelta(x, y) => BlitzWheelDelta::Lines(x as f64, y as f64),
                     winit::event::MouseScrollDelta::PixelDelta(pos) => BlitzWheelDelta::Pixels(pos.x, pos.y),
+                    _ => return paint_committed,
                 };
 
                 let event = BlitzWheelEvent {
@@ -1073,9 +1076,9 @@ impl<Rend: WindowRenderer> View<Rend> {
             WindowEvent::DoubleTapGesture { .. } => {},
             WindowEvent::RotationGesture { .. } => {},
             WindowEvent::DragEntered { .. } => {},
-            WindowEvent::DragMoved { .. } => {},
             WindowEvent::DragDropped { .. } => {},
             WindowEvent::DragLeft { .. } => {},
+            _ => {},
         }
         paint_committed
     }
