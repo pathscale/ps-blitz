@@ -2203,3 +2203,298 @@ fn an_appended_script_with_a_src_is_fetched_and_reports_load() {
         "the loader waits on this event before it will show the page"
     );
 }
+
+#[test]
+fn checkbox_click_listener_observes_the_new_checked_state() {
+    // The HTML activation behaviour toggles a checkbox's checkedness in the
+    // *pre*-click activation steps, so every listener -- `click` included --
+    // sees the state the press produced. A renderer that toggles afterwards
+    // hands `click` the previous value, which reads as a control that responds
+    // to every second press.
+    let mut doc = doc_from_html(
+        r#"
+        <html><body>
+            <label>
+                <input type="checkbox" id="check">
+                <span>Use a custom backend</span>
+            </label>
+            <div id="out"></div>
+            <script>
+                const check = document.getElementById("check");
+                const log = [];
+                check.addEventListener("click", () => log.push(`click:${check.checked}`));
+                check.addEventListener("input", () => log.push(`input:${check.checked}`));
+                check.addEventListener("change", () => {
+                    log.push(`change:${check.checked}`);
+                    document.getElementById("out").textContent = log.join(",");
+                });
+            </script>
+        </body></html>
+        "#,
+    );
+
+    doc.inner_mut().resolve(0.0);
+
+    let click_event = {
+        let inner = doc.inner();
+        let check_id = inner.query_selector("#check").unwrap().unwrap();
+        DomEvent::new(
+            check_id,
+            inner
+                .get_node(check_id)
+                .unwrap()
+                .synthetic_click_event(Modifiers::empty()),
+        )
+    };
+    doc.dispatch_dom_event(click_event);
+    assert_eq!(
+        text_of_selector(&doc, "#out"),
+        "click:true,input:true,change:true"
+    );
+}
+
+#[test]
+fn cancelling_a_checkbox_click_restores_its_checked_state() {
+    // The canceled activation steps: `preventDefault()` on the click puts the
+    // checkedness back, so a control can veto its own toggle.
+    let mut doc = doc_from_html(
+        r#"
+        <html><body>
+            <input type="checkbox" id="check">
+            <div id="out"></div>
+            <script>
+                const check = document.getElementById("check");
+                const log = [];
+                check.addEventListener("click", (event) => {
+                    log.push(`click:${check.checked}`);
+                    event.preventDefault();
+                });
+                check.addEventListener("change", () => log.push("change"));
+                document.addEventListener("click", () => {
+                    log.push(`after:${check.checked}`);
+                    document.getElementById("out").textContent = log.join(",");
+                });
+            </script>
+        </body></html>
+        "#,
+    );
+
+    doc.inner_mut().resolve(0.0);
+
+    let click_event = {
+        let inner = doc.inner();
+        let check_id = inner.query_selector("#check").unwrap().unwrap();
+        DomEvent::new(
+            check_id,
+            inner
+                .get_node(check_id)
+                .unwrap()
+                .synthetic_click_event(Modifiers::empty()),
+        )
+    };
+    doc.dispatch_dom_event(click_event);
+
+    // `after` is read on the document, still inside the click's own dispatch,
+    // so it sees the toggled value; the revert lands with the default action.
+    assert_eq!(text_of_selector(&doc, "#out"), "click:true,after:true");
+    let check_id = doc.inner().query_selector("#check").unwrap().unwrap();
+    assert_eq!(
+        doc.inner()
+            .get_node(check_id)
+            .unwrap()
+            .element_data()
+            .unwrap()
+            .checkbox_input_checked(),
+        Some(false),
+        "a cancelled click must leave the checkbox as it was"
+    );
+}
+
+#[test]
+fn clicking_a_label_activates_its_input_before_dispatch() {
+    // The shape every switch component has: a visually hidden input inside a
+    // label. The press lands on the label, and the input has to be activated
+    // before the click reaches script -- otherwise a controlled component that
+    // reads `checked` off the event opens on every second press.
+    let mut doc = doc_from_html(
+        r#"
+        <html><body>
+            <label id="label">
+                <input type="checkbox" id="check">
+                <span id="control">Use a custom backend</span>
+            </label>
+            <div id="out"></div>
+            <script>
+                const check = document.getElementById("check");
+                const log = [];
+                check.addEventListener("click", () => log.push(`click:${check.checked}`));
+                check.addEventListener("change", () => {
+                    log.push(`change:${check.checked}`);
+                    document.getElementById("out").textContent = log.join(",");
+                });
+            </script>
+        </body></html>
+        "#,
+    );
+
+    doc.inner_mut().resolve(0.0);
+
+    let click_event = {
+        let inner = doc.inner();
+        let label_id = inner.query_selector("#label").unwrap().unwrap();
+        DomEvent::new(
+            label_id,
+            inner
+                .get_node(label_id)
+                .unwrap()
+                .synthetic_click_event(Modifiers::empty()),
+        )
+    };
+    doc.dispatch_dom_event(click_event);
+    assert_eq!(text_of_selector(&doc, "#out"), "click:true,change:true");
+}
+
+#[test]
+fn radio_click_listener_observes_the_new_selection() {
+    let mut doc = doc_from_html(
+        r#"
+        <html><body>
+            <input type="radio" name="pick" id="one" checked>
+            <input type="radio" name="pick" id="two">
+            <div id="out"></div>
+            <script>
+                const one = document.getElementById("one");
+                const two = document.getElementById("two");
+                const log = [];
+                two.addEventListener("click", () => log.push(`click:${one.checked}:${two.checked}`));
+                two.addEventListener("change", () => {
+                    log.push(`change:${one.checked}:${two.checked}`);
+                    document.getElementById("out").textContent = log.join(",");
+                });
+            </script>
+        </body></html>
+        "#,
+    );
+
+    doc.inner_mut().resolve(0.0);
+
+    let click_event = {
+        let inner = doc.inner();
+        let two_id = inner.query_selector("#two").unwrap().unwrap();
+        DomEvent::new(
+            two_id,
+            inner
+                .get_node(two_id)
+                .unwrap()
+                .synthetic_click_event(Modifiers::empty()),
+        )
+    };
+    doc.dispatch_dom_event(click_event);
+    assert_eq!(
+        text_of_selector(&doc, "#out"),
+        "click:false:true,change:false:true"
+    );
+}
+
+#[test]
+fn clicking_a_disabled_checkbox_changes_nothing() {
+    let mut doc = doc_from_html(
+        r#"
+        <html><body>
+            <label id="label">
+                <input type="checkbox" id="check" disabled>
+                <span>Off limits</span>
+            </label>
+            <script>
+                document.getElementById("check")
+                    .addEventListener("change", () => { window.changed = true; });
+            </script>
+        </body></html>
+        "#,
+    );
+
+    doc.inner_mut().resolve(0.0);
+
+    let click_event = {
+        let inner = doc.inner();
+        let label_id = inner.query_selector("#label").unwrap().unwrap();
+        DomEvent::new(
+            label_id,
+            inner
+                .get_node(label_id)
+                .unwrap()
+                .synthetic_click_event(Modifiers::empty()),
+        )
+    };
+    doc.dispatch_dom_event(click_event);
+
+    let check_id = doc.inner().query_selector("#check").unwrap().unwrap();
+    assert_eq!(
+        doc.inner()
+            .get_node(check_id)
+            .unwrap()
+            .element_data()
+            .unwrap()
+            .checkbox_input_checked(),
+        Some(false)
+    );
+}
+
+#[test]
+fn pressing_a_switch_over_its_label_runs_the_control_callback() {
+    // The shape `@pathscale/ui` ships and the one every styled checkbox on the
+    // web uses: the real input is clipped to a pixel and the visible control is
+    // a sibling span. A press lands on the label, and everything the component
+    // depends on -- the click, the new checkedness, `change` -- has to come out
+    // of that.
+    use blitz_traits::events::{DomEventData, UiEvent};
+
+    let mut doc = doc_from_html(
+        r#"
+        <html><head><style>
+            .switch { display: block; width: 40px; height: 20px; }
+            .switch-input {
+                position: absolute; width: 1px; height: 1px;
+                clip-path: inset(50%); opacity: 0;
+            }
+            .switch-control { display: block; width: 40px; height: 20px; }
+        </style></head><body>
+            <label class="switch" id="switch">
+                <input type="checkbox" class="switch-input" id="check">
+                <span class="switch-control" id="control"></span>
+            </label>
+            <div id="out"></div>
+            <script>
+                const check = document.getElementById("check");
+                const log = [];
+                check.addEventListener("click", () => log.push(`click:${check.checked}`));
+                check.addEventListener("change", () => {
+                    log.push(`change:${check.checked}`);
+                    document.getElementById("out").textContent = log.join(",");
+                });
+            </script>
+        </body></html>
+        "#,
+    );
+
+    doc.inner_mut().resolve(0.0);
+
+    // Aimed at the middle of the visible control, not at the input.
+    let pointer = {
+        let inner = doc.inner();
+        let control_id = inner.query_selector("#control").unwrap().unwrap();
+        match inner
+            .get_node(control_id)
+            .unwrap()
+            .synthetic_click_event(Modifiers::empty())
+        {
+            DomEventData::Click(pointer) => pointer,
+            _ => unreachable!(),
+        }
+    };
+
+    doc.handle_ui_event(UiEvent::PointerDown(pointer.clone()));
+    doc.handle_ui_event(UiEvent::PointerUp(pointer));
+
+    assert_eq!(text_of_selector(&doc, "#out"), "click:true,change:true");
+}

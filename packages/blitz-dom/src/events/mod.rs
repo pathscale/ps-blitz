@@ -2,7 +2,7 @@ mod driver;
 mod focus;
 mod ime;
 mod keyboard;
-mod pointer;
+pub(crate) mod pointer;
 
 use crate::util::Point;
 use blitz_traits::events::{DomEvent, DomEventData, PointerCoords, UiEvent};

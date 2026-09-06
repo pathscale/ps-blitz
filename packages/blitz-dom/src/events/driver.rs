@@ -341,8 +341,26 @@ impl<'doc, Handler: EventHandler> EventDriver<'doc, Handler> {
 
     fn process_queue(&mut self) {
         while let Some(mut event) = self.queue.pop_front() {
+            // HTML runs a click's *pre-click activation steps* before the event
+            // is dispatched, so a checkbox or radio has already taken its new
+            // value by the time any listener runs. Doing it afterwards -- as
+            // the default action, with everything else -- hands `click`
+            // listeners the value from before the press, which reads as a
+            // control that responds to every second press. Cancelling the click
+            // runs the canceled activation steps and puts it back.
+            let activation = match event.data {
+                DomEventData::Click(_) => {
+                    self.doc.inner_mut().run_pre_click_activation(event.target)
+                }
+                _ => None,
+            };
+
             let event_state = self.run_handler_event(&mut event, EventState::default());
-            if !event_state.is_cancelled() {
+            if event_state.is_cancelled() {
+                if let Some(activation) = activation {
+                    self.doc.inner_mut().undo_pre_click_activation(activation);
+                }
+            } else {
                 self.run_default_action(&mut event);
             }
         }
