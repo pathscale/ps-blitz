@@ -2,8 +2,17 @@
   A control that refuses its own activation. `preventDefault` on the click runs
   the canceled activation steps, so the checkedness has to go back.
 
-  The heading tracks the checkedness after the whole press has been delivered,
-  so "still off" is an outcome something can name.
+  The heading names *both* halves, and that is the whole point. "It ended off"
+  is satisfied just as well by a press that never toggled anything, so a check
+  asserting only that passes on an engine with no activation at all -- which is
+  exactly what it did: with the pre-click activation steps disabled, every other
+  fixture failed and this one passed.
+
+  So the page records the checkedness inside the click listener, where the
+  pre-click activation steps have already run and it must be `true`, and again
+  once the press is over, where the canceled activation steps must have put it
+  back to `false`. Only the pair distinguishes an undo from an engine that
+  never did anything.
 -->
 <html>
   <body>
@@ -19,13 +28,16 @@
       const box = document.getElementById("vetoed");
       const out = document.getElementById("out");
       box.addEventListener("click", (event) => {
+        // Read before `preventDefault`, so this is the value the press
+        // produced rather than anything the refusal did.
+        const during = box.checked;
         event.preventDefault();
-        // After the dispatch, so the canceled activation steps have run.
+        // Once the current task is over, so the canceled activation steps have
+        // run. Not a guess about ordering inside the dispatch: this is the next
+        // task, which is after all of it.
         setTimeout(() => {
           const heading = document.createElement("h2");
-          heading.textContent = box.checked
-            ? "Vetoed press stuck"
-            : "Vetoed press was undone";
+          heading.textContent = "Press saw " + during + ", left " + box.checked;
           out.appendChild(heading);
         }, 0);
       });
