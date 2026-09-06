@@ -466,13 +466,43 @@ fn set_checked(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsRes
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
     let checked = args.first().map(JsValue::to_boolean).unwrap_or(false);
-    // blitz-dom's checked handling parses the value as a boolean
-    write_attr(
-        &ctx,
-        node_id,
-        "checked",
-        if checked { "true" } else { "false" },
-    );
+
+    /*
+     * The live state first. Once the input has been constructed its checkedness
+     * lives in the element's special data, and the attribute is only the
+     * document as it was parsed. Writing the attribute alone left a controlled
+     * component -- one that renders `checked` from its own state -- unable to
+     * drive its own input at all: the property write landed nowhere the
+     * renderer, the accessibility tree or a `change` handler could see.
+     */
+    {
+        let mut doc = ctx.mutate_doc();
+        if let Some(is_checked) = doc
+            .get_node_mut(node_id)
+            .and_then(|node| node.data.downcast_element_mut())
+            .and_then(|element| element.checkbox_input_checked_mut())
+        {
+            *is_checked = checked;
+        }
+    }
+
+    /*
+     * Then the attribute, because before the input is constructed it is the
+     * only carrier of the initial value.
+     *
+     * `checked` is an HTML boolean attribute: present means on, whatever the
+     * value reads. Writing `checked="false"` therefore *set* it, and every
+     * controlled checkbox, radio and switch came up already on and could never
+     * be turned off. Reflecting the property this way diverges from
+     * `defaultChecked`, which the attribute is supposed to be, and that is the
+     * lesser of the two: nothing here resets a form, and the alternative is an
+     * input whose initial state is unreachable.
+     */
+    if checked {
+        write_attr(&ctx, node_id, "checked", "");
+    } else {
+        clear_attr(&ctx, node_id, "checked");
+    }
     Ok(JsValue::undefined())
 }
 
