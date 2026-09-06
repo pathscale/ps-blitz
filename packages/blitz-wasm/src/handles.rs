@@ -15,7 +15,7 @@ pub struct HandleTable {
 }
 
 impl HandleTable {
-    /// A table holding only the mount point, which is always [`Handle::MOUNT`].
+    /// A table holding only the mount point, which is always `Handle::MOUNT`.
     pub fn with_mount(mount: NodeId) -> Self {
         Self { nodes: vec![mount] }
     }

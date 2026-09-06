@@ -36,6 +36,13 @@ fn node(doc: &BaseDocument, selector: &str) -> NodeId {
     doc.query_selector(selector).unwrap().unwrap()
 }
 
+/// macOS only: a span fragments across lines because its text wraps, so with
+/// no font registered there is nothing to wrap and no second fragment. The
+/// other two tests in this file are not gated: `bounding_rect_is_union_of_
+/// fragments` still measures a real box, because the span contains an atomic
+/// inline-block sized 30x10 by style, and `block_elements_return_single_rect`
+/// is about a block.
+#[cfg(target_os = "macos")]
 #[test]
 fn wrapped_span_has_one_rect_per_line() {
     let doc = make_doc();
@@ -77,6 +84,11 @@ fn bounding_rect_is_union_of_fragments() {
     }
 }
 
+/// macOS only: the nested `<b>` is a non-atomic inline whose rects exist only
+/// where its text shaped, so `!nested_rects.is_empty()` cannot hold without a
+/// face. The atomic half of this test would survive, but splitting it would
+/// leave the assertion it exists to pair with unenforced.
+#[cfg(target_os = "macos")]
 #[test]
 fn fragments_include_nested_inline_and_atomic_children() {
     let doc = make_doc();

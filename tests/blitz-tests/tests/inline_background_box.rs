@@ -65,6 +65,19 @@ fn a_block_background_is_rounded() {
 }
 
 /// The same corner test on an inline box, which is the application's chip.
+///
+/// macOS only, and the contrast with the block control above is the reason. A
+/// block box is given its width and height by the style, so it paints with no
+/// font registered at all. An inline box has no dimensions of its own: it is
+/// exactly as wide as the text it wraps. With no face parley shapes nothing,
+/// the span is zero-sized, no blue pixel exists anywhere, and the search below
+/// fails at "the chip painted somewhere".
+///
+/// That is why only half of this file is quarantined. The control genuinely
+/// tests something without a face; this one cannot. macOS resolves a face
+/// through Core Text, so it costs no system library, and on Linux it compiles
+/// out.
+#[cfg(target_os = "macos")]
 #[test]
 fn an_inline_background_is_rounded() {
     let buffer = render(

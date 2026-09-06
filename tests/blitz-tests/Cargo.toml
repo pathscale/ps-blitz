@@ -29,7 +29,6 @@ blitz-dom = { workspace = true, features = [
     "accessibility",
     "autofocus",
     "floats",
-    "system-fonts",
 ] }
 blitz-html = { workspace = true }
 blitz-traits = { workspace = true }
@@ -50,6 +49,18 @@ keyboard-types = { workspace = true }
 usvg = { workspace = true }
 taffy = { workspace = true }
 image = { workspace = true, features = ["png"] }
+
+# Only on macOS, for the caret tests quarantined there. A caret's rect comes
+# from the line box its text shapes into, so with no face nothing paints and
+# those assertions stop being able to fail rather than failing honestly.
+#
+# Scoped to the target because of where the face comes from: macOS uses Core
+# Text, so this adds no system library and nothing to install. On Linux the same
+# feature reaches `parley/system` and then `yeslogic-fontconfig-sys`, which is
+# what had a headless runner installing `libfontconfig-dev` to run tests. There
+# the quarantined files compile out and this line does not apply.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+blitz-dom = { workspace = true, features = ["system-fonts"] }
 
 [lib]
 path = "lib.rs"

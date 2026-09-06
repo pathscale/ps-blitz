@@ -80,16 +80,6 @@ base64 = { workspace = true, optional = true }
 image = { workspace = true, features = ["png"], optional = true }
 
 [dev-dependencies]
-# Tests measure text, so the test build needs real fonts.
-#
-# `system-fonts` is off by default for the library on purpose, and a test build
-# without it does not fail: parley simply finds no face, every line shapes to
-# nothing, and each box reports a height of zero. So `cargo test -p
-# ps-blitz-script` looked like five broken layout features — textarea
-# autosizing, shrink-to-fit, relayout on edit — while the engine itself was
-# fine and the browser rendered text correctly. A dev-dependency turns it on
-# for tests only, leaving what the library ships unchanged.
-blitz-dom = { workspace = true, features = ["system-fonts"] }
 anyrender = { workspace = true }
 anyrender_vello_cpu = { workspace = true }
 blitz-paint = { workspace = true }
@@ -97,3 +87,16 @@ blitz-traits = { workspace = true }
 image = { workspace = true, features = ["png"] }
 keyboard-types = { workspace = true }
 url = { workspace = true }
+
+# Only on macOS, and only for `tests/text_metrics_macos.rs`, which measures
+# boxes sized by their own text and so cannot assert anything without a face.
+#
+# Scoped to the target rather than enabled outright because of where the face
+# comes from. macOS resolves it through Core Text: nothing to install, and no
+# system library in the graph. On Linux the same feature reaches
+# `parley/system` and then `yeslogic-fontconfig-sys`, which is how a headless
+# runner ended up needing `libfontconfig-dev` to run unit tests. There the
+# quarantined file compiles out and this line does not apply, so a Linux build
+# of this crate -- shipped or under test -- links no system library at all.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+blitz-dom = { workspace = true, features = ["system-fonts"] }

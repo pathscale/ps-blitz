@@ -18,6 +18,16 @@
 //! The width changes for real reasons: showing and hiding the project sidebar,
 //! and resizing the window.
 
+//! # macOS only
+//!
+//! Every test here is about where an inline box sits on its line, which is
+//! a question about wrapped text. With no font registered parley shapes
+//! nothing, there are no lines, the chip has no position, and the
+//! assertions fail for a reason unrelated to reflow. macOS resolves a face
+//! through Core Text at no cost in system libraries; on Linux this
+//! compiles out.
+#![cfg(target_os = "macos")]
+
 use blitz_dom::DocumentConfig;
 use blitz_html::{HtmlDocument, HtmlProvider};
 use blitz_traits::shell::{ColorScheme, Viewport};

@@ -1770,8 +1770,13 @@ impl Node {
             || self.data.is_element_with_tag_name(&local_name!("th"))
     }
 
-    /// The nearest layout ancestor that [is an offset parent](Self::is_offset_parent), as in
-    /// CSSOM View's `offsetParent`.
+    /// The nearest layout ancestor that is an offset parent, as in CSSOM View's
+    /// `offsetParent`.
+    ///
+    /// The predicate is `is_offset_parent`, which is private, so this is not a
+    /// link: rustdoc rejects a public item linking to a private one under
+    /// `-D warnings`, and the alternative is publishing a helper nothing else
+    /// needs.
     pub fn offset_parent(&self) -> Option<&Node> {
         let mut node = self;
         loop {

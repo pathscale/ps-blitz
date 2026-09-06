@@ -546,6 +546,14 @@ fn a_click_bubbles_to_ancestors() {
 ///
 /// Without this the test proves only that the right nodes exist, which a tree
 /// of detached nodes would also satisfy.
+///
+/// macOS only. The panel's height comes from the text its children shape into,
+/// so with no font registered parley measures nothing and the box reports zero
+/// on both axes. Relaxing the assertion to survive that would leave it
+/// asserting nothing, which is the failure mode it was written to close. macOS
+/// resolves a face through Core Text, so it costs no system library; on Linux
+/// this compiles out and the crate reaches none.
+#[cfg(target_os = "macos")]
 #[test]
 fn the_resulting_tree_lays_out() {
     let (mut store, instance) = counter();

@@ -11,6 +11,17 @@
 //!
 //!   cargo test --release -p blitz-tests --test text_update_repaint -- --nocapture
 
+//! # macOS only
+//!
+//! The damage rect for replaced text is the text's own box.
+//!
+//! Every test in this file measures or paints text. With no font
+//! registered parley shapes nothing, so the boxes report zero and the
+//! probes find blank pixels: the assertions stop being able to fail
+//! rather than failing honestly. macOS resolves a face through Core
+//! Text, costing no system library, and on Linux this compiles out.
+#![cfg(target_os = "macos")]
+
 use anyrender::render_to_buffer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
 use blitz_dom::{Document as _, DocumentConfig, QualName, ns};

@@ -8,8 +8,8 @@ const LAYER_LIMIT: u32 = 1024;
 
 /// Where a layer came from.
 ///
-/// The first five go through [`LayerManager::maybe_with_layer`] and are subject
-/// to [`LAYER_LIMIT`]. The last three push onto the scene directly and are only
+/// The first five go through `LayerManager::maybe_with_layer` and are subject
+/// to `LAYER_LIMIT`. The last three push onto the scene directly and are only
 /// counted here, which is the point of listing them: a total taken from the
 /// managed sites alone understates the scene.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,7 +69,7 @@ impl LayerSite {
 /// not the cost and the encode is charged elsewhere.
 ///
 /// `wanted` exceeding `used` is not just a performance note. It means the
-/// scene hit [`LAYER_LIMIT`] and clipping was silently skipped, so content that
+/// scene hit `LAYER_LIMIT` and clipping was silently skipped, so content that
 /// should have been cut off was drawn in full.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SceneLayerCounts {
@@ -143,7 +143,7 @@ impl LayerManager {
     /// Record a layer pushed straight onto the scene, bypassing this manager.
     ///
     /// Inset shadows, masks and border clips do that. They are not subject to
-    /// [`LAYER_LIMIT`] and do not appear in `wanted` or `used`, so without this
+    /// `LAYER_LIMIT` and do not appear in `wanted` or `used`, so without this
     /// they would be invisible to every reading taken here.
     pub(crate) fn note_unmanaged(&self, site: LayerSite) {
         self.by_site[site as usize].update(|x| x + 1);

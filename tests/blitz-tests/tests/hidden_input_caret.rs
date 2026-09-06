@@ -9,6 +9,21 @@
 //! caret's own 500ms clock, in a place with nothing logical near it. Focus was
 //! on the document root at the time, so the caret did not even belong to a
 //! visible input.
+//!
+//! # macOS only, and the four tests go together
+//!
+//! Three of these assert that something does *not* blink, by rendering two
+//! frames and requiring them equal. On a runner with no font registered
+//! nothing paints at all, so both frames are identically blank and all three
+//! pass without exercising anything.
+//!
+//! `a_visible_input_still_blinks` is the control written to catch exactly that,
+//! and on Linux it is the only test here that fails. Quarantining just the
+//! failure would leave the three vacuous ones green, which is worse than
+//! running none of them. So the file runs where a face is guaranteed and costs
+//! nothing: macOS resolves one through Core Text, with no `fontconfig` and
+//! nothing to install. On Linux it compiles out.
+#![cfg(target_os = "macos")]
 
 use anyrender::render_to_buffer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;

@@ -1,0 +1,68 @@
+# The verifier for one rule: nothing headless links a system library.
+#
+# `system-fonts` sat in `blitz-dom`'s default feature list long enough that two
+# downstream repositories each worked around it by hand rather than anyone
+# noticing it here, and CI papered over it with five `libfontconfig-dev`
+# installs. A rule with no verifier is a property that held on the day someone
+# last checked.
+#
+# Scoped deliberately to `bans`. This is not a licence or advisory policy for
+# the fork; CI runs `cargo deny check bans` and nothing else reads the rest.
+
+[graph]
+# Linux is the whole point. `yeslogic-fontconfig-sys` is reached only on this
+# target, which is why the problem stayed invisible from macOS for so long, and
+# why the macOS-scoped dev-dependencies that carry the quarantined text tests
+# are correctly absent from this graph.
+targets = ["x86_64-unknown-linux-gnu"]
+
+# Dev-dependencies stay in the graph. Excluding them would miss exactly how
+# this last escaped: `blitz-script` and `blitz-wasm` each pulled `blitz-dom`
+# with `system-fonts` so their tests could measure text, putting fontconfig in
+# front of `cargo test` on Linux while the shipped crates were clean.
+exclude-dev = false
+
+# The crates that paint on a screen, and the WPT runner that renders pages to
+# score them. Each opts into `system-fonts` on purpose: a GUI wants the
+# machine's font catalogue, and asking for it is correct. They are built where
+# a GUI is the deliverable, never on a headless runner, and they are the same
+# set `HEADLESS_EXCLUDE` keeps out of the build jobs in ci.yml.
+#
+# Adding a name here is a deliberate statement that something is a GUI. It is
+# not the place to quiet a failure.
+exclude = [
+    "ps-dioxus-native",
+    "ps-dioxus-native-dom",
+    "browser",
+    "counter",
+    "transparent",
+    "seven_guis",
+    "todomvc",
+    "wgpu_texture",
+    "wpt",
+]
+
+[bans]
+# `yeslogic-fontconfig-sys` is the one that bit us: `blitz-dom` -> `parley`
+# (feature `system`) -> `fontique` -> here, and its build script needs
+# `fontconfig.pc` present, so the failure surfaces as a missing apt package
+# rather than as a dependency mistake.
+#
+# The rest are the same class of thing, listed so a headless crate cannot
+# quietly acquire a windowing or display dependency either.
+#
+# Not `fontconfig` as a substring: `fontconfig-parser` is pure Rust that reads
+# fontconfig's XML, arrives through `fontdb` behind usvg, and links nothing. A
+# pattern that matched it once failed ps-observability's equivalent gate for a
+# dependency that needs nothing installed.
+deny = [
+    { crate = "yeslogic-fontconfig-sys", reason = "links fontconfig; a headless crate must not need a font catalogue" },
+    { crate = "servo-fontconfig", reason = "links fontconfig" },
+    { crate = "servo-fontconfig-sys", reason = "links fontconfig" },
+    { crate = "gtk", reason = "GTK is a GUI toolkit; headless crates must not reach one" },
+    { crate = "gtk-sys", reason = "links GTK" },
+    { crate = "glib-sys", reason = "links glib, which arrives with GTK" },
+    { crate = "webkit2gtk", reason = "links WebKitGTK" },
+    { crate = "webkit2gtk-sys", reason = "links WebKitGTK" },
+    { crate = "soup3-sys", reason = "links libsoup, which arrives with WebKitGTK" },
+]

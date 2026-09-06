@@ -17,9 +17,9 @@
 //!
 //! # Reads: mechanism (b), unchanged
 //!
-//! [`OutBuffer`] and [`ReadOutcome`] come from `dom-abi`, so a guest reading a
+//! `OutBuffer` and `ReadOutcome` come from `dom-abi`, so a guest reading a
 //! response body and a guest reading an attribute use one protocol and one set
-//! of edge cases. See [`OutBuffer`]'s documentation for why the guest supplies
+//! of edge cases. See `OutBuffer`'s documentation for why the guest supplies
 //! the buffer rather than the host allocating one: the host-allocates variant
 //! would call `alloc` *into* the guest from inside a host function, which is
 //! the one thing this binding is built to prevent.
@@ -360,7 +360,7 @@ fn read_bytes<T>(caller: &Caller<'_, T>, ptr: i32, len: i32) -> Result<Vec<u8>, 
 /// Deliver `bytes` through the guest's own buffer, and return the length it
 /// would have needed.
 ///
-/// This is [`OutBuffer`]'s protocol in one function, so that no import
+/// This is `OutBuffer`'s protocol in one function, so that no import
 /// implements it a second time slightly differently:
 ///
 /// - the return value is always the value's **full** length, fitting or not;

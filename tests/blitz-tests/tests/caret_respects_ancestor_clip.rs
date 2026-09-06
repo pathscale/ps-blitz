@@ -14,6 +14,22 @@
 //! The app-side sizing disagreement is a separate bug. This one is the
 //! renderer's: whatever an input's box says, a caret must not escape a clip
 //! its input is subject to.
+//!
+//! # macOS only, and the two tests go together
+//!
+//! The caret's rect comes from the line box the text shapes into. With no font
+//! registered there is no line, nothing is painted, and the page renders blank
+//! white. `a_caret_does_not_paint_below_a_clipping_ancestor` then passes for the
+//! wrong reason entirely: no dark pixels below the clip, because there are no
+//! dark pixels anywhere.
+//!
+//! Its paired positive control, `a_caret_still_paints_inside_the_clip`, is what
+//! catches that, and on a fontless Linux runner it is the only thing in this
+//! file that fails. Quarantining just the failure would leave the vacuous half
+//! green, which is worse than not running either. So both run where a face is
+//! guaranteed and costs nothing: macOS resolves one through Core Text, with no
+//! `fontconfig` and nothing to install. On Linux the file compiles out.
+#![cfg(target_os = "macos")]
 
 use anyrender::render_to_buffer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;

@@ -230,13 +230,16 @@ fn separate_process_controls_solid_without_fixed_sleeps() {
             .as_str()
             .is_some_and(|value| !value.is_empty())
     );
-    let before_png = base64::engine::general_purpose::STANDARD
-        .decode(
-            session_request(address, &session, "GET", "screenshot", Value::Null)["value"]
-                .as_str()
-                .unwrap(),
-        )
-        .unwrap();
+    // A screenshot is taken here only to prove the endpoint answers before the
+    // interaction as well as after it. What the click actually did is read back
+    // from the document below, not from the pixels.
+    let before = session_request(address, &session, "GET", "screenshot", Value::Null);
+    assert!(
+        base64::engine::general_purpose::STANDARD
+            .decode(before["value"].as_str().unwrap())
+            .unwrap()
+            .starts_with(b"\x89PNG\r\n\x1a\n")
+    );
     session_request(
         address,
         &session,
@@ -293,7 +296,19 @@ fn separate_process_controls_solid_without_fixed_sleeps() {
         .decode(screenshot["value"].as_str().unwrap())
         .unwrap();
     assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
-    assert_ne!(png, before_png);
+    // This used to be `assert_ne!(png, before_png)`: the same screenshot taken
+    // before the click, asserted to differ after it.
+    //
+    // Removed rather than quarantined to macOS, because it was the weaker of
+    // two assertions about the same fact. The click is already proven directly
+    // above, by reading `#count` back through the session and getting "1" --
+    // the document itself saying what changed, not a whole-frame byte
+    // comparison that passes on any difference anywhere and names none of it.
+    //
+    // It was also the only font-dependent line in this test. Text shapes to
+    // nothing without a face, so on a runner with no fonts both frames come
+    // back identically blank and `assert_ne!` fails while the behaviour under
+    // test is fine. Reading the tree does not care.
     let snapshot = session_request(
         address,
         &session,

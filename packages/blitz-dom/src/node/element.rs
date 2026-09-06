@@ -1258,6 +1258,11 @@ mod tests {
         }
     }
 
+    /// macOS only: the scrollable extent it clamps against comes from shaped
+    /// text, so with no font registered there is nothing to scroll and the
+    /// clamp has no work to do. See the target-scoped `parley` dev-dependency
+    /// in this crate's manifest.
+    #[cfg(target_os = "macos")]
     #[test]
     fn scroll_by_clamps_and_bubbles() {
         let text = (0..40)

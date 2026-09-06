@@ -1,7 +1,8 @@
 // Pressing a checkbox, and what its listeners saw.
 //
-// The page writes what each listener observed into a heading, so the assertion
-// is a name the renderer painted rather than anything read out of the engine.
+// The page writes what each listener observed into a heading, so most of the
+// assertion is a name in the tree. `-control-paints` is the half that needs a
+// real box, and a checkbox has one whatever the font situation is.
 [
     (
         id: "checkbox-activation-paints",
@@ -11,7 +12,7 @@
         hover: None,
         click: None,
         subject: "heading:Checkbox activation",
-        expect: PaintsNamed,
+        expect: Present,
     ),
     (
         id: "checkbox-activation-listeners-see-the-new-state",
@@ -22,6 +23,23 @@
         settle_after_ms: 300,
         click: Some("checkbox:Bare checkbox"),
         subject: "heading:Bare saw click:true,input:true,change:true",
+        expect: Present,
+    ),
+    // The control, not the outcome text. A checkbox or radio has an
+    // intrinsic box that owes nothing to a font, so this is the paint
+    // assertion the rest of this file can no longer make: the checks above
+    // read outcome text, and text measures 0x0 with no face registered.
+    //
+    // Without this, the group proves the tree is right and nothing about
+    // whether the document rendered at all.
+    (
+        id: "checkbox-activation-control-paints",
+        group: "checkbox-activation",
+        what: "the control itself paints, with no font involved",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "checkbox:Bare checkbox",
         expect: PaintsNamed,
     ),
 ]

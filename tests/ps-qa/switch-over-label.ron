@@ -13,7 +13,7 @@
         hover: None,
         click: None,
         subject: "heading:Switch over label",
-        expect: PaintsNamed,
+        expect: Present,
     ),
     (
         id: "switch-over-label-delivers-the-press",
@@ -24,6 +24,23 @@
         settle_after_ms: 300,
         click: Some("checkbox:Hidden switch"),
         subject: "heading:Switch saw click:true,input:true,change:true",
+        expect: Present,
+    ),
+    // The control, not the outcome text. A checkbox or radio has an
+    // intrinsic box that owes nothing to a font, so this is the paint
+    // assertion the rest of this file can no longer make: the checks above
+    // read outcome text, and text measures 0x0 with no face registered.
+    //
+    // Without this, the group proves the tree is right and nothing about
+    // whether the document rendered at all.
+    (
+        id: "switch-over-label-control-paints",
+        group: "switch-over-label",
+        what: "the control itself paints, with no font involved",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "checkbox:Hidden switch",
         expect: PaintsNamed,
     ),
 ]

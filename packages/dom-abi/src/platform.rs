@@ -8,7 +8,7 @@
 //! that only touches the DOM.
 //!
 //! Everything else is shared and deliberately not restated here.
-//! [`Status`](crate::host::Status) is the same type with the same rules,
+//! [`Status`] is the same type with the same rules,
 //! [`OutBuffer`](crate::host::OutBuffer) is the same read protocol, and
 //! [`MAX_ID`](crate::host::MAX_ID) is the same cap. A reader for a response
 //! body and a reader for an attribute behave identically, which is the whole

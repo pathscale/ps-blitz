@@ -52,11 +52,17 @@ wat = "1"
 # `Modifiers`, for the synthetic click. `blitz-traits` takes its event types
 # from here and does not re-export this one.
 keyboard-types = { workspace = true }
-# The layout test measures text, so the test build needs real fonts.
+
+# Only on macOS, and only for `the_resulting_tree_lays_out`, which asserts the
+# guest's panel has a box. Its height comes from the text its children shape
+# into, so without a face parley finds nothing, the box reports zero, and the
+# assertion fails for a reason that has nothing to do with the tree the guest
+# built. Writing it loosely enough to survive that would be measuring nothing.
 #
-# Without `system-fonts` parley finds no face, every line shapes to nothing,
-# and every box reports a height of zero. A layout assertion then fails for a
-# reason that has nothing to do with the tree the guest built, and a layout
-# assertion written loosely enough to survive it would be measuring nothing.
-# `blitz-script` carries the same dev-dependency for the same reason.
+# Scoped to the target because of where the face comes from. macOS resolves one
+# through Core Text, adding no system library. On Linux the same feature
+# reaches `parley/system` and then `yeslogic-fontconfig-sys`, so there the test
+# is compiled out and this line does not apply. `blitz-dom` is already a normal
+# dependency above; this only turns the feature on.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
 blitz-dom = { workspace = true, features = ["system-fonts"] }

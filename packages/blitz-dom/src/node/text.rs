@@ -1340,6 +1340,11 @@ mod content_widths_cache_tests {
         text_layout
     }
 
+    /// macOS only: it compares a cached content width against an uncached one,
+    /// and both are zero with no font registered, so the comparison holds
+    /// without the cache having done anything. See the target-scoped `parley`
+    /// dev-dependency in this crate's manifest.
+    #[cfg(target_os = "macos")]
     #[test]
     fn first_call_matches_an_uncached_computation() {
         let mut text_layout = build_layout("the quick brown fox", None);
@@ -1454,6 +1459,10 @@ mod shortcut_tests {
         assert_eq!(clipboard_command(&event), Some(ClipboardCommand::Cut));
     }
 
+    /// macOS only: it drives a real edit and reads the text back, which needs
+    /// the editor to have shaped something to delete from. See the
+    /// target-scoped `parley` dev-dependency in this crate's manifest.
+    #[cfg(target_os = "macos")]
     #[test]
     fn backspace_does_not_depend_on_an_apple_standard_keybinding() {
         let mut data = TextInputData::new(false);
