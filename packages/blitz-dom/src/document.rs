@@ -793,20 +793,31 @@ impl BaseDocument {
             });
         };
 
-        // Recorded before the toggle, since it clears every other radio in the
-        // set and cancelling has to restore all of them.
-        let previous: Vec<(NodeId, bool)> = self
-            .nodes
-            .iter()
-            .filter_map(|(id, node)| {
-                let el = node.data.downcast_element()?;
-                if el.attr(local_name!("name")) != Some(&*radio_set) {
-                    return None;
-                }
-                Some((id, el.checkbox_input_checked()?))
-            })
-            .collect();
-        self.toggle_radio(radio_set, node_id);
+        // Recorded *while* selecting rather than before it. Selecting one radio
+        // clears every other in the set, so cancelling has to restore all of
+        // them, and reading them first meant walking the whole arena twice for
+        // one press. The membership test is `toggle_radio`'s, deliberately: two
+        // predicates that disagreed would restore a different set than the one
+        // that changed.
+        //
+        // That predicate is name plus "has checkbox state", which is neither
+        // scoped to `type=radio` nor to a form owner. Wrong per HTML, and
+        // longstanding; matching it here keeps this change to the ordering it
+        // is about.
+        let mut previous: Vec<(NodeId, bool)> = Vec::new();
+        for (id, node) in self.nodes.iter_mut() {
+            let Some(el) = node.data.downcast_element_mut() else {
+                continue;
+            };
+            if el.attr(local_name!("name")) != Some(&*radio_set) {
+                continue;
+            }
+            let Some(is_checked) = el.checkbox_input_checked_mut() else {
+                continue;
+            };
+            previous.push((id, *is_checked));
+            *is_checked = id == node_id;
+        }
         Some(PreClickActivation { previous })
     }
 
