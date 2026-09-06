@@ -453,6 +453,18 @@ jobs:
         with:
           repository: pathscale/ps-observability
           path: .ps-observability
+      # The host reaches the engine through `tauri-runtime-blitz`, which brings
+      # the Tauri stack with it, and on Linux that wants GTK and its
+      # dependencies at build time. `libfontconfig-dev` above is not enough:
+      # the build dies in `glib-sys` with "pkg-config exited with status code
+      # 1", which reads as a cargo problem rather than a missing system
+      # library.
+      - name: System libraries the host's Tauri dependency needs
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libglib2.0-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev librsvg2-dev libsoup-3.0-dev
       # Both binaries from the same checkout, rather than `cargo install ps-qa`.
       # The harness and the host move together, and installing one while
       # building the other makes this job depend on a release of the harness as
