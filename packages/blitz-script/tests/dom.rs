@@ -2498,3 +2498,79 @@ fn pressing_a_switch_over_its_label_runs_the_control_callback() {
 
     assert_eq!(text_of_selector(&doc, "#out"), "click:true,change:true");
 }
+
+#[test]
+fn a_controlled_checkbox_starts_from_its_property_not_its_attribute() {
+    // A component that renders `checked` from its own state writes the DOM
+    // property, and it writes `false` as readily as `true`. The initial `false`
+    // has to leave the input off: reflecting it as `checked="false"` reads as
+    // on, because `checked` is a boolean attribute and presence is the whole
+    // value. Every controlled checkbox, radio and switch used to come up on.
+    let mut doc = doc_from_html(
+        r#"
+        <html><body>
+            <input type="checkbox" id="check">
+            <script>
+                document.getElementById("check").checked = false;
+            </script>
+        </body></html>
+        "#,
+    );
+    doc.inner_mut().resolve(0.0);
+
+    let check_id = doc.inner().query_selector("#check").unwrap().unwrap();
+    let checked = |doc: &ScriptDocument| {
+        doc.inner()
+            .get_node(check_id)
+            .unwrap()
+            .element_data()
+            .unwrap()
+            .checkbox_input_checked()
+    };
+    assert_eq!(checked(&doc), Some(false), "written false, so off");
+}
+
+#[test]
+fn setting_checked_from_script_moves_the_live_state() {
+    // After construction the checkedness lives in the element's own state, and
+    // that is what the renderer, the accessibility tree and `change` read. A
+    // property write that only reached the attribute left a controlled input
+    // impossible to drive.
+    let mut doc = doc_from_html(
+        r#"
+        <html><body>
+            <input type="checkbox" id="check">
+            <div id="out"></div>
+        </body></html>
+        "#,
+    );
+    doc.inner_mut().resolve(0.0);
+
+    let check_id = doc.inner().query_selector("#check").unwrap().unwrap();
+    let checked = |doc: &ScriptDocument| {
+        doc.inner()
+            .get_node(check_id)
+            .unwrap()
+            .element_data()
+            .unwrap()
+            .checkbox_input_checked()
+    };
+    assert_eq!(checked(&doc), Some(false));
+
+    doc.eval(
+        r#"
+        const check = document.getElementById("check");
+        check.checked = true;
+        document.getElementById("out").textContent = String(check.checked);
+        "#,
+    );
+    assert_eq!(
+        checked(&doc),
+        Some(true),
+        "the live state follows the property"
+    );
+    assert_eq!(text_of_selector(&doc, "#out"), "true");
+
+    doc.eval(r#"document.getElementById("check").checked = false;"#);
+    assert_eq!(checked(&doc), Some(false), "and back off again");
+}
