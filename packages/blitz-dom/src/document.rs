@@ -151,6 +151,14 @@ pub trait Document: Any + 'static {
     }
 }
 
+/// What the pre-click activation steps changed, so a cancelled click can put
+/// it back. Produced by [`BaseDocument::run_pre_click_activation`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct PreClickActivation {
+    /// Every node whose checkedness moved, paired with the value it held.
+    previous: Vec<(NodeId, bool)>,
+}
+
 pub struct PlainDocument(pub BaseDocument);
 impl Document for PlainDocument {
     fn inner(&self) -> DocGuard<'_> {
@@ -753,6 +761,68 @@ impl BaseDocument {
                     }
                 })
                 .next()
+        }
+    }
+
+    /// The checkedness a click changed, kept so the click's *canceled
+    /// activation steps* can put it back when a listener calls
+    /// `preventDefault()`.
+    ///
+    /// A radio carries its whole set, because selecting one clears the others.
+    pub fn run_pre_click_activation(&mut self, target: NodeId) -> Option<PreClickActivation> {
+        let node_id = crate::events::pointer::checkable_activation_target(self, target)?;
+        let el = self.get_node(node_id)?.data.downcast_element()?;
+        let is_radio = el.attr(local_name!("type")) == Some("radio");
+
+        if !is_radio {
+            let previous = el.checkbox_input_checked()?;
+            let el = self.get_node_mut(node_id)?.data.downcast_element_mut()?;
+            Self::toggle_checkbox(el);
+            return Some(PreClickActivation {
+                previous: vec![(node_id, previous)],
+            });
+        }
+
+        let radio_set = el.attr(local_name!("name")).map(str::to_string);
+        let Some(radio_set) = radio_set else {
+            let previous = el.checkbox_input_checked()?;
+            let el = self.get_node_mut(node_id)?.data.downcast_element_mut()?;
+            *el.checkbox_input_checked_mut()? = true;
+            return Some(PreClickActivation {
+                previous: vec![(node_id, previous)],
+            });
+        };
+
+        // Recorded before the toggle, since it clears every other radio in the
+        // set and cancelling has to restore all of them.
+        let previous: Vec<(NodeId, bool)> = self
+            .nodes
+            .iter()
+            .filter_map(|(id, node)| {
+                let el = node.data.downcast_element()?;
+                if el.attr(local_name!("name")) != Some(&*radio_set) {
+                    return None;
+                }
+                Some((id, el.checkbox_input_checked()?))
+            })
+            .collect();
+        self.toggle_radio(radio_set, node_id);
+        Some(PreClickActivation { previous })
+    }
+
+    /// Undo [`Self::run_pre_click_activation`]. The click's *canceled
+    /// activation steps*.
+    pub fn undo_pre_click_activation(&mut self, activation: PreClickActivation) {
+        for (node_id, was_checked) in activation.previous {
+            let Some(node) = self.get_node_mut(node_id) else {
+                continue;
+            };
+            let Some(el) = node.data.downcast_element_mut() else {
+                continue;
+            };
+            if let Some(is_checked) = el.checkbox_input_checked_mut() {
+                *is_checked = was_checked;
+            }
         }
     }
 

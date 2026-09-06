@@ -597,6 +597,56 @@ pub(crate) fn handle_pointerup<F: FnMut(DomEvent)>(
     }
 }
 
+/// The checkbox or radio that a click at `target` activates, or `None` if the
+/// click activates something else.
+///
+/// This walks the tree the way [`handle_click`] does -- stopping at a disabled
+/// element or a text input -- because the two have to agree. The pre-click
+/// activation steps flip the checkedness of whatever this returns, and
+/// `handle_click` reports it afterwards; if they disagreed, a control would
+/// either toggle without an `input` event or fire one without having toggled.
+///
+/// A `<label>` ends the walk with `None`. The label is the nearest thing with
+/// an activation behaviour of its own, and that behaviour is to fire a *fresh*
+/// click at the control -- which arrives here again with the control as its
+/// target. Following the label from here as well would toggle twice and leave
+/// the control exactly as it was.
+pub(crate) fn checkable_activation_target(doc: &BaseDocument, target: NodeId) -> Option<NodeId> {
+    let mut maybe_node_id = Some(target);
+
+    while let Some(node_id) = maybe_node_id {
+        let node = doc.get_node(node_id)?;
+        let Some(el) = node.data.downcast_element() else {
+            maybe_node_id = node.parent;
+            continue;
+        };
+
+        if el.attr(local_name!("disabled")).is_some() {
+            return None;
+        }
+        if let SpecialElementData::TextInput(_) = el.special_data {
+            return None;
+        }
+
+        match el.name.local {
+            local_name!("input")
+                if matches!(
+                    el.attr(local_name!("type")),
+                    Some("checkbox") | Some("radio")
+                ) =>
+            {
+                return Some(node_id);
+            }
+            local_name!("label") => return None,
+            _ => {}
+        }
+
+        maybe_node_id = node.parent;
+    }
+
+    None
+}
+
 pub(crate) fn handle_click(
     doc: &mut BaseDocument,
     target: NodeId,
@@ -629,7 +679,10 @@ pub(crate) fn handle_click(
 
             match el.name.local {
                 local_name!("input") if el.attr(local_name!("type")) == Some("checkbox") => {
-                    let is_checked = BaseDocument::toggle_checkbox(el);
+                    // Checkedness was already flipped by the pre-click
+                    // activation steps, so this is only the post-click half:
+                    // report the value the press produced.
+                    let is_checked = el.checkbox_input_checked().unwrap_or(false);
                     let value = is_checked.to_string();
                     dispatch_event(DomEvent::new(
                         node_id,
@@ -645,12 +698,7 @@ pub(crate) fn handle_click(
                     break 'matched true;
                 }
                 local_name!("input") if el.attr(local_name!("type")) == Some("radio") => {
-                    if let Some(radio_set) = el.attr(local_name!("name")).map(str::to_string) {
-                        BaseDocument::toggle_radio(doc, radio_set, node_id);
-                    } else if let Some(is_checked) = el.checkbox_input_checked_mut() {
-                        *is_checked = true;
-                    }
-
+                    // The selection was made by the pre-click activation steps.
                     // TODO: make input event conditional on value actually changing
                     let value = String::from("true");
                     dispatch_event(DomEvent::new(
@@ -695,15 +743,22 @@ pub(crate) fn handle_click(
                         }
                     }
                 }
-                // Clicking labels triggers click, and possibly input event, of associated input
+                // A label's activation behaviour is to fire a click at the
+                // control it labels. Dispatching that click -- rather than
+                // running the control's default action here -- is what puts it
+                // through the pre-click activation steps and past every
+                // listener, so a press on the label is indistinguishable from a
+                // press on the control. Running the default action alone meant
+                // a component whose input is visually hidden behind its label,
+                // which is every switch and every styled checkbox, never saw a
+                // `click` at all.
                 local_name!("label") => {
                     if let Some(target_node_id) =
                         doc.label_bound_input_element(node_id).map(|n| n.id)
                     {
-                        // Apply default click event action for target node
-                        let target_node = doc.get_node_mut(target_node_id).unwrap();
-                        let syn_event = target_node.synthetic_click_event_data(event.mods);
-                        handle_click(doc, target_node_id, &syn_event, dispatch_event);
+                        let target_node = doc.get_node(target_node_id).unwrap();
+                        let syn_event = target_node.synthetic_click_event(event.mods);
+                        dispatch_event(DomEvent::new(target_node_id, syn_event));
                         break 'matched true;
                     }
                 }
