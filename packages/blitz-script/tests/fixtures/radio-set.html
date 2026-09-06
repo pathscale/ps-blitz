@@ -1,0 +1,25 @@
+<!--
+  Selecting a radio clears the rest of its set, and a listener has to see the
+  finished selection rather than the one before it.
+-->
+<html>
+  <body>
+    <h1>Radio set</h1>
+
+    <input type="radio" name="pick" id="one" aria-label="First" checked>
+    <input type="radio" name="pick" id="two" aria-label="Second">
+    <div id="out"></div>
+
+    <script>
+      const one = document.getElementById("one");
+      const two = document.getElementById("two");
+      const out = document.getElementById("out");
+      two.addEventListener("click", () => {
+        const heading = document.createElement("h2");
+        heading.textContent =
+          "Click saw first=" + one.checked + " second=" + two.checked;
+        out.appendChild(heading);
+      });
+    </script>
+  </body>
+</html>

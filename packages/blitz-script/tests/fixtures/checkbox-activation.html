@@ -1,54 +1,30 @@
 <!--
-  What a listener on a checkbox actually sees when the control is pressed.
-
-  Everything observable is written into the document, because that is all a
-  driver can read. `#log` records the events in order with the checkedness each
-  one saw, so the assertions are about what the page could tell a person, not
-  about anything reached from inside the engine.
+  What a listener on a checkbox sees when the control is pressed.
+  Outcomes are headings, because that is what the harness can name and assert.
 -->
 <html>
   <body>
+    <h1>Checkbox activation</h1>
+
     <label id="bare-label">
-      <input type="checkbox" id="bare">
+      <input type="checkbox" id="bare" aria-label="Bare checkbox">
       <span>Bare checkbox</span>
     </label>
-    <div id="log">quiet</div>
-
-    <label id="disabled-label">
-      <input type="checkbox" id="off-limits" disabled>
-      <span>Off limits</span>
-    </label>
-    <div id="disabled-log">quiet</div>
-
-    <input type="radio" name="pick" id="one" checked>
-    <input type="radio" name="pick" id="two">
-    <div id="radio-log">quiet</div>
-
-    <label id="cancel-label">
-      <input type="checkbox" id="vetoed">
-      <span>Vetoed</span>
-    </label>
+    <div id="bare-out"></div>
 
     <script>
-      const record = (target, into) => {
-        const log = [];
-        const out = document.getElementById(into);
-        for (const name of ["click", "input", "change"]) {
-          target.addEventListener(name, () => {
-            log.push(name + ":" + target.checked);
-            out.textContent = log.join(",");
-          });
-        }
-      };
-
-      record(document.getElementById("bare"), "log");
-      record(document.getElementById("off-limits"), "disabled-log");
-      record(document.getElementById("two"), "radio-log");
-
-      // Refuses its own activation. The checkedness has to go back.
-      document
-        .getElementById("vetoed")
-        .addEventListener("click", (event) => event.preventDefault());
+      const bare = document.getElementById("bare");
+      const bareOut = document.getElementById("bare-out");
+      const seen = [];
+      for (const name of ["click", "input", "change"]) {
+        bare.addEventListener(name, () => {
+          seen.push(name + ":" + bare.checked);
+          bareOut.textContent = "";
+          const heading = document.createElement("h2");
+          heading.textContent = "Bare saw " + seen.join(",");
+          bareOut.appendChild(heading);
+        });
+      }
     </script>
   </body>
 </html>

@@ -1,0 +1,18 @@
+// What ps-qa has to be told about these fixtures.
+//
+// Almost empty, and that is the point. An application profile carries surfaces,
+// collapsible sections and controls that must not be pressed, because the
+// harness has to find its way around a product before it can touch anything.
+// Here each page is one control and its outcome, already on screen, so there is
+// nothing to navigate and nothing to avoid.
+AppProfile(
+    // One surface: the page. Every fixture renders an `<h1>`, so arrival is
+    // decidable without knowing which fixture is loaded.
+    surfaces: [
+        (name: "fixture", opener: "\u{0}dynamic-document", marker: None),
+    ],
+
+    permanent_surfaces: [],
+    navigation_controls: [],
+    sections: [],
+)

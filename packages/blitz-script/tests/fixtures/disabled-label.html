@@ -1,0 +1,46 @@
+<!--
+  A disabled control inside a label, and an enabled one beside it.
+
+  The press lands on the label, and nothing may reach the disabled control: the
+  pre-click activation steps refuse to toggle it, but a `click` delivered anyway
+  runs whatever the application wired to it, which is the one thing `disabled`
+  is there to prevent.
+
+  The enabled control is not decoration. "The disabled one heard nothing" is
+  satisfied just as well by a press that never arrived, so the page carries a
+  control that must hear the same kind of press. One check asserts the heading
+  appears, the other that it does not, and only the pair means anything.
+-->
+<html>
+  <body>
+    <h1>Disabled label</h1>
+
+    <label id="allowed-label" aria-label="Allowed region">
+      <input type="checkbox" id="allowed" aria-label="Allowed control">
+      <span>Allowed</span>
+    </label>
+
+    <label id="off-limits-label" aria-label="Forbidden region">
+      <input type="checkbox" id="off-limits" aria-label="Off limits control" disabled>
+      <span>Off limits</span>
+    </label>
+
+    <div id="out"></div>
+
+    <script>
+      const out = document.getElementById("out");
+      const announce = (who, name) => {
+        const heading = document.createElement("h2");
+        heading.textContent = who + " heard " + name;
+        out.appendChild(heading);
+      };
+
+      for (const [id, who] of [["allowed", "Allowed"], ["off-limits", "Disabled"]]) {
+        const input = document.getElementById(id);
+        for (const name of ["click", "input", "change"]) {
+          input.addEventListener(name, () => announce(who, name));
+        }
+      }
+    </script>
+  </body>
+</html>
