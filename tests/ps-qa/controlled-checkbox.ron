@@ -12,7 +12,7 @@
         hover: None,
         click: None,
         subject: "heading:Controlled checkbox",
-        expect: PaintsNamed,
+        expect: Present,
     ),
     (
         id: "controlled-checkbox-starts-off",
@@ -22,7 +22,7 @@
         hover: None,
         click: None,
         subject: "heading:Reports off",
-        expect: PaintsNamed,
+        expect: Present,
     ),
     (
         id: "controlled-checkbox-follows-the-property",
@@ -33,6 +33,23 @@
         settle_after_ms: 300,
         click: Some("checkbox:Controlled"),
         subject: "heading:Reports on",
+        expect: Present,
+    ),
+    // The control, not the outcome text. A checkbox or radio has an
+    // intrinsic box that owes nothing to a font, so this is the paint
+    // assertion the rest of this file can no longer make: the checks above
+    // read outcome text, and text measures 0x0 with no face registered.
+    //
+    // Without this, the group proves the tree is right and nothing about
+    // whether the document rendered at all.
+    (
+        id: "controlled-checkbox-control-paints",
+        group: "controlled-checkbox",
+        what: "the control itself paints, with no font involved",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "checkbox:Controlled",
         expect: PaintsNamed,
     ),
 ]

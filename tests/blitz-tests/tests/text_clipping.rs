@@ -9,6 +9,17 @@
 //!
 //!   cargo test --release -p blitz-tests --test text_clipping -- --nocapture
 
+//! # macOS only
+//!
+//! Clipping is defined against the width the text shapes to.
+//!
+//! Every test in this file measures or paints text. With no font
+//! registered parley shapes nothing, so the boxes report zero and the
+//! probes find blank pixels: the assertions stop being able to fail
+//! rather than failing honestly. macOS resolves a face through Core
+//! Text, costing no system library, and on Linux this compiles out.
+#![cfg(target_os = "macos")]
+
 use anyrender::render_to_buffer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
 use blitz_dom::DocumentConfig;

@@ -13,7 +13,7 @@
         hover: None,
         click: None,
         subject: "heading:Disabled label",
-        expect: PaintsNamed,
+        expect: Present,
     ),
     (
         id: "disabled-label-delivers-to-an-enabled-control",
@@ -24,7 +24,7 @@
         settle_after_ms: 300,
         click: Some("#allowed-label"),
         subject: "heading:Allowed heard click",
-        expect: PaintsNamed,
+        expect: Present,
     ),
     (
         id: "disabled-label-delivers-nothing-to-a-disabled-control",
@@ -36,5 +36,22 @@
         click: Some("#off-limits-label"),
         subject: "heading:Disabled heard click",
         expect: Absent,
+    ),
+    // The control, not the outcome text. A checkbox or radio has an
+    // intrinsic box that owes nothing to a font, so this is the paint
+    // assertion the rest of this file can no longer make: the checks above
+    // read outcome text, and text measures 0x0 with no face registered.
+    //
+    // Without this, the group proves the tree is right and nothing about
+    // whether the document rendered at all.
+    (
+        id: "disabled-label-control-paints",
+        group: "disabled-label",
+        what: "the control itself paints, with no font involved",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "checkbox:Allowed control",
+        expect: PaintsNamed,
     ),
 ]

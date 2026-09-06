@@ -16,7 +16,6 @@ default = [
     "svg",
     "woff",
     "accessibility",
-    "system-fonts",
     "file-input",
     "custom-widget"
 ]
@@ -120,3 +119,18 @@ web-time = { workspace = true }
 # to prevent debug builds from panicking.
 [target.'cfg(any(target_vendor = "apple"))'.dependencies]
 objc2 = { version = "0.6", features = ["disable-encoding-assertions"] }
+
+# Only on macOS, and only for the handful of unit tests that measure text.
+#
+# `system-fonts` is no longer a default of this crate, which is the point of it:
+# nothing headless should acquire a font catalogue by accident. But three tests
+# in `node::element` and `node::text` do measure shaped text, and a crate cannot
+# dev-depend on itself to switch its own feature on.
+#
+# `parley` is a direct dependency and `system-fonts` is exactly
+# `["parley/system"]`, so asking for it here has the same effect for the test
+# build and no effect on what ships. macOS resolves the face through Core Text,
+# adding no system library; on Linux this does not apply and those tests are
+# compiled out.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+parley = { workspace = true, features = ["system"] }

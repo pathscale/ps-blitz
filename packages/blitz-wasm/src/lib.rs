@@ -29,7 +29,7 @@
 //! that, and nothing in the ABI reversed anything before, so a mechanism had to
 //! be chosen. It is **the guest supplies the buffer**: `(out_ptr, out_cap)` in,
 //! the value's full byte length out, and the guest retries with a bigger buffer
-//! if it did not fit. [`deliver`] is where that lives, and ABI.md, "The read
+//! if it did not fit. `deliver` is where that lives, and ABI.md, "The read
 //! direction", records the two mechanisms it was chosen over.
 //!
 //! **This is the direction the atom design does not help.** A read's name is an
@@ -58,7 +58,7 @@
 //! *trusted* to avoid the guest — it is handed no `Store`, so it has no means
 //! to reach one.
 //!
-//! Reading a guest string is where the rule is visible: [`read_string`]
+//! Reading a guest string is where the rule is visible: `read_string`
 //! borrows guest memory, copies out, and drops the borrow *before* the
 //! document is touched, because the alternative does not compile.
 //!
@@ -135,7 +135,7 @@ pub struct Host {
 
 impl Host {
     /// A host bound to `doc`, with the guest's mount point seeded as
-    /// [`MOUNT`].
+    /// `Handle::MOUNT`.
     ///
     /// The seed is not a convenience. All five operations either create a
     /// detached node or need one that already exists, so without a handle to
@@ -354,7 +354,7 @@ struct GuestBuffer {
 /// allocates, and failing after that point would allocate it and throw it away.
 ///
 /// A zero-capacity buffer is legal and is how a guest asks "how long is it?"
-/// without providing anywhere to put it — see [`deliver`].
+/// without providing anywhere to put it — see `deliver`.
 fn guest_buffer(caller: &Caller<'_, Host>, ptr: i32, cap: i32) -> Result<GuestBuffer, Status> {
     let memory = caller
         .get_export("memory")
@@ -373,7 +373,7 @@ fn guest_buffer(caller: &Caller<'_, Host>, ptr: i32, cap: i32) -> Result<GuestBu
 ///
 /// # Why holding both at once is allowed
 ///
-/// [`read_string`] enforces the reentrancy rule by *dropping* its borrow of
+/// `read_string` enforces the reentrancy rule by *dropping* its borrow of
 /// guest memory before the document is touched. This holds both together, and
 /// that is a stronger guarantee rather than a weaker one: calling into the
 /// guest requires the store, and `data_and_store_mut` holds the store mutably

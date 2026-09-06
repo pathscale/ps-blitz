@@ -30,7 +30,7 @@
 //! No HTTP. This crate never opens a socket, parses a header off the wire, or
 //! names a client. `blitz-net` already ships `reqwest` with HTTP/2, cookies,
 //! compression and a cacache disk cache, and it implements
-//! [`FetchProvider`](blitz_traits::platform::FetchProvider) over that same
+//! [`FetchProvider`] over that same
 //! client. Anything here that looked like HTTP logic would be a second, worse
 //! implementation of it.
 //!
@@ -58,7 +58,7 @@
 //! identical answer, and this crate is built so the wrong version does not
 //! compile. Nothing here can reach a document, because nothing here has ever
 //! been given one: [`PlatformHost`] holds an origin, two providers and a table.
-//! The completion handler holds a [`Weak`](std::sync::Weak) reference to that
+//! The completion handler holds a [`Weak`] reference to that
 //! table and nothing else.
 //!
 //! # Origin scoping
@@ -68,7 +68,7 @@
 //! takes an origin as an argument. A binding therefore cannot pass the wrong
 //! one, in the same way `blitz-wasm`'s event handler cannot reach the guest.
 //!
-//! See [`OriginKey`](blitz_traits::platform::OriginKey) for why `file:` and
+//! See [`OriginKey`] for why `file:` and
 //! `data:` documents each get their own opaque origin rather than sharing one
 //! bucket.
 

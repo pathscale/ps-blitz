@@ -21,6 +21,27 @@ concurrency:
 env:
   RUSTDOCFLAGS: "-D warnings"
   CARGO_REGISTRIES_CRATES_IO_PROTOCOL: "sparse"
+  # The crates that paint on a screen. Each opts into `system-fonts`, which
+  # reaches `parley/system` and, on Linux only, `yeslogic-fontconfig-sys`. That
+  # is a system library, and installing it here is what made a headless runner
+  # carry a GUI's dependencies: every job in this file then needed
+  # `libfontconfig-dev` before it could build, and one of them shelled out to
+  # `apt-get` to be sure.
+  #
+  # A GUI legitimately wants the machine's font catalogue, so it keeps the
+  # feature and is built where a GUI is the deliverable. Everything here is
+  # headless and installs nothing. `blitz-dom` and `blitz-script`, which is what
+  # a headless embedder actually consumes, reach no system library at all.
+  HEADLESS_EXCLUDE: >-
+    --exclude ps-dioxus-native
+    --exclude ps-dioxus-native-dom
+    --exclude browser
+    --exclude counter
+    --exclude transparent
+    --exclude seven_guis
+    --exclude todomvc
+    --exclude wgpu_texture
+    --exclude wpt
 
 jobs:
 
@@ -46,24 +67,7 @@ jobs:
           cache-all-crates: "true"
           save-if: ${{ github.ref == 'refs/heads/master' }}
       - run: perl -pi.bak -e 's/opt-level = 2/opt-level = 0/g' Cargo.toml
-      - uses: awalsh128/cache-apt-pkgs-action@latest
-        with:
-          packages: libfontconfig-dev
-          version: 1.0
-      # The cache action restores a tarball rather than installing, and on this
-      # runner image it has silently restored nothing: every job then died in
-      # `yeslogic-fontconfig-sys`'s build script with `pkg-config exited with
-      # status code 1`, which reads as a dependency problem rather than a
-      # missing system library. Ask pkg-config directly and install if it is
-      # not there. A no-op when the cache worked.
-      - name: Ensure fontconfig is actually present
-        run: |
-          pkg-config --exists fontconfig && exit 0
-          echo "fontconfig missing after the cache step; installing it" >&2
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends libfontconfig-dev
-          pkg-config --exists fontconfig
-      - run: cargo build --workspace
+      - run: cargo build --workspace ${{ env.HEADLESS_EXCLUDE }}
 
   build-features-default:
     if: ${{ github.event_name == 'workflow_dispatch' }}
@@ -80,24 +84,7 @@ jobs:
           cache-all-crates: "true"
           save-if: ${{ github.ref == 'refs/heads/master' }}
       - run: perl -pi.bak -e 's/opt-level = 2/opt-level = 0/g' Cargo.toml
-      - uses: awalsh128/cache-apt-pkgs-action@latest
-        with:
-          packages: libfontconfig-dev
-          version: 1.0
-      # The cache action restores a tarball rather than installing, and on this
-      # runner image it has silently restored nothing: every job then died in
-      # `yeslogic-fontconfig-sys`'s build script with `pkg-config exited with
-      # status code 1`, which reads as a dependency problem rather than a
-      # missing system library. Ask pkg-config directly and install if it is
-      # not there. A no-op when the cache worked.
-      - name: Ensure fontconfig is actually present
-        run: |
-          pkg-config --exists fontconfig && exit 0
-          echo "fontconfig missing after the cache step; installing it" >&2
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends libfontconfig-dev
-          pkg-config --exists fontconfig
-      - run: cargo build --workspace
+      - run: cargo build --workspace ${{ env.HEADLESS_EXCLUDE }}
 
   test-features-default:
     if: ${{ github.event_name == 'workflow_dispatch' }}
@@ -114,57 +101,40 @@ jobs:
           cache-all-crates: "true"
           save-if: ${{ github.ref == 'refs/heads/master' }}
       - run: perl -pi.bak -e 's/opt-level = 2/opt-level = 0/g' Cargo.toml
-      - uses: awalsh128/cache-apt-pkgs-action@latest
-        with:
-          packages: libfontconfig-dev
-          version: 1.0
-      # The cache action restores a tarball rather than installing, and on this
-      # runner image it has silently restored nothing: every job then died in
-      # `yeslogic-fontconfig-sys`'s build script with `pkg-config exited with
-      # status code 1`, which reads as a dependency problem rather than a
-      # missing system library. Ask pkg-config directly and install if it is
-      # not there. A no-op when the cache worked.
-      - name: Ensure fontconfig is actually present
-        run: |
-          pkg-config --exists fontconfig && exit 0
-          echo "fontconfig missing after the cache step; installing it" >&2
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends libfontconfig-dev
-          pkg-config --exists fontconfig
-      - run: cargo test --workspace
+      - run: cargo test --workspace ${{ env.HEADLESS_EXCLUDE }}
 
-  build-counter:
-    name: "Build counter example"
-    runs-on: ubicloud-standard-8
+  headless-graph:
+    # The verifier for the rule the rest of this file assumes. Without one,
+    # "nothing headless links a system library" is a property that held on the
+    # day someone last checked, and `system-fonts` sat in `blitz-dom`'s defaults
+    # long enough that two downstream repositories each worked around it by hand
+    # rather than anyone noticing it here.
+    #
+    # `cargo deny`, the same tool and action ps-taffy and pays.online-backend
+    # already use, rather than a shell loop over `cargo tree` output. The policy
+    # is declarative in deny.toml, cargo-deny resolves the graph properly per
+    # target, and there is no hand-kept crate list to fall out of date.
+    #
+    # Cheap: it resolves rather than builds, so a re-added default fails here in
+    # seconds instead of surfacing as a missing apt package in someone else's CI.
+    name: "No system libraries in the headless graph"
+    runs-on: ubicloud-standard-2
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      # Restore the compiled dependency graph rather than rebuilding the
-      # whole workspace from source on every run.
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: "counter"
-          cache-all-crates: "true"
-          save-if: ${{ github.ref == 'refs/heads/master' }}
-      - run: perl -pi.bak -e 's/opt-level = 2/opt-level = 0/g' Cargo.toml
-      - uses: awalsh128/cache-apt-pkgs-action@latest
-        with:
-          packages: libfontconfig-dev
-          version: 1.0
-      # The cache action restores a tarball rather than installing, and on this
-      # runner image it has silently restored nothing: every job then died in
-      # `yeslogic-fontconfig-sys`'s build script with `pkg-config exited with
-      # status code 1`, which reads as a dependency problem rather than a
-      # missing system library. Ask pkg-config directly and install if it is
-      # not there. A no-op when the cache worked.
-      - name: Ensure fontconfig is actually present
-        run: |
-          pkg-config --exists fontconfig && exit 0
-          echo "fontconfig missing after the cache step; installing it" >&2
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends libfontconfig-dev
-          pkg-config --exists fontconfig
-      - run: cargo build -p counter
+      - uses: taiki-e/install-action@cargo-deny
+      - run: cargo deny check bans
+
+  # There was a `build-counter` job here. It built a GUI example on a Linux
+  # runner, so it needed `libfontconfig-dev` installed to compile, and it was
+  # the last thing in this file asking a headless machine for a GUI's
+  # libraries. Removed rather than kept behind an apt step: nothing in this
+  # workflow installs a system package now, and that is the property worth
+  # holding. Do not add one back to make a job build.
+  #
+  # A native GUI build is still covered, where a GUI is the deliverable and the
+  # libraries are honest: `publish-browser.yml`, which brings its own. The
+  # examples are also compiled for wasm below, which needs nothing installed.
 
   # wasm_hello is a standalone workspace; seven_guis and todomvc are workspace
   # members with a [lib] crate-type = ["cdylib"] target for wasm.
@@ -228,24 +198,7 @@ jobs:
           cache-all-crates: "true"
           save-if: ${{ github.ref == 'refs/heads/master' }}
       - run: perl -pi.bak -e 's/opt-level = 2/opt-level = 0/g' Cargo.toml
-      - uses: awalsh128/cache-apt-pkgs-action@latest
-        with:
-          packages: libfontconfig-dev
-          version: 1.0
-      # The cache action restores a tarball rather than installing, and on this
-      # runner image it has silently restored nothing: every job then died in
-      # `yeslogic-fontconfig-sys`'s build script with `pkg-config exited with
-      # status code 1`, which reads as a dependency problem rather than a
-      # missing system library. Ask pkg-config directly and install if it is
-      # not there. A no-op when the cache worked.
-      - name: Ensure fontconfig is actually present
-        run: |
-          pkg-config --exists fontconfig && exit 0
-          echo "fontconfig missing after the cache step; installing it" >&2
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends libfontconfig-dev
-          pkg-config --exists fontconfig
-      - run: cargo clippy --workspace -- -D warnings
+      - run: cargo clippy --workspace ${{ env.HEADLESS_EXCLUDE }} -- -D warnings
 
   # Every other job builds default features only, so code behind a feature is
   # never compiled here at all. `ps-blitz-script`'s `debug_control` module is
@@ -271,25 +224,28 @@ jobs:
           key: "all-features"
           cache-all-crates: "true"
           save-if: ${{ github.ref == 'refs/heads/master' }}
-      - run: perl -pi.bak -e 's/opt-level = 2/opt-level = 0/g' Cargo.toml
-      - uses: awalsh128/cache-apt-pkgs-action@latest
+      # `--all-features` cannot be used here any more, and not for a CI reason.
+      # `system-fonts` means "read the machine's font catalogue", so on Linux it
+      # is by definition an opt-in to `yeslogic-fontconfig-sys`. Asking for
+      # every feature therefore asks for a system library, and the only ways to
+      # make that pass are to install one on a headless runner or to stop
+      # checking. Neither is right; the feature is simply not in scope for a
+      # headless build, so it is named as excluded rather than worked around.
+      #
+      # cargo-hack because plain `--all-features` has no way to leave one out,
+      # and it is what ps-vello, wild and psc-nanoid already use here.
+      # `--each-feature` is also stricter than what it replaces: it catches a
+      # feature that fails to compile on its own, which `--all-features` hides
+      # behind whatever else happened to be switched on.
+      - name: install cargo-hack
+        uses: taiki-e/install-action@v2
         with:
-          packages: libfontconfig-dev
-          version: 1.0
-      # The cache action restores a tarball rather than installing, and on this
-      # runner image it has silently restored nothing: every job then died in
-      # `yeslogic-fontconfig-sys`'s build script with `pkg-config exited with
-      # status code 1`, which reads as a dependency problem rather than a
-      # missing system library. Ask pkg-config directly and install if it is
-      # not there. A no-op when the cache worked.
-      - name: Ensure fontconfig is actually present
-        run: |
-          pkg-config --exists fontconfig && exit 0
-          echo "fontconfig missing after the cache step; installing it" >&2
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends libfontconfig-dev
-          pkg-config --exists fontconfig
-      - run: cargo check -p ps-blitz-dom -p ps-blitz-html -p ps-blitz-script -p ps-blitz-paint -p ps-blitz-net --all-features
+          tool: cargo-hack
+      - run: perl -pi.bak -e 's/opt-level = 2/opt-level = 0/g' Cargo.toml
+      - run: >-
+          cargo hack check --each-feature --exclude-features system-fonts
+          -p ps-blitz-dom -p ps-blitz-html -p ps-blitz-script
+          -p ps-blitz-paint -p ps-blitz-net
 
   doc:
     name: Documentation
@@ -304,7 +260,7 @@ jobs:
           key: "doc"
           cache-all-crates: "true"
           save-if: ${{ github.ref == 'refs/heads/master' }}
-      - run: cargo doc
+      - run: cargo doc --workspace ${{ env.HEADLESS_EXCLUDE }}
 
   matrix_test:
     runs-on: ${{ matrix.platform.os }}
@@ -324,7 +280,12 @@ jobs:
               os: ubicloud-standard-8,
               cross: false,
               command: "test",
-              args: "--all --tests",
+              # `--no-fail-fast` because cargo otherwise stops at the first test
+              # binary that fails, and this suite has around sixty. A run then
+              # reports one broken thing, gets fixed, and reports the next: the
+              # cost of finding N failures is N full CI runs, and the shape of
+              # the problem stays hidden until the last one.
+              args: "--all --tests --no-fail-fast",
             }
           - {
               name: android,
@@ -347,16 +308,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      # These jobs build the same fontconfig-dependent crates as the rest but
-      # never installed the library; they passed only while a warm cache made
-      # the build script unnecessary. See the note on the other jobs.
-      - name: Ensure fontconfig is actually present
-        run: |
-          pkg-config --exists fontconfig && exit 0
-          echo "fontconfig missing; installing it" >&2
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends libfontconfig-dev
-          pkg-config --exists fontconfig
       - name: install stable
         uses: dtolnay/rust-toolchain@master
         with:
@@ -395,36 +346,23 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/master' }}
           cache-bin: ${{ matrix.platform.os != 'macos-latest' }} # works around https://github.com/Swatinem/rust-cache/issues/341
 
-      - name: Install apt deps
-        if: ${{ matrix.platform.os == 'ubicloud-standard-8' }}
-        uses: awalsh128/cache-apt-pkgs-action@latest
-        with:
-          packages: libfontconfig1-dev
-          version: 1.0
-
       - name: Setup
         run: ${{ matrix.platform.setup }} 
         shell: bash
 
+      # Every entry in this matrix passes `--all`, so each one selects the GUI
+      # crates too and would need a font catalogue installed to build them.
+      # Same exclude list the other jobs use, applied in one place rather than
+      # repeated in three matrix entries.
       - name: test
         run: |
-          ${{ env.RUST_CARGO_COMMAND }} ${{ matrix.platform.command }} ${{ matrix.platform.args }} --target ${{ matrix.platform.target }}
+          ${{ env.RUST_CARGO_COMMAND }} ${{ matrix.platform.command }} ${{ matrix.platform.args }} ${{ env.HEADLESS_EXCLUDE }} --target ${{ matrix.platform.target }}
 
   debug_control_e2e:
     name: Debug control (Solid 2 process)
     runs-on: ubicloud-standard-8
     steps:
       - uses: actions/checkout@v4
-      # These jobs build the same fontconfig-dependent crates as the rest but
-      # never installed the library; they passed only while a warm cache made
-      # the build script unnecessary. See the note on the other jobs.
-      - name: Ensure fontconfig is actually present
-        run: |
-          pkg-config --exists fontconfig && exit 0
-          echo "fontconfig missing; installing it" >&2
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends libfontconfig-dev
-          pkg-config --exists fontconfig
       - uses: dtolnay/rust-toolchain@stable
       - uses: oven-sh/setup-bun@v2
       - uses: Swatinem/rust-cache@v2
@@ -432,10 +370,6 @@ jobs:
           key: "debug-control-e2e"
           cache-all-crates: "true"
           save-if: ${{ github.ref == 'refs/heads/master' }}
-      - uses: awalsh128/cache-apt-pkgs-action@latest
-        with:
-          packages: libfontconfig1-dev
-          version: 1.0
       - name: Build the matching Solid 2 fixture without a lockfile
         working-directory: examples/solid
         run: |

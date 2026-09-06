@@ -18,8 +18,8 @@
 //!
 //! So the guest is not called from there at all. Instead:
 //!
-//! 1. [`WasmEventHandler::handle_event`] does one thing: pushes the matching
-//!    listener ids onto [`Host::pending`]. It calls no guest code and returns
+//! 1. `WasmEventHandler::handle_event` does one thing: pushes the matching
+//!    listener ids onto `Host::pending`. It calls no guest code and returns
 //!    immediately. Its capabilities are, by construction, "read the registry,
 //!    push a `u32`" — there is no `Store` in scope, so it *could not* call the
 //!    guest even if it wanted to.
@@ -93,7 +93,7 @@ impl ListenerTable {
     }
 
     /// Unregister a listener. A second removal of the same id is
-    /// [`ERR_BAD_LISTENER`], not a silent success: a guest that double-removes
+    /// `Status::ERR_BAD_LISTENER`, not a silent success: a guest that double-removes
     /// has a bug and should hear about it.
     pub fn remove(&mut self, id: ListenerId) -> Result<(), Status> {
         let slot = self

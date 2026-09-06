@@ -1,5 +1,16 @@
 //! Placeholder rendering for text form controls.
 
+//! # macOS only
+//!
+//! A placeholder is text, and a value painted with computed font styles is text.
+//!
+//! Every test in this file measures or paints text. With no font
+//! registered parley shapes nothing, so the boxes report zero and the
+//! probes find blank pixels: the assertions stop being able to fail
+//! rather than failing honestly. macOS resolves a face through Core
+//! Text, costing no system library, and on Linux this compiles out.
+#![cfg(target_os = "macos")]
+
 use anyrender::render_to_buffer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
 use blitz_dom::DocumentConfig;
