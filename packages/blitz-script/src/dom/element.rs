@@ -468,40 +468,53 @@ fn set_checked(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsRes
     let checked = args.first().map(JsValue::to_boolean).unwrap_or(false);
 
     /*
-     * The live state first. Once the input has been constructed its checkedness
-     * lives in the element's special data, and the attribute is only the
-     * document as it was parsed. Writing the attribute alone left a controlled
-     * component -- one that renders `checked` from its own state -- unable to
-     * drive its own input at all: the property write landed nowhere the
-     * renderer, the accessibility tree or a `change` handler could see.
+     * Once the input has been constructed its checkedness lives in the
+     * element's special data, and that is what the renderer, the accessibility
+     * tree and `change` all read. The attribute is `defaultChecked`: the
+     * document as it was parsed, which the IDL property is not supposed to
+     * move.
+     *
+     * Writing only the attribute left a controlled component -- one that
+     * renders `checked` from its own state -- unable to drive its own input at
+     * all, because the write landed nowhere anything observes.
+     *
+     * The snapshot is what asks for a restyle. `:checked` is matched from this
+     * same state, and taking the attribute write away takes its invalidation
+     * with it.
      */
-    {
+    let has_live_state = {
         let mut doc = ctx.mutate_doc();
-        if let Some(is_checked) = doc
+        match doc
             .get_node_mut(node_id)
             .and_then(|node| node.data.downcast_element_mut())
             .and_then(|element| element.checkbox_input_checked_mut())
         {
-            *is_checked = checked;
+            Some(is_checked) => {
+                let changed = *is_checked != checked;
+                *is_checked = checked;
+                if changed {
+                    doc.snapshot_node(node_id);
+                }
+                true
+            }
+            None => false,
         }
-    }
+    };
 
     /*
-     * Then the attribute, because before the input is constructed it is the
-     * only carrier of the initial value.
+     * Before construction the attribute is the only carrier of the initial
+     * value, so a property write has to reach it or the value is lost.
      *
      * `checked` is an HTML boolean attribute: present means on, whatever the
      * value reads. Writing `checked="false"` therefore *set* it, and every
-     * controlled checkbox, radio and switch came up already on and could never
-     * be turned off. Reflecting the property this way diverges from
-     * `defaultChecked`, which the attribute is supposed to be, and that is the
-     * lesser of the two: nothing here resets a form, and the alternative is an
-     * input whose initial state is unreachable.
+     * controlled checkbox, radio and switch came up already on.
      */
-    if checked {
-        write_attr(&ctx, node_id, "checked", "");
-    } else {
-        clear_attr(&ctx, node_id, "checked");
+    if !has_live_state {
+        if checked {
+            write_attr(&ctx, node_id, "checked", "");
+        } else {
+            clear_attr(&ctx, node_id, "checked");
+        }
     }
     Ok(JsValue::undefined())
 }
