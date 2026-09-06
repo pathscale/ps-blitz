@@ -455,13 +455,17 @@ jobs:
       # on the published engine, so an installed one judges the last release and
       # a change in this workspace could not fail it. `ps-qa` itself carries no
       # engine, so the published binary drives whatever host it is given.
-      - name: Install ps-qa
-        run: cargo install ps-qa --locked
       - uses: actions/checkout@v5
         with:
           repository: pathscale/ps-observability
           path: .ps-observability
+      # Both binaries from the same checkout, rather than `cargo install ps-qa`.
+      # The harness and the host move together, and installing one while
+      # building the other makes this job depend on a release of the harness as
+      # well as on the checkout, so a change to either has to be published
+      # before it can be used here.
       - name: Drive the fixtures with ps-qa
         env:
           PS_OBSERVABILITY: .ps-observability
+          QA_BUILD_PS_QA: "1"
         run: tests/qa/run.sh
