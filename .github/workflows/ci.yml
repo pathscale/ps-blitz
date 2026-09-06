@@ -443,12 +443,6 @@ jobs:
           bun run build
       - name: Drive the fixture through the real process boundary
         run: cargo test -p ps-blitz-script --features debug-control --test debug_control
-      # Activation behaviour, driven the same way. Separate from the step above
-      # because these need no built Solid fixture: they open static pages under
-      # `packages/blitz-script/tests/fixtures`, so they run even when the
-      # example fails to build.
-      - name: Drive checkbox activation through the real process boundary
-        run: cargo test -p ps-blitz-script --features debug-control --test activation
       # Activation behaviour, driven by ps-qa against this checkout.
       #
       # The host is built here rather than installed: `qa-inspect-host` depends
