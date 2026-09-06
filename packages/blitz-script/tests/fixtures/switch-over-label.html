@@ -1,0 +1,36 @@
+<!--
+  The shape `@pathscale/ui` ships and every styled checkbox on the web uses: the
+  real input clipped to a pixel, the visible control a sibling span. A press
+  lands on the label, and everything the component depends on has to come out of
+  that.
+-->
+<html>
+  <head>
+    <style>
+      .switch { display: block; width: 40px; height: 20px; }
+      .switch-input {
+        position: absolute; width: 1px; height: 1px;
+        clip-path: inset(50%); opacity: 0;
+      }
+      .switch-control { display: block; width: 40px; height: 20px; }
+    </style>
+  </head>
+  <body>
+    <label class="switch" id="switch">
+      <input type="checkbox" class="switch-input" id="hidden-input">
+      <span class="switch-control" id="control"></span>
+    </label>
+    <div id="log">quiet</div>
+    <script>
+      const input = document.getElementById("hidden-input");
+      const out = document.getElementById("log");
+      const log = [];
+      for (const name of ["click", "input", "change"]) {
+        input.addEventListener(name, () => {
+          log.push(name + ":" + input.checked);
+          out.textContent = log.join(",");
+        });
+      }
+    </script>
+  </body>
+</html>

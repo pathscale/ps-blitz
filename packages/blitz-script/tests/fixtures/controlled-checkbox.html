@@ -1,0 +1,21 @@
+<!--
+  A checkbox whose state is written from script, which is what every controlled
+  component does on its first render and on every render after.
+-->
+<html>
+  <body>
+    <input type="checkbox" id="controlled">
+    <div id="state">unknown</div>
+    <script>
+      const box = document.getElementById("controlled");
+      const state = document.getElementById("state");
+      const show = () => { state.textContent = String(box.checked); };
+
+      // The initial render of a control bound to `false`.
+      box.checked = false;
+      show();
+
+      window.drive = (value) => { box.checked = value; show(); };
+    </script>
+  </body>
+</html>
