@@ -443,35 +443,21 @@ jobs:
           bun run build
       - name: Drive the fixture through the real process boundary
         run: cargo test -p ps-blitz-script --features debug-control --test debug_control
-
-  # Activation behaviour, driven by ps-qa against this checkout.
-  #
-  # macOS, and not by preference: `tauri-runtime-blitz`, which the host reaches
-  # the engine through, does not build on Linux at all. Its `RawWindow` impl is
-  # missing `default_vbox` and `gtk_window` there, so this is a portability
-  # limit of that crate rather than a missing development package, and no
-  # amount of GTK headers moves it.
-  qa_fixtures:
-    name: "Fixture outcomes (ps-qa)"
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: "qa-fixtures"
-          cache-all-crates: "true"
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+      # Activation behaviour, driven by ps-qa against this checkout.
+      #
+      # The host is built here rather than installed: `qa-inspect-host` depends
+      # on the published engine, so an installed one judges the last release and
+      # a change in this workspace could not fail it. `ps-qa` itself carries no
+      # engine, so the published binary drives whatever host it is given.
       - uses: actions/checkout@v5
         with:
           repository: pathscale/ps-observability
           path: .ps-observability
-      # Both binaries from that checkout, rather than `cargo install ps-qa`.
+      # Both binaries from the same checkout, rather than `cargo install ps-qa`.
       # The harness and the host move together, and installing one while
-      # building the other would make this depend on a release of the harness
-      # as well, so a change to either could not be used here until it had been
-      # published. The host is built against this workspace, so what it judges
-      # is the engine in this pull request rather than the last release.
+      # building the other makes this job depend on a release of the harness as
+      # well as on the checkout, so a change to either has to be published
+      # before it can be used here.
       - name: Drive the fixtures with ps-qa
         env:
           PS_OBSERVABILITY: .ps-observability
