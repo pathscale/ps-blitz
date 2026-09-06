@@ -1,0 +1,25 @@
+// The canceled activation steps: `preventDefault` on the click puts the
+// checkedness back, so a control can refuse its own activation.
+[
+    (
+        id: "cancelled-click-paints",
+        group: "cancelled-click",
+        what: "the fixture builds and paints",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "heading:Cancelled click",
+        expect: PaintsNamed,
+    ),
+    (
+        id: "cancelled-click-is-undone",
+        group: "cancelled-click",
+        what: "a cancelled press leaves the control as it was",
+        open: None,
+        hover: None,
+        settle_after_ms: 300,
+        click: Some("checkbox:Vetoed"),
+        subject: "heading:Vetoed press was undone",
+        expect: PaintsNamed,
+    ),
+]

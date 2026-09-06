@@ -1,0 +1,27 @@
+// Pressing a checkbox, and what its listeners saw.
+//
+// The page writes what each listener observed into a heading, so the assertion
+// is a name the renderer painted rather than anything read out of the engine.
+[
+    (
+        id: "checkbox-activation-paints",
+        group: "checkbox-activation",
+        what: "the fixture builds and paints",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "heading:Checkbox activation",
+        expect: PaintsNamed,
+    ),
+    (
+        id: "checkbox-activation-listeners-see-the-new-state",
+        group: "checkbox-activation",
+        what: "every listener sees the checkedness the press produced",
+        open: None,
+        hover: None,
+        settle_after_ms: 300,
+        click: Some("checkbox:Bare checkbox"),
+        subject: "heading:Bare saw click:true,input:true,change:true",
+        expect: PaintsNamed,
+    ),
+]

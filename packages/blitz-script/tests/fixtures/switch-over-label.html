@@ -16,19 +16,25 @@
     </style>
   </head>
   <body>
+    <h1>Switch over label</h1>
+
     <label class="switch" id="switch">
-      <input type="checkbox" class="switch-input" id="hidden-input">
+      <input type="checkbox" class="switch-input" id="hidden-input" aria-label="Hidden switch">
       <span class="switch-control" id="control"></span>
     </label>
-    <div id="log">quiet</div>
+    <div id="out"></div>
+
     <script>
       const input = document.getElementById("hidden-input");
-      const out = document.getElementById("log");
-      const log = [];
+      const out = document.getElementById("out");
+      const seen = [];
       for (const name of ["click", "input", "change"]) {
         input.addEventListener(name, () => {
-          log.push(name + ":" + input.checked);
-          out.textContent = log.join(",");
+          seen.push(name + ":" + input.checked);
+          out.textContent = "";
+          const heading = document.createElement("h2");
+          heading.textContent = "Switch saw " + seen.join(",");
+          out.appendChild(heading);
         });
       }
     </script>

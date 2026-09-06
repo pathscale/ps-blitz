@@ -1,0 +1,40 @@
+// A press on a label whose control is disabled.
+//
+// The two checks are a pair. "The disabled control heard nothing" is satisfied
+// just as well by a press that never arrived, so the first one presses an
+// enabled control the same way and requires that it did hear. Without it the
+// second is vacuous, which is the failure this whole area is about.
+[
+    (
+        id: "disabled-label-paints",
+        group: "disabled-label",
+        what: "the fixture builds and paints",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "heading:Disabled label",
+        expect: PaintsNamed,
+    ),
+    (
+        id: "disabled-label-delivers-to-an-enabled-control",
+        group: "disabled-label",
+        what: "a press on a label reaches an enabled control",
+        open: None,
+        hover: None,
+        settle_after_ms: 300,
+        click: Some("#allowed-label"),
+        subject: "heading:Allowed heard click",
+        expect: PaintsNamed,
+    ),
+    (
+        id: "disabled-label-delivers-nothing-to-a-disabled-control",
+        group: "disabled-label",
+        what: "the same press reaches a disabled control not at all",
+        open: None,
+        hover: None,
+        settle_after_ms: 300,
+        click: Some("#off-limits-label"),
+        subject: "heading:Disabled heard click",
+        expect: Absent,
+    ),
+]

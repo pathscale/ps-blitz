@@ -1,0 +1,29 @@
+// A press on a label whose control is clipped to a pixel.
+//
+// A label's activation behaviour is to fire a click at the control it labels.
+// Running the control's default action instead toggles it and fires `input` and
+// `change` while no `click` ever arrives, and every switch on the web puts its
+// input inside its label, so this is the case that matters most.
+[
+    (
+        id: "switch-over-label-paints",
+        group: "switch-over-label",
+        what: "the fixture builds and paints",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "heading:Switch over label",
+        expect: PaintsNamed,
+    ),
+    (
+        id: "switch-over-label-delivers-the-press",
+        group: "switch-over-label",
+        what: "a press over the label reaches the control it labels",
+        open: None,
+        hover: None,
+        settle_after_ms: 300,
+        click: Some("checkbox:Hidden switch"),
+        subject: "heading:Switch saw click:true,input:true,change:true",
+        expect: PaintsNamed,
+    ),
+]

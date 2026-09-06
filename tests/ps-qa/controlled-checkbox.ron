@@ -1,0 +1,38 @@
+// What a control bound to `false` reports before anything touches it.
+//
+// `checked` is an HTML boolean attribute, so reflecting a written `false` into
+// it sets the input, and every controlled checkbox, radio and switch came up
+// already selected whatever its state said.
+[
+    (
+        id: "controlled-checkbox-paints",
+        group: "controlled-checkbox",
+        what: "the fixture builds and paints",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "heading:Controlled checkbox",
+        expect: PaintsNamed,
+    ),
+    (
+        id: "controlled-checkbox-starts-off",
+        group: "controlled-checkbox",
+        what: "a control bound to false is not checked",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "heading:Reports off",
+        expect: PaintsNamed,
+    ),
+    (
+        id: "controlled-checkbox-follows-the-property",
+        group: "controlled-checkbox",
+        what: "pressing it moves the state a component reads back",
+        open: None,
+        hover: None,
+        settle_after_ms: 300,
+        click: Some("checkbox:Controlled"),
+        subject: "heading:Reports on",
+        expect: PaintsNamed,
+    ),
+]

@@ -449,3 +449,19 @@ jobs:
       # example fails to build.
       - name: Drive checkbox activation through the real process boundary
         run: cargo test -p ps-blitz-script --features debug-control --test activation
+      # Activation behaviour, driven by ps-qa against this checkout.
+      #
+      # The host is built here rather than installed: `qa-inspect-host` depends
+      # on the published engine, so an installed one judges the last release and
+      # a change in this workspace could not fail it. `ps-qa` itself carries no
+      # engine, so the published binary drives whatever host it is given.
+      - name: Install ps-qa
+        run: cargo install ps-qa --locked
+      - uses: actions/checkout@v5
+        with:
+          repository: pathscale/ps-observability
+          path: .ps-observability
+      - name: Drive the fixtures with ps-qa
+        env:
+          PS_OBSERVABILITY: .ps-observability
+        run: tests/qa/run.sh

@@ -1,0 +1,25 @@
+// Selecting a radio clears the rest of its set, and a listener has to see the
+// finished selection rather than the one before it.
+[
+    (
+        id: "radio-set-paints",
+        group: "radio-set",
+        what: "the fixture builds and paints",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "heading:Radio set",
+        expect: PaintsNamed,
+    ),
+    (
+        id: "radio-set-is-settled-when-listeners-run",
+        group: "radio-set",
+        what: "a listener sees the whole set already moved",
+        open: None,
+        hover: None,
+        settle_after_ms: 300,
+        click: Some("radio:Second"),
+        subject: "heading:Click saw first=false second=true",
+        expect: PaintsNamed,
+    ),
+]

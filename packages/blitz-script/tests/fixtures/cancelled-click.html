@@ -1,0 +1,34 @@
+<!--
+  A control that refuses its own activation. `preventDefault` on the click runs
+  the canceled activation steps, so the checkedness has to go back.
+
+  The heading tracks the checkedness after the whole press has been delivered,
+  so "still off" is an outcome something can name.
+-->
+<html>
+  <body>
+    <h1>Cancelled click</h1>
+
+    <label id="vetoed-label">
+      <input type="checkbox" id="vetoed" aria-label="Vetoed">
+      <span>Vetoed</span>
+    </label>
+    <div id="out"></div>
+
+    <script>
+      const box = document.getElementById("vetoed");
+      const out = document.getElementById("out");
+      box.addEventListener("click", (event) => {
+        event.preventDefault();
+        // After the dispatch, so the canceled activation steps have run.
+        setTimeout(() => {
+          const heading = document.createElement("h2");
+          heading.textContent = box.checked
+            ? "Vetoed press stuck"
+            : "Vetoed press was undone";
+          out.appendChild(heading);
+        }, 0);
+      });
+    </script>
+  </body>
+</html>
