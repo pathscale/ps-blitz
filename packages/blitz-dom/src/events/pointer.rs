@@ -757,8 +757,19 @@ pub(crate) fn handle_click(
                         doc.label_bound_input_element(node_id).map(|n| n.id)
                     {
                         let target_node = doc.get_node(target_node_id).unwrap();
-                        let syn_event = target_node.synthetic_click_event(event.mods);
-                        dispatch_event(DomEvent::new(target_node_id, syn_event));
+                        // A disabled control has no activation behaviour, so
+                        // the label has nothing to forward and the press ends
+                        // here. Dispatching anyway would run the control's own
+                        // `click` listeners, which is the one thing `disabled`
+                        // is there to prevent -- and the pre-click activation
+                        // steps refusing to toggle it would not stop them.
+                        let disabled = target_node
+                            .element_data()
+                            .is_some_and(|el| el.attr(local_name!("disabled")).is_some());
+                        if !disabled {
+                            let syn_event = target_node.synthetic_click_event(event.mods);
+                            dispatch_event(DomEvent::new(target_node_id, syn_event));
+                        }
                         break 'matched true;
                     }
                 }

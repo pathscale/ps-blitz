@@ -2405,9 +2405,18 @@ fn clicking_a_disabled_checkbox_changes_nothing() {
                 <input type="checkbox" id="check" disabled>
                 <span>Off limits</span>
             </label>
+            <div id="out">quiet</div>
             <script>
-                document.getElementById("check")
-                    .addEventListener("change", () => { window.changed = true; });
+                const check = document.getElementById("check");
+                const out = document.getElementById("out");
+                // Every event a listener could act on, not just `change`. A
+                // disabled control that still receives `click` runs whatever
+                // the application wired to it, which is the one thing
+                // `disabled` is there to stop, and the pre-click activation
+                // steps refusing to toggle it do not help.
+                for (const name of ["click", "input", "change"]) {
+                    check.addEventListener(name, () => { out.textContent = "heard " + name; });
+                }
             </script>
         </body></html>
         "#,
@@ -2437,6 +2446,11 @@ fn clicking_a_disabled_checkbox_changes_nothing() {
             .unwrap()
             .checkbox_input_checked(),
         Some(false)
+    );
+    assert_eq!(
+        text_of_selector(&doc, "#out"),
+        "quiet",
+        "a disabled control must not receive the label's press at all"
     );
 }
 
