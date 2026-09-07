@@ -225,6 +225,27 @@ impl ScriptRuntime {
         )
         .expect("failed to register console");
 
+        // `URL` and `URLSearchParams`. These are WHATWG globals that every
+        // browser has, and a router is the first thing to reach for them:
+        // `@solidjs/router` builds one during module evaluation, so a page
+        // without them does not fail at navigation time, it fails to boot at
+        // all. `boa_runtime` implements both over the `url` crate; they were
+        // simply never registered here, because nothing but `Console` was.
+        //
+        // Registered one extension at a time rather than through
+        // `boa_runtime::register`, which would also install its own
+        // `setTimeout`/`setInterval` over the ones in `timers.rs` that are
+        // wired to this document's event loop.
+        boa_runtime::register_extensions(
+            (
+                boa_runtime::extensions::UrlExtension,
+                boa_runtime::extensions::EncodingExtension,
+            ),
+            None,
+            &mut context,
+        )
+        .expect("failed to register URL and text-encoding globals");
+
         crate::dom::init_protos(&ctx, &mut context);
 
         // `document`
