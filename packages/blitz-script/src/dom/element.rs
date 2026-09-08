@@ -24,6 +24,7 @@ pub(crate) fn init_element_proto(proto: &JsObject, context: &mut Context) {
     define_accessor(proto, "namespaceURI", Some(namespace_uri), None, context);
     define_accessor(proto, "id", Some(get_id), Some(set_id), context);
     define_accessor(proto, "src", Some(get_src), Some(set_src), context);
+    define_accessor(proto, "href", Some(get_href), Some(set_href), context);
     define_accessor(
         proto,
         "className",
@@ -398,6 +399,44 @@ fn get_src(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<
 }
 fn set_src(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     attr_setter("src", this, args, context)
+}
+
+/// The `href` IDL attribute, which is the *resolved absolute* URL.
+///
+/// Deliberately not `attr_getter`. An IDL `href` is absolute by definition, and
+/// the difference is not cosmetic: `@solidjs/router` intercepts in-app anchor
+/// clicks by reading `a.href` and handing it straight to `new URL(href)` with
+/// no base argument. With no `href` accessor at all the read was `undefined`,
+/// the router declined the click before it could call `preventDefault`, and the
+/// anchor's own default action ran instead. Every in-app navigation therefore
+/// became a full document load: a new script context, a re-bootstrapped
+/// application, and every WebSocket the page was holding closed with it.
+/// Reflecting the raw attribute rather than resolving it would move the same
+/// bug one step along, into `new URL("/platform/users")`, which throws.
+///
+/// Resolution is against the document URL. A `<base>` element is not consulted
+/// yet, which is the remaining gap here.
+fn get_href(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let _ = args;
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    // Undefined rather than the empty string when the content attribute is
+    // absent. This proto is shared by every element, so a `div` reaches here
+    // too, and a `div` has no `href` in any browser.
+    let Some(attr) = read_attr(&ctx, node_id, "href") else {
+        return Ok(JsValue::undefined());
+    };
+    let doc = ctx.doc.borrow();
+    let resolved = doc
+        .url()
+        .join(&attr)
+        .map(|url| url.to_string())
+        .unwrap_or(attr);
+    Ok(js_str(&resolved))
+}
+
+fn set_href(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    attr_setter("href", this, args, context)
 }
 
 fn get_class_name(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
