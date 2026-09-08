@@ -176,6 +176,43 @@ impl ScriptRuntime {
             .module_loader(Rc::clone(&module_loader))
             .build()
             .expect("building the script context should not fail");
+        /*
+         * A call depth a real application actually reaches.
+         *
+         * Boa defaults to 512 nested calls. That is a sandbox's number, not a
+         * browser's: every engine on the web allows several thousand, and a
+         * framework spends most of them before the page's own code runs. A
+         * Solid application renders its component tree as nested calls and
+         * threads each one through the reactive graph's owner chain, so depth
+         * grows with how deeply the page is nested rather than with anything
+         * the author would recognise as recursion.
+         *
+         * Measured on support.cafe, driven headlessly: the home page renders,
+         * and following the link to `/login` throws
+         *
+         *   RuntimeLimitError: reached the maximum number of recursive calls
+         *
+         * mid-render, leaving a partial tree. Nothing in the page is
+         * recursive; the route is simply deeper than 512 frames. The failure
+         * is also silent to a person: the click is dispatched, the old page
+         * goes, and what arrives is a fragment.
+         *
+         * Both limits move, because raising one alone does nothing. The
+         * recursion count is not what a deep render runs out of first: the VM's
+         * value stack is, at roughly seven slots a frame, so the default 10240
+         * slots stop a page at about 1460 frames however high the call limit
+         * is. Measured by recursing from a page and reporting the deepest frame
+         * reached: 511 with the defaults, 1462 with only the call limit raised.
+         *
+         * The pair below reaches about 8000 frames, which is the range browsers
+         * are in, and costs 1.6 MB of value stack. They are still limits: a page
+         * that really does recurse without a base case is stopped, with the same
+         * error, before it can exhaust the machine.
+         */
+        let limits = context.runtime_limits_mut();
+        limits.set_recursion_limit(8192);
+        limits.set_stack_size_limit(1024 * 100);
+
         let ctx = DomCtx::new(doc);
         context.insert_data(ctx.clone());
         let diagnostics = Rc::new(RefCell::new(RuntimeDiagnostics::default()));
