@@ -2,7 +2,7 @@ use crate::{BaseDocument, node::GeneratedTextInputEvent, util::has_clipboard_mod
 use blitz_traits::node_id::NodeId;
 use blitz_traits::{
     SmolStr,
-    events::{BlitzInputEvent, BlitzKeyEvent, DomEvent, DomEventData},
+    events::{BlitzInputEvent, BlitzKeyEvent, BlitzSubmitEvent, DomEvent, DomEventData},
 };
 use keyboard_types::{Code, Key, Modifiers};
 use markup5ever::local_name;
@@ -144,15 +144,18 @@ impl BaseDocument {
                 self.shell_provider.request_redraw();
             }
             GeneratedTextInputEvent::Submit => {
-                // TODO: Generate submit event that can be handled by script
-                implicit_form_submission(self, node_id);
+                implicit_form_submission(self, node_id, dispatch_event);
             }
         }
     }
 }
 
 /// https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#field-that-blocks-implicit-submission
-fn implicit_form_submission(doc: &BaseDocument, text_target: NodeId) {
+fn implicit_form_submission<F: FnMut(DomEvent)>(
+    doc: &BaseDocument,
+    text_target: NodeId,
+    mut dispatch_event: F,
+) {
     let Some(form_owner_id) = doc.controls_to_form.get(&text_target) else {
         return;
     };
@@ -186,7 +189,16 @@ fn implicit_form_submission(doc: &BaseDocument, text_target: NodeId) {
         return;
     }
 
-    doc.submit_form(*form_owner_id, *form_owner_id);
+    // Dispatched rather than submitted, for the same reason a button press is:
+    // pressing Enter in the only text field of a form is a submission a page
+    // handles, and a default action nothing can cancel is not one.
+    dispatch_event(DomEvent::new(
+        *form_owner_id,
+        DomEventData::Submit(BlitzSubmitEvent {
+            form: (*form_owner_id).as_u64(),
+            submitter: (*form_owner_id).as_u64(),
+        }),
+    ));
 }
 
 /// The Copy chord has to be recognised however the platform reports it.
