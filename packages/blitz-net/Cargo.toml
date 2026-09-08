@@ -54,7 +54,19 @@ blitz-traits = { workspace = true }
 
 # Networking dependencies
 tokio = { workspace = true, features = ["sync", "time"] }
-reqwest = { workspace = true, features = ["charset", "native-tls", "form"] }
+# rustls, not native-tls, and this is not a preference.
+#
+# Every endpoint-libs backend in the fleet is TLS 1.3 only, and macOS
+# native-tls offers a TLS 1.2 ClientHello with no `supported_versions`
+# extension, so the handshake is refused before a byte of HTTP. The server
+# says so plainly: `peer is incompatible: SupportedVersionsExtensionRequired`.
+# A browser that cannot reach the sites it is meant to render is not a browser.
+#
+# `rustls` here also brings `rustls-platform-verifier`, so the trust anchors
+# are the operating system's rather than a bundle compiled in. That is what a
+# browser should do: a certificate the user's machine trusts, including one an
+# employer installed, is one this engine trusts too.
+reqwest = { workspace = true, features = ["charset", "rustls", "form"] }
 data-url = { workspace = true }
 
 # Caching
@@ -72,7 +84,7 @@ tracing = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
-reqwest = { workspace = true, features = ["native-tls-vendored"] }
+reqwest = { workspace = true, features = ["rustls"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = { workspace = true }
