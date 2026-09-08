@@ -67,6 +67,57 @@ pub(crate) fn sync_node_listener_callbacks(
     }
 }
 
+/// Keep a connected node's wrapper alive while it carries an `on<event>`
+/// handler.
+///
+/// The wrapper cache is weak and an `on<event>` handler is an ordinary property
+/// of the wrapper, so a page that writes `el.onload = ...` and then drops its
+/// own reference to the element loses the handler to the collector while the
+/// element is still in the document. In a browser the element owns that
+/// property and the document owns the element, so it lives as long as the
+/// element does.
+///
+/// Every CDN loader has this shape: create a script, set `onload`, append it,
+/// return, and wait on the promise the handler resolves. nofilter.io's does,
+/// and the handler was collected during the second it took to fetch a 1.8MB
+/// bundle, so the promise never settled, the loader never removed
+/// `body{display:none}`, and the site read as one that renders nothing. The
+/// bundle had run and built 568 nodes by then; only the acknowledgement was
+/// lost.
+pub(crate) fn root_inline_event_handlers(
+    ctx: &crate::state::DomCtx,
+    node_id: NodeId,
+    context: &mut Context,
+) {
+    if !node_is_connected(ctx, node_id) {
+        return;
+    }
+    let Some(wrapper) = ctx
+        .state
+        .borrow()
+        .node_wrappers
+        .get(&node_id)
+        .and_then(|wrapper| wrapper.upgrade())
+    else {
+        return;
+    };
+    // The handler is stored on the instance under a hidden key by the
+    // `on<event>` accessor, so this asks whether the page assigned one rather
+    // than whether the prototype defines the name.
+    let carries_handler = super::ON_EVENT_TYPES.iter().any(|event_type| {
+        let key = format!("{}{event_type}", super::ON_HANDLER_PREFIX);
+        wrapper
+            .has_own_property(boa_engine::JsString::from(key.as_str()), context)
+            .unwrap_or(false)
+    });
+    if carries_handler {
+        ctx.state
+            .borrow_mut()
+            .listener_wrappers
+            .insert(node_id, wrapper);
+    }
+}
+
 /// Move listener ownership wholly into Boa before native removal. Every extant
 /// wrapper in the subtree points at one wrapper group, so holding any node
 /// preserves all descendant listeners while an unreachable subtree remains a
@@ -430,6 +481,7 @@ fn append_child(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsRe
     drop(mutr);
     drop(doc);
     super::mark_node_reattached(&ctx, child_id);
+    root_inline_event_handlers(&ctx, child_id, context);
 
     // An element created after its class was defined is upgraded on insertion,
     // which is also when `connectedCallback` is due. Without this only the
@@ -475,6 +527,7 @@ fn append(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<J
         drop(mutr);
         drop(doc);
         super::mark_node_reattached(&ctx, child_id);
+        root_inline_event_handlers(&ctx, child_id, context);
         super::custom_elements::upgrade_if_defined(&ctx, child_id, context)?;
     }
     Ok(JsValue::undefined())
@@ -504,6 +557,7 @@ fn prepend(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<
         drop(mutr);
         drop(doc);
         super::mark_node_reattached(&ctx, child_id);
+        root_inline_event_handlers(&ctx, child_id, context);
     }
     Ok(JsValue::undefined())
 }
@@ -561,6 +615,7 @@ fn insert_before(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
     drop(mutr);
     drop(doc);
     super::mark_node_reattached(&ctx, new_id);
+    root_inline_event_handlers(&ctx, new_id, context);
     Ok(args[0].clone())
 }
 
@@ -592,6 +647,7 @@ fn replace_child(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
         drop(mutr);
         drop(doc);
         super::mark_node_reattached(&ctx, new_id);
+        root_inline_event_handlers(&ctx, new_id, context);
         super::remove_and_free_node(&ctx, old_id, context);
     }
     Ok(args[1].clone())

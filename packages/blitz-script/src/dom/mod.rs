@@ -414,8 +414,92 @@ pub(crate) const ON_EVENT_TYPES: &[&str] = &[
     "submit",
     "scroll",
     "wheel",
+    "error",
     "load",
 ];
+
+/// Where an `on<event>` handler is actually stored on the instance.
+pub(crate) const ON_HANDLER_PREFIX: &str = "__blitz_internal_on_";
+
+/// Define `on<event>` as an accessor rather than as a plain `null` property.
+///
+/// The handler is kept on the instance under a hidden key, and assigning one
+/// roots the wrapper for as long as the node is in the document. A data
+/// property cannot do the second half: nothing observes the write, so the only
+/// thing keeping the handler alive was the page's own reference to the element.
+/// The wrapper cache is weak, so a page that creates an element, wires it up and
+/// drops it lost the handler to the collector while the element was still in the
+/// tree. Reading is unchanged: `el.onclick` answers with what was assigned, or
+/// `null`, and `'onclick' in el` is still true.
+fn define_on_event_accessor(proto: &JsObject, event_type: &'static str, context: &mut Context) {
+    // The event name is captured as the `'static` string it already is, so
+    // both closures stay `Copy` and need no unsafe constructor. Building the
+    // key costs one small allocation, on a path taken when a handler is read
+    // or written rather than once per frame.
+    let getter = FunctionObjectBuilder::new(
+        context.realm(),
+        NativeFunction::from_copy_closure(move |this, _args, context| {
+            let Some(object) = this.as_object() else {
+                return Ok(JsValue::null());
+            };
+            let stored = object.get(
+                JsString::from(format!("{ON_HANDLER_PREFIX}{event_type}")),
+                context,
+            )?;
+            Ok(if stored.is_undefined() {
+                JsValue::null()
+            } else {
+                stored
+            })
+        }),
+    )
+    .name(JsString::from(format!("get on{event_type}")))
+    .length(0)
+    .build();
+
+    let setter = FunctionObjectBuilder::new(
+        context.realm(),
+        NativeFunction::from_copy_closure(move |this, args, context| {
+            let Some(object) = this.as_object() else {
+                return Ok(JsValue::undefined());
+            };
+            let value = args.first().cloned().unwrap_or(JsValue::null());
+            define_value(
+                &object,
+                &format!("{ON_HANDLER_PREFIX}{event_type}"),
+                value,
+                context,
+            );
+            // A handler on a node already in the document has to outlive the
+            // reference the page is about to drop. One assigned before
+            // insertion is rooted by the insertion instead: rooting a detached
+            // node here would keep alive exactly what the weak cache exists to
+            // release.
+            if let Ok(ctx) = dom_ctx(context)
+                && let Some(node_id) = node_id_of_value(this)
+            {
+                crate::dom::node::root_inline_event_handlers(&ctx, node_id, context);
+            }
+            Ok(JsValue::undefined())
+        }),
+    )
+    .name(JsString::from(format!("set on{event_type}")))
+    .length(1)
+    .build();
+
+    proto
+        .define_property_or_throw(
+            PropertyKey::from(JsString::from(format!("on{event_type}"))),
+            PropertyDescriptor::builder()
+                .get(getter)
+                .set(setter)
+                .enumerable(false)
+                .configurable(true)
+                .build(),
+            context,
+        )
+        .expect("failed to define an on<event> accessor");
+}
 
 /// Initialise the DOM prototype objects and store them in the runtime state
 pub(crate) fn init_protos(ctx: &DomCtx, context: &mut Context) {
@@ -426,12 +510,7 @@ pub(crate) fn init_protos(ctx: &DomCtx, context: &mut Context) {
 
     // `on<event>` IDL-style properties (default null)
     for event_type in ON_EVENT_TYPES {
-        define_value(
-            &node_proto,
-            &format!("on{event_type}"),
-            JsValue::null(),
-            context,
-        );
+        define_on_event_accessor(&node_proto, event_type, context);
     }
 
     let element_proto = JsObject::with_object_proto(context.intrinsics());
