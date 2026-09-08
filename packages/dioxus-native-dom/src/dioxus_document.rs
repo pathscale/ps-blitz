@@ -349,6 +349,10 @@ impl EventHandler for DioxusEventHandler<'_> {
 
             // AppleStandardKeybinding events are not exposed to script
             DomEventData::AppleStandardKeybinding(_) => None,
+            // Dioxus has no matching event payload for a submission, and the
+            // default action still runs, so a component that wants one listens
+            // for the click on its button.
+            DomEventData::Submit(_) => None,
         };
 
         let Some(event_data) = event_data else {

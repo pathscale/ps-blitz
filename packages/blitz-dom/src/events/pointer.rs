@@ -5,8 +5,8 @@ use web_time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use blitz_traits::{
     events::{
-        BlitzInputEvent, BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, BlitzWheelEvent,
-        DomEvent, DomEventData, MouseEventButton, MouseEventButtons,
+        BlitzInputEvent, BlitzPointerEvent, BlitzPointerId, BlitzSubmitEvent, BlitzWheelDelta,
+        BlitzWheelEvent, DomEvent, DomEventData, MouseEventButton, MouseEventButtons,
     },
     navigation::NavigationOptions,
 };
@@ -802,8 +802,23 @@ pub(crate) fn handle_click(
                 local_name!("input") | local_name!("button")
                     if el.is_submit_button() || el.attr(local_name!("type")) == Some("submit") =>
                 {
-                    if let Some(form_owner) = doc.controls_to_form.get(&node_id) {
-                        doc.submit_form(*form_owner, node_id);
+                    // Dispatched, not submitted.
+                    //
+                    // Submitting here made the navigation a default action
+                    // nothing could see or stop: no `submit` event ever
+                    // reached script, so every framework form called
+                    // `preventDefault` on an event that was never fired and
+                    // the page navigated anyway. Measured on a page whose
+                    // handler prevents the default: it still left for the
+                    // action URL with the fields in the query string.
+                    if let Some(form_owner) = doc.controls_to_form.get(&node_id).copied() {
+                        dispatch_event(DomEvent::new(
+                            form_owner,
+                            DomEventData::Submit(BlitzSubmitEvent {
+                                form: form_owner.as_u64(),
+                                submitter: node_id.as_u64(),
+                            }),
+                        ));
                     }
                 }
                 #[cfg(feature = "file-input")]

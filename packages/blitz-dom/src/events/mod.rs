@@ -39,6 +39,9 @@ fn map_dom_event_to_ui_event(
             adjust_coords_for_subdocument(&mut event.coords, node_offset, viewport_scroll);
             Some(UiEvent::PointerMove(event))
         }
+        // A submission belongs to the document that owns the form, so there is
+        // nothing to forward into a sub-document.
+        DomEventData::Submit(_) => None,
         DomEventData::PointerDown(mut event) => {
             adjust_coords_for_subdocument(&mut event.coords, node_offset, viewport_scroll);
             Some(UiEvent::PointerDown(event))
@@ -209,6 +212,17 @@ pub(crate) fn handle_dom_event<F: FnMut(DomEvent)>(
         }
         DomEventData::Click(event) => {
             handle_click(doc, target_node_id, event, &mut dispatch_event);
+        }
+        // The default action of a submit event that nothing cancelled.
+        //
+        // Split from the press that caused it so a page gets its say in
+        // between: the button press dispatches this, every listener runs, and
+        // the form is only submitted if none of them prevented it.
+        DomEventData::Submit(submit) => {
+            doc.submit_form(
+                blitz_traits::node_id::NodeId::from_u64(submit.form),
+                blitz_traits::node_id::NodeId::from_u64(submit.submitter),
+            );
         }
         DomEventData::KeyDown(event) => {
             // Keyboard scrolling, before the text-input handling below claims

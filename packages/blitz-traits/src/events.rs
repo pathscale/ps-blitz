@@ -152,6 +152,8 @@ pub enum DomEventKind {
     FocusIn,
     FocusOut,
 
+    Submit,
+
     AppleStandardKeybinding,
 }
 impl DomEventKind {
@@ -250,6 +252,15 @@ pub enum DomEventData {
     FocusIn(BlitzFocusEvent),
     FocusOut(BlitzFocusEvent),
 
+    /// A form is about to be submitted.
+    ///
+    /// Dispatched before the submission itself, and cancelable, which is the
+    /// whole point: a single-page application handles its own forms and calls
+    /// `preventDefault`. Without this event the submission was a default
+    /// action nothing could see or stop, so every framework form in every
+    /// application navigated the page instead of running its handler.
+    Submit(BlitzSubmitEvent),
+
     AppleStandardKeybinding(SmolStr),
 }
 impl DomEventData {
@@ -305,6 +316,8 @@ impl DomEventData {
             Self::FocusIn { .. } => "focusin",
             Self::FocusOut { .. } => "focusout",
 
+            Self::Submit { .. } => "submit",
+
             Self::AppleStandardKeybinding { .. } => "applekeybinding",
         }
     }
@@ -350,6 +363,7 @@ impl DomEventData {
             Self::Blur { .. } => DomEventKind::Blur,
             Self::FocusIn { .. } => DomEventKind::FocusIn,
             Self::FocusOut { .. } => DomEventKind::FocusOut,
+            Self::Submit { .. } => DomEventKind::Submit,
 
             Self::AppleStandardKeybinding { .. } => DomEventKind::AppleStandardKeybinding,
         }
@@ -397,6 +411,11 @@ impl DomEventData {
             Self::FocusIn { .. } => false,
             Self::FocusOut { .. } => false,
 
+            // Bubbles, the way a browser dispatches it: a framework attaches
+            // its handler to the form, and a delegating one attaches to the
+            // document.
+            Self::Submit { .. } => true,
+
             Self::AppleStandardKeybinding { .. } => true,
         }
     }
@@ -442,6 +461,9 @@ impl DomEventData {
             Self::Blur { .. } => false,
             Self::FocusIn { .. } => true,
             Self::FocusOut { .. } => true,
+
+            // Cancelable, which is the entire reason the event exists.
+            Self::Submit { .. } => true,
 
             Self::AppleStandardKeybinding { .. } => false,
         }
@@ -763,6 +785,20 @@ pub struct BlitzInputEvent {
 
 #[derive(Clone, Debug)]
 pub struct BlitzFocusEvent;
+
+/// A form submission, before it happens.
+///
+/// Carries the control that triggered it, because that is what a handler
+/// reads to tell one submit button from another, and what the submission
+/// itself needs in order to include the submitter's own name and value.
+#[derive(Clone, Debug)]
+pub struct BlitzSubmitEvent {
+    /// The form being submitted.
+    pub form: u64,
+    /// The control that triggered it. Equal to the form when the submission
+    /// came from a key press rather than from a button.
+    pub submitter: u64,
+}
 
 /// Copy of Winit IME event to avoid lower-level Blitz crates depending on winit
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
