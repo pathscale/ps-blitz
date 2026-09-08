@@ -1816,3 +1816,45 @@ fn an_appended_script_with_a_src_is_fetched_and_reports_load() {
         "the loader waits on this event before it will show the page"
     );
 }
+
+#[test]
+fn anchor_href_is_the_resolved_absolute_url() {
+    // The IDL `href`, not the content attribute. `@solidjs/router` intercepts
+    // in-app anchor clicks by reading `a.href` and passing it to `new URL(href)`
+    // with no base argument, so a value that is missing or merely relative makes
+    // the router decline the click and the anchor's default action run: every
+    // in-app navigation becomes a full document load, and the page loses its
+    // script context and every socket it held. A relative reflection would pass
+    // an `href !== undefined` assertion and still fail `new URL`, which is why
+    // this asserts the resolved value and constructs a URL from it.
+    let mut doc = ScriptDocument::from_html(
+        r#"
+        <html><body>
+            <a id="rel" href="/platform/all-users">users</a>
+            <a id="abs" href="https://example.test/x">x</a>
+            <a id="bare">no href</a>
+            <div id="plain"></div>
+            <div id="out"></div>
+            <script>
+                const rel = document.getElementById("rel").href;
+                const abs = document.getElementById("abs").href;
+                const bare = document.getElementById("bare").href;
+                const plain = document.getElementById("plain").href;
+                // The construction the router actually performs.
+                const parsed = new URL(rel).pathname;
+                document.getElementById("out").textContent =
+                    [rel, abs, bare === undefined, plain === undefined, parsed].join("|");
+            </script>
+        </body></html>
+        "#,
+        DocumentConfig {
+            base_url: Some("https://app.test/login".into()),
+            ..DocumentConfig::default()
+        },
+    );
+    doc.execute_scripts();
+    assert_eq!(
+        text_of_selector(&doc, "#out"),
+        "https://app.test/platform/all-users|https://example.test/x|true|true|/platform/all-users"
+    );
+}
