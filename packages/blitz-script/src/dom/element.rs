@@ -141,6 +141,30 @@ pub(crate) fn init_element_proto(proto: &JsObject, context: &mut Context) {
         context,
     );
     define_method(proto, "hasPointerCapture", 1, has_pointer_capture, context);
+    define_method(proto, "getContext", 1, get_context, context);
+}
+
+/// `canvas.getContext(...)`, which always answers "not this one".
+///
+/// The engine draws no canvas, and the honest way to say so is the one the
+/// specification already defines: `getContext` returns null when the context
+/// identifier names something the implementation does not support. Code that
+/// asks for a context is written to expect that answer, because a browser
+/// gives it whenever WebGL is unavailable.
+///
+/// The method missing entirely is what a page cannot survive.
+/// `@pathscale/ui`'s metal-border effect calls `getContext("webgl")` during
+/// render, so on every page carrying that component the call threw
+/// `TypeError: not a callable function`, and under Solid 2 an error with no
+/// boundary above it halts the reactive system for the whole application:
+/// consulting.parcle.ai rendered once and then answered nothing.
+///
+/// One prototype backs every element here, so this is reachable on a `<div>`
+/// as well. That is the cost of the shared prototype rather than a decision;
+/// it answers null there too, which is the closest a shared prototype gets to
+/// a method that only canvases have.
+fn get_context(_: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+    Ok(JsValue::null())
 }
 
 fn pointer_id_arg(args: &[JsValue], context: &mut Context) -> JsResult<u64> {
