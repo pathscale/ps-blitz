@@ -255,6 +255,21 @@ pub struct BaseDocument {
     /// paints beneath every background between them and disappears.
     pub(crate) hoisted_fixed_parents: HashMap<NodeId, NodeId>,
 
+    /// Every `position: fixed` node whose containing block is the viewport,
+    /// which is every one of them except those under a transformed ancestor.
+    ///
+    /// Collected by the walk that hoists them, and used by
+    /// `resolve_fixed_positions` to hold them still while the page scrolls.
+    pub(crate) fixed_nodes: Vec<NodeId>,
+
+    /// The viewport scroll currently baked into those nodes' locations.
+    ///
+    /// One value for the whole document rather than one per node: the pin is
+    /// the same displacement for every fixed box, because they all share the
+    /// viewport as their containing block. Reset by `resolve_layout`, which
+    /// rewrites the locations it was added to.
+    pub(crate) fixed_scroll_offset: crate::Point<f64>,
+
     /// Every `position: sticky` node in the document, in tree order.
     ///
     /// Collected by the same walk that hoists fixed nodes, because both need
@@ -549,6 +564,8 @@ impl BaseDocument {
 
         let mut doc = Self {
             hoisted_fixed_parents: HashMap::new(),
+            fixed_nodes: Vec::new(),
+            fixed_scroll_offset: crate::Point::ZERO,
             sticky_nodes: Vec::new(),
             sticky_offsets: HashMap::new(),
             hoisted_clip_hosts: Vec::new(),
@@ -2828,9 +2845,11 @@ impl BaseDocument {
         let has_changed = self.viewport_scroll != initial;
         if has_changed {
             // The viewport is the scrollport a page-level sticky box is held
-            // against, so its boxes move with this and not with the next
-            // relayout. See `resolve_sticky_positions`.
+            // against, and the containing block a fixed box is pinned to, so
+            // both move with this and not with the next relayout. See
+            // `resolve_sticky_positions` and `resolve_fixed_positions`.
             self.resolve_sticky_positions();
+            self.resolve_fixed_positions();
         }
         has_changed
     }

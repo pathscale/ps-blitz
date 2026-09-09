@@ -291,6 +291,7 @@ impl BaseDocument {
         #[cfg(target_arch = "wasm32")]
         self.resolve_layout();
         self.resolve_sticky_positions();
+        self.resolve_fixed_positions();
         self.resolve_hoisted_positions();
         self.correct_hoisted_fixed_positions();
         self.resolve_hoisted_clips();
@@ -313,6 +314,7 @@ impl BaseDocument {
             self.flush_styles_to_layout(root_node_id);
             self.resolve_layout();
             self.resolve_sticky_positions();
+            self.resolve_fixed_positions();
             self.resolve_hoisted_positions();
             self.correct_hoisted_fixed_positions();
             self.resolve_hoisted_clips();
@@ -699,6 +701,7 @@ impl BaseDocument {
         let mut sticky: Vec<NodeId> = Vec::new();
         collect_fixed(self, root_id, false, &mut hoisted, &mut sticky);
         self.sticky_nodes = sticky;
+        self.fixed_nodes = hoisted.clone();
 
         // Drop nodes that are no longer fixed, and keep the rest.
         //
@@ -798,6 +801,45 @@ impl BaseDocument {
                 || !matches!(box_styles.rotate, Rotate::None)
                 || !matches!(box_styles.scale, Scale::None)
         }
+    }
+
+    /// Hold every viewport-anchored `position: fixed` box still while the page
+    /// scrolls under it.
+    ///
+    /// Paint translates the whole tree by the negated viewport scroll, and a
+    /// hoisted fixed layer is in that tree like everything else, so a fixed box
+    /// held its document position and left the screen exactly like flow
+    /// content: an overlay authored `top: 0` painted at screen y=-800 on a page
+    /// scrolled 800px down. Its document position has to track the scroll for
+    /// its screen position to hold still, which is the whole of the correction.
+    ///
+    /// Boxes under a transformed ancestor are left alone: that ancestor is
+    /// their containing block, so they are not viewport-anchored at all and
+    /// `hoist_fixed_position_nodes` does not collect them.
+    ///
+    /// This does not give a fixed box the containing block CSS asks for. That
+    /// is still the root element, which takes its height from its content, so
+    /// `bottom` and `inset` resolve against the document rather than against a
+    /// viewport-sized initial containing block. Closing that needs an ICB node
+    /// distinct from the root element, which `fixed_position.rs` records as an
+    /// ignored test.
+    pub(crate) fn resolve_fixed_positions(&mut self) {
+        let scroll = self.viewport_scroll;
+        if scroll == self.fixed_scroll_offset {
+            return;
+        }
+        let delta_x = (scroll.x - self.fixed_scroll_offset.x) as f32;
+        let delta_y = (scroll.y - self.fixed_scroll_offset.y) as f32;
+
+        for &node_id in self.fixed_nodes.iter() {
+            let Some(node) = self.nodes.get_mut(node_id) else {
+                continue;
+            };
+            let location = &mut node.final_layout_mut().location;
+            location.x += delta_x;
+            location.y += delta_y;
+        }
+        self.fixed_scroll_offset = scroll;
     }
 
     /// Hold every `position: sticky` box against the edge of its scrollport.
@@ -1302,10 +1344,12 @@ impl BaseDocument {
         taffy::round_layout(self, root_element_id);
 
         // Rounding rewrites every location from taffy's own output, discarding
-        // the sticky displacements written into them along with everything
-        // else. Forgetting them here is what keeps `resolve_sticky_positions`
-        // able to treat the map as "what is currently baked into a box".
+        // the sticky and fixed displacements written into them along with
+        // everything else. Forgetting them here is what keeps
+        // `resolve_sticky_positions` and `resolve_fixed_positions` able to
+        // treat what they hold as "what is currently baked into a box".
         self.sticky_offsets.clear();
+        self.fixed_scroll_offset = crate::Point::ZERO;
 
         // Table rows and row groups are flattened into a grid of cells and
         // never reach Taffy, so nothing wrote a layout for them at all. Describe
