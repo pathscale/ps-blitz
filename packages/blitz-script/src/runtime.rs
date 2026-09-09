@@ -1498,8 +1498,49 @@ fn build_location(base_url: Option<&Url>, context: &mut Context) -> JsValue {
             Attribute::all(),
         )
         .property(js_string!("hash"), JsString::from(hash), Attribute::all())
+        // `assign`, `replace` and `reload`. Without them `location` was a plain
+        // data object, so a page calling any of the three threw a TypeError out
+        // of whatever ran it. All three go through the document's navigation
+        // provider, which is where a link click goes.
+        .function(
+            NativeFunction::from_fn_ptr(location_assign),
+            js_string!("assign"),
+            1,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(location_assign),
+            js_string!("replace"),
+            1,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(location_reload),
+            js_string!("reload"),
+            0,
+        )
         .build()
         .into()
+}
+
+/// Serves both `assign` and `replace`. They differ only in whether the current
+/// entry is kept in the session history, and this runtime's history is a
+/// script-level shim that a real navigation replaces wholesale either way.
+fn location_assign(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let url = crate::dom::to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
+    if !ctx.doc.borrow().navigate_to_url(&url) {
+        return Err(JsNativeError::typ()
+            .with_message(format!("{url} is not a valid URL"))
+            .into());
+    }
+    Ok(JsValue::undefined())
+}
+
+fn location_reload(_: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let doc = ctx.doc.borrow();
+    let current = doc.current_url();
+    doc.navigate_to_url(&current);
+    Ok(JsValue::undefined())
 }
 
 fn window_inner_width(_: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
