@@ -859,6 +859,29 @@ impl BaseDocument {
                 continue;
             };
 
+            // A stacking context is assembled during a style flush and then
+            // outlives it. `flush_styles_to_layout` returns early on a
+            // `display: none` subtree, so a host hidden after its list was
+            // built never rebuilds that list, while this pass walks every node
+            // that has a context, hidden or not. Removing one of the listed
+            // children left a freed key behind, and the next resolve panicked
+            // with "invalid SlotMap key used" rather than painting one frame
+            // stale. Prune here, where the whole list is already in hand.
+            if context
+                .children
+                .iter()
+                .any(|child| !self.nodes.contains_key(child.node_id))
+            {
+                context
+                    .children
+                    .retain(|child| self.nodes.contains_key(child.node_id));
+                context.negative_z_count = context
+                    .children
+                    .iter()
+                    .take_while(|child| child.z_index < 0)
+                    .count() as u32;
+            }
+
             for child in context.children.iter_mut() {
                 let node = &self.nodes[child.node_id];
                 if node
