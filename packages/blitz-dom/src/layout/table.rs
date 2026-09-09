@@ -29,6 +29,7 @@ pub struct TableContext {
     pub style: taffy::Style<Atom>,
     pub cells: Vec<TableCell>,
     pub rows: Vec<TableRow>,
+    pub row_groups: Vec<TableRowGroup>,
     pub computed_grid_info: AtomicRefCell<Option<DetailedGridInfo>>,
     pub border_style: Option<ServoArc<Border>>,
     pub border_collapse: BorderCollapse,
@@ -52,6 +53,21 @@ pub struct TableRow {
     // kind: TableItemKind,
     pub node_id: NodeId,
     pub height: f32,
+    /// Where this row's cells sit in [`TableContext::cells`].
+    ///
+    /// Rows are flattened away into the grid, so nothing else records which
+    /// cells belong to which row, and without that a row cannot be given the
+    /// box its cells occupy. It reported 0x0 and "not displayed", and anything
+    /// walking a table by row had nothing to walk.
+    pub cells: Range<usize>,
+}
+
+/// A `<thead>`, `<tbody>` or `<tfoot>`, and the rows it holds.
+#[derive(Debug, Clone)]
+pub struct TableRowGroup {
+    pub node_id: NodeId,
+    /// Where this group's rows sit in [`TableContext::rows`].
+    pub rows: Range<usize>,
 }
 
 pub(crate) fn build_table_context(
@@ -60,6 +76,7 @@ pub(crate) fn build_table_context(
 ) -> (TableContext, Vec<NodeId>) {
     let mut cells: Vec<TableCell> = Vec::new();
     let mut rows: Vec<TableRow> = Vec::new();
+    let mut row_groups: Vec<TableRowGroup> = Vec::new();
     let mut row = 0u16;
     let mut col = 0u16;
 
@@ -104,6 +121,7 @@ pub(crate) fn build_table_context(
             &mut col,
             &mut cells,
             &mut rows,
+            &mut row_groups,
             &mut column_sizes,
             &mut first_cell_border,
         );
@@ -170,6 +188,7 @@ pub(crate) fn build_table_context(
             style,
             cells,
             rows,
+            row_groups,
             computed_grid_info: AtomicRefCell::new(None),
             border_collapse,
             border_style: first_cell_border,
@@ -188,6 +207,7 @@ pub(crate) fn collect_table_cells(
     col: &mut u16,
     cells: &mut Vec<TableCell>,
     rows: &mut Vec<TableRow>,
+    row_groups: &mut Vec<TableRowGroup>,
     columns: &mut Vec<TrackSizingFunction>,
     first_cell_border: &mut Option<ServoArc<Border>>,
 ) {
@@ -213,6 +233,8 @@ pub(crate) fn collect_table_cells(
         | DisplayInside::TableHeaderGroup
         | DisplayInside::TableFooterGroup
         | DisplayInside::Contents => {
+            let is_row_group = !matches!(display.inside(), DisplayInside::Contents);
+            let first_row = rows.len();
             let children = std::mem::take(&mut doc.nodes[node_id].children);
             for child_id in children.iter().copied() {
                 doc.nodes[child_id]
@@ -226,20 +248,30 @@ pub(crate) fn collect_table_cells(
                     col,
                     cells,
                     rows,
+                    row_groups,
                     columns,
                     first_cell_border,
                 );
             }
             doc.nodes[node_id].children = children;
+            if is_row_group {
+                row_groups.push(TableRowGroup {
+                    node_id,
+                    rows: first_row..rows.len(),
+                });
+            }
         }
         DisplayInside::TableRow => {
             node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
             *row += 1;
             *col = 0;
 
+            let row_index = rows.len();
+            let first_cell = cells.len();
             rows.push(TableRow {
                 node_id,
                 height: 0.0,
+                cells: first_cell..first_cell,
             });
 
             let children = std::mem::take(&mut doc.nodes[node_id].children);
@@ -253,11 +285,13 @@ pub(crate) fn collect_table_cells(
                     col,
                     cells,
                     rows,
+                    row_groups,
                     columns,
                     first_cell_border,
                 );
             }
             doc.nodes[node_id].children = children;
+            rows[row_index].cells = first_cell..cells.len();
         }
         DisplayInside::TableCell => {
             // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
@@ -353,6 +387,107 @@ pub(crate) fn collect_table_cells(
             // Ignore
         }
     }
+}
+
+/// Give every `<tr>` and every row group the box its cells occupy.
+///
+/// Table layout flattens the rows into a grid of cells, so the row and
+/// row-group nodes never reach Taffy and nothing ever wrote a layout for them:
+/// each one reported 0x0 and, to anything asking whether an element is
+/// displayed, "no". A row is not laid out, it is described, so this runs after
+/// the grid is computed and derives each box from the cells that are.
+///
+/// Rounded and unrounded are both written. The rounding pass walks the box
+/// tree, and these nodes are not in it, so a value left only in the unrounded
+/// slot would never reach `final_layout`, which is what every geometry query
+/// reads.
+impl BaseDocument {
+    pub(crate) fn assign_table_row_layouts(&mut self) {
+        let contexts: Vec<Arc<TableContext>> = self
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.flags.is_table_root())
+            .filter_map(
+                |(_, node)| match &node.data.downcast_element()?.special_data {
+                    crate::node::SpecialElementData::TableRoot(context) => {
+                        Some(Arc::clone(context))
+                    }
+                    _ => None,
+                },
+            )
+            .collect();
+        for context in contexts {
+            assign_row_layouts(self, &context);
+        }
+    }
+}
+
+pub(crate) fn assign_row_layouts(doc: &mut BaseDocument, ctx: &TableContext) {
+    if ctx.rows.is_empty() {
+        return;
+    }
+
+    // The grid's own extent, so that a row spans the table rather than only the
+    // cells that happen to be in it. A row with a colspan short of the full
+    // width is still as wide as the table.
+    let mut left = f32::MAX;
+    let mut right = f32::MIN;
+    for cell in &ctx.cells {
+        let Some(node) = doc.nodes.get(cell.node_id) else {
+            continue;
+        };
+        let layout = node.final_layout();
+        left = left.min(layout.location.x);
+        right = right.max(layout.location.x + layout.size.width);
+    }
+    if left > right {
+        return;
+    }
+
+    let mut row_extents: Vec<Option<(f32, f32)>> = Vec::with_capacity(ctx.rows.len());
+    for row in &ctx.rows {
+        let mut top = f32::MAX;
+        let mut bottom = f32::MIN;
+        for cell in &ctx.cells[row.cells.clone()] {
+            let Some(node) = doc.nodes.get(cell.node_id) else {
+                continue;
+            };
+            let layout = node.final_layout();
+            top = top.min(layout.location.y);
+            bottom = bottom.max(layout.location.y + layout.size.height);
+        }
+        if top > bottom {
+            row_extents.push(None);
+            continue;
+        }
+        row_extents.push(Some((top, bottom)));
+        write_box(doc, row.node_id, left, top, right - left, bottom - top);
+    }
+
+    for group in &ctx.row_groups {
+        let mut top = f32::MAX;
+        let mut bottom = f32::MIN;
+        for extent in row_extents[group.rows.clone()].iter().flatten() {
+            top = top.min(extent.0);
+            bottom = bottom.max(extent.1);
+        }
+        if top > bottom {
+            continue;
+        }
+        write_box(doc, group.node_id, left, top, right - left, bottom - top);
+    }
+}
+
+fn write_box(doc: &mut BaseDocument, node_id: NodeId, x: f32, y: f32, width: f32, height: f32) {
+    let Some(node) = doc.nodes.get_mut(node_id) else {
+        return;
+    };
+    let mut layout = taffy::Layout::with_order(node.final_layout().order);
+    layout.location = taffy::Point { x, y };
+    layout.size = taffy::Size { width, height };
+    layout.content_size = layout.size;
+    *node.unrounded_layout_mut() = layout;
+    *node.final_layout_mut() = layout;
 }
 
 pub struct RangeIter(Range<usize>);
