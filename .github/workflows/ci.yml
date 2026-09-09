@@ -387,13 +387,21 @@ jobs:
         with:
           repository: pathscale/ps-observability
           path: .ps-observability
-      # Both binaries from the same checkout, rather than `cargo install ps-qa`.
-      # The harness and the host move together, and installing one while
-      # building the other makes this job depend on a release of the harness as
-      # well as on the checkout, so a change to either has to be published
-      # before it can be used here.
+      # The host moved. `qa-inspect-host` lived in ps-observability and was
+      # deleted there in "refactor: delete qa-inspect-host, so there is one
+      # headless browser"; `chuzz-headless` replaced it, and it lives here.
+      - uses: actions/checkout@v5
+        with:
+          repository: pathscale/chuzz
+          path: .chuzz
+      # ps-qa from the ps-observability checkout, rather than `cargo install
+      # ps-qa`. The harness and the fixtures move together, and installing it
+      # while building the host would make this job depend on a release of the
+      # harness as well as on the checkout, so a change to either would have to
+      # be published before it could be used here.
       - name: Drive the fixtures with ps-qa
         env:
           PS_OBSERVABILITY: .ps-observability
+          CHUZZ: .chuzz
           QA_BUILD_PS_QA: "1"
         run: tests/qa/run.sh

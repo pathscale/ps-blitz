@@ -41,25 +41,66 @@ fi
 
 # A checkout of the host's repository. `QA_HOST` skips the build entirely, for
 # someone iterating on the host and the fixtures together.
+#
+# The host is `chuzz-headless`, from the chuzz repository. It used to be
+# `qa-inspect-host` in ps-observability, which that repository deleted in
+# "refactor: delete qa-inspect-host, so there is one headless browser". This
+# job kept building it and failed with
+#
+#   error: package ID specification `qa-inspect-host` did not match any packages
+#
+# on every run after that, master included: master's last green run predates
+# the deletion by forty minutes, so it looked fine only because nothing had
+# rebuilt it.
 host="${QA_HOST:-}"
 if [ -z "$host" ]; then
-  observability="${PS_OBSERVABILITY:-$ROOT/../ps-observability}"
-  if [ ! -d "$observability" ]; then
-    echo "no ps-observability checkout at $observability" >&2
-    echo "  set PS_OBSERVABILITY, or QA_HOST to a prebuilt qa-inspect-host" >&2
+  chuzz="${CHUZZ:-$ROOT/../chuzz}"
+  if [ ! -d "$chuzz" ]; then
+    echo "no chuzz checkout at $chuzz" >&2
+    echo "  set CHUZZ, or QA_HOST to a prebuilt chuzz-headless" >&2
     exit 1
   fi
-  echo "building qa-inspect-host against $PACKAGES"
-  ( cd "$observability" && cargo build --release -p qa-inspect-host \
-      --config "patch.crates-io.ps-blitz-dom.path='$PACKAGES/blitz-dom'" \
-      --config "patch.crates-io.ps-blitz-script.path='$PACKAGES/blitz-script'" \
-      --config "patch.crates-io.ps-blitz-traits.path='$PACKAGES/blitz-traits'" \
-      --config "patch.crates-io.ps-blitz-paint.path='$PACKAGES/blitz-paint'" \
-      --config "patch.crates-io.ps-blitz-shell.path='$PACKAGES/blitz-shell'" )
-  host="$observability/target/release/qa-inspect-host"
 
-  # The same patches, because building any member resolves the whole workspace
-  # and the host's engine requirement names a version that is not published yet.
+  # chuzz's build script builds its Solid browser chrome, and on master it does
+  # so even for a headless binary that never links it, which needs
+  # `node_modules/.bin` to exist or it panics with
+  #
+  #   solid-layouts-library: command not found
+  #
+  # A headless build has no use for any of it. The gate that skips it lives in
+  # chuzz's own open pull request, so until that merges this install is what
+  # keeps this job independent of chuzz's release order. It is cheap and it is
+  # harmless once the gate lands.
+  echo "installing chuzz's frontend dependencies"
+  ( cd "$chuzz/apps/chuzz/frontend" && bun install )
+
+  # Every ps-blitz crate chuzz reaches, not just the five the old host used:
+  # patching some and not others resolves the rest from crates.io, and an engine
+  # built half from this checkout and half from the last release does not
+  # compile.
+  echo "building chuzz-headless against $PACKAGES"
+  ( cd "$chuzz" && cargo build --release --bin chuzz-headless \
+      --no-default-features \
+      --features capture,javascript,vello,scrollbars,webp \
+      --config "patch.crates-io.ps-blitz-dom.path='$PACKAGES/blitz-dom'" \
+      --config "patch.crates-io.ps-blitz-html.path='$PACKAGES/blitz-html'" \
+      --config "patch.crates-io.ps-blitz-net.path='$PACKAGES/blitz-net'" \
+      --config "patch.crates-io.ps-blitz-paint.path='$PACKAGES/blitz-paint'" \
+      --config "patch.crates-io.ps-blitz-script.path='$PACKAGES/blitz-script'" \
+      --config "patch.crates-io.ps-blitz-shell.path='$PACKAGES/blitz-shell'" \
+      --config "patch.crates-io.ps-blitz-traits.path='$PACKAGES/blitz-traits'" \
+      --config "patch.crates-io.ps-blitz-wasm.path='$PACKAGES/blitz-wasm'" )
+  host="$chuzz/target/release/chuzz-headless"
+
+  # ps-qa still comes from ps-observability, and still with the patches:
+  # building any member resolves the whole workspace, and its engine
+  # requirement names a version that is not published yet.
+  observability="${PS_OBSERVABILITY:-$ROOT/../ps-observability}"
+  if [ -z "$qa" ] && [ ! -d "$observability" ]; then
+    echo "no ps-observability checkout at $observability" >&2
+    echo "  set PS_OBSERVABILITY, or QA_PS_QA to a local ps-qa" >&2
+    exit 1
+  fi
   if [ -z "$qa" ]; then
     echo "building ps-qa from $observability"
     ( cd "$observability" && cargo build --release -p ps-qa \
@@ -78,7 +119,7 @@ if [ -z "$qa" ] || [ ! -x "$qa" ]; then
 fi
 
 if [ ! -x "$host" ]; then
-  echo "no qa-inspect-host at $host" >&2
+  echo "no chuzz-headless at $host" >&2
   exit 1
 fi
 
