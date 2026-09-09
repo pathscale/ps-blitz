@@ -8,6 +8,7 @@ mod custom_widget;
 mod element;
 mod node;
 pub(crate) mod scrollbar;
+mod select;
 mod stylo_data;
 mod text;
 
@@ -30,4 +31,5 @@ pub use element::{
 };
 pub use node::*;
 pub use scrollbar::{ScrollbarColor, ScrollbarRef, ScrollbarWidth};
+pub use select::SelectData;
 pub use text::{GeneratedTextInputEvent, TextBrush, TextInputData, TextLayout};

@@ -136,6 +136,33 @@ impl BaseDocument {
             };
 
             builder.set_role(role);
+
+            /*
+             * A select and its options carried their roles and nothing else, so
+             * the tree said "there is a combo box here" and stopped. What it
+             * offers, what is chosen, and which option that is were all absent,
+             * which is exactly the set of questions a QA harness asks of a
+             * picker before it can drive one.
+             *
+             * The options are already in the tree: the traversal walks raw
+             * children, so `option { display: none }` does not hide them. Only
+             * the state was missing.
+             */
+            match &*name {
+                "select" => {
+                    builder.set_value(self.select_label(node.id));
+                }
+                "option" => {
+                    // An explicit label, rather than relying on the text child
+                    // labelling its parent: an option's text is `display: none`
+                    // and a consumer that resolves names through the child text
+                    // runs would be reading a node that never gets laid out.
+                    builder.set_label(self.option_label(node.id));
+                    builder.set_selected(self.option_is_selected(node.id));
+                }
+                _ => {}
+            }
+
             builder.set_html_tag(name);
         } else if node.is_text_node() {
             builder.set_role(Role::TextRun);

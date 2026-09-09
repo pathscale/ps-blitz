@@ -32,7 +32,7 @@ use super::stylo_data::StyloData;
 use super::{Attribute, Attributes};
 use crate::Document;
 use crate::layout::table::TableContext;
-use crate::node::{TextBrush, TextInputData, TextLayout};
+use crate::node::{SelectData, TextBrush, TextInputData, TextLayout};
 
 #[cfg(feature = "shadow-dom")]
 use super::custom_element::CustomElementData;
@@ -383,6 +383,7 @@ pub enum SpecialElementType {
     TableRoot,
     TextInput,
     CheckboxInput,
+    Select,
     #[cfg(feature = "file-input")]
     FileInput,
     #[default]
@@ -412,6 +413,8 @@ pub enum SpecialElementData {
     TextInput(TextInputData),
     /// Checkbox checked state
     CheckboxInput(bool),
+    /// A \<select\> element's selectedness and open state
+    Select(SelectData),
     /// Selected files
     #[cfg(feature = "file-input")]
     FileInput(FileData),
@@ -434,6 +437,7 @@ impl Clone for SpecialElementData {
             Self::TableRoot(data) => Self::TableRoot(data.clone()),
             Self::TextInput(data) => Self::TextInput(data.clone()),
             Self::CheckboxInput(data) => Self::CheckboxInput(*data),
+            Self::Select(data) => Self::Select(data.clone()),
             #[cfg(feature = "file-input")]
             Self::FileInput(data) => Self::FileInput(data.clone()),
             Self::None => Self::None,
@@ -678,6 +682,27 @@ impl ElementData {
     pub fn checkbox_input_checked_mut(&mut self) -> Option<&mut bool> {
         match self.special_data {
             SpecialElementData::CheckboxInput(ref mut checked) => Some(checked),
+            _ => None,
+        }
+    }
+
+    /// The live state of a `<select>`, or `None` for anything else.
+    ///
+    /// Deliberately not modelled the way `checkbox_input_checked` is: that one
+    /// hands back an `Option<bool>` whose `None` means both "not a checkbox"
+    /// and, to every caller that reaches for `unwrap_or(false)`, "unchecked".
+    /// A select's answer to "what is selected" is a whole vector, so the
+    /// borrow is handed out instead and the two questions stay apart.
+    pub fn select_data(&self) -> Option<&SelectData> {
+        match &self.special_data {
+            SpecialElementData::Select(data) => Some(data),
+            _ => None,
+        }
+    }
+
+    pub fn select_data_mut(&mut self) -> Option<&mut SelectData> {
+        match &mut self.special_data {
+            SpecialElementData::Select(data) => Some(data),
             _ => None,
         }
     }
@@ -1066,6 +1091,9 @@ impl std::fmt::Debug for SpecialElementData {
             SpecialElementData::TableRoot(_) => f.write_str("NodeSpecificData::TableRoot"),
             SpecialElementData::TextInput(_) => f.write_str("NodeSpecificData::TextInput"),
             SpecialElementData::CheckboxInput(_) => f.write_str("NodeSpecificData::CheckboxInput"),
+            SpecialElementData::Select(data) => {
+                write!(f, "NodeSpecificData::Select({data:?})")
+            }
             #[cfg(feature = "file-input")]
             SpecialElementData::FileInput(_) => f.write_str("NodeSpecificData::FileInput"),
             SpecialElementData::None => f.write_str("NodeSpecificData::None"),

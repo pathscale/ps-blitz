@@ -53,6 +53,7 @@ mod mutator;
 pub mod paint_damage;
 mod query_selector;
 mod resolve;
+mod select;
 mod selection;
 #[cfg(feature = "shadow-dom")]
 mod shadow;
@@ -98,7 +99,7 @@ pub use markup5ever::{
     namespace_prefix, namespace_url, ns,
 };
 pub use mutator::DocumentMutator;
-pub use node::{Attribute, DocumentData, ElementData, Node, NodeData, TextNodeData};
+pub use node::{Attribute, DocumentData, ElementData, Node, NodeData, SelectData, TextNodeData};
 pub use paint_damage::PaintDamage;
 // Re-exported because `PaintDamage` takes and returns `kurbo::Rect` across the
 // crate boundary. A consumer that pulls kurbo in itself and lands on a
