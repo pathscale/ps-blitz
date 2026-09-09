@@ -158,6 +158,10 @@ pub(crate) struct ScriptRuntime {
     /// a failure at evaluation time would report an error against every module
     /// on the modern web that waits for anything.
     pending_modules: Vec<(JsPromise, String)>,
+    /// The value a text control held when it was focussed, so that losing
+    /// focus can tell an edited field from an untouched one. `change` is a
+    /// commit event, not a blur notification.
+    focussed_text_value: Option<(NodeId, String)>,
 }
 
 impl ScriptRuntime {
@@ -413,6 +417,7 @@ impl ScriptRuntime {
             diagnostics,
             module_loader,
             pending_modules: Vec::new(),
+            focussed_text_value: None,
         };
 
         // Small JS bootstrap for APIs that are easiest to define in JS
@@ -945,9 +950,28 @@ impl ScriptRuntime {
         // Browsers fire a `change` event after `input` events on checkbox/radio
         // inputs. Blitz only generates `input` events, so synthesise the `change`
         // event here.
-        if matches!(event.data, DomEventData::Input(_))
-            && self.target_is_checkbox_or_radio(event.target)
-        {
+        //
+        // A text control commits instead: `change` fires when it loses focus
+        // having been edited, never on each keystroke. Only checkbox and radio
+        // were covered, so `change` on a text field was dead, and a phone-number
+        // field bound to it gated a Confirm button that nothing could open.
+        let synthesise_change = match &event.data {
+            DomEventData::Input(_) => self.target_is_checkbox_or_radio(event.target),
+            DomEventData::Focus(_) => {
+                self.focussed_text_value = self
+                    .text_control_value(event.target)
+                    .map(|value| (event.target, value));
+                false
+            }
+            DomEventData::Blur(_) => match self.focussed_text_value.take() {
+                Some((node_id, focussed_value)) if node_id == event.target => self
+                    .text_control_value(event.target)
+                    .is_some_and(|current| current != focussed_value),
+                _ => false,
+            },
+            _ => false,
+        };
+        if synthesise_change {
             let mut change_state = EventState::default();
             any_called |= self.dispatch_event_inner(
                 chain,
@@ -978,6 +1002,16 @@ impl ScriptRuntime {
         }
 
         any_called
+    }
+
+    /// The current text of a text input or textarea, or `None` for anything
+    /// that is not one.
+    fn text_control_value(&self, node_id: NodeId) -> Option<String> {
+        let doc = self.ctx.doc.borrow();
+        doc.get_node(node_id)?
+            .element_data()?
+            .text_input_data()
+            .map(|input| input.editor.text().to_string())
     }
 
     fn target_is_checkbox_or_radio(&self, node_id: NodeId) -> bool {
