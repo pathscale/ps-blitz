@@ -247,21 +247,6 @@ jobs:
           -p ps-blitz-dom -p ps-blitz-html -p ps-blitz-script
           -p ps-blitz-paint -p ps-blitz-net
 
-  doc:
-    name: Documentation
-    runs-on: ubicloud-standard-8
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      # Restore the compiled dependency graph rather than rebuilding the
-      # whole workspace from source on every run.
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: "doc"
-          cache-all-crates: "true"
-          save-if: ${{ github.ref == 'refs/heads/master' }}
-      - run: cargo doc --workspace ${{ env.HEADLESS_EXCLUDE }}
-
   matrix_test:
     runs-on: ${{ matrix.platform.os }}
     env:
