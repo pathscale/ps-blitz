@@ -404,6 +404,7 @@ impl ScriptRuntime {
             2,
             window_remove_event_listener,
         );
+        register_global_fn(&mut context, "dispatchEvent", 1, window_dispatch_event);
         register_global_fn(&mut context, "__blitzRandomU32", 0, random_u32);
 
         let mut runtime = Self {
@@ -579,6 +580,12 @@ impl ScriptRuntime {
                         if (next === index) return;
                         index = next;
                         applyUrl(entries[index].url);
+                        // A traversal has to announce itself. Without this a
+                        // router's `navigate(-1)` changed the URL and nothing
+                        // redrew, so every route was one-way.
+                        const event = new Event("popstate");
+                        event.state = entries[index].state;
+                        globalThis.dispatchEvent(event);
                     },
                     back() { this.go(-1); },
                     forward() { this.go(1); },
@@ -1658,6 +1665,69 @@ fn clear_timer(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult
         ctx.state.borrow_mut().timers.remove(id as u64);
     }
     Ok(JsValue::undefined())
+}
+
+/// `window.dispatchEvent`, which the window did not have.
+///
+/// `Node.prototype.dispatchEvent` walks a node chain and never reaches the
+/// window listeners, so there was no way at all to raise a window-targeted
+/// event, from a page or from the runtime's own `history` shim.
+fn window_dispatch_event(
+    _: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let event = args
+        .first()
+        .and_then(JsValue::as_object)
+        .filter(|event| event.downcast_ref::<EventRef>().is_some())
+        .ok_or_else(|| JsNativeError::typ().with_message("dispatchEvent requires an Event"))?;
+    let event_type = crate::dom::to_rust_string(&event.get(js_string!("type"), context)?, context)?;
+
+    let global: JsValue = context.global_object().into();
+    crate::dom::define_value(&event, "target", global.clone(), context);
+    crate::dom::define_value(&event, "srcElement", global.clone(), context);
+    crate::dom::define_value(&event, "currentTarget", global.clone(), context);
+    crate::dom::define_value(&event, "eventPhase", JsValue::from(2), context);
+
+    let listeners: Vec<Listener> = {
+        let mut state = ctx.state.borrow_mut();
+        match state.window_listeners.get_mut(&event_type) {
+            Some(listeners) => {
+                let cloned = listeners.clone();
+                listeners.retain(|listener| !listener.once);
+                cloned
+            }
+            None => Vec::new(),
+        }
+    };
+    for listener in listeners {
+        listener
+            .callback
+            .call(&global, &[event.clone().into()], context)?;
+        if event
+            .downcast_ref::<EventRef>()
+            .is_some_and(|event| event.stopped_immediate.get())
+        {
+            break;
+        }
+    }
+
+    // The `window.on<event>` form, which is how a page most often listens for
+    // `popstate`.
+    let on_name = JsString::from(format!("on{event_type}"));
+    if let Some(handler) = context.global_object().get(on_name, context)?.as_object()
+        && handler.is_callable()
+    {
+        handler.call(&global, &[event.clone().into()], context)?;
+    }
+
+    crate::dom::define_value(&event, "currentTarget", JsValue::null(), context);
+    let prevented = event
+        .downcast_ref::<EventRef>()
+        .is_some_and(|event| event.prevented.get());
+    Ok(JsValue::from(!prevented))
 }
 
 fn window_add_event_listener(
