@@ -331,7 +331,54 @@ impl BaseDocument {
     }
 }
 
+/// The widest option label, in characters, and the number of visible rows, for
+/// a `<select>`. `None` for anything else.
+///
+/// A select has no in-flow content: `option { display: none }` in the user-agent
+/// sheet sees to that, and nothing replaces it. Without a measure of its own it
+/// laid out at zero and no site's country picker, currency picker or language
+/// picker had a box to press.
+fn select_metrics_of(
+    doc: &BaseDocument,
+    node_id: blitz_traits::node_id::NodeId,
+) -> Option<(usize, f32)> {
+    let node = doc.nodes.get(node_id)?;
+    let element = node.data.downcast_element()?;
+    if element.name.local != local_name!("select") {
+        return None;
+    }
+
+    let widest = crate::traversal::TreeTraverser::new_with_root(doc, node_id)
+        .filter_map(|descendant_id| doc.nodes.get(descendant_id))
+        .filter(|descendant| {
+            descendant
+                .data
+                .is_element_with_tag_name(&local_name!("option"))
+        })
+        .map(|option| option.text_content().trim().chars().count())
+        .max()
+        .unwrap_or(0);
+
+    // A dropdown shows one row. `size` names the row count for a list box, and
+    // `multiple` without `size` shows four, which is what browsers settled on.
+    let rows = element
+        .attr(local_name!("size"))
+        .and_then(|size| size.parse::<f32>().ok())
+        .filter(|rows| *rows >= 1.0)
+        .unwrap_or(if element.attr(local_name!("multiple")).is_some() {
+            4.0
+        } else {
+            1.0
+        });
+
+    Some((widest, rows))
+}
+
 impl BaseDocument {
+    fn select_metrics(&self, node_id: blitz_traits::node_id::NodeId) -> Option<(usize, f32)> {
+        select_metrics_of(self, node_id)
+    }
+
     fn compute_child_layout_internal(
         &mut self,
         node_id: NodeId,
@@ -344,6 +391,11 @@ impl BaseDocument {
         // radius separates them, and a cache hit never reaches this function.
         #[cfg(feature = "log-phase-times")]
         layout_counters::note_computed(dom_node_id(node_id));
+
+        // Read before the node is borrowed mutably: a `<select>` is sized from
+        // its options, which are other nodes.
+        let select_metrics = self.select_metrics(dom_node_id(node_id));
+
         let node = &mut self.nodes[dom_node_id(node_id)];
 
         let font_styles = node.primary_styles().map(|style| {
@@ -396,6 +448,26 @@ impl BaseDocument {
                 // })
             }
             NodeData::Element(element_data) | NodeData::AnonymousBlock(element_data) => {
+                // A `<select>` is measured from its options, which are not in
+                // flow. The character-count estimate is the same one the
+                // `cols` attribute of a textarea uses below: a select's label
+                // is not laid out as text anywhere yet, so there is no real
+                // measurement to take. An authored width or height still wins,
+                // this only supplies the content size.
+                if let Some((widest_label, rows)) = select_metrics {
+                    let advance = font_size.unwrap_or(16.0) * 0.6;
+                    let line_height = resolved_line_height.unwrap_or(16.0);
+                    return compute_leaf_layout(
+                        inputs,
+                        node.style(),
+                        resolve_calc_value,
+                        |_known_size, _available_space| taffy::Size {
+                            width: widest_label as f32 * advance,
+                            height: line_height * rows,
+                        },
+                    );
+                }
+
                 // TODO: deduplicate with single-line text input
                 if *element_data.name.local == *"textarea" {
                     let rows = element_data
