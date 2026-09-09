@@ -1395,6 +1395,31 @@ impl BaseDocument {
         })
     }
 
+    /// Navigate to `raw`, resolved against this document's base URL.
+    ///
+    /// The same route a link click takes, exposed so that script can reach it:
+    /// `location.assign`, `location.replace` and `location.reload` had nowhere
+    /// to go, because `resolve_url` and the navigation provider are both
+    /// internal to this crate. Returns `false` when `raw` will not resolve,
+    /// so the caller can report that rather than navigate somewhere wrong.
+    pub fn navigate_to_url(&self, raw: &str) -> bool {
+        let Some(url) = self.url.resolve_relative(raw) else {
+            return false;
+        };
+        self.navigation_provider
+            .navigate_to(blitz_traits::navigation::NavigationOptions::new(
+                url,
+                None,
+                self.id(),
+            ));
+        true
+    }
+
+    /// This document's URL, as a page's `location.href` reads it.
+    pub fn current_url(&self) -> String {
+        self.url.to_string()
+    }
+
     pub fn print_tree(&self) {
         crate::util::walk_tree(0, self.root_node());
     }
