@@ -581,6 +581,25 @@ pub(crate) fn collect_layout_children(
             push_hoisted_children_and_pseudos(doc, container_node_id, out);
         }
         DisplayInside::Flow | DisplayInside::FlowRoot | DisplayInside::TableCell => {
+            // An anonymous table box, fused into this container rather than
+            // inserted under it.
+            //
+            // `table { display: block }` is the standard wide-table
+            // horizontal-scroll pattern, and it left `thead` and `tbody` as
+            // plain block children whose own displays have no mapping in the
+            // style conversion. They fell through to Taffy's default, which is
+            // flex, so every row rendered SIDE BY SIDE. CSS 2.1 17.2.1 requires
+            // an anonymous table box around misparented table-internal boxes.
+            //
+            // Fusing is exact when the container holds nothing but those boxes,
+            // which is this whole pattern and every case seen on a real page:
+            // the anonymous table would be the container's only child and would
+            // take its content box. A container with mixed content still needs a
+            // separate anonymous box, and does not get one here.
+            if block_contains_only_table_internals(doc, container_node_id) {
+                return make_table_root(doc, container_node_id, out);
+            }
+
             // display:contents children are transparent for box generation:
             // their children participate in this container's formatting
             // context, so classification must recurse into them.
@@ -678,26 +697,7 @@ pub(crate) fn collect_layout_children(
             );
         }
 
-        DisplayInside::Table => {
-            let (table_context, tlayout_children) = build_table_context(doc, container_node_id);
-            #[allow(clippy::arc_with_non_send_sync)]
-            let data = SpecialElementData::TableRoot(Arc::new(table_context));
-            doc.nodes[container_node_id]
-                .flags
-                .insert(NodeFlags::IS_TABLE_ROOT);
-            doc.nodes[container_node_id]
-                .data
-                .downcast_element_mut()
-                .unwrap()
-                .special_data = data;
-            if let Some(before) = doc.nodes[container_node_id].before() {
-                out.push(before, doc);
-            }
-            out.extend(&tlayout_children, doc);
-            if let Some(after) = doc.nodes[container_node_id].after() {
-                out.push(after, doc);
-            }
-        }
+        DisplayInside::Table => make_table_root(doc, container_node_id, out),
 
         _ => {
             // Internal table boxes can receive direct text from malformed or
@@ -735,6 +735,74 @@ pub(crate) fn collect_layout_children(
             );
         }
     }
+}
+
+/// Turn `container_node_id` into a table root and give it the flattened grid of
+/// cells as its layout children.
+fn make_table_root(doc: &mut BaseDocument, container_node_id: NodeId, out: &mut LayoutChildren) {
+    let (table_context, tlayout_children) = build_table_context(doc, container_node_id);
+    #[allow(clippy::arc_with_non_send_sync)]
+    let data = SpecialElementData::TableRoot(Arc::new(table_context));
+    doc.nodes[container_node_id]
+        .flags
+        .insert(NodeFlags::IS_TABLE_ROOT);
+    doc.nodes[container_node_id]
+        .data
+        .downcast_element_mut()
+        .unwrap()
+        .special_data = data;
+    if let Some(before) = doc.nodes[container_node_id].before() {
+        out.push(before, doc);
+    }
+    out.extend(&tlayout_children, doc);
+    if let Some(after) = doc.nodes[container_node_id].after() {
+        out.push(after, doc);
+    }
+}
+
+/// Whether every box this container generates is a table-internal one, so the
+/// container is the table its author took the `display: table` off.
+fn block_contains_only_table_internals(doc: &BaseDocument, container_node_id: NodeId) -> bool {
+    // Not for an anonymous block: those are generated *by* this pass, and one
+    // of them wrapping table internals means the wrapping has already been
+    // decided elsewhere.
+    if doc.nodes[container_node_id]
+        .data
+        .downcast_element()
+        .is_none()
+    {
+        return false;
+    }
+
+    let mut saw_table_internal = false;
+    for child_id in doc.nodes[container_node_id]
+        .layout_dom_children()
+        .iter()
+        .copied()
+    {
+        let child = &doc.nodes[child_id];
+        if child.data.kind() == NodeKind::Comment || child.is_whitespace_node() {
+            continue;
+        }
+        let Some(display) = child.display_style() else {
+            // A text child: real content, so this is a block with a stray table
+            // box in it and not a table.
+            return false;
+        };
+        match display.inside() {
+            DisplayInside::None => {}
+            DisplayInside::TableRowGroup
+            | DisplayInside::TableHeaderGroup
+            | DisplayInside::TableFooterGroup
+            | DisplayInside::TableRow
+            | DisplayInside::TableCell
+            | DisplayInside::TableColumn
+            | DisplayInside::TableColumnGroup => saw_table_internal = true,
+            _ => return false,
+        }
+    }
+
+    saw_table_internal
 }
 
 /// Extract the text generated by a pseudo-element's `content` property
