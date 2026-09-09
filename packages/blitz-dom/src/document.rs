@@ -255,6 +255,26 @@ pub struct BaseDocument {
     /// paints beneath every background between them and disappears.
     pub(crate) hoisted_fixed_parents: HashMap<NodeId, NodeId>,
 
+    /// Every `position: sticky` node in the document, in tree order.
+    ///
+    /// Collected by the same walk that hoists fixed nodes, because both need
+    /// one pre-order pass over the box tree and a second one would cost the
+    /// same on every frame of every document, sticky or not. Tree order matters:
+    /// a sticky box inside another sticky box is adjusted on top of its
+    /// ancestor's adjustment, so the ancestor has to be settled first.
+    pub(crate) sticky_nodes: Vec<NodeId>,
+
+    /// For each sticky node, the offset currently baked into its
+    /// `final_layout().location`.
+    ///
+    /// The adjustment is written into the box itself so that paint, hit testing
+    /// and `absolute_position` cannot disagree about where the box is. That
+    /// makes the pass non-idempotent unless it can recover the flow position it
+    /// started from, which is what this records. Cleared by `resolve_layout`,
+    /// which rewrites every location from taffy and so discards the offsets
+    /// along with them.
+    pub(crate) sticky_offsets: HashMap<NodeId, taffy::Point<f32>>,
+
     /// Stacking contexts holding a hoisted child that an ancestor clips.
     ///
     /// Collected while flushing styles so that `resolve_hoisted_clips` visits
@@ -529,6 +549,8 @@ impl BaseDocument {
 
         let mut doc = Self {
             hoisted_fixed_parents: HashMap::new(),
+            sticky_nodes: Vec::new(),
+            sticky_offsets: HashMap::new(),
             hoisted_clip_hosts: Vec::new(),
             id,
             tx,
@@ -2589,7 +2611,27 @@ impl BaseDocument {
     /// Scroll a node by given x and y
     /// Will bubble scrolling up to parent node once it can no longer scroll further
     /// If we're already at the root node, bubbles scrolling up to the viewport
+    ///
+    /// A `position: sticky` box is held against the edge of the scrollport it
+    /// lives in, so the boxes have to be re-adjusted here rather than only in
+    /// `resolve`: a wheel event does not necessarily produce a style and layout
+    /// pass, and a header that only unstuck on the next restyle is a header
+    /// that visibly lags the scroll.
     pub fn scroll_node_by_has_changed<F: FnMut(DomEvent)>(
+        &mut self,
+        node_id: NodeId,
+        x: f64,
+        y: f64,
+        dispatch_event: F,
+    ) -> bool {
+        let has_changed = self.scroll_node_by_inner(node_id, x, y, dispatch_event);
+        if has_changed {
+            self.resolve_sticky_positions();
+        }
+        has_changed
+    }
+
+    fn scroll_node_by_inner<F: FnMut(DomEvent)>(
         &mut self,
         node_id: NodeId,
         x: f64,
@@ -2653,7 +2695,7 @@ impl BaseDocument {
 
             if bubble_x != 0.0 || bubble_y != 0.0 {
                 let bubbled = if let Some(parent) = parent {
-                    self.scroll_node_by_has_changed(parent, bubble_x, bubble_y, dispatch_event)
+                    self.scroll_node_by_inner(parent, bubble_x, bubble_y, dispatch_event)
                 } else {
                     self.scroll_viewport_by_has_changed(bubble_x, bubble_y)
                 };
@@ -2743,7 +2785,7 @@ impl BaseDocument {
 
         if bubble_x != 0.0 || bubble_y != 0.0 {
             if let Some(parent) = parent {
-                return self.scroll_node_by_has_changed(parent, bubble_x, bubble_y, dispatch_event)
+                return self.scroll_node_by_inner(parent, bubble_x, bubble_y, dispatch_event)
                     | has_changed;
             } else {
                 return self.scroll_viewport_by_has_changed(bubble_x, bubble_y) | has_changed;
@@ -2783,7 +2825,14 @@ impl BaseDocument {
         self.viewport_scroll.y =
             f64::max(0.0, f64::min(new_scroll.1, content_height - window_height));
 
-        self.viewport_scroll != initial
+        let has_changed = self.viewport_scroll != initial;
+        if has_changed {
+            // The viewport is the scrollport a page-level sticky box is held
+            // against, so its boxes move with this and not with the next
+            // relayout. See `resolve_sticky_positions`.
+            self.resolve_sticky_positions();
+        }
+        has_changed
     }
 
     pub fn scroll_by(
