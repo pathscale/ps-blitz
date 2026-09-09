@@ -46,6 +46,19 @@ pub(crate) fn init_event_proto(proto: &JsObject, context: &mut Context) {
         None,
         context,
     );
+    // `cancelBubble` is the legacy alias for the stop-propagation flag, and
+    // delegated dispatchers still read and write it. Without it a framework's
+    // own `stopPropagation` shim had nothing to set and nothing to check, so
+    // propagation did not actually stop: pressing a category button inside a
+    // cookie-preferences panel also ran the dismiss handler on the backdrop
+    // that contains the panel, and the whole dialog closed.
+    define_accessor(
+        proto,
+        "cancelBubble",
+        Some(get_cancel_bubble),
+        Some(set_cancel_bubble),
+        context,
+    );
 }
 
 pub(crate) fn set_event_path(event: &JsObject, path: Vec<JsObject>) {
@@ -210,6 +223,21 @@ fn stop_immediate_propagation(this: &JsValue, _: &[JsValue], _: &mut Context) ->
         event.stopped.set(true);
         event.stopped_immediate.set(true);
     });
+    Ok(JsValue::undefined())
+}
+
+fn get_cancel_bubble(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+    Ok(JsValue::from(
+        event_ref(this, |event| event.stopped.get()).unwrap_or(false),
+    ))
+}
+
+/// Setting it to true sets the stop-propagation flag. Setting it to false does
+/// nothing, per the DOM standard: the flag cannot be unset once raised.
+fn set_cancel_bubble(this: &JsValue, args: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+    if args.first().unwrap_or(&JsValue::undefined()).to_boolean() {
+        event_ref(this, |event| event.stopped.set(true));
+    }
     Ok(JsValue::undefined())
 }
 
