@@ -122,6 +122,7 @@ pub(crate) fn init_element_proto(proto: &JsObject, context: &mut Context) {
     define_method(proto, "hasAttribute", 1, has_attribute, context);
     define_method(proto, "focus", 0, focus, context);
     define_method(proto, "blur", 0, blur, context);
+    define_method(proto, "scrollIntoView", 1, scroll_into_view, context);
     define_method(
         proto,
         "getBoundingClientRect",
@@ -1054,6 +1055,25 @@ fn blur(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValu
     let ctx = dom_ctx(context)?;
     let _ = this_node_id(this)?;
     ctx.mutate_doc().clear_focus();
+    Ok(JsValue::undefined())
+}
+
+/// `scrollIntoView`, which blitz-dom has had all along as `scroll_to_node` but
+/// only ever offered to the harness. A page calling it got
+/// "TypeError: not a callable function", which is what any anchor-scrolling
+/// router, "back to top" control or validation-error focuser calls.
+///
+/// The argument (a boolean or a `ScrollIntoViewOptions`) is accepted and
+/// ignored: `scroll_to_node` lands the node at the top-left of each scrollport,
+/// which is `block: "start"`, the default. Ignoring it is what a page expects
+/// far more than throwing at it.
+fn scroll_into_view(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    // Scrolling is a geometry operation, so the mutations script already made
+    // have to be laid out before the offsets are computed. See DomCtx::flush_layout.
+    ctx.flush_layout();
+    ctx.mutate_doc().scroll_to_node(node_id);
     Ok(JsValue::undefined())
 }
 
