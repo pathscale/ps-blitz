@@ -1252,6 +1252,12 @@ impl BaseDocument {
             self.drag_mode = DragMode::None;
         }
         self.scrollbar_activity.remove(&node_id);
+
+        // The form-owner map is keyed by control id and was never pruned, so a
+        // page that re-renders its fields grew an entry per render, every one
+        // of them a freed slot. Nothing dereferences those any more, but an
+        // unbounded map keyed on dead ids is a leak either way.
+        self.controls_to_form.remove(&node_id);
     }
 
     pub(crate) fn drop_node_ignoring_parent(&mut self, node_id: NodeId) -> Option<Node> {
