@@ -116,6 +116,23 @@ input[type="file"] {
     background-color: transparent;
 }
 
+/*
+ * There was no `select` rule at all, so a select computed `display: inline`,
+ * and the `option` rule below left it with no in-flow content. Height on a
+ * non-replaced inline is ignored, so even `<select style="height:34px">`
+ * reported 0x0 and nothing on a page could find it or press it. Its content
+ * size comes from `layout::select_metrics_of`, because the options it is sized
+ * from are not in flow.
+ */
+select {
+    display: inline-block;
+    border: 1px solid #999;
+    padding: 1px 4px;
+    background-color: white;
+    white-space: nowrap;
+    overflow: clip;
+}
+
 option {
     display: none;
 }
