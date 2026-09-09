@@ -1058,6 +1058,13 @@ impl BaseDocument {
         taffy::compute_root_layout(self, root_element_id, available_space);
         taffy::round_layout(self, root_element_id);
 
+        // Table rows and row groups are flattened into a grid of cells and
+        // never reach Taffy, so nothing wrote a layout for them at all. Describe
+        // each from the cells it holds, after rounding: `final_layout` is what
+        // every geometry query reads and the rounding pass is what fills it, so
+        // doing this any earlier reads cells that are still zero.
+        self.assign_table_row_layouts();
+
         // Taffy currently maps CSS `position: fixed` to absolute positioning,
         // which leaves the box relative to its DOM layout parent. A portal
         // mounted after a full-height application root therefore starts one
