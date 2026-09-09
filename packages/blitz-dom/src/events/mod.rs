@@ -371,7 +371,14 @@ fn scroll_key_is_claimed_by(doc: &BaseDocument, node_id: NodeId, key: &Key) -> b
     }
     doc.get_node(node_id)
         .and_then(|node| node.element_data())
-        .is_some_and(|element| element.text_input_data().is_some())
+        .is_some_and(|element| {
+            element.text_input_data().is_some()
+                // A focussed select moves its selection with the arrows, Home
+                // and End. Without claiming them here the branch above scrolls
+                // the page and *returns*, so the keyboard handler never runs
+                // and a select could not be driven by keyboard at all.
+                || element.select_data().is_some()
+        })
 }
 
 /// The scroll a key asks for, in CSS pixels, or `None` if it asks for none.
