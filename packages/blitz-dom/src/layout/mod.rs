@@ -519,7 +519,17 @@ impl BaseDocument {
                                 },
                             );
                         }
-                        None | Some("text" | "password" | "email" | "tel" | "url" | "search") => {
+                        // Kept in step with the list in
+                        // `layout::construct::collect_layout_children`, which
+                        // decides which inputs get a text editor. A type that
+                        // is on that list and not this one gets an editor and
+                        // no content box: `number` measured 6x6, its padding
+                        // and border alone, against 306x25.2 for every other
+                        // text-like type.
+                        None
+                        | Some(
+                            "text" | "password" | "email" | "number" | "tel" | "url" | "search",
+                        ) => {
                             return compute_leaf_layout(
                                 inputs,
                                 node.style(),
