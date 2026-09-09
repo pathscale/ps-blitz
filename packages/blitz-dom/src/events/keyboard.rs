@@ -155,14 +155,14 @@ impl BaseDocument {
 ///
 /// <https://html.spec.whatwg.org/multipage/forms.html#default-button>
 fn is_submit_button(element_data: &crate::ElementData) -> bool {
-    let type_attr = element_data.attr(local_name!("type"));
-    match element_data.name.local {
-        // A `button` with no type, or an unrecognised one, is in the Submit
-        // Button state.
-        local_name!("button") => !matches!(type_attr, Some("reset" | "button" | "menu")),
-        local_name!("input") => matches!(type_attr, Some("submit" | "image")),
-        _ => false,
-    }
+    // `ElementData::is_submit_button` covers `<button>`, including the
+    // command-attribute cases that take it back out of the Submit Button state.
+    element_data.is_submit_button()
+        || (element_data.name.local == local_name!("input")
+            && matches!(
+                element_data.attr(local_name!("type")),
+                Some("submit" | "image")
+            ))
 }
 
 /// <https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#implicit-submission>
