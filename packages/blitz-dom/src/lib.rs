@@ -74,7 +74,16 @@ pub mod net;
 pub mod util;
 
 #[cfg(feature = "accessibility")]
-mod accessibility;
+pub mod accessibility;
+/// The role vocabulary [`accessibility::implicit_role`] answers in.
+///
+/// Re-exported rather than left to the caller to depend on: a second copy of
+/// `accesskit` in the graph makes its `Role` a different type from this one,
+/// and the error that produces names the same enum on both sides of a
+/// mismatch. Anything consuming the role rules gets the vocabulary from the
+/// crate that owns them.
+#[cfg(feature = "accessibility")]
+pub use accesskit;
 
 #[cfg(feature = "custom-widget")]
 pub use crate::node::Widget;
