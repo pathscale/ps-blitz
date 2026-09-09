@@ -267,11 +267,29 @@ fn construct_entry_list(doc: &BaseDocument, form_id: NodeId, submitter_id: NodeI
             continue;
         };
 
-        // TODO: If the field element is a select element,
-        //  then for each option element in the select element's
-        //  list of options whose selectedness is true and that is not disabled,
-        //  create an entry with name and the value of the option element,
-        //  and append it to entry list.
+        // If the field element is a select element, then for each option
+        // element in the select element's list of options whose selectedness is
+        // true and that is not disabled, create an entry with name and the
+        // value of the option element, and append it to entry list.
+        //
+        // Without this a select fell through to the generic tail below and
+        // submitted its own literal `value` attribute, which a select does not
+        // have. Every form containing a picker posted the wrong body.
+        if element.name.local == local_name!("select") {
+            let options = doc.select_options(control_id);
+            for (index, option_id) in options.iter().enumerate() {
+                let is_selected = element
+                    .select_data()
+                    .map(|data| data.is_selected(index))
+                    // Before layout construction has run there is no live
+                    // state, and the content attribute is all there is.
+                    .unwrap_or_else(|| doc.option_is_selected(*option_id));
+                if is_selected && !doc.option_is_disabled(*option_id) {
+                    create_entry(name, doc.option_value(*option_id).as_str().into());
+                }
+            }
+            continue;
+        }
 
         // Otherwise, if the field element is an input element whose type attribute is in the Checkbox state or the Radio Button state, then:
         if element.name.local == local_name!("input")

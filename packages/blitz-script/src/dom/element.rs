@@ -42,6 +42,21 @@ pub(crate) fn init_element_proto(proto: &JsObject, context: &mut Context) {
     );
     define_accessor(
         proto,
+        "selectedIndex",
+        Some(get_selected_index),
+        Some(set_selected_index),
+        context,
+    );
+    define_accessor(
+        proto,
+        "selected",
+        Some(get_selected),
+        Some(set_selected),
+        context,
+    );
+    define_accessor(proto, "options", Some(get_options), None, context);
+    define_accessor(
+        proto,
         "disabled",
         Some(get_disabled),
         Some(set_disabled),
@@ -484,9 +499,29 @@ fn set_autofocus(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
     Ok(JsValue::undefined())
 }
 
+/// Whether the node is a `<select>`.
+///
+/// Tag-guarded rather than given a prototype of its own: every element shares
+/// one `Element` prototype here, exactly as `get_value` already branches on
+/// `text_input_data()` rather than on the tag having its own object.
+fn is_select(ctx: &DomCtx, node_id: NodeId) -> bool {
+    let doc = ctx.doc.borrow();
+    doc.get_node(node_id).is_some_and(|node| {
+        node.data
+            .is_element_with_tag_name(&blitz_dom::local_name!("select"))
+    })
+}
+
 fn get_value(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
+    if is_select(&ctx, node_id) {
+        // A select has no `value` attribute of its own, so the generic tail
+        // below read an attribute that is never there and every picker
+        // reported the empty string.
+        let value = ctx.doc.borrow().select_value(node_id);
+        return Ok(js_str(&value));
+    }
     let value = {
         let doc = ctx.doc.borrow();
         doc.get_node(node_id)
@@ -506,7 +541,166 @@ fn get_value(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<J
 }
 
 fn set_value(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    if is_select(&ctx, node_id) {
+        let value = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
+        select_by_value(&ctx, node_id, &value);
+        return Ok(JsValue::undefined());
+    }
     attr_setter("value", this, args, context)
+}
+
+/// Select the first option whose value matches, or deselect everything when
+/// none does, which is what `HTMLSelectElement.value` does on a single select.
+///
+/// Live state, then snapshot: the same rule `set_checked` is written to. The
+/// selectedness in special data is what the accessibility tree, form
+/// submission and `change` all read, and the snapshot is what asks for the
+/// restyle that a state-derived selector needs.
+fn select_by_value(ctx: &DomCtx, node_id: NodeId, value: &str) {
+    let target = {
+        let doc = ctx.doc.borrow();
+        doc.select_options(node_id)
+            .into_iter()
+            .position(|option_id| doc.option_value(option_id) == value)
+    };
+    let mut doc = ctx.mutate_doc();
+    let changed = match target {
+        Some(index) => doc.set_select_selected_index(node_id, index),
+        None => doc
+            .get_node_mut(node_id)
+            .and_then(|node| node.data.downcast_element_mut())
+            .and_then(|el| el.select_data_mut())
+            .is_some_and(|data| data.clear_selection()),
+    };
+    if changed {
+        doc.snapshot_node(node_id);
+    }
+}
+
+fn get_selected_index(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    // -1 for "nothing selected", which is what the IDL says and what every
+    // caller comparing against a numeric index expects.
+    let index = ctx
+        .doc
+        .borrow()
+        .select_selected_index(node_id)
+        .map(|index| index as i64)
+        .unwrap_or(-1);
+    Ok(JsValue::from(index))
+}
+
+fn set_selected_index(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    let index = args
+        .first()
+        .map(|value| value.to_number(context))
+        .transpose()?
+        .unwrap_or(-1.0);
+
+    let mut doc = ctx.mutate_doc();
+    let changed = if index < 0.0 {
+        doc.get_node_mut(node_id)
+            .and_then(|node| node.data.downcast_element_mut())
+            .and_then(|el| el.select_data_mut())
+            .is_some_and(|data| data.clear_selection())
+    } else {
+        doc.set_select_selected_index(node_id, index as usize)
+    };
+    if changed {
+        doc.snapshot_node(node_id);
+    }
+    Ok(JsValue::undefined())
+}
+
+/// A select's `options` collection: its list of options, flattened out of any
+/// `<optgroup>`, which is what `selectedIndex` counts against.
+fn get_options(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    let option_ids = ctx.doc.borrow().select_options(node_id);
+    let wrappers: Vec<JsValue> = option_ids
+        .into_iter()
+        .map(|option_id| node_wrapper(&ctx, option_id, context).into())
+        .collect();
+    Ok(boa_engine::object::builtins::JsArray::from_iter(wrappers, context).into())
+}
+
+fn get_selected(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    let selected = ctx.doc.borrow().option_is_selected(node_id);
+    Ok(JsValue::from(selected))
+}
+
+fn set_selected(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    let selected = args.first().map(JsValue::to_boolean).unwrap_or(false);
+
+    let owner = {
+        let doc = ctx.doc.borrow();
+        doc.option_owner_select(node_id).map(|select_id| {
+            let index = doc
+                .select_options(select_id)
+                .into_iter()
+                .position(|id| id == node_id);
+            (select_id, index)
+        })
+    };
+    let Some((select_id, Some(index))) = owner else {
+        // An option outside a select has nowhere to record selectedness, so
+        // the attribute is all there is.
+        if selected {
+            write_attr(&ctx, node_id, "selected", "");
+        } else {
+            clear_attr(&ctx, node_id, "selected");
+        }
+        return Ok(JsValue::undefined());
+    };
+
+    let mut doc = ctx.mutate_doc();
+    let has_live_state = doc
+        .get_node(select_id)
+        .and_then(|node| node.data.downcast_element())
+        .is_some_and(|el| el.select_data().is_some());
+    if has_live_state {
+        let changed = if selected {
+            doc.set_select_selected_index(select_id, index)
+        } else {
+            doc.get_node_mut(select_id)
+                .and_then(|node| node.data.downcast_element_mut())
+                .and_then(|el| el.select_data_mut())
+                .is_some_and(|data| data.set_selected(index, false))
+        };
+        if changed {
+            doc.snapshot_node(node_id);
+            doc.snapshot_node(select_id);
+        }
+        return Ok(JsValue::undefined());
+    }
+    drop(doc);
+
+    /*
+     * Before layout construction has run there is no live state, so a property
+     * write has to reach the attribute or the value is lost. `selected` is an
+     * HTML boolean attribute: present means selected whatever the value reads,
+     * which is the trap `checked` fell into where `checked="false"` came up on.
+     */
+    if selected {
+        write_attr(&ctx, node_id, "selected", "");
+    } else {
+        clear_attr(&ctx, node_id, "selected");
+    }
+    Ok(JsValue::undefined())
 }
 
 fn get_checked(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {

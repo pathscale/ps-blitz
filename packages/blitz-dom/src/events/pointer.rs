@@ -638,6 +638,12 @@ pub(crate) fn checkable_activation_target(doc: &BaseDocument, target: NodeId) ->
                 return Some(node_id);
             }
             local_name!("label") => return None,
+            // A select is not checkable and has an activation behaviour of its
+            // own, so the walk stops here for the same reason it stops at a
+            // text input: `handle_click` claims the press, and the two have to
+            // agree about where the walk ends or a checkbox wrapping a select
+            // would toggle without ever seeing a click.
+            local_name!("select") => return None,
             _ => {}
         }
 
@@ -714,6 +720,27 @@ pub(crate) fn handle_click(
                         dispatch_event,
                     );
 
+                    break 'matched true;
+                }
+                // A press on a select focuses it. Nothing else yet: there is no
+                // popup to open.
+                //
+                // Without an arm of its own the walk fell through to the
+                // no-match tail below, which calls `clear_focus()`. Clicking a
+                // select therefore actively *unfocused* the page, and since the
+                // keyboard handler is gated on focus, the arrows could not
+                // drive a select the user had just pressed. `handle_pointerdown`
+                // is no help either: it classifies a select as
+                // `ClickTarget::SelectableText` and only the `TextInput` arm
+                // there generates focus events.
+                local_name!("select") => {
+                    generate_focus_events(
+                        doc,
+                        &mut |doc| {
+                            doc.set_focus_to(node_id);
+                        },
+                        dispatch_event,
+                    );
                     break 'matched true;
                 }
                 // Activating the first <summary> of a <details> element toggles
