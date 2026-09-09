@@ -86,6 +86,7 @@ blitz-paint = { workspace = true }
 blitz-traits = { workspace = true }
 image = { workspace = true, features = ["png"] }
 keyboard-types = { workspace = true }
+markup5ever = { workspace = true }
 url = { workspace = true }
 
 # Only on macOS, and only for `tests/text_metrics_macos.rs`, which measures
