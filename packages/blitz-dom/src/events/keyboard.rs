@@ -150,20 +150,66 @@ impl BaseDocument {
     }
 }
 
-/// https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#field-that-blocks-implicit-submission
+/// Whether this control is a submit button, and so a candidate for the form's
+/// default button.
+///
+/// <https://html.spec.whatwg.org/multipage/forms.html#default-button>
+fn is_submit_button(element_data: &crate::ElementData) -> bool {
+    let type_attr = element_data.attr(local_name!("type"));
+    match element_data.name.local {
+        // A `button` with no type, or an unrecognised one, is in the Submit
+        // Button state.
+        local_name!("button") => !matches!(type_attr, Some("reset" | "button" | "menu")),
+        local_name!("input") => matches!(type_attr, Some("submit" | "image")),
+        _ => false,
+    }
+}
+
+/// <https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#implicit-submission>
 fn implicit_form_submission<F: FnMut(DomEvent)>(
     doc: &BaseDocument,
     text_target: NodeId,
     mut dispatch_event: F,
 ) {
-    let Some(form_owner_id) = doc.controls_to_form.get(&text_target) else {
+    let Some(&form_owner_id) = doc.controls_to_form.get(&text_target) else {
         return;
     };
-    if doc
-        .controls_to_form
+
+    // Walked over the tree rather than over `controls_to_form` directly, for
+    // two reasons. Tree order is what names the default button, and the map is
+    // not a reliable source of live node ids: a control removed from the
+    // document leaves its key behind, so a framework that re-rendered a field
+    // left a freed id in it and indexing the slab for that id panicked with
+    // "invalid SlotMap key used", taking the host process down. The traverser
+    // only yields nodes that are still in the tree.
+    let controls: Vec<NodeId> = crate::traversal::TreeTraverser::new(doc)
+        .filter(|control_id| doc.controls_to_form.get(control_id) == Some(&form_owner_id))
+        .collect();
+
+    // "If the form has a default button, then act as if that button was
+    // clicked." The multiple-fields rule below applies only when there is none,
+    // which is the whole of the gate: a login form with a user field, a
+    // password field and a Sign in button submits on Enter, and this returned
+    // early on it instead.
+    if let Some(default_button) = controls.iter().copied().find(|control_id| {
+        doc.get_node(*control_id)
+            .and_then(|node| node.element_data())
+            .is_some_and(is_submit_button)
+    }) {
+        dispatch_event(DomEvent::new(
+            form_owner_id,
+            DomEventData::Submit(BlitzSubmitEvent {
+                form: form_owner_id.as_u64(),
+                submitter: default_button.as_u64(),
+            }),
+        ));
+        return;
+    }
+
+    if controls
         .iter()
-        .filter(|(_control_id, form_id)| *form_id == form_owner_id)
-        .filter_map(|(control_id, _)| doc.nodes[*control_id].element_data())
+        .filter_map(|control_id| doc.get_node(*control_id))
+        .filter_map(|node| node.element_data())
         .filter(|element_data| {
             element_data.attr(local_name!("type")).is_some_and(|t| {
                 matches!(
@@ -193,10 +239,10 @@ fn implicit_form_submission<F: FnMut(DomEvent)>(
     // pressing Enter in the only text field of a form is a submission a page
     // handles, and a default action nothing can cancel is not one.
     dispatch_event(DomEvent::new(
-        *form_owner_id,
+        form_owner_id,
         DomEventData::Submit(BlitzSubmitEvent {
-            form: (*form_owner_id).as_u64(),
-            submitter: (*form_owner_id).as_u64(),
+            form: form_owner_id.as_u64(),
+            submitter: form_owner_id.as_u64(),
         }),
     ));
 }
