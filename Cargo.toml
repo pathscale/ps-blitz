@@ -36,7 +36,9 @@ members = [
 # for wasm32-unknown-unknown and has its own target directory, so
 # `cargo test -p blitz-wasm` can shell out to build it without deadlocking on
 # this workspace's own target lock. See packages/blitz-wasm/ABI.md.
-exclude = ["sites", "packages/blitz-wasm/guest"]
+# CI checks the coordinated runtime stack out below this repository. Keep those
+# independent workspaces out of Cargo's automatic path-dependency membership.
+exclude = ["sites", "packages/blitz-wasm/guest", ".ps-observability", ".chuzz", ".tauri-runtime-blitz"]
 resolver = "2"
 
 [workspace.package]
