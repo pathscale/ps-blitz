@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Native select state</title>
+<label for="plan">Plan</label>
+<select id="plan">
+  <option value="basic" selected>Basic</option>
+  <optgroup label="Paid">
+    <option value="team" label="Team plan">Team</option>
+    <option value="enterprise">Enterprise</option>
+  </optgroup>
+</select>
+<h1 id="result">No change yet</h1>
+<script>
+  const plan = document.getElementById('plan');
+  plan.addEventListener('change', () => {
+    document.getElementById('result').textContent = 'Chosen ' + plan.value;
+  });
+</script>
+</html>

@@ -1531,8 +1531,12 @@ pub(crate) fn build_inline_layout_into(
                 };
             }
             NodeData::Text(data) => {
-                // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
-                // dbg!(&data.content);
+                // Keep the styling element for painting, and retain the text
+                // node's identity so inspection can recover its actual glyph bounds.
+                builder.push_style_modification_span(&[StyleProperty::Brush(TextBrush {
+                    id: parent_id,
+                    text_node: Some(node_id),
+                })]);
 
                 // TODO: optimize case transforms to be non-allocating
                 match parent_text_transform {
@@ -1546,6 +1550,7 @@ pub(crate) fn build_inline_layout_into(
                         builder.push_text(&data.content);
                     }
                 }
+                builder.pop_style_span();
             }
             NodeData::Comment { .. } | NodeData::ShadowRoot(_) => {
                 // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);

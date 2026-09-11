@@ -3214,15 +3214,19 @@ root={:?} root_right={root_right:.1} root_w={:.1} lines={} layout_scale={:.2} vp
 
         let node = self.get_node(node_id)?;
 
-        // Only non-atomic inline elements lack their own layout box: they are
-        // flattened into the containing inline root's text layout as style spans.
-        if !node.is_element() || node.flags.is_inline_root() {
-            return None;
-        }
-        let display = node.primary_styles()?.clone_display();
-        if !(display.outside() == DisplayOutside::Inline && display.inside() == DisplayInside::Flow)
-        {
-            return None;
+        // Text and non-atomic inline elements live in the inline root's glyph
+        // runs rather than owning layout boxes.
+        let is_text = node.is_text_node();
+        if !is_text {
+            if !node.is_element() || node.flags.is_inline_root() {
+                return None;
+            }
+            let display = node.primary_styles()?.clone_display();
+            if !(display.outside() == DisplayOutside::Inline
+                && display.inside() == DisplayInside::Flow)
+            {
+                return None;
+            }
         }
 
         let inline_root = node.inline_root_ancestor()?;
@@ -3274,7 +3278,13 @@ root={:?} root_right={root_right:.1} root_w={:.1} lines={} layout_scale={:.2} vp
             for item in line.items() {
                 match item {
                     PositionedLayoutItem::GlyphRun(glyph_run) => {
-                        if !is_in_target(glyph_run.style().brush.id) {
+                        let brush = glyph_run.style().brush;
+                        let matches = if is_text {
+                            brush.text_node == Some(node_id)
+                        } else {
+                            is_in_target(brush.id)
+                        };
+                        if !matches {
                             continue;
                         }
                         let x0 = glyph_run.offset() as f64;
@@ -3289,7 +3299,7 @@ root={:?} root_right={root_right:.1} root_w={:.1} lines={} layout_scale={:.2} vp
                         add(x0, y0, x1, y1);
                     }
                     PositionedLayoutItem::InlineBox(inline_box) => {
-                        if !is_in_target(NodeId::from_u64(inline_box.id)) {
+                        if is_text || !is_in_target(NodeId::from_u64(inline_box.id)) {
                             continue;
                         }
                         let x0 = inline_box.x as f64;

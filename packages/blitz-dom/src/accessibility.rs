@@ -205,6 +205,16 @@ impl BaseDocument {
             builder.set_role(Role::Window)
         } else if let Some(element_data) = node.element_data() {
             builder.set_role(implicit_role(element_data));
+            // Roles alone do not expose a picker's current value or its options.
+            // Read live selectedness so keyboard and script changes reach the tree.
+            match element_data.name.local.as_ref() {
+                "select" => builder.set_value(self.select_label(node.id)),
+                "option" => {
+                    builder.set_label(self.option_label(node.id));
+                    builder.set_selected(self.option_is_selected(node.id));
+                }
+                _ => {}
+            }
             builder.set_html_tag(element_data.name.local.to_string());
         } else if node.is_text_node() {
             builder.set_role(Role::TextRun);
