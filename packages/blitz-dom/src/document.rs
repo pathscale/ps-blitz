@@ -255,6 +255,41 @@ pub struct BaseDocument {
     /// paints beneath every background between them and disappears.
     pub(crate) hoisted_fixed_parents: HashMap<NodeId, NodeId>,
 
+    /// Every `position: fixed` node whose containing block is the viewport,
+    /// which is every one of them except those under a transformed ancestor.
+    ///
+    /// Collected by the walk that hoists them, and used by
+    /// `resolve_fixed_positions` to hold them still while the page scrolls.
+    pub(crate) fixed_nodes: Vec<NodeId>,
+
+    /// The viewport scroll currently baked into those nodes' locations.
+    ///
+    /// One value for the whole document rather than one per node: the pin is
+    /// the same displacement for every fixed box, because they all share the
+    /// viewport as their containing block. Reset by `resolve_layout`, which
+    /// rewrites the locations it was added to.
+    pub(crate) fixed_scroll_offset: crate::Point<f64>,
+
+    /// Every `position: sticky` node in the document, in tree order.
+    ///
+    /// Collected by the same walk that hoists fixed nodes, because both need
+    /// one pre-order pass over the box tree and a second one would cost the
+    /// same on every frame of every document, sticky or not. Tree order matters:
+    /// a sticky box inside another sticky box is adjusted on top of its
+    /// ancestor's adjustment, so the ancestor has to be settled first.
+    pub(crate) sticky_nodes: Vec<NodeId>,
+
+    /// For each sticky node, the offset currently baked into its
+    /// `final_layout().location`.
+    ///
+    /// The adjustment is written into the box itself so that paint, hit testing
+    /// and `absolute_position` cannot disagree about where the box is. That
+    /// makes the pass non-idempotent unless it can recover the flow position it
+    /// started from, which is what this records. Cleared by `resolve_layout`,
+    /// which rewrites every location from taffy and so discards the offsets
+    /// along with them.
+    pub(crate) sticky_offsets: HashMap<NodeId, taffy::Point<f32>>,
+
     /// Stacking contexts holding a hoisted child that an ancestor clips.
     ///
     /// Collected while flushing styles so that `resolve_hoisted_clips` visits
@@ -529,6 +564,10 @@ impl BaseDocument {
 
         let mut doc = Self {
             hoisted_fixed_parents: HashMap::new(),
+            fixed_nodes: Vec::new(),
+            fixed_scroll_offset: crate::Point::ZERO,
+            sticky_nodes: Vec::new(),
+            sticky_offsets: HashMap::new(),
             hoisted_clip_hosts: Vec::new(),
             id,
             tx,
@@ -2589,7 +2628,27 @@ impl BaseDocument {
     /// Scroll a node by given x and y
     /// Will bubble scrolling up to parent node once it can no longer scroll further
     /// If we're already at the root node, bubbles scrolling up to the viewport
+    ///
+    /// A `position: sticky` box is held against the edge of the scrollport it
+    /// lives in, so the boxes have to be re-adjusted here rather than only in
+    /// `resolve`: a wheel event does not necessarily produce a style and layout
+    /// pass, and a header that only unstuck on the next restyle is a header
+    /// that visibly lags the scroll.
     pub fn scroll_node_by_has_changed<F: FnMut(DomEvent)>(
+        &mut self,
+        node_id: NodeId,
+        x: f64,
+        y: f64,
+        dispatch_event: F,
+    ) -> bool {
+        let has_changed = self.scroll_node_by_inner(node_id, x, y, dispatch_event);
+        if has_changed {
+            self.resolve_sticky_positions();
+        }
+        has_changed
+    }
+
+    fn scroll_node_by_inner<F: FnMut(DomEvent)>(
         &mut self,
         node_id: NodeId,
         x: f64,
@@ -2653,7 +2712,7 @@ impl BaseDocument {
 
             if bubble_x != 0.0 || bubble_y != 0.0 {
                 let bubbled = if let Some(parent) = parent {
-                    self.scroll_node_by_has_changed(parent, bubble_x, bubble_y, dispatch_event)
+                    self.scroll_node_by_inner(parent, bubble_x, bubble_y, dispatch_event)
                 } else {
                     self.scroll_viewport_by_has_changed(bubble_x, bubble_y)
                 };
@@ -2743,7 +2802,7 @@ impl BaseDocument {
 
         if bubble_x != 0.0 || bubble_y != 0.0 {
             if let Some(parent) = parent {
-                return self.scroll_node_by_has_changed(parent, bubble_x, bubble_y, dispatch_event)
+                return self.scroll_node_by_inner(parent, bubble_x, bubble_y, dispatch_event)
                     | has_changed;
             } else {
                 return self.scroll_viewport_by_has_changed(bubble_x, bubble_y) | has_changed;
@@ -2783,7 +2842,16 @@ impl BaseDocument {
         self.viewport_scroll.y =
             f64::max(0.0, f64::min(new_scroll.1, content_height - window_height));
 
-        self.viewport_scroll != initial
+        let has_changed = self.viewport_scroll != initial;
+        if has_changed {
+            // The viewport is the scrollport a page-level sticky box is held
+            // against, and the containing block a fixed box is pinned to, so
+            // both move with this and not with the next relayout. See
+            // `resolve_sticky_positions` and `resolve_fixed_positions`.
+            self.resolve_sticky_positions();
+            self.resolve_fixed_positions();
+        }
+        has_changed
     }
 
     pub fn scroll_by(
@@ -2988,6 +3056,10 @@ impl BaseDocument {
         // Non-atomic inline elements have no layout box of their own: return
         // the union of their per-line-box fragment rects.
         if let Some(rects) = self.inline_fragment_rects(node_id) {
+            let rects: Vec<_> = rects
+                .into_iter()
+                .map(|rect| self.transformed_client_rect(node_id, rect))
+                .collect();
             let x0 = rects.iter().map(|r| r.x).fold(f64::INFINITY, f64::min);
             let y0 = rects.iter().map(|r| r.y).fold(f64::INFINITY, f64::min);
             let x1 = rects
@@ -3018,12 +3090,56 @@ impl BaseDocument {
         }
         let pos = node.absolute_position(0.0, 0.0);
 
-        Some(BoundingRect {
-            x: pos.x as f64 - self.viewport_scroll.x,
-            y: pos.y as f64 - self.viewport_scroll.y,
-            width: node.unrounded_layout().size.width as f64,
-            height: node.unrounded_layout().size.height as f64,
-        })
+        Some(self.transformed_client_rect(
+            node_id,
+            BoundingRect {
+                x: pos.x as f64 - self.viewport_scroll.x,
+                y: pos.y as f64 - self.viewport_scroll.y,
+                width: node.unrounded_layout().size.width as f64,
+                height: node.unrounded_layout().size.height as f64,
+            },
+        ))
+    }
+
+    /// Map the layout rectangle through the same two-dimensional transforms as paint.
+    /// Layout coordinates deliberately exclude transforms; CSSOM client rectangles do not.
+    fn transformed_client_rect(&self, node_id: NodeId, rect: BoundingRect) -> BoundingRect {
+        let mut matrix = kurbo::Affine::IDENTITY;
+        let mut current = self.get_node(node_id);
+        let scale = self.viewport.scale_f64();
+        while let Some(node) = current {
+            if matches!(
+                node.data,
+                NodeData::Element(_) | NodeData::AnonymousBlock(_) | NodeData::Document(_)
+            ) && let Some(transform) = *node.transform()
+            {
+                let [a, b, c, d, e, f] = transform.as_coeffs();
+                let css_transform = kurbo::Affine::new([a, b, c, d, e / scale, f / scale]);
+                let origin = node.absolute_position(0.0, 0.0);
+                let translate = kurbo::Affine::translate((
+                    origin.x as f64 - self.viewport_scroll.x,
+                    origin.y as f64 - self.viewport_scroll.y,
+                ));
+                matrix = translate * css_transform * translate.inverse() * matrix;
+            }
+            current = node
+                .layout_parent
+                .get()
+                .or(node.parent)
+                .and_then(|id| self.get_node(id));
+        }
+        let transformed = matrix.transform_rect_bbox(kurbo::Rect::new(
+            rect.x,
+            rect.y,
+            rect.x + rect.width,
+            rect.y + rect.height,
+        ));
+        BoundingRect {
+            x: transformed.x0,
+            y: transformed.y0,
+            width: transformed.width(),
+            height: transformed.height(),
+        }
     }
 
     /// Computes the sizes and positions of the `Node`'s box fragments relative to the
@@ -3032,7 +3148,10 @@ impl BaseDocument {
     /// spans within an inline root's text layout) return one rect per line box.
     pub fn node_client_rects(&self, node_id: NodeId) -> Vec<BoundingRect> {
         match self.inline_fragment_rects(node_id) {
-            Some(rects) => rects,
+            Some(rects) => rects
+                .into_iter()
+                .map(|rect| self.transformed_client_rect(node_id, rect))
+                .collect(),
             None => self.get_client_bounding_rect(node_id).into_iter().collect(),
         }
     }
@@ -3146,15 +3265,19 @@ root={:?} root_right={root_right:.1} root_w={:.1} lines={} layout_scale={:.2} vp
 
         let node = self.get_node(node_id)?;
 
-        // Only non-atomic inline elements lack their own layout box: they are
-        // flattened into the containing inline root's text layout as style spans.
-        if !node.is_element() || node.flags.is_inline_root() {
-            return None;
-        }
-        let display = node.primary_styles()?.clone_display();
-        if !(display.outside() == DisplayOutside::Inline && display.inside() == DisplayInside::Flow)
-        {
-            return None;
+        // Text and non-atomic inline elements live in the inline root's glyph
+        // runs rather than owning layout boxes.
+        let is_text = node.is_text_node();
+        if !is_text {
+            if !node.is_element() || node.flags.is_inline_root() {
+                return None;
+            }
+            let display = node.primary_styles()?.clone_display();
+            if !(display.outside() == DisplayOutside::Inline
+                && display.inside() == DisplayInside::Flow)
+            {
+                return None;
+            }
         }
 
         let inline_root = node.inline_root_ancestor()?;
@@ -3206,7 +3329,13 @@ root={:?} root_right={root_right:.1} root_w={:.1} lines={} layout_scale={:.2} vp
             for item in line.items() {
                 match item {
                     PositionedLayoutItem::GlyphRun(glyph_run) => {
-                        if !is_in_target(glyph_run.style().brush.id) {
+                        let brush = glyph_run.style().brush;
+                        let matches = if is_text {
+                            brush.text_node == Some(node_id)
+                        } else {
+                            is_in_target(brush.id)
+                        };
+                        if !matches {
                             continue;
                         }
                         let x0 = glyph_run.offset() as f64;
@@ -3221,7 +3350,7 @@ root={:?} root_right={root_right:.1} root_w={:.1} lines={} layout_scale={:.2} vp
                         add(x0, y0, x1, y1);
                     }
                     PositionedLayoutItem::InlineBox(inline_box) => {
-                        if !is_in_target(NodeId::from_u64(inline_box.id)) {
+                        if is_text || !is_in_target(NodeId::from_u64(inline_box.id)) {
                             continue;
                         }
                         let x0 = inline_box.x as f64;

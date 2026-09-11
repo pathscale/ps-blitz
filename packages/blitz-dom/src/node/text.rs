@@ -249,11 +249,16 @@ fn clipboard_command(event: &BlitzKeyEvent) -> Option<ClipboardCommand> {
 pub struct TextBrush {
     /// The node id for the span
     pub id: NodeId,
+    /// The DOM text node supplying this run, separate from its styling element.
+    pub text_node: Option<NodeId>,
 }
 
 impl TextBrush {
     pub(crate) fn from_id(id: NodeId) -> Self {
-        Self { id }
+        Self {
+            id,
+            text_node: None,
+        }
     }
 }
 

@@ -290,6 +290,8 @@ impl BaseDocument {
         }
         #[cfg(target_arch = "wasm32")]
         self.resolve_layout();
+        self.resolve_sticky_positions();
+        self.resolve_fixed_positions();
         self.resolve_hoisted_positions();
         self.correct_hoisted_fixed_positions();
         self.resolve_hoisted_clips();
@@ -311,6 +313,8 @@ impl BaseDocument {
             }
             self.flush_styles_to_layout(root_node_id);
             self.resolve_layout();
+            self.resolve_sticky_positions();
+            self.resolve_fixed_positions();
             self.resolve_hoisted_positions();
             self.correct_hoisted_fixed_positions();
             self.resolve_hoisted_clips();
@@ -685,11 +689,19 @@ impl BaseDocument {
     ///
     /// <https://drafts.csswg.org/css-position/#fixed-pos>
     /// <https://drafts.csswg.org/css-transforms-1/#propdef-transform>
+    ///
+    /// The same walk collects `position: sticky` nodes into
+    /// [`Self::sticky_nodes`]. Nothing about the two is related, but both need
+    /// one pre-order pass over the box tree, and a second walk would be paid on
+    /// every frame of every document whether or not it has a sticky box in it.
     pub fn hoist_fixed_position_nodes(&mut self) {
         let root_id = self.root_element().id;
 
         let mut hoisted: Vec<NodeId> = Vec::new();
-        collect_fixed(self, root_id, false, &mut hoisted);
+        let mut sticky: Vec<NodeId> = Vec::new();
+        collect_fixed(self, root_id, false, &mut hoisted, &mut sticky);
+        self.sticky_nodes = sticky;
+        self.fixed_nodes = hoisted.clone();
 
         // Drop nodes that are no longer fixed, and keep the rest.
         //
@@ -735,6 +747,7 @@ impl BaseDocument {
             node_id: NodeId,
             under_transform: bool,
             out: &mut Vec<NodeId>,
+            sticky: &mut Vec<NodeId>,
         ) {
             let children = doc.nodes[node_id].layout_children.borrow().clone();
             let Some(children) = children else {
@@ -761,8 +774,10 @@ impl BaseDocument {
                     continue;
                 }
 
-                if !under_transform && styles.clone_position() == Position::Fixed {
-                    out.push(child_id);
+                match styles.clone_position() {
+                    Position::Fixed if !under_transform => out.push(child_id),
+                    Position::Sticky => sticky.push(child_id),
+                    _ => {}
                 }
 
                 collect_fixed(
@@ -770,6 +785,7 @@ impl BaseDocument {
                     child_id,
                     under_transform || establishes_containing_block(&styles),
                     out,
+                    sticky,
                 );
             }
         }
@@ -785,6 +801,275 @@ impl BaseDocument {
                 || !matches!(box_styles.rotate, Rotate::None)
                 || !matches!(box_styles.scale, Scale::None)
         }
+    }
+
+    /// Hold every viewport-anchored `position: fixed` box still while the page
+    /// scrolls under it.
+    ///
+    /// Paint translates the whole tree by the negated viewport scroll, and a
+    /// hoisted fixed layer is in that tree like everything else, so a fixed box
+    /// held its document position and left the screen exactly like flow
+    /// content: an overlay authored `top: 0` painted at screen y=-800 on a page
+    /// scrolled 800px down. Its document position has to track the scroll for
+    /// its screen position to hold still, which is the whole of the correction.
+    ///
+    /// Boxes under a transformed ancestor are left alone: that ancestor is
+    /// their containing block, so they are not viewport-anchored at all and
+    /// `hoist_fixed_position_nodes` does not collect them.
+    ///
+    /// This does not give a fixed box the containing block CSS asks for. That
+    /// is still the root element, which takes its height from its content, so
+    /// `bottom` and `inset` resolve against the document rather than against a
+    /// viewport-sized initial containing block. Closing that needs an ICB node
+    /// distinct from the root element, which `fixed_position.rs` records as an
+    /// ignored test.
+    pub(crate) fn resolve_fixed_positions(&mut self) {
+        let scroll = self.viewport_scroll;
+        if scroll == self.fixed_scroll_offset {
+            return;
+        }
+        let delta_x = (scroll.x - self.fixed_scroll_offset.x) as f32;
+        let delta_y = (scroll.y - self.fixed_scroll_offset.y) as f32;
+
+        for &node_id in self.fixed_nodes.iter() {
+            let Some(node) = self.nodes.get_mut(node_id) else {
+                continue;
+            };
+            let location = &mut node.final_layout_mut().location;
+            location.x += delta_x;
+            location.y += delta_y;
+        }
+        self.fixed_scroll_offset = scroll;
+    }
+
+    /// Hold every `position: sticky` box against the edge of its scrollport.
+    ///
+    /// A sticky box lays out in flow, reserving its space there, and is then
+    /// displaced so that it stays between its own flow position and the far
+    /// edge of its containing block. `stylo_taffy` maps `Position::Sticky` onto
+    /// `taffy::Position::Relative`, which gets the first half right and does
+    /// nothing at all about the second, so every sticky navbar and document
+    /// sidebar on the fleet simply scrolled away, on documents 5,000 to
+    /// 16,700px tall.
+    ///
+    /// The displacement is written straight into the box's
+    /// `final_layout().location` rather than kept beside it. Paint, hit testing
+    /// and `absolute_position` all read that one field, so writing it is what
+    /// makes them agree; a parallel offset would have to be threaded through
+    /// each of them and would disagree the moment one was missed. The cost is
+    /// that this pass has to be able to recover the flow position it started
+    /// from, which is what [`Self::sticky_offsets`] records.
+    ///
+    /// Runs after layout, which is the only point at which the boxes it reads
+    /// exist, and again after a scroll, because a wheel event does not
+    /// necessarily produce a style and layout pass.
+    ///
+    /// <https://drafts.csswg.org/css-position/#stickypos-insets>
+    pub(crate) fn resolve_sticky_positions(&mut self) {
+        if self.sticky_nodes.is_empty() && self.sticky_offsets.is_empty() {
+            return;
+        }
+
+        // Put every box back at its flow position first. Recomputing from an
+        // already-displaced box would compound the offset, walking a header
+        // down the page one scroll at a time, and a node that stopped being
+        // sticky since the last pass is not in `sticky_nodes` to be corrected
+        // any other way.
+        for (&node_id, offset) in self.sticky_offsets.iter() {
+            let Some(node) = self.nodes.get_mut(node_id) else {
+                continue;
+            };
+            let location = &mut node.final_layout_mut().location;
+            location.x -= offset.x;
+            location.y -= offset.y;
+        }
+        self.sticky_offsets.clear();
+
+        let nodes = std::mem::take(&mut self.sticky_nodes);
+        for &node_id in nodes.iter() {
+            let Some(offset) = self.sticky_offset_of(node_id) else {
+                continue;
+            };
+            if offset.x == 0.0 && offset.y == 0.0 {
+                continue;
+            }
+            let location = &mut self.nodes[node_id].final_layout_mut().location;
+            location.x += offset.x;
+            location.y += offset.y;
+            self.sticky_offsets.insert(node_id, offset);
+        }
+        self.sticky_nodes = nodes;
+    }
+
+    /// The displacement `node_id` needs to stay inside its sticky view
+    /// rectangle, given the boxes and scroll offsets as they stand.
+    ///
+    /// Every coordinate here is a painted document coordinate:
+    /// `absolute_position` has already applied each ancestor scroll offset, so
+    /// a box and the scrollport it is measured against are directly comparable.
+    /// The one scroll offset it does not apply is the viewport's, which paint
+    /// subtracts from the whole document, so a box that holds still on screen
+    /// is one whose document coordinate tracks the viewport scroll.
+    fn sticky_offset_of(&self, node_id: NodeId) -> Option<taffy::Point<f32>> {
+        let node = self.nodes.get(node_id)?;
+        let styles = node.primary_styles()?;
+        if styles.clone_position() != Position::Sticky {
+            return None;
+        }
+
+        let size = node.final_layout().size;
+        let base = node.absolute_position(0.0, 0.0);
+
+        // The sticky view rectangle: the padding box of the nearest scroll
+        // container, or the viewport when there is none above it.
+        let (port_x, port_y, port_width, port_height) = match self.nearest_scrollport(node_id) {
+            Some(scroller_id) => {
+                let scroller = &self.nodes[scroller_id];
+                let layout = *scroller.final_layout();
+                let origin = scroller.absolute_position(0.0, 0.0);
+                (
+                    origin.x + layout.border.left,
+                    origin.y + layout.border.top,
+                    layout.size.width - layout.border.left - layout.border.right,
+                    layout.size.height - layout.border.top - layout.border.bottom,
+                )
+            }
+            None => {
+                let scale = self.viewport.scale();
+                (
+                    self.viewport_scroll.x as f32,
+                    self.viewport_scroll.y as f32,
+                    self.viewport.window_size.0 as f32 / scale,
+                    self.viewport.window_size.1 as f32 / scale,
+                )
+            }
+        };
+
+        let insets = styles.get_position();
+        // Percentages resolve against the sticky view rectangle, which is the
+        // rectangle the inset is measured inside.
+        let inset = |value: &style::values::computed::Inset, basis: f32| {
+            use style::values::generics::position::GenericInset as Inset;
+            match value {
+                Inset::LengthPercentage(value) => Some(
+                    value
+                        .resolve(style::values::computed::Length::new(basis))
+                        .px(),
+                ),
+                _ => None,
+            }
+        };
+
+        // Where the box may travel: its containing block, which is its layout
+        // parent's padding box, taken in the same painted coordinates. The
+        // parent's own scroll offset is subtracted because the region scrolls
+        // with the content, and the extent is widened to the scrollable content
+        // so that a sticky box whose parent *is* the scroller stays held for
+        // the whole scroll rather than only across one scrollport.
+        let parent = node
+            .layout_parent
+            .get()
+            .and_then(|parent_id| self.nodes.get(parent_id))?;
+        let (block_x, block_y, block_width, block_height) = {
+            let layout = *parent.final_layout();
+            let origin = parent.absolute_position(0.0, 0.0);
+            let scroll = *parent.scroll_offset();
+            (
+                origin.x + layout.border.left - scroll.x as f32,
+                origin.y + layout.border.top - scroll.y as f32,
+                (layout.size.width - layout.border.left - layout.border.right)
+                    .max(layout.content_size.width),
+                (layout.size.height - layout.border.top - layout.border.bottom)
+                    .max(layout.content_size.height),
+            )
+        };
+
+        let axis = |start: Option<f32>,
+                    end: Option<f32>,
+                    base: f32,
+                    extent: f32,
+                    port_start: f32,
+                    port_extent: f32,
+                    block_start: f32,
+                    block_extent: f32| {
+            // `start` (top/left) pushes the box away from the near edge of the
+            // scrollport; `end` (bottom/right) pulls it back from the far one.
+            // A box can satisfy both at once when it is smaller than the
+            // rectangle between them; when it cannot, the near edge wins, so
+            // that constraint is applied second.
+            let mut offset = 0.0f32;
+            if let Some(end) = end {
+                offset = (port_start + port_extent - end - extent - base).min(0.0);
+            }
+            if let Some(start) = start {
+                let shift = (port_start + start - base).max(0.0);
+                if shift > 0.0 {
+                    offset = shift;
+                }
+            }
+
+            // Stickiness ends where the containing block does: a box pinned for
+            // ever would escape its own section and float over the next one.
+            let furthest = (block_start + block_extent - extent - base).max(0.0);
+            let nearest = (block_start - base).min(0.0);
+            offset.clamp(nearest, furthest)
+        };
+
+        Some(taffy::Point {
+            x: axis(
+                inset(&insets.left, port_width),
+                inset(&insets.right, port_width),
+                base.x,
+                size.width,
+                port_x,
+                port_width,
+                block_x,
+                block_width,
+            ),
+            y: axis(
+                inset(&insets.top, port_height),
+                inset(&insets.bottom, port_height),
+                base.y,
+                size.height,
+                port_y,
+                port_height,
+                block_y,
+                block_height,
+            ),
+        })
+    }
+
+    /// The nearest ancestor of `node_id` that scrolls its content, or `None`
+    /// when nothing between it and the root does and the viewport is the
+    /// scrollport.
+    ///
+    /// The root element is excluded deliberately: per the CSS overflow
+    /// propagation rules its overflow belongs to the viewport, which is also
+    /// why `scroll_node_by_has_changed` forwards a scroll that reaches it.
+    fn nearest_scrollport(&self, node_id: NodeId) -> Option<NodeId> {
+        use style::computed_values::overflow_x::T as Overflow;
+
+        let root_id = self.try_root_element()?.id;
+        let mut current = self.nodes.get(node_id)?.layout_parent.get();
+        while let Some(id) = current {
+            if id == root_id {
+                return None;
+            }
+            let ancestor = self.nodes.get(id)?;
+            if let Some(styles) = ancestor.primary_styles() {
+                let scrolls = |overflow| {
+                    matches!(
+                        overflow,
+                        Overflow::Scroll | Overflow::Auto | Overflow::Hidden
+                    )
+                };
+                if scrolls(styles.clone_overflow_x()) || scrolls(styles.clone_overflow_y()) {
+                    return Some(id);
+                }
+            }
+            current = ancestor.layout_parent.get();
+        }
+        None
     }
 
     /// Give each held fixed layer the offset that cancels its hoist.
@@ -1057,6 +1342,14 @@ impl BaseDocument {
 
         taffy::compute_root_layout(self, root_element_id, available_space);
         taffy::round_layout(self, root_element_id);
+
+        // Rounding rewrites every location from taffy's own output, discarding
+        // the sticky and fixed displacements written into them along with
+        // everything else. Forgetting them here is what keeps
+        // `resolve_sticky_positions` and `resolve_fixed_positions` able to
+        // treat what they hold as "what is currently baked into a box".
+        self.sticky_offsets.clear();
+        self.fixed_scroll_offset = crate::Point::ZERO;
 
         // Table rows and row groups are flattened into a grid of cells and
         // never reach Taffy, so nothing wrote a layout for them at all. Describe

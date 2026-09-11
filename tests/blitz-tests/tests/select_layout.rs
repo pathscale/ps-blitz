@@ -64,3 +64,44 @@ fn a_bare_select_still_gets_a_box() {
         "a select with no authored size must still be hittable, got {width}x{height}"
     );
 }
+
+#[test]
+fn a_labelled_option_is_measured_by_its_label() {
+    // The `label` attribute is what the control shows; the element's text is
+    // not displayed at all. Measuring the text sized the box to a string the
+    // reader never sees.
+    let doc = doc(r#"<html><body style="margin:0; line-height:normal">
+            <select id="short"><option label="X">A considerably longer hidden string</option></select>
+            <select id="long"><option>A considerably longer hidden string</option></select>
+        </body></html>"#);
+
+    let (short_width, _) = size_of(&doc, "#short");
+    let (long_width, _) = size_of(&doc, "#long");
+    assert!(
+        short_width < long_width / 4.0,
+        "the labelled select must be sized from its one-character label, got {short_width} against {long_width}"
+    );
+}
+
+#[test]
+fn an_option_written_across_several_lines_is_not_measured_wider_for_it() {
+    // The whitespace inside the label is collapsed away when it is rendered,
+    // so it must not be counted. `trim()` only strips the ends: a label whose
+    // own words are split across lines kept the newline and the run of leading
+    // spaces before the next word, and the control came out that much wider.
+    let indented = doc(r#"<html><body style="margin:0; line-height:normal">
+            <select id="country">
+                <option value="us">United
+                    States</option>
+            </select>
+        </body></html>"#);
+    let inline = doc(r#"<html><body style="margin:0; line-height:normal">
+            <select id="country"><option value="us">United States</option></select>
+        </body></html>"#);
+
+    assert_eq!(
+        size_of(&indented, "#country").0,
+        size_of(&inline, "#country").0,
+        "how the markup is formatted must not change how wide the control is"
+    );
+}

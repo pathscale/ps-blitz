@@ -86,6 +86,25 @@ pub(crate) fn handle_key_or_input_event<F: FnMut(DomEvent)>(
             return;
         }
 
+        // A focussed select owns the arrows, Home and End: they move the
+        // selection. Checked before the mutable borrow below, because deciding
+        // where a select's selection goes means reading its options, which are
+        // other nodes.
+        //
+        // There was no keyboard activation for anything but a text input, so a
+        // picker could be focussed and then not driven at all. A harness has no
+        // other way in: worktables.dev's schema designer selects its column
+        // type by keyboard or not at all.
+        if doc
+            .get_node(node_id)
+            .is_some_and(|node| node.data.is_element_with_tag_name(&local_name!("select")))
+        {
+            if let KeyboardOrTextInputEvent::KeyPress(key_event) = &event {
+                handle_select_keypress(doc, node_id, key_event, dispatch_event);
+            }
+            return;
+        }
+
         let node = &mut doc.nodes[node_id];
         let Some(element_data) = node.element_data_mut() else {
             return;
@@ -114,6 +133,49 @@ pub(crate) fn handle_key_or_input_event<F: FnMut(DomEvent)>(
             }
         }
     }
+}
+
+/// Move a focussed select's selection with the arrows, Home and End.
+///
+/// A select commits immediately, the way a checkbox does and unlike a text
+/// control: the keystroke *is* the commit, so `input` fires here and
+/// blitz-script synthesises the `change` that follows it. Waiting for blur, as
+/// a text field does, would leave a picker that never reports what was chosen.
+fn handle_select_keypress<F: FnMut(DomEvent)>(
+    doc: &mut BaseDocument,
+    node_id: NodeId,
+    event: &BlitzKeyEvent,
+    mut dispatch_event: F,
+) {
+    if !event.state.is_pressed() {
+        return;
+    }
+
+    let target_index = match &event.key {
+        Key::ArrowDown => doc.select_index_step(node_id, true),
+        Key::ArrowUp => doc.select_index_step(node_id, false),
+        Key::Home => doc.select_index_edge(node_id, false),
+        Key::End => doc.select_index_edge(node_id, true),
+        _ => return,
+    };
+    let Some(index) = target_index else {
+        // Already at the end of the list, or nothing selectable. Silently
+        // doing nothing is right: a browser does not wrap around.
+        return;
+    };
+
+    if !doc.set_select_selected_index(node_id, index) {
+        return;
+    }
+    // The selectedness is what `:checked` and the accessibility tree read, so
+    // the restyle has to be asked for or the change is invisible.
+    doc.snapshot_node(node_id);
+
+    let value = doc.select_value(node_id);
+    dispatch_event(DomEvent::new(
+        node_id,
+        DomEventData::Input(BlitzInputEvent { value }),
+    ));
 }
 
 impl BaseDocument {

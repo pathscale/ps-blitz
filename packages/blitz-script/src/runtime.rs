@@ -956,7 +956,12 @@ impl ScriptRuntime {
         // were covered, so `change` on a text field was dead, and a phone-number
         // field bound to it gated a Confirm button that nothing could open.
         let synthesise_change = match &event.data {
-            DomEventData::Input(_) => self.target_is_checkbox_or_radio(event.target),
+            DomEventData::Input(_) => {
+                // A select commits on selection, not on blur: the keystroke or
+                // the press is the commit, exactly as it is for a checkbox.
+                self.target_is_checkbox_or_radio(event.target)
+                    || self.target_is_select(event.target)
+            }
             DomEventData::Focus(_) => {
                 self.focussed_text_value = self
                     .text_control_value(event.target)
@@ -1012,6 +1017,14 @@ impl ScriptRuntime {
             .element_data()?
             .text_input_data()
             .map(|input| input.editor.text().to_string())
+    }
+
+    fn target_is_select(&self, node_id: NodeId) -> bool {
+        let doc = self.ctx.doc.borrow();
+        doc.get_node(node_id).is_some_and(|node| {
+            node.data
+                .is_element_with_tag_name(&blitz_dom::local_name!("select"))
+        })
     }
 
     fn target_is_checkbox_or_radio(&self, node_id: NodeId) -> bool {

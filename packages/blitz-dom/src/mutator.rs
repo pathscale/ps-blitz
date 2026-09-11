@@ -497,6 +497,49 @@ impl DocumentMutator<'_> {
             || (tag, attr) == tag_and_attr!("iframe", "srcdoc")
         {
             self.load_iframe(node_id);
+        } else if (tag, attr) == tag_and_attr!("option", "selected") {
+            // `selected` is an HTML boolean attribute: present means selected,
+            // whatever the value reads. The same trap `checked` fell into, where
+            // `selected="false"` selected the option.
+            //
+            // Selectedness lives on the owning select once that has been
+            // constructed, and construction is idempotent, so writing the
+            // attribute alone would land nowhere anything reads. Before
+            // construction the attribute is the only carrier and seeds the
+            // state on the next resolve, which is why this is allowed to do
+            // nothing at all.
+            self.set_option_selected_state(node_id, true);
+        }
+    }
+
+    /// Push an option's selectedness into the owning select's live state, if
+    /// that state exists yet.
+    fn set_option_selected_state(&mut self, option_id: NodeId, selected: bool) {
+        let Some(select_id) = self.doc.option_owner_select(option_id) else {
+            return;
+        };
+        let Some(index) = self
+            .doc
+            .select_options(select_id)
+            .iter()
+            .position(|id| *id == option_id)
+        else {
+            return;
+        };
+        let changed = if selected {
+            self.doc.set_select_selected_index(select_id, index)
+        } else {
+            self.doc
+                .get_node_mut(select_id)
+                .and_then(|node| node.data.downcast_element_mut())
+                .and_then(|el| el.select_data_mut())
+                .is_some_and(|data| data.set_selected(index, false))
+        };
+        if changed {
+            // `option:checked` is matched from this state, so the restyle has
+            // to be asked for here or the change is invisible to CSS.
+            self.doc.snapshot_node(option_id);
+            self.doc.snapshot_node(select_id);
         }
     }
 
@@ -1392,6 +1435,7 @@ impl<'doc> DocumentMutator<'doc> {
                 SpecialElementData::TableRoot(_) => {}
                 SpecialElementData::TextInput(_) => {}
                 SpecialElementData::CheckboxInput(_) => {}
+                SpecialElementData::Select(_) => {}
                 #[cfg(feature = "file-input")]
                 SpecialElementData::FileInput(_) => {}
                 SpecialElementData::None => {}

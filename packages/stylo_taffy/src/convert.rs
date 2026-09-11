@@ -149,6 +149,28 @@ pub fn inset(val: &stylo::InsetVal) -> taffy::LengthPercentageAuto {
     }
 }
 
+/// An inset, as the layout engine should see it for a box in `position`.
+///
+/// Taffy applies the inset of a `Relative` box as a displacement of its flow
+/// position. For `position: sticky` that is wrong twice over: the inset is a
+/// threshold rather than an offset, so a box that has not been scrolled past
+/// must not move at all, and the offset that does apply is measured from the
+/// scrollport rather than from the flow position. `position: sticky; top: 24px`
+/// was drawn 24px below where it belonged before anything had scrolled.
+///
+/// So sticky boxes reach taffy with no inset, and the engine reads the authored
+/// insets from the computed style when it applies the sticky adjustment.
+#[inline]
+pub fn inset_for_position(
+    position: stylo::Position,
+    val: &stylo::InsetVal,
+) -> taffy::LengthPercentageAuto {
+    if matches!(position, stylo::Position::Sticky) {
+        return taffy::LengthPercentageAuto::AUTO;
+    }
+    self::inset(val)
+}
+
 #[inline]
 pub fn is_block(input: stylo::Display) -> bool {
     matches!(input.outside(), stylo::DisplayOutside::Block)
@@ -226,9 +248,16 @@ pub fn position(input: stylo::Position) -> taffy::Position {
         stylo::Position::Relative => taffy::Position::Relative,
         stylo::Position::Static => taffy::Position::Relative,
 
-        // TODO: support position:fixed and sticky
+        // TODO: support position:fixed
         stylo::Position::Absolute => taffy::Position::Absolute,
         stylo::Position::Fixed => taffy::Position::Absolute,
+
+        // A sticky box lays out in flow and reserves its space there, which is
+        // exactly what `Relative` does. The offset that holds it against the
+        // edge of its scrollport is not a layout property at all: it depends on
+        // a scroll position, so it is applied after layout by the embedder.
+        // See `inset_for_position` for the half of that which taffy must not
+        // do on its own.
         stylo::Position::Sticky => taffy::Position::Relative,
     }
 }
@@ -698,11 +727,14 @@ pub fn to_taffy_style(style: &stylo::ComputedValues) -> taffy::Style<Atom> {
         },
         aspect_ratio: self::aspect_ratio(pos.aspect_ratio),
 
-        inset: taffy::Rect {
-            left: self::inset(&pos.left),
-            right: self::inset(&pos.right),
-            top: self::inset(&pos.top),
-            bottom: self::inset(&pos.bottom),
+        inset: {
+            let position = style.clone_position();
+            taffy::Rect {
+                left: self::inset_for_position(position, &pos.left),
+                right: self::inset_for_position(position, &pos.right),
+                top: self::inset_for_position(position, &pos.top),
+                bottom: self::inset_for_position(position, &pos.bottom),
+            }
         },
         margin: taffy::Rect {
             left: self::margin(&margin.margin_left),

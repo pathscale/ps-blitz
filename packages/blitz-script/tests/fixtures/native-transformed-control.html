@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Transformed control geometry</title>
+<style>
+  body { margin: 0; }
+  #surface { position: absolute; left: 100px; top: 80px; width: 300px; height: 200px;
+    transform-origin: 0 0; transform: translate(10px, 15px) scale(2); }
+  #action { position: absolute; left: 20px; top: 30px; width: 80px; height: 40px; box-sizing: border-box; }
+  h1 { position: absolute; top: 550px; }
+</style>
+<div id="surface"><button id="action">Transformed action</button></div>
+<h1 id="result">Not activated</h1>
+<script>
+  let activations = 0;
+  document.getElementById('action').addEventListener('click', () => {
+    activations += 1;
+    const rect = document.getElementById('action').getBoundingClientRect();
+    document.getElementById('result').textContent =
+      'Activated ' + activations + ' at ' + rect.x + ',' + rect.y + ' size ' + rect.width + 'x' + rect.height;
+  });
+</script>
+</html>

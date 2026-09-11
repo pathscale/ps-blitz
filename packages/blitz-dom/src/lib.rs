@@ -53,6 +53,7 @@ mod mutator;
 pub mod paint_damage;
 mod query_selector;
 mod resolve;
+mod select;
 mod selection;
 #[cfg(feature = "shadow-dom")]
 mod shadow;
@@ -73,7 +74,16 @@ pub mod net;
 pub mod util;
 
 #[cfg(feature = "accessibility")]
-mod accessibility;
+pub mod accessibility;
+/// The role vocabulary [`accessibility::implicit_role`] answers in.
+///
+/// Re-exported rather than left to the caller to depend on: a second copy of
+/// `accesskit` in the graph makes its `Role` a different type from this one,
+/// and the error that produces names the same enum on both sides of a
+/// mismatch. Anything consuming the role rules gets the vocabulary from the
+/// crate that owns them.
+#[cfg(feature = "accessibility")]
+pub use accesskit;
 
 #[cfg(feature = "custom-widget")]
 pub use crate::node::Widget;
@@ -98,7 +108,7 @@ pub use markup5ever::{
     namespace_prefix, namespace_url, ns,
 };
 pub use mutator::DocumentMutator;
-pub use node::{Attribute, DocumentData, ElementData, Node, NodeData, TextNodeData};
+pub use node::{Attribute, DocumentData, ElementData, Node, NodeData, SelectData, TextNodeData};
 pub use paint_damage::PaintDamage;
 // Re-exported because `PaintDamage` takes and returns `kurbo::Rect` across the
 // crate boundary. A consumer that pulls kurbo in itself and lands on a

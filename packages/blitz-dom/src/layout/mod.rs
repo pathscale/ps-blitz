@@ -338,6 +338,15 @@ impl BaseDocument {
 /// sheet sees to that, and nothing replaces it. Without a measure of its own it
 /// laid out at zero and no site's country picker, currency picker or language
 /// picker had a box to press.
+///
+/// Still a character count rather than shaped text, because the options never
+/// reach layout and so are never shaped. What it counts is now the option's
+/// *label*, which is the string the control actually shows: a `label`
+/// attribute overrides the element's text, and the text is collapsed the way it
+/// would be rendered. Counting `text_content().trim()` measured the hidden text
+/// of a labelled option, and `trim()` only strips the ends, so a label whose own
+/// words were split across source lines counted the newline and the indentation
+/// before the next word and came out that much too wide.
 fn select_metrics_of(
     doc: &BaseDocument,
     node_id: blitz_traits::node_id::NodeId,
@@ -348,14 +357,10 @@ fn select_metrics_of(
         return None;
     }
 
-    let widest = crate::traversal::TreeTraverser::new_with_root(doc, node_id)
-        .filter_map(|descendant_id| doc.nodes.get(descendant_id))
-        .filter(|descendant| {
-            descendant
-                .data
-                .is_element_with_tag_name(&local_name!("option"))
-        })
-        .map(|option| option.text_content().trim().chars().count())
+    let widest = doc
+        .select_options(node_id)
+        .into_iter()
+        .map(|option_id| doc.option_label(option_id).chars().count())
         .max()
         .unwrap_or(0);
 

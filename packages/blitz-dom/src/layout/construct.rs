@@ -501,6 +501,14 @@ pub(crate) fn collect_layout_children(
             }
         }
 
+        // A select has no in-flow content of its own: `option { display: none }`
+        // in the user-agent sheet sees to that, so returning here costs nothing
+        // and keeps the options out of the box the control occupies.
+        if tag_name == "select" {
+            create_select(doc, container_node_id);
+            return;
+        }
+
         #[cfg(feature = "svg")]
         if matches!(tag_name, "svg") {
             // Serialised rather than `outer_html`, so that symbols referenced
@@ -1118,6 +1126,24 @@ fn create_checkbox_input(doc: &mut BaseDocument, input_element_id: NodeId) {
     }
 }
 
+fn create_select(doc: &mut BaseDocument, select_element_id: NodeId) {
+    // Read before the node is borrowed mutably: the seed comes from the
+    // options, which are other nodes.
+    let initial = doc.initial_select_data(select_element_id);
+    let option_count = initial.len();
+
+    let node = &mut doc.nodes[select_element_id];
+    let element = &mut node.data.downcast_element_mut().unwrap();
+    match element.special_data {
+        // Construction runs again on every resolve. Re-seeding would put the
+        // control back to its parsed state on the next frame, so a selection
+        // made by the user or by script would survive exactly until anything
+        // else on the page changed. Only the option count is refreshed.
+        SpecialElementData::Select(ref mut data) => data.resize(option_count),
+        _ => element.special_data = SpecialElementData::Select(initial),
+    }
+}
+
 /// Find and return the "layout_children" (inline boxes) for an inline layout
 /// without actually constructing the layout. This allows us to defer the expensive
 /// construction of the Parley layout (which invokes text shaping) to a paralell phase.
@@ -1505,8 +1531,12 @@ pub(crate) fn build_inline_layout_into(
                 };
             }
             NodeData::Text(data) => {
-                // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
-                // dbg!(&data.content);
+                // Keep the styling element for painting, and retain the text
+                // node's identity so inspection can recover its actual glyph bounds.
+                builder.push_style_modification_span(&[StyleProperty::Brush(TextBrush {
+                    id: parent_id,
+                    text_node: Some(node_id),
+                })]);
 
                 // TODO: optimize case transforms to be non-allocating
                 match parent_text_transform {
@@ -1520,6 +1550,7 @@ pub(crate) fn build_inline_layout_into(
                         builder.push_text(&data.content);
                     }
                 }
+                builder.pop_style_span();
             }
             NodeData::Comment { .. } | NodeData::ShadowRoot(_) => {
                 // node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);

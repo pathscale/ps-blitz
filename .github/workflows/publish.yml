@@ -104,8 +104,13 @@ jobs:
           #
           # The job reported success throughout, because it published exactly
           # the list it was given.
+          # `ps-blitz-debug-control` sits before `ps-blitz-script`, which takes
+          # it behind `debug-control`. It carries its own 0.3.x version rather
+          # than the engine's, so on an ordinary engine release the version
+          # check below finds it already on crates.io and skips it.
           crates='ps-blitz-traits ps-stylo-taffy ps-blitz-dom ps-blitz-platform-api
                   ps-blitz-dom-api ps-blitz-html ps-blitz-net ps-blitz-paint
+                  ps-blitz-debug-control
                   ps-blitz-script ps-blitz-shell
                   ps-blitz-wasm ps-blitz
                   ps-dioxus-native-dom ps-dioxus-native'

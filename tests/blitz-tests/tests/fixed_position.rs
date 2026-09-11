@@ -179,3 +179,100 @@ fn fixed_descendant_of_flow_content_is_viewport_relative() {
     assert_eq!((rect.x, rect.y), (0.0, 0.0));
     assert_eq!((rect.width, rect.height), (1344.0, 900.0));
 }
+
+/// A fixed box must not scroll with the document.
+///
+/// Paint translates the whole tree by the negated viewport scroll, hoisted
+/// fixed layers included, so a fixed box held its document position and left
+/// the screen exactly like flow content: an overlay `top: 0` on a page scrolled
+/// 800px down painted at screen y=-800. Its document position has to track the
+/// scroll for its screen position to hold still.
+#[test]
+fn a_fixed_box_holds_its_place_when_the_page_scrolls() {
+    let mut doc = document(
+        r#"<html><body style="margin:0">
+            <div id="bar" style="position:fixed;top:0;left:0;width:100px;height:50px"></div>
+            <div style="height:5000px"></div>
+        </body></html>"#,
+    );
+
+    assert_box(&doc, "bar", (0.0, 0.0, 100.0, 50.0));
+
+    doc.scroll_viewport_by(0.0, -800.0);
+    doc.resolve(0.0);
+
+    // Paint subtracts the viewport scroll from every box, so a box that stays
+    // on screen is one whose document coordinate tracks it.
+    assert_box(&doc, "bar", (0.0, 800.0, 100.0, 50.0));
+
+    // Which is the same statement in viewport coordinates, where a client rect
+    // is what a page reads.
+    let bar = doc.get_element_by_id("bar").unwrap();
+    let rect = doc.get_client_bounding_rect(bar).unwrap();
+    assert_eq!((rect.x, rect.y), (0.0, 0.0));
+}
+
+/// The pin has to be recomputed, not accumulated: applying it twice would walk
+/// a fixed overlay down the page one scroll at a time.
+#[test]
+fn scrolling_twice_does_not_accumulate_the_pin() {
+    let mut doc = document(
+        r#"<html><body style="margin:0">
+            <div id="bar" style="position:fixed;top:0;left:0;width:100px;height:50px"></div>
+            <div style="height:5000px"></div>
+        </body></html>"#,
+    );
+
+    for _ in 0..4 {
+        doc.scroll_viewport_by(0.0, -200.0);
+        doc.resolve(0.0);
+    }
+    assert_box(&doc, "bar", (0.0, 800.0, 100.0, 50.0));
+
+    doc.scroll_viewport_by(0.0, 800.0);
+    doc.resolve(0.0);
+    assert_box(&doc, "bar", (0.0, 0.0, 100.0, 50.0));
+}
+
+/// A scroll on its own, with no resolve after it, still has to move the box.
+#[test]
+fn a_scroll_alone_pins_a_fixed_box() {
+    let mut doc = document(
+        r#"<html><body style="margin:0">
+            <div id="bar" style="position:fixed;top:0;left:0;width:100px;height:50px"></div>
+            <div style="height:5000px"></div>
+        </body></html>"#,
+    );
+
+    doc.scroll_viewport_by(0.0, -300.0);
+    assert_box(&doc, "bar", (0.0, 300.0, 100.0, 50.0));
+}
+
+/// A fixed box under a transformed ancestor is positioned against that ancestor
+/// rather than the viewport, so it scrolls with the page like any other content.
+#[test]
+fn a_fixed_box_under_a_transform_is_not_pinned() {
+    let mut doc = document(
+        r#"<html><body style="margin:0">
+            <div id="ancestor" style="transform:translate(0,0);width:300px;height:200px">
+                <div id="nested" style="position:fixed;top:10px;left:10px;width:120px;height:40px"></div>
+            </div>
+            <div style="height:5000px"></div>
+        </body></html>"#,
+    );
+
+    let before = {
+        let nested = doc.get_element_by_id("nested").unwrap();
+        doc.tree()[nested].absolute_position(0.0, 0.0).y
+    };
+
+    doc.scroll_viewport_by(0.0, -400.0);
+    doc.resolve(0.0);
+
+    let nested = doc.get_element_by_id("nested").unwrap();
+    assert_eq!(
+        doc.tree()[nested].absolute_position(0.0, 0.0).y,
+        before,
+        "a transformed ancestor is the containing block, so its fixed descendants scroll with it"
+    );
+}

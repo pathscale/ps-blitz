@@ -61,18 +61,11 @@ if [ -z "$host" ]; then
     exit 1
   fi
 
-  # chuzz's build script builds its Solid browser chrome, and on master it does
-  # so even for a headless binary that never links it, which needs
-  # `node_modules/.bin` to exist or it panics with
-  #
-  #   solid-layouts-library: command not found
-  #
-  # A headless build has no use for any of it. The gate that skips it lives in
-  # chuzz's own open pull request, so until that merges this install is what
-  # keeps this job independent of chuzz's release order. It is cheap and it is
-  # harmless once the gate lands.
-  echo "installing chuzz's frontend dependencies"
-  ( cd "$chuzz/apps/chuzz/frontend" && bun install )
+  # The control refactor spans repositories. Use the matching protocol and
+  # runtime checkouts so this engine's fixtures can run before publication.
+  # CI pins their revisions; local runs use the sibling working checkouts.
+  observability="$(CDPATH= cd -- "${PS_OBSERVABILITY:-$ROOT/../ps-observability}" && pwd)"
+  runtime="$(CDPATH= cd -- "${TAURI_RUNTIME_BLITZ:-$ROOT/../tauri-runtime-blitz}" && pwd)"
 
   # Every ps-blitz crate chuzz reaches, not just the five the old host used:
   # patching some and not others resolves the rest from crates.io, and an engine
@@ -81,7 +74,11 @@ if [ -z "$host" ]; then
   echo "building chuzz-headless against $PACKAGES"
   ( cd "$chuzz" && cargo build --release --bin chuzz-headless \
       --no-default-features \
-      --features capture,javascript,vello,scrollbars,webp \
+      --features capture,javascript,scrollbars,webp \
+      --config "patch.crates-io.blitz-control-protocol.path='$observability/crates/blitz-control-protocol'" \
+      --config "patch.crates-io.tauri-runtime-blitz.path='$runtime/crates/tauri-runtime-blitz'" \
+      --config "patch.crates-io.ps-blitz-debug-control.path='$PACKAGES/blitz-debug-control'" \
+      --config "patch.crates-io.ps-blitz-dom-api.path='$PACKAGES/blitz-dom-api'" \
       --config "patch.crates-io.ps-blitz-dom.path='$PACKAGES/blitz-dom'" \
       --config "patch.crates-io.ps-blitz-html.path='$PACKAGES/blitz-html'" \
       --config "patch.crates-io.ps-blitz-net.path='$PACKAGES/blitz-net'" \
@@ -95,7 +92,6 @@ if [ -z "$host" ]; then
   # ps-qa still comes from ps-observability, and still with the patches:
   # building any member resolves the whole workspace, and its engine
   # requirement names a version that is not published yet.
-  observability="${PS_OBSERVABILITY:-$ROOT/../ps-observability}"
   if [ -z "$qa" ] && [ ! -d "$observability" ]; then
     echo "no ps-observability checkout at $observability" >&2
     echo "  set PS_OBSERVABILITY, or QA_PS_QA to a local ps-qa" >&2
