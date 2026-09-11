@@ -2,7 +2,7 @@
     (
         id: "native-select-option-label",
         group: "native-select",
-        what: "the option inside an optgroup exposes its explicit label",
+        what: "the option inside an optgroup exposes its label",
         subject: "option:Team plan",
         expect: Present,
     ),
