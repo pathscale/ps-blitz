@@ -371,6 +371,8 @@ jobs:
       - uses: actions/checkout@v5
         with:
           repository: pathscale/ps-observability
+          # Protocol/driver from PR #21, validated with this engine candidate.
+          ref: 42c2b3400b373fd766725ca2b1722af54f7d45a3
           path: .ps-observability
       # The host moved. `qa-inspect-host` lived in ps-observability and was
       # deleted there in "refactor: delete qa-inspect-host, so there is one
@@ -378,7 +380,15 @@ jobs:
       - uses: actions/checkout@v5
         with:
           repository: pathscale/chuzz
+          # Shared document actions and headless build gate from PR #45.
+          ref: a1c2552aaeecaf6f5eb6d0cf05e30d9e0092723d
           path: .chuzz
+      - uses: actions/checkout@v5
+        with:
+          repository: pathscale/tauri-runtime-blitz
+          # Resolve the host workspace before the 0.4.0 registry release.
+          ref: 5b392a6f0a919fc9e664c4b505c8f661e29f0c5a
+          path: .tauri-runtime-blitz
       # ps-qa from the ps-observability checkout, rather than `cargo install
       # ps-qa`. The harness and the fixtures move together, and installing it
       # while building the host would make this job depend on a release of the
@@ -388,5 +398,6 @@ jobs:
         env:
           PS_OBSERVABILITY: .ps-observability
           CHUZZ: .chuzz
+          TAURI_RUNTIME_BLITZ: .tauri-runtime-blitz
           QA_BUILD_PS_QA: "1"
         run: tests/qa/run.sh

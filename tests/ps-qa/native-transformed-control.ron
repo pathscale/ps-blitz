@@ -5,7 +5,7 @@
         what: "a scaled control reports the size the renderer paints",
         subject: "button:Transformed action",
         expect: Measures,
-        expect_size: Some("160x80"),
+        expect_size: Some("=160x=80"),
     ),
     (
         id: "transformed-control-pointer-activates",
@@ -13,7 +13,7 @@
         what: "a pointer aimed using client geometry activates the transformed button once",
         click: Some("button:Transformed action"),
         press: true,
-        subject: "heading:Activated at 150,155 size 160x80",
+        subject: "heading:Activated 1 at 150,155 size 160x80",
         expect: Present,
     ),
 ]
