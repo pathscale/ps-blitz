@@ -372,7 +372,7 @@ jobs:
         with:
           repository: pathscale/ps-observability
           # Protocol/driver from PR #21, validated with this engine candidate.
-          ref: 42c2b3400b373fd766725ca2b1722af54f7d45a3
+          ref: d4f6d70fec8cb0673c4a73c448983aff336ee84c
           path: .ps-observability
       # The host moved. `qa-inspect-host` lived in ps-observability and was
       # deleted there in "refactor: delete qa-inspect-host, so there is one
@@ -381,7 +381,7 @@ jobs:
         with:
           repository: pathscale/chuzz
           # Shared document actions and headless build gate from PR #45.
-          ref: a1c2552aaeecaf6f5eb6d0cf05e30d9e0092723d
+          ref: 4ad2d73e5179c6568f3bd7f8f55594e8957c01ef
           path: .chuzz
       - uses: actions/checkout@v5
         with:
