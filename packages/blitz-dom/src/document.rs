@@ -3056,6 +3056,10 @@ impl BaseDocument {
         // Non-atomic inline elements have no layout box of their own: return
         // the union of their per-line-box fragment rects.
         if let Some(rects) = self.inline_fragment_rects(node_id) {
+            let rects: Vec<_> = rects
+                .into_iter()
+                .map(|rect| self.transformed_client_rect(node_id, rect))
+                .collect();
             let x0 = rects.iter().map(|r| r.x).fold(f64::INFINITY, f64::min);
             let y0 = rects.iter().map(|r| r.y).fold(f64::INFINITY, f64::min);
             let x1 = rects
@@ -3086,12 +3090,56 @@ impl BaseDocument {
         }
         let pos = node.absolute_position(0.0, 0.0);
 
-        Some(BoundingRect {
-            x: pos.x as f64 - self.viewport_scroll.x,
-            y: pos.y as f64 - self.viewport_scroll.y,
-            width: node.unrounded_layout().size.width as f64,
-            height: node.unrounded_layout().size.height as f64,
-        })
+        Some(self.transformed_client_rect(
+            node_id,
+            BoundingRect {
+                x: pos.x as f64 - self.viewport_scroll.x,
+                y: pos.y as f64 - self.viewport_scroll.y,
+                width: node.unrounded_layout().size.width as f64,
+                height: node.unrounded_layout().size.height as f64,
+            },
+        ))
+    }
+
+    /// Map the layout rectangle through the same two-dimensional transforms as paint.
+    /// Layout coordinates deliberately exclude transforms; CSSOM client rectangles do not.
+    fn transformed_client_rect(&self, node_id: NodeId, rect: BoundingRect) -> BoundingRect {
+        let mut matrix = kurbo::Affine::IDENTITY;
+        let mut current = self.get_node(node_id);
+        let scale = self.viewport.scale_f64();
+        while let Some(node) = current {
+            if matches!(
+                node.data,
+                NodeData::Element(_) | NodeData::AnonymousBlock(_) | NodeData::Document(_)
+            ) && let Some(transform) = *node.transform()
+            {
+                let [a, b, c, d, e, f] = transform.as_coeffs();
+                let css_transform = kurbo::Affine::new([a, b, c, d, e / scale, f / scale]);
+                let origin = node.absolute_position(0.0, 0.0);
+                let translate = kurbo::Affine::translate((
+                    origin.x as f64 - self.viewport_scroll.x,
+                    origin.y as f64 - self.viewport_scroll.y,
+                ));
+                matrix = translate * css_transform * translate.inverse() * matrix;
+            }
+            current = node
+                .layout_parent
+                .get()
+                .or(node.parent)
+                .and_then(|id| self.get_node(id));
+        }
+        let transformed = matrix.transform_rect_bbox(kurbo::Rect::new(
+            rect.x,
+            rect.y,
+            rect.x + rect.width,
+            rect.y + rect.height,
+        ));
+        BoundingRect {
+            x: transformed.x0,
+            y: transformed.y0,
+            width: transformed.width(),
+            height: transformed.height(),
+        }
     }
 
     /// Computes the sizes and positions of the `Node`'s box fragments relative to the
@@ -3100,7 +3148,10 @@ impl BaseDocument {
     /// spans within an inline root's text layout) return one rect per line box.
     pub fn node_client_rects(&self, node_id: NodeId) -> Vec<BoundingRect> {
         match self.inline_fragment_rects(node_id) {
-            Some(rects) => rects,
+            Some(rects) => rects
+                .into_iter()
+                .map(|rect| self.transformed_client_rect(node_id, rect))
+                .collect(),
             None => self.get_client_bounding_rect(node_id).into_iter().collect(),
         }
     }
