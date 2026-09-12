@@ -174,6 +174,20 @@ impl<'doc, Handler: EventHandler> EventDriver<'doc, Handler> {
     }
 
     pub fn handle_ui_event(&mut self, event: UiEvent) {
+        self.handle_ui_event_inner(event, None);
+    }
+
+    /// Dispatch input to a DOM node that automation already resolved.
+    ///
+    /// Window input remains coordinate hit-tested through [`Self::handle_ui_event`].
+    /// A semantic driver has already selected its target by node id, and may be
+    /// operating without fonts or a compositor, so hit-testing its synthetic
+    /// coordinate would either choose a different node or reject a flat one.
+    pub fn handle_ui_event_to_node(&mut self, event: UiEvent, node_id: NodeId) {
+        self.handle_ui_event_inner(event, Some(node_id));
+    }
+
+    fn handle_ui_event_inner(&mut self, event: UiEvent, forced_target: Option<NodeId>) {
         let doc = self.doc.inner();
 
         let mut should_clear_hover = false;
@@ -184,16 +198,22 @@ impl<'doc, Handler: EventHandler> EventDriver<'doc, Handler> {
         // Update document input state (hover, focus, active, etc)
         match &event {
             UiEvent::PointerMove(event) => {
-                hover_node_id = self.handle_pointer_move(event);
+                hover_node_id = forced_target
+                    .and_then(|node_id| self.handle_pointer_move_to_node(event, node_id))
+                    .or_else(|| self.handle_pointer_move(event));
             }
             UiEvent::PointerDown(event) => {
-                hover_node_id = self.handle_pointer_move(event);
+                hover_node_id = forced_target
+                    .and_then(|node_id| self.handle_pointer_move_to_node(event, node_id))
+                    .or_else(|| self.handle_pointer_move(event));
                 let mut doc = self.doc.inner_mut();
                 doc.active_node();
                 doc.set_mousedown_node_id(hover_node_id);
             }
             UiEvent::PointerUp(event) => {
-                hover_node_id = self.handle_pointer_move(event);
+                hover_node_id = forced_target
+                    .and_then(|node_id| self.handle_pointer_move_to_node(event, node_id))
+                    .or_else(|| self.handle_pointer_move(event));
                 let mut doc = self.doc.inner_mut();
                 doc.unactive_node();
 
@@ -202,7 +222,9 @@ impl<'doc, Handler: EventHandler> EventDriver<'doc, Handler> {
                 }
             }
             UiEvent::PointerCancel(event) => {
-                hover_node_id = self.handle_pointer_move(event);
+                hover_node_id = forced_target
+                    .and_then(|node_id| self.handle_pointer_move_to_node(event, node_id))
+                    .or_else(|| self.handle_pointer_move(event));
                 let mut doc = self.doc.inner_mut();
                 doc.unactive_node();
                 doc.set_mousedown_node_id(None);

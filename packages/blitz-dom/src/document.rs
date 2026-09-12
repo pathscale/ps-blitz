@@ -2954,8 +2954,53 @@ impl BaseDocument {
     pub fn scroll_to_node_with_events<F: FnMut(DomEvent)>(
         &mut self,
         node_id: NodeId,
+        dispatch_event: F,
+    ) {
+        self.scroll_to_node_aligned_with_events(node_id, false, dispatch_event);
+    }
+
+    /// Reveal a node near the centre of each scrollport and the viewport.
+    ///
+    /// Semantic input uses this placement so fixed or sticky chrome cannot
+    /// cover the point an automation client will drive. Ordinary DOM
+    /// `scrollIntoView` and fragment navigation retain their start alignment.
+    pub fn scroll_to_node_centered_with_events<F: FnMut(DomEvent)>(
+        &mut self,
+        node_id: NodeId,
+        dispatch_event: F,
+    ) {
+        self.scroll_to_node_aligned_with_events(node_id, true, dispatch_event);
+    }
+
+    fn scroll_to_node_aligned_with_events<F: FnMut(DomEvent)>(
+        &mut self,
+        node_id: NodeId,
+        centered: bool,
         mut dispatch_event: F,
     ) {
+        // Semantic snapshots expose visible text as addressable nodes, but a
+        // text node does not own a Taffy layout box. `absolute_position` and
+        // the scrolling calculations below require one, so resolve such a
+        // target to its nearest layout ancestor first. Without this, asking an
+        // automation client to reveal a label panics the entire host at
+        // `Node::final_layout` instead of scrolling the label's box into view.
+        let mut scroll_target = Some(node_id);
+        let node_id = loop {
+            let Some(candidate) = scroll_target else {
+                return;
+            };
+            let Some(node) = self.nodes.get(candidate) else {
+                return;
+            };
+            if matches!(
+                node.data,
+                NodeData::Element(_) | NodeData::AnonymousBlock(_) | NodeData::Document(_)
+            ) {
+                break candidate;
+            }
+            scroll_target = node.layout_parent.get().or(node.parent);
+        };
+
         // Every scroll container between the node and the root, innermost
         // first. Scrolling only the viewport is not `scrollIntoView`: it does
         // nothing at all for a node inside a nested scroller, which is what an
@@ -2994,12 +3039,24 @@ impl BaseDocument {
             };
             let box_ = scroller.absolute_position(0.0, 0.0);
             let layout = scroller.final_layout();
-            // Land the node at the top-left of the scrollport. `scroll_node_by`
-            // takes a delta and subtracts it, so the sign here matches
-            // `scroll_viewport_by` below.
-            let dx = f64::from(box_.x - target.x);
-            let dy = f64::from(box_.y - target.y);
-            let _ = layout;
+            let target_layout = node.final_layout();
+            // `scroll_node_by` subtracts its delta from the offset. Semantic
+            // automation centres the target to avoid chrome; DOM behavior
+            // keeps its historical start alignment.
+            let (dx, dy) = if centered {
+                (
+                    f64::from(
+                        box_.x + layout.size.width / 2.0
+                            - (target.x + target_layout.size.width / 2.0),
+                    ),
+                    f64::from(
+                        box_.y + layout.size.height / 2.0
+                            - (target.y + target_layout.size.height / 2.0),
+                    ),
+                )
+            } else {
+                (f64::from(box_.x - target.x), f64::from(box_.y - target.y))
+            };
             self.scroll_node_by(container, dx, dy, &mut dispatch_event);
         }
 
@@ -3010,11 +3067,25 @@ impl BaseDocument {
         };
         let target = node.absolute_position(0.0, 0.0);
         let current = self.viewport_scroll;
+        let (desired_x, desired_y) = if centered {
+            let target_layout = node.final_layout();
+            let scale = self.viewport.scale();
+            let viewport_width = self.viewport.window_size.0 as f32 / scale;
+            let viewport_height = self.viewport.window_size.1 as f32 / scale;
+            (
+                f64::from(target.x + target_layout.size.width / 2.0 - viewport_width / 2.0)
+                    .max(0.0),
+                f64::from(target.y + target_layout.size.height / 2.0 - viewport_height / 2.0)
+                    .max(0.0),
+            )
+        } else {
+            (f64::from(target.x), f64::from(target.y))
+        };
 
-        // `scroll_viewport_by` subtracts the delta from the current scroll offset, so pass
-        // `current - target` in order to land on `target`.
-        let dx = current.x - target.x as f64;
-        let dy = current.y - target.y as f64;
+        // `scroll_viewport_by` subtracts the delta from the current scroll
+        // offset, so pass current minus the centred destination.
+        let dx = current.x - desired_x;
+        let dy = current.y - desired_y;
         if let Some(root) = self.try_root_element().map(|element| element.id) {
             self.scroll_node_by(root, dx, dy, dispatch_event);
         } else {
@@ -3897,6 +3968,8 @@ mod control_scroll_tests {
         );
         let spacer = mutator.create_element(qual_name!("div"), vec![style("height:400px")]);
         let target = mutator.create_element(qual_name!("button"), vec![style("height:40px")]);
+        let target_text = mutator.create_text_node("Reveal me");
+        mutator.append_children(target, &[target_text]);
         mutator.append_children(scroller, &[spacer, target]);
         mutator.append_children(body, &[scroller]);
         mutator.append_children(html, &[body]);
@@ -3912,9 +3985,15 @@ mod control_scroll_tests {
         doc.nodes[target].final_layout_mut().location.y = 400.0;
 
         let mut events = Vec::new();
-        doc.scroll_to_node_with_events(target, |event| events.push(event));
+        // A semantic client may target the exposed text rather than its
+        // element. Text has no `final_layout`, so this also pins the host-crash
+        // regression from revealing a named label.
+        doc.scroll_to_node_centered_with_events(target_text, |event| events.push(event));
 
-        assert!(doc.viewport_scroll.y > 0.0);
+        assert!(
+            (doc.viewport_scroll.y - 270.0).abs() < 0.1,
+            "the 40px target should be centred in the 300px viewport"
+        );
         assert!(
             events
                 .iter()
