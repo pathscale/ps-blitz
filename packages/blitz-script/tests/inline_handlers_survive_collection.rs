@@ -108,6 +108,70 @@ fn a_handler_assigned_after_insertion_survives_too() {
     );
 }
 
+/// Solid and other delegated-event runtimes keep the authored callback on an
+/// expando property and install one listener on the document. The connected
+/// DOM node owns that property even after application code drops its wrapper.
+#[test]
+fn a_delegated_expando_handler_survives_collection() {
+    let mut document = page(
+        r#"document.addEventListener('click', function (event) {
+             var target = event.composedPath().find(function (node) {
+               return node.nodeName === 'BUTTON';
+             });
+             if (target && target.$$click) target.$$click(event);
+           });
+           (function () {
+             var button = document.createElement('button');
+             button.id = 'later';
+             button.$$click = function () {
+               document.getElementById('out').textContent = 'delegated';
+             };
+             document.getElementById('host').appendChild(button);
+           })();"#,
+    );
+    document.execute_scripts();
+
+    boa_gc::force_collect();
+    click(&mut document, "#later");
+
+    assert_eq!(
+        text_of(&document, "#out"),
+        "delegated",
+        "the collector took a delegated expando while its node was connected"
+    );
+}
+
+#[test]
+fn delegated_handlers_survive_a_framework_remount() {
+    let mut document = page(
+        r#"document.addEventListener('click', function (event) {
+             var target = event.composedPath().find(function (node) {
+               return node.nodeName === 'BUTTON';
+             });
+             if (target && target.$$click) target.$$click(event);
+           });
+           function render(label) {
+             var button = document.createElement('button');
+             button.id = label;
+             button.textContent = label;
+             button.$$click = function () {
+               document.getElementById('out').textContent += label;
+               if (label === 'first') render('second');
+             };
+             document.getElementById('host').replaceChildren(button);
+           }
+           render('first');"#,
+    );
+    document.execute_scripts();
+
+    boa_gc::force_collect();
+    click(&mut document, "#first");
+    boa_gc::force_collect();
+    click(&mut document, "#second");
+
+    assert_eq!(text_of(&document, "#out"), "not yetfirstsecond");
+}
+
 /// A node the page removed and let go of is not kept alive by this. Rooting
 /// every wrapper that ever carried a handler would leak exactly the nodes the
 /// weak cache exists to release.

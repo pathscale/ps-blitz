@@ -101,10 +101,16 @@ pub(crate) fn node_wrapper(ctx: &DomCtx, node_id: NodeId, _context: &mut Context
     };
 
     let wrapper = JsObject::from_proto_and_data(Some(proto), NodeRef { node_id });
-    ctx.state
-        .borrow_mut()
-        .node_wrappers
-        .insert(node_id, wrapper.downgrade());
+    let connected = ctx
+        .doc
+        .borrow()
+        .get_node(node_id)
+        .is_some_and(|node| node.flags.is_in_document());
+    let mut state = ctx.state.borrow_mut();
+    state.node_wrappers.insert(node_id, wrapper.downgrade());
+    if connected {
+        state.connected_wrappers.insert(node_id, wrapper.clone());
+    }
     wrapper
 }
 
@@ -150,17 +156,12 @@ pub(crate) fn mark_node_reattached(ctx: &DomCtx, node_id: NodeId) {
         .detached_nodes
         .retain(|candidate| *candidate != node_id);
     for id in ids {
-        let has_listeners = state
-            .node_listeners
+        if let Some(wrapper) = state
+            .node_wrappers
             .get(&id)
-            .is_some_and(|by_type| by_type.values().any(|listeners| !listeners.is_empty()));
-        if has_listeners
-            && let Some(wrapper) = state
-                .node_wrappers
-                .get(&id)
-                .and_then(|wrapper| wrapper.upgrade())
+            .and_then(|wrapper| wrapper.upgrade())
         {
-            state.listener_wrappers.insert(id, wrapper);
+            state.connected_wrappers.insert(id, wrapper);
         }
     }
 }
@@ -253,7 +254,7 @@ pub(crate) fn sweep_detached_nodes(ctx: &DomCtx) {
         state.dataset_wrappers.remove(&id);
         state.class_list_wrappers.remove(&id);
         state.node_listeners.remove(&id);
-        state.listener_wrappers.remove(&id);
+        state.connected_wrappers.remove(&id);
     }
 }
 

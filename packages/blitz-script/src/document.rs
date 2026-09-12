@@ -575,6 +575,23 @@ impl ScriptDocument {
         self.arm_timer_thread();
     }
 
+    /// Deliver one automation input event to the exact semantic node selected
+    /// by the caller, while retaining the normal pointer event ordering,
+    /// compatibility mouse events, activation state and click synthesis.
+    pub fn handle_ui_event_to_node(&mut self, event: UiEvent, node_id: NodeId) {
+        let profiling_boundary = self.runtime.ctx.enter_profiling_boundary();
+        let profiling = profiling_boundary.enabled();
+        let handler = ScriptEventHandler {
+            runtime: &mut self.runtime,
+            profiling,
+        };
+        let mut driver = EventDriver::new(&mut self.inner, handler);
+        driver.handle_ui_event_to_node(event, node_id);
+
+        self.request_redraw();
+        self.arm_timer_thread();
+    }
+
     /// The real poll. Split out so every exit path is timed by the wrapper
     /// above rather than by a stopwatch threaded through each early return.
     fn poll_inner(&mut self, task_context: Option<TaskContext>, profiling: bool) -> bool {

@@ -85,10 +85,13 @@ pub(crate) struct RuntimeState {
     pub class_list_wrappers: FxHashMap<NodeId, WeakJsObject>,
     /// Event listeners registered on nodes, keyed by node id then event type.
     pub node_listeners: FxHashMap<NodeId, NodeListenerMap>,
-    /// Strong roots for wrappers with listeners while their nodes are in the
-    /// live document. Detaching a subtree removes these roots after linking
-    /// its wrappers together inside Boa's heap.
-    pub listener_wrappers: FxHashMap<NodeId, JsObject>,
+    /// Strong roots for wrappers while their nodes are in the live document.
+    ///
+    /// DOM nodes own their JavaScript wrappers in a browser. Keeping that
+    /// relationship here preserves arbitrary expando properties such as
+    /// Solid's delegated `$$click` handler. Detaching a subtree removes these
+    /// roots after linking its wrappers together inside Boa's heap.
+    pub connected_wrappers: FxHashMap<NodeId, JsObject>,
     /// Nodes detached from the document but not yet freed.
     ///
     /// A node is removed while script may still hold its wrapper, and whether

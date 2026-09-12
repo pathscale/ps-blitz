@@ -60,9 +60,9 @@ pub(crate) fn sync_node_listener_callbacks(
         let connected = node_is_connected(ctx, node_id);
         let mut state = ctx.state.borrow_mut();
         if connected {
-            state.listener_wrappers.insert(node_id, wrapper);
+            state.connected_wrappers.insert(node_id, wrapper);
         } else {
-            state.listener_wrappers.remove(&node_id);
+            state.connected_wrappers.remove(&node_id);
         }
     }
 }
@@ -113,7 +113,7 @@ pub(crate) fn root_inline_event_handlers(
     if carries_handler {
         ctx.state
             .borrow_mut()
-            .listener_wrappers
+            .connected_wrappers
             .insert(node_id, wrapper);
     }
 }
@@ -163,7 +163,7 @@ pub(crate) fn unroot_detached_listener_subtree(
     }
     let mut state = ctx.state.borrow_mut();
     for id in ids {
-        state.listener_wrappers.remove(&id);
+        state.connected_wrappers.remove(&id);
     }
 }
 
