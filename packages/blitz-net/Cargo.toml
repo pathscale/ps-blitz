@@ -7,7 +7,7 @@
 name = "ps-blitz-net"
 description = "Blitz networking"
 documentation = "https://docs.rs/ps-blitz-net"
-version.workspace = true
+version = "0.4.10"
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
