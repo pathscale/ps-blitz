@@ -27,6 +27,14 @@ use std::{
 };
 use tokio::sync::Semaphore;
 
+/// Cookie storage supplied to [`Provider::with_user_agent_and_cookie_provider`].
+///
+/// Re-exported so an embedder can provide a persistent profile jar without
+/// depending on reqwest directly. Reqwest invokes it for every response in a
+/// redirect chain and before every request it sends.
+#[cfg(feature = "cookies")]
+pub use reqwest::cookie::CookieStore;
+
 #[cfg(feature = "cache")]
 use http_cache_reqwest::{
     CACacheManager, Cache, CacheMode, CacheOptions, HttpCache, HttpCacheOptions,
@@ -110,6 +118,33 @@ impl Provider {
         let builder = reqwest::Client::builder();
         #[cfg(feature = "cookies")]
         let builder = builder.cookie_store(true);
+        Self::with_client_builder(waker, user_agent, builder)
+    }
+
+    /// A provider that uses an embedder-owned cookie jar and identity.
+    ///
+    /// The jar is installed on the provider's one reqwest client, so it sees
+    /// intermediate redirects and error responses as well as the final
+    /// successful response. It also supplies cookies for redirected requests;
+    /// no parallel client or second cookie store is involved.
+    #[cfg(feature = "cookies")]
+    pub fn with_user_agent_and_cookie_provider<C>(
+        waker: Option<Arc<dyn NetWaker>>,
+        user_agent: &str,
+        cookie_provider: Arc<C>,
+    ) -> Self
+    where
+        C: CookieStore + 'static,
+    {
+        let builder = reqwest::Client::builder().cookie_provider(cookie_provider);
+        Self::with_client_builder(waker, user_agent, builder)
+    }
+
+    fn with_client_builder(
+        waker: Option<Arc<dyn NetWaker>>,
+        user_agent: &str,
+        builder: reqwest::ClientBuilder,
+    ) -> Self {
         let client = builder.build().unwrap();
 
         #[cfg(feature = "cache")]
@@ -859,6 +894,119 @@ mod tests {
             )),
             "the default user agent should be on the wire, got:\n{request}"
         );
+    }
+
+    /// A consumer jar participates in the client's whole exchange. The first
+    /// request reads its existing cookie, a redirect writes another cookie
+    /// before the next request, and the final error response is written too.
+    #[cfg(feature = "cookies")]
+    #[tokio::test]
+    async fn a_consumer_cookie_store_sees_redirects_and_error_responses() {
+        use blitz_traits::net::http::HeaderValue;
+        use std::io::{Read, Write};
+
+        #[derive(Default)]
+        struct RecordingCookieStore {
+            request_header: Mutex<String>,
+            responses: Mutex<Vec<(String, Vec<String>)>>,
+        }
+
+        impl CookieStore for RecordingCookieStore {
+            fn set_cookies(
+                &self,
+                cookie_headers: &mut dyn Iterator<Item = &HeaderValue>,
+                url: &Url,
+            ) {
+                let fields = cookie_headers
+                    .filter_map(|header| header.to_str().ok().map(str::to_owned))
+                    .collect::<Vec<_>>();
+                let mut request_header = self.request_header.lock().unwrap();
+                for pair in fields
+                    .iter()
+                    .filter_map(|field| field.split(';').next())
+                    .filter(|pair| !pair.is_empty())
+                {
+                    if !request_header.is_empty() {
+                        request_header.push_str("; ");
+                    }
+                    request_header.push_str(pair);
+                }
+                self.responses
+                    .lock()
+                    .unwrap()
+                    .push((url.path().to_owned(), fields));
+            }
+
+            fn cookies(&self, _url: &Url) -> Option<HeaderValue> {
+                let header = self.request_header.lock().unwrap();
+                (!header.is_empty()).then(|| {
+                    HeaderValue::from_str(&header).expect("the fixture cookie header is valid")
+                })
+            }
+        }
+
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("loopback listener is available");
+        let port = listener
+            .local_addr()
+            .expect("listener has an address")
+            .port();
+        let server = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for index in 0..2 {
+                let (mut stream, _) = listener.accept().expect("the provider connects");
+                let mut head = Vec::new();
+                let mut byte = [0_u8; 1];
+                while !head.ends_with(b"\r\n\r\n") {
+                    match stream.read(&mut byte) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => head.push(byte[0]),
+                    }
+                }
+                requests.push(String::from_utf8_lossy(&head).to_ascii_lowercase());
+                let response = if index == 0 {
+                    "HTTP/1.1 302 Found\r\nLocation: /finish\r\nSet-Cookie: redirected=one; Path=/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                } else {
+                    "HTTP/1.1 418 I'm a teapot\r\nSet-Cookie: final=two; Path=/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                };
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("fixture response writes");
+            }
+            requests
+        });
+
+        let cookies = Arc::new(RecordingCookieStore {
+            request_header: Mutex::new("seed=outbound".to_owned()),
+            responses: Mutex::new(Vec::new()),
+        });
+        let provider = Provider::with_user_agent_and_cookie_provider(
+            None,
+            "FixtureBrowser/1.0",
+            Arc::clone(&cookies),
+        );
+        let result = provider
+            .fetch_response_async(Request::get(
+                Url::parse(&format!("http://127.0.0.1:{port}/start"))
+                    .expect("fixture URL is valid"),
+            ))
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(ProviderError::HttpStatus { status, .. }) if status.as_u16() == 418
+        ));
+        let requests = server.join().expect("fixture server finishes");
+        assert!(requests[0].contains("cookie: seed=outbound"));
+        assert!(requests[0].contains("user-agent: fixturebrowser/1.0"));
+        assert!(requests[1].contains("cookie: seed=outbound; redirected=one"));
+
+        let responses = cookies.responses.lock().unwrap();
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[0].0, "/start");
+        assert!(responses[0].1[0].starts_with("redirected=one;"));
+        assert_eq!(responses[1].0, "/finish");
+        assert!(responses[1].1[0].starts_with("final=two;"));
     }
 
     #[tokio::test]
