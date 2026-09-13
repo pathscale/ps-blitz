@@ -60,10 +60,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Read the workspace version
+      - name: Read the workspace version through Cargo
         id: registry
         run: |
-          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
+          version="$(cargo metadata --format-version 1 --no-deps \
+            | jq -er '.packages[] | select(.name == "ps-blitz") | .version')"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "workspace version is $version"
 
