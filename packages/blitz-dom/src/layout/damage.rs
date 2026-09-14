@@ -1022,7 +1022,23 @@ impl BaseDocument {
         };
         let mut hoisted = HoistedPaintChild::new(child_id, z_index, Position::Fixed);
         hoisted.position = position;
-        context.children.push(hoisted);
+        // Update in place, never append a second copy.
+        //
+        // This joins an ancestor context that is *already built*, so an
+        // incremental resolve that re-flushes this node reaches it again with
+        // the same child. Pushing unconditionally recorded the node twice, and
+        // two entries paint the same box twice: a hovered pill menu stacked its
+        // shadow, ~11.8k pixels darker each pass, with the DOM and layout still
+        // flat because the duplication is only in this paint list.
+        if let Some(existing) = context
+            .children
+            .iter_mut()
+            .find(|child| child.node_id == child_id)
+        {
+            *existing = hoisted;
+        } else {
+            context.children.push(hoisted);
+        }
         let mut context = self.nodes[host].stacking_context.take().unwrap();
         context.sort();
         context.compute_content_size(self);
