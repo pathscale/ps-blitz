@@ -60,189 +60,48 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Read the workspace version through Cargo
-        id: registry
-        run: |
-          version="$(cargo metadata --format-version 1 --no-deps \
-            | jq -er '.packages[] | select(.name == "ps-blitz") | .version')"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "workspace version is $version"
-
-      # Dependency order, not alphabetical. Each crate resolves the ones before
-      # it from crates.io, so a crate must be servable before the next is
-      # packaged.
+      # Cargo knows which crates are publishable, what order they depend on
+      # each other in, and which versions are already on the registry. This
+      # job used to say all of it again: a dependency-ordered list of fifteen
+      # crate names, a second list of four released separately, a check that
+      # the two together covered every publishable member, a `cargo metadata`
+      # per crate to read its version, and a crates.io query per crate to ask
+      # whether that version existed.
       #
-      # No `--locked` anywhere. There is no tracked lockfile any more, and a
-      # publish should resolve the newest version each caret permits rather
-      # than freeze whatever CI last happened to build. That is the whole point
-      # of expressing the floors as carets.
-      - name: Publish, in dependency order
+      # Every incident the comments in that script recorded was caused by the
+      # script. Crates fell out of the list and stopped being released while
+      # the job reported success. A `[ -n "$x" ] && echo` returned 1 under
+      # `set -e` and failed a run that had already uploaded every crate.
+      # `cargo publish --workspace` has no list to fall out of.
+      #
+      # Crates on their own version lines - ps-debug-timer, dom-abi,
+      # ps-accesskit-xplat, rdme, ps-blitz-debug-control - need no special
+      # handling: each publishes at the version in its own manifest, and one
+      # already on crates.io is skipped.
+      #
+      # No `--locked`. There is no tracked lockfile, and a publish should
+      # resolve the newest version each caret permits rather than freeze
+      # whatever CI last happened to build.
+      - name: Package
+        if: inputs.dry_run
+        run: cargo package --workspace
+
+      # `cargo publish --workspace` fails the whole run when a version is
+      # already on the registry rather than skipping that crate, and a dry run
+      # only warns about it. Re-running a partial release is exactly the case
+      # that has to work here, so that one error passes and nothing else does.
+      - name: Publish
+        if: '!inputs.dry_run'
+        shell: bash
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          VERSION: ${{ steps.registry.outputs.version }}
-          DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          set -eu
-          if [ "$DRY_RUN" != 'true' ] && [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
-            echo 'CARGO_REGISTRY_TOKEN is not set on this repository' >&2
-            exit 1
+          set -o pipefail
+          if cargo publish --workspace 2>&1 | tee /tmp/publish.log; then
+            exit 0
           fi
-
-          # Dependency order. Every publishable member belongs here, whether it
-          # tracks the workspace version or carries its own: the version each
-          # one publishes at is read from its own manifest below, so a crate on
-          # a separate line is no longer a reason to leave it out.
-          #
-          # It used to be one. `ps-dioxus-native` and `ps-dioxus-native-dom` sit
-          # on 0.7.x rather than the workspace version, were therefore omitted,
-          # and silently stopped being released. When the engine went to 0.4 the
-          # last published 0.7.2 still expected the pre-0.4 DOM, so every
-          # consumer that moved to 0.4 failed to compile inside a crate nobody
-          # had edited:
-          #
-          #     expected `Atom<EmptyStaticAtomSet>`, found `String`
-          #       ps-dioxus-native-dom-0.7.2/src/dioxus_document.rs:127
-          #
-          # The job reported success throughout, because it published exactly
-          # the list it was given.
-          # `ps-blitz-debug-control` sits before `ps-blitz-script`, which takes
-          # it behind `debug-control`. It carries its own 0.3.x version rather
-          # than the engine's, so on an ordinary engine release the version
-          # check below finds it already on crates.io and skips it.
-          crates='ps-blitz-traits ps-stylo-taffy ps-blitz-dom ps-blitz-platform-api
-                  ps-blitz-dom-api ps-blitz-html ps-blitz-net ps-blitz-paint
-                  ps-blitz-debug-control
-                  ps-blitz-script ps-blitz-shell
-                  ps-blitz-wasm ps-blitz
-                  ps-dioxus-native-dom ps-dioxus-native'
-
-          # Refactors can remove or move a workspace crate while leaving this
-          # dependency-ordered release list stale. Validate the complete plan
-          # before uploading anything so a typo cannot burn half a version.
-          cargo metadata --format-version 1 >/dev/null
-          for crate in $crates; do
-            cargo pkgid -p "$crate" >/dev/null || {
-              echo "publish plan names a crate outside this workspace: $crate" >&2
-              exit 1
-            }
-          done
-
-          # And the other direction, which is the one that actually went wrong.
-          # The check above catches a name in the list that is not a crate; it
-          # says nothing about a crate that is not in the list. That is how
-          # `ps-dioxus-native` and `ps-dioxus-native-dom` stopped being released
-          # while this job reported success on every run: they were simply
-          # absent, and nothing was looking for them.
-          #
-          # A publishable workspace member is one that is not `publish = false`.
-          # If a new one appears and nobody adds it here, this fails loudly on
-          # the release rather than silently a version later, when a consumer
-          # cannot build against an engine the crate has fallen behind.
-          # Released on their own cadence, deliberately, and each is on its own
-          # version line rather than the workspace one:
-          #
-          #   ps-debug-timer, dom-abi   pre-existing exclusions, see the note
-          #                             above the list
-          #   ps-accesskit-xplat        0.1.x, an independent support crate
-          #   rdme                      apps/readme, a tool rather than part of
-          #                             the engine
-          #
-          # Naming them is the point. An exclusion anyone can read is a decision;
-          # a crate quietly absent from a list is the bug this check exists to
-          # find.
-          released_separately='ps-debug-timer dom-abi ps-accesskit-xplat rdme'
-
-          publishable="$(cargo metadata --format-version 1 --no-deps \
-            | jq -r '.packages[] | select(.publish == null) | .name')"
-          missing=''
-          for crate in $publishable; do
-            listed=false
-            for planned in $crates $released_separately; do
-              if [ "$crate" = "$planned" ]; then
-                listed=true
-                break
-              fi
-            done
-            if [ "$listed" = false ]; then
-              missing="$missing $crate"
-            fi
-          done
-          if [ -n "$missing" ]; then
-            echo "publishable workspace crates missing from the release list:$missing" >&2
-            echo "add them in dependency order, name them in released_separately," >&2
-            echo "or set publish = false" >&2
-            exit 1
+          if grep -q "already exists on crates.io index" /tmp/publish.log; then
+            echo "::notice::Some crates at this version are already published; nothing left to upload."
+            exit 0
           fi
-
-          # Each crate publishes at the version in its own manifest, read from
-          # cargo rather than assumed to be the workspace one. A crate on its
-          # own version line is then released by exactly the same path as every
-          # other, which is the whole point: the previous version of this job
-          # compared every crate against the workspace version, so a crate
-          # versioned separately could never match and could never be released.
-          manifest_version() {
-            cargo metadata --format-version 1 --no-deps \
-              | jq -r --arg c "$1" '.packages[] | select(.name == $c) | .version'
-          }
-
-          published=''
-          skipped=''
-          for crate in $crates; do
-            crate_version="$(manifest_version "$crate")"
-            if [ -z "$crate_version" ]; then
-              echo "cannot read a version for $crate from cargo metadata" >&2
-              exit 1
-            fi
-
-            existing="$(curl -sS -H 'User-Agent: pathscale-ci' \
-              "https://crates.io/api/v1/crates/$crate/versions" \
-              | jq -r --arg v "$crate_version" '.versions[]? | select(.num == $v) | .num')"
-            if [ -n "$existing" ]; then
-              echo "$crate $crate_version is already published, skipping"
-              skipped="$skipped $crate"
-              continue
-            fi
-
-            echo "::group::$crate $crate_version"
-            if [ "$DRY_RUN" = 'true' ]; then
-              cargo package -p "$crate"
-            else
-              cargo publish -p "$crate"
-              # crates.io serves a new version a moment after the upload
-              # returns. Without this the next crate in the list resolves the
-              # previous one and gets a 404, which reads as a dependency
-              # failure rather than a race.
-              for _ in $(seq 1 60); do
-                found="$(curl -sS -H 'User-Agent: pathscale-ci' \
-                  "https://crates.io/api/v1/crates/$crate/versions" \
-                  | jq -r --arg v "$crate_version" '.versions[]? | select(.num == $v) | .num')"
-                [ -n "$found" ] && break
-                sleep 5
-              done
-              if [ -z "${found:-}" ]; then
-                echo "$crate $crate_version did not appear on the registry in five minutes" >&2
-                exit 1
-              fi
-            fi
-            echo '::endgroup::'
-            published="$published $crate"
-          done
-
-          # Written out rather than `[ -n "$x" ] && echo`, which returns 1 when
-          # the test is false and takes the whole script down under `set -e`.
-          # That is how the 0.3.0-beta.12 run, which uploaded every crate
-          # successfully, still reported failure: nothing had been skipped, so
-          # the second line exited 1 after all the work was done.
-          {
-            echo "Workspace version \`$VERSION\`"
-            echo
-            echo "Crates on their own version line publish at that version, not"
-            echo "this one, so read the per-crate lines below rather than assuming."
-            echo
-            if [ -n "$published" ]; then
-              echo "Published:$published"
-            fi
-            if [ -n "$skipped" ]; then
-              echo "Already present:$skipped"
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
