@@ -760,7 +760,11 @@ mod tests {
         {
             let _held = doc.borrow_mut();
             // Must not panic, and must not apply yet: the borrow is held.
-            let _ = handle.set_focus(true);
+            //
+            // Dropped rather than awaited, deliberately: the request goes onto
+            // the command queue when the future is built, and this test is
+            // about what happens before anything drives it.
+            drop(handle.set_focus(true));
         }
 
         assert_eq!(
@@ -792,7 +796,9 @@ mod tests {
             node_id: root_id,
         };
 
-        let _ = handle.set_focus(true);
+        // Dropped rather than awaited: queueing the request is what applies
+        // it here, and that happens when the future is built.
+        drop(handle.set_focus(true));
 
         assert_eq!(doc.borrow().get_focussed_node_id(), Some(root_id));
     }
@@ -821,8 +827,11 @@ mod tests {
         {
             let _first_borrow = first.borrow_mut();
             let _second_borrow = second.borrow_mut();
-            let _ = first_handle.set_focus(true);
-            let _ = second_handle.set_focus(true);
+            // Dropped rather than awaited: each request lands on its own
+            // document's queue as the future is built, which is what the
+            // drain below is checking.
+            drop(first_handle.set_focus(true));
+            drop(second_handle.set_focus(true));
         }
 
         // This stands in for polling only the first DioxusDocument. A global
