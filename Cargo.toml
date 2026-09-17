@@ -288,7 +288,7 @@ opt-level = "z"
 
 [profile.tiny.package.fearless_simd]
 opt-level = 3
-[profile.tiny.package.vello_cpu]
+[profile.tiny.package.ps-vello-cpu]
 opt-level = 3
 [profile.tiny.package.ps-taffy]
 opt-level = 3

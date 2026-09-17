@@ -1,17 +1,25 @@
 name: CI
 
 on:
-  pull_request:
-  push:
-    branches:
-      # `master`, this fork's default branch, not upstream's `main`.
-      #
-      # This was inherited from DioxusLabs/blitz and never changed, so push CI
-      # fired for a branch this repository does not have: every merge to
-      # `master` ran nothing, and the only green push runs in the history belong
-      # to upstream's `main`. Pull requests still ran, which is what hid it.
-      - master
-      - v0.*
+  # Manual only.
+  #
+  # This suite is upstream's, sized for an engine many people contribute to
+  # from many machines. Here it ran on every push of every branch and took
+  # minutes, and it is not what anything is gated on: the checks that catch
+  # real breakage run locally in seconds, before a push.
+  #
+  #   cargo fmt --check                                    seconds
+  #   cargo clippy --workspace -- -D warnings               ~1 min warm
+  #   cargo test --workspace --exclude blitz-tests          ~1 min warm
+  #
+  # `--all-targets` is deliberately absent: it builds every example, test and
+  # bench in the workspace and takes six minutes rather than one. CI does not
+  # use it either. Reach for it only when touching an example or a bench.
+  #
+  # Press this before a release, or when changing something wide enough to
+  # want the full matrix on a clean machine.
+  #
+  # Deliberately no `push` and no `pull_request`.
   workflow_dispatch:
 
 concurrency:
