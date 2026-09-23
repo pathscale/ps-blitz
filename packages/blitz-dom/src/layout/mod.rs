@@ -630,6 +630,9 @@ impl BaseDocument {
                     //
                     // TODO: smarter sizing using these (depending on object-fit, they shouldn't
                     // necessarily just override the native size)
+                    //
+                    // Only the `svg` arm below writes to it.
+                    #[cfg_attr(not(feature = "svg"), allow(unused_mut))]
                     let mut attr_size = taffy::Size {
                         width: element_data
                             .attr(local_name!("width"))
