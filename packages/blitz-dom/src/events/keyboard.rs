@@ -78,9 +78,7 @@ pub(crate) fn handle_key_or_input_event<F: FnMut(DomEvent)>(
                             // plain write when the selection has no markup
                             // worth carrying.
                             let _ = match doc.get_selected_html() {
-                                Some(html) => {
-                                    doc.shell_provider.set_clipboard_html(html, text)
-                                }
+                                Some(html) => doc.shell_provider.set_clipboard_html(html, text),
                                 None => doc.shell_provider.set_clipboard_text(text),
                             };
                             return;
