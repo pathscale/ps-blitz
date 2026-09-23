@@ -45,6 +45,11 @@ fn build_guest() -> Vec<u8> {
 fn build_guest_once() -> Vec<u8> {
     let guest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("guest");
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    // Named rather than left to cargo. A `build.target-dir` in any cargo config
+    // above this checkout sends the guest's output somewhere else, and the read
+    // below then fails on a module that built fine; all twenty tests reported
+    // "no module" on a machine with a shared target directory.
+    let target_dir = guest_dir.join("target");
 
     let output = Command::new(&cargo)
         .current_dir(&guest_dir)
@@ -56,6 +61,8 @@ fn build_guest_once() -> Vec<u8> {
             "--package",
             "blitz-wasm-demo",
         ])
+        .arg("--target-dir")
+        .arg(&target_dir)
         .output()
         .unwrap_or_else(|err| panic!("could not run `{cargo} build` for the guest: {err}"));
 
@@ -70,7 +77,7 @@ fn build_guest_once() -> Vec<u8> {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let wasm = guest_dir.join("target/wasm32-unknown-unknown/release/blitz_wasm_demo.wasm");
+    let wasm = target_dir.join("wasm32-unknown-unknown/release/blitz_wasm_demo.wasm");
     std::fs::read(&wasm).unwrap_or_else(|err| panic!("no module at {}: {err}", wasm.display()))
 }
 
