@@ -72,12 +72,19 @@ jobs:
       # script. Crates fell out of the list and stopped being released while
       # the job reported success. A `[ -n "$x" ] && echo` returned 1 under
       # `set -e` and failed a run that had already uploaded every crate.
-      # `cargo publish --workspace` has no list to fall out of.
+      # There is still no list: the members come from cargo, and so does the
+      # order, because one multi-package `cargo publish` sorts what it is
+      # given by dependency.
       #
-      # Crates on their own version lines - ps-debug-timer, dom-abi,
-      # ps-accesskit-xplat, rdme, ps-blitz-debug-control - need no special
-      # handling: each publishes at the version in its own manifest, and one
-      # already on crates.io is skipped.
+      # What cargo does not do is skip. Crates on their own version lines -
+      # ps-debug-timer, dom-abi, ps-accesskit-xplat, rdme,
+      # ps-blitz-debug-control - rarely change version, and
+      # `cargo publish --workspace` aborts on the first one already on
+      # crates.io before uploading anything. This step read that error as
+      # "nothing left to upload" and passed: 0.4.11 was released on master and
+      # never reached crates.io, stopped at ps-accesskit-xplat 0.1.1. So the one
+      # question the old script asked per crate is asked again, and only that
+      # one: is this name at this version on the index.
       #
       # No `--locked`. There is no tracked lockfile, and a publish should
       # resolve the newest version each caret permits rather than freeze
@@ -86,22 +93,11 @@ jobs:
         if: inputs.dry_run
         run: cargo package --workspace
 
-      # `cargo publish --workspace` fails the whole run when a version is
-      # already on the registry rather than skipping that crate, and a dry run
-      # only warns about it. Re-running a partial release is exactly the case
-      # that has to work here, so that one error passes and nothing else does.
+      # Every failure fails the run. The old step let "already exists" through
+      # and so reported success for a release that uploaded nothing.
       - name: Publish
         if: '!inputs.dry_run'
         shell: bash
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          set -o pipefail
-          if cargo publish --workspace 2>&1 | tee /tmp/publish.log; then
-            exit 0
-          fi
-          if grep -q "already exists on crates.io index" /tmp/publish.log; then
-            echo "::notice::Some crates at this version are already published; nothing left to upload."
-            exit 0
-          fi
-          exit 1
+        run: .github/scripts/publish-missing.sh
