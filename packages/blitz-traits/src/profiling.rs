@@ -30,7 +30,7 @@ static DEEP_PROFILING_CONSUMERS: AtomicUsize = AtomicUsize::new(0);
 
 /// The two owner-controlled debug capabilities shared by Blitz embedders.
 ///
-/// Socket lifecycle belongs to the embedder (for example tauri-runtime-blitz
+/// Socket lifecycle belongs to the embedder (for example izumo
 /// or Chuzz), while the engine profiling decision is common to every stack.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DebugOptions {

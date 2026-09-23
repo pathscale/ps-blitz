@@ -38,7 +38,7 @@ members = [
 # this workspace's own target lock. See packages/blitz-wasm/ABI.md.
 # CI checks the coordinated runtime stack out below this repository. Keep those
 # independent workspaces out of Cargo's automatic path-dependency membership.
-exclude = ["sites", "packages/blitz-wasm/guest", ".ps-observability", ".chuzz", ".tauri-runtime-blitz"]
+exclude = ["sites", "packages/blitz-wasm/guest", ".ps-observability", ".chuzz", ".izumo"]
 resolver = "2"
 
 [workspace.package]
