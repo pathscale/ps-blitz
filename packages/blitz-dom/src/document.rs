@@ -4162,7 +4162,10 @@ mod clipboard_html_tests {
     /// Unescaped, `a < b` opens a tag in whatever receives the paste.
     #[test]
     fn markup_characters_in_a_selection_are_escaped() {
-        assert_eq!(escape_html("a < b && c > d"), "a &lt; b &amp;&amp; c &gt; d");
+        assert_eq!(
+            escape_html("a < b && c > d"),
+            "a &lt; b &amp;&amp; c &gt; d"
+        );
     }
 
     /// The ampersand has to go first, or escaping the others re-escapes the
