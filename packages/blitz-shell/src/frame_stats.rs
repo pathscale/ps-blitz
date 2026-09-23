@@ -5,7 +5,7 @@
 //! took, and how long the renderer took to submit and present. Those numbers used
 //! to exist only inside a once-per-second `[blitz-frame]` log line, so anything
 //! that wanted to report renderer performance had no way to read them. The MCP
-//! diagnostics endpoint in `tauri-runtime-blitz` is the case that motivated this
+//! diagnostics endpoint in `izumo` is the case that motivated this
 //! module: with no accessor it timed its own snapshot collection and reported that
 //! as frame cost, which measures the observer rather than the application.
 //!

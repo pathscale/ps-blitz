@@ -379,8 +379,9 @@ jobs:
       - uses: actions/checkout@v5
         with:
           repository: pathscale/ps-observability
-          # Protocol/driver from PR #21, validated with this engine candidate.
-          ref: d4f6d70fec8cb0673c4a73c448983aff336ee84c
+          # blitz-control-protocol 0.5.3 and ps-qa 0.7.4, the versions izumo 0.4.1
+          # and the chuzz ref below are built against.
+          ref: 2a5ab50dd567bde12948673c14d0664bd58b97a3
           path: .ps-observability
       # The host moved. `qa-inspect-host` lived in ps-observability and was
       # deleted there in "refactor: delete qa-inspect-host, so there is one
@@ -388,16 +389,16 @@ jobs:
       - uses: actions/checkout@v5
         with:
           repository: pathscale/chuzz
-          # Shared document actions and headless build gate from PR #45.
-          ref: 4ad2d73e5179c6568f3bd7f8f55594e8957c01ef
+          # The first chuzz that takes izumo rather than tauri-runtime-blitz
+          # (pathscale/chuzz#48), so the izumo patch below reaches it.
+          ref: c1863e9ed43510e1e8d9601c755b00076963fe9c
           path: .chuzz
       - uses: actions/checkout@v5
         with:
-          # Renamed from pathscale/tauri-runtime-blitz; the pinned ref predates it.
           repository: pathscale/izumo
-          # Resolve the host workspace before the 0.4.0 registry release.
-          ref: 5b392a6f0a919fc9e664c4b505c8f661e29f0c5a
-          path: .tauri-runtime-blitz
+          # izumo 0.4.1, the first release under that name.
+          ref: 908675a8fa5fb8e311ddb6010af647e98d7c6791
+          path: .izumo
       # ps-qa from the ps-observability checkout, rather than `cargo install
       # ps-qa`. The harness and the fixtures move together, and installing it
       # while building the host would make this job depend on a release of the
@@ -407,6 +408,6 @@ jobs:
         env:
           PS_OBSERVABILITY: .ps-observability
           CHUZZ: .chuzz
-          TAURI_RUNTIME_BLITZ: .tauri-runtime-blitz
+          IZUMO: .izumo
           QA_BUILD_PS_QA: "1"
         run: tests/qa/run.sh

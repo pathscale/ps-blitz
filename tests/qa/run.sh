@@ -65,7 +65,7 @@ if [ -z "$host" ]; then
   # runtime checkouts so this engine's fixtures can run before publication.
   # CI pins their revisions; local runs use the sibling working checkouts.
   observability="$(CDPATH= cd -- "${PS_OBSERVABILITY:-$ROOT/../ps-observability}" && pwd)"
-  runtime="$(CDPATH= cd -- "${TAURI_RUNTIME_BLITZ:-$ROOT/../tauri-runtime-blitz}" && pwd)"
+  runtime="$(CDPATH= cd -- "${IZUMO:-$ROOT/../izumo}" && pwd)"
 
   # Every ps-blitz crate chuzz reaches, not just the five the old host used:
   # patching some and not others resolves the rest from crates.io, and an engine
@@ -76,7 +76,7 @@ if [ -z "$host" ]; then
       --no-default-features \
       --features capture,javascript,scrollbars,webp \
       --config "patch.crates-io.blitz-control-protocol.path='$observability/crates/blitz-control-protocol'" \
-      --config "patch.crates-io.tauri-runtime-blitz.path='$runtime/crates/tauri-runtime-blitz'" \
+      --config "patch.crates-io.izumo.path='$runtime/crates/izumo'" \
       --config "patch.crates-io.ps-blitz-debug-control.path='$PACKAGES/blitz-debug-control'" \
       --config "patch.crates-io.ps-blitz-dom-api.path='$PACKAGES/blitz-dom-api'" \
       --config "patch.crates-io.ps-blitz-dom.path='$PACKAGES/blitz-dom'" \

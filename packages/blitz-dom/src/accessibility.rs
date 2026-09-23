@@ -23,7 +23,7 @@ fn attr<'a>(element: &'a ElementData, name: &str) -> Option<&'a str> {
 /// # Why this is public
 ///
 /// There were two of these. This one built the AccessKit tree a screen reader
-/// reads; a second copy in `tauri-runtime-blitz`'s `agent.rs` built the
+/// reads; a second copy in `izumo`'s `agent.rs` built the
 /// semantic tree an agent and the QA harness read, and the two answered
 /// differently about the same document. `<th>` was the case that showed it:
 /// correct here as a column or row header, reported as a plain `cell` there,
