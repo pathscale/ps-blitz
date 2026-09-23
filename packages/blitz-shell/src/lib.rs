@@ -442,6 +442,21 @@ impl ShellProvider for BlitzShellProvider {
     /// `set_html` takes the plain alternative alongside the markup, so this is
     /// a single operation rather than two that could race: writing text and
     /// then HTML would leave a window in which a paste sees only the first.
+    ///
+    /// Gated like its two siblings. Without `clipboard` there is no
+    /// `with_clipboard`, and the trait's default copies the plain text.
+    #[cfg(all(
+        feature = "clipboard",
+        any(
+            target_os = "windows",
+            target_os = "macos",
+            target_os = "linux",
+            target_os = "dragonfly",
+            target_os = "freebsd",
+            target_os = "netbsd",
+            target_os = "openbsd"
+        )
+    ))]
     fn set_clipboard_html(
         &self,
         html: String,
