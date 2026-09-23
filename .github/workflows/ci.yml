@@ -393,7 +393,8 @@ jobs:
           path: .chuzz
       - uses: actions/checkout@v5
         with:
-          repository: pathscale/tauri-runtime-blitz
+          # Renamed from pathscale/tauri-runtime-blitz; the pinned ref predates it.
+          repository: pathscale/izumo
           # Resolve the host workspace before the 0.4.0 registry release.
           ref: 5b392a6f0a919fc9e664c4b505c8f661e29f0c5a
           path: .tauri-runtime-blitz
