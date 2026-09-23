@@ -32,6 +32,20 @@ pub trait ShellProvider: Send + Sync + 'static {
         let _ = text;
         Err(ClipboardError)
     }
+    /// Put a selection on the clipboard as both rich text and plain text.
+    ///
+    /// Two payloads, one copy. A target that understands HTML takes the markup
+    /// and keeps the bold, the links and the code spans; everything else takes
+    /// `text`, which is what a plain `set_clipboard_text` would have written on
+    /// its own. Pasting formatted text out of a Blitz window was impossible
+    /// before this, because plain text was the only thing ever offered.
+    ///
+    /// Defaults to the plain path so a shell that has not implemented it still
+    /// copies, rather than silently putting nothing on the clipboard.
+    fn set_clipboard_html(&self, html: String, text: String) -> Result<(), ClipboardError> {
+        let _ = html;
+        self.set_clipboard_text(text)
+    }
     fn open_file_dialog(
         &self,
         multiple: bool,

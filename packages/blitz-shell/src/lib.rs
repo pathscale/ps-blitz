@@ -437,6 +437,19 @@ impl ShellProvider for BlitzShellProvider {
         with_clipboard(|cb| cb.set_text(text))
     }
 
+    /// Both payloads in one clipboard write.
+    ///
+    /// `set_html` takes the plain alternative alongside the markup, so this is
+    /// a single operation rather than two that could race: writing text and
+    /// then HTML would leave a window in which a paste sees only the first.
+    fn set_clipboard_html(
+        &self,
+        html: String,
+        text: String,
+    ) -> Result<(), blitz_traits::shell::ClipboardError> {
+        with_clipboard(|cb| cb.set_html(html, Some(text)))
+    }
+
     #[cfg(all(
         feature = "file-dialog",
         any(

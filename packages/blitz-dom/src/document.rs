@@ -159,6 +159,25 @@ pub struct PreClickActivation {
     previous: Vec<(NodeId, bool)>,
 }
 
+/// Escape text for inclusion in an HTML clipboard payload.
+///
+/// The five characters that would otherwise be read as markup. A selection is
+/// document text, so a paragraph containing `a < b` must arrive as `a &lt; b`
+/// rather than opening a tag in whatever receives the paste.
+fn escape_html(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
 pub struct PlainDocument(pub BaseDocument);
 impl Document for PlainDocument {
     fn inner(&self) -> DocGuard<'_> {
@@ -3699,6 +3718,66 @@ root={:?} root_right={root_right:.1} root_w={:.1} lines={} layout_scale={:.2} vp
         }
     }
 
+    /// The selection as HTML, for a clipboard that can carry formatting.
+    ///
+    /// The same ranges [`Self::get_selected_text`] walks, with each one wrapped
+    /// in the tag of the element it came from, so bold stays bold and a code
+    /// span stays a code span when it lands in another application. Pasting
+    /// formatted text out of a Blitz window was impossible before this: plain
+    /// text was the only payload ever written.
+    ///
+    /// Only the element's own tag is reproduced, not its ancestors or its
+    /// styles. That is deliberate: a paste should carry the structure the author
+    /// wrote, not this window's theme, and dragging a `class` into another
+    /// application's document would reference styles that do not exist there.
+    pub fn get_selected_html(&self) -> Option<String> {
+        let ranges = self.get_text_selection_ranges();
+        if ranges.is_empty() {
+            return None;
+        }
+
+        let mut result = String::new();
+        for (node_id, start, end) in &ranges {
+            let Some(node) = self.get_node(*node_id) else {
+                continue;
+            };
+            let Some(element_data) = node.element_data() else {
+                continue;
+            };
+            let Some(inline_layout) = element_data.inline_layout_data.as_ref() else {
+                continue;
+            };
+            if *end > inline_layout.text.len() {
+                continue;
+            }
+
+            if !result.is_empty() {
+                result.push(' ');
+            }
+
+            let tag = element_data.name.local.as_ref();
+            let fragment = escape_html(&inline_layout.text[*start..*end]);
+            // A block tag around a fragment of a paragraph would be wrong: the
+            // range is a run of text, and the element it belongs to may be only
+            // partly selected. Inline tags carry meaning a paste should keep;
+            // anything else contributes its text and nothing more.
+            if matches!(
+                tag,
+                "b" | "strong" | "i" | "em" | "code" | "kbd" | "mark" | "s" | "u" | "sub" | "sup"
+            ) {
+                result.push_str(&format!("<{tag}>{fragment}</{tag}>"));
+            } else {
+                result.push_str(&fragment);
+            }
+        }
+
+        if result.is_empty() {
+            None
+        } else {
+            Some(result)
+        }
+    }
+
     /// Get all selection ranges as Vec<(node_id, start_offset, end_offset)>.
     /// Returns empty vec if no selection.
     pub fn get_text_selection_ranges(&self) -> Vec<(NodeId, usize, usize)> {
@@ -4072,5 +4151,31 @@ mod font_face_override_tests {
             "registered family should report the CSS-declared name, \
              not the font file's internal `name` table entry",
         );
+    }
+}
+
+#[cfg(test)]
+mod clipboard_html_tests {
+    use super::escape_html;
+
+    /// A selection is document text, so markup characters in it are content.
+    /// Unescaped, `a < b` opens a tag in whatever receives the paste.
+    #[test]
+    fn markup_characters_in_a_selection_are_escaped() {
+        assert_eq!(escape_html("a < b && c > d"), "a &lt; b &amp;&amp; c &gt; d");
+    }
+
+    /// The ampersand has to go first, or escaping the others re-escapes the
+    /// entities just written and `<` arrives as `&amp;lt;`.
+    #[test]
+    fn an_ampersand_is_not_double_escaped() {
+        assert_eq!(escape_html("&lt;"), "&amp;lt;");
+    }
+
+    /// Ordinary prose is left exactly as it is, including the apostrophes and
+    /// quotes that a paste should carry through unchanged.
+    #[test]
+    fn prose_is_untouched() {
+        assert_eq!(escape_html("it's \"fine\""), "it's &quot;fine&quot;");
     }
 }

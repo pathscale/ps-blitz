@@ -72,7 +72,17 @@ pub(crate) fn handle_key_or_input_event<F: FnMut(DomEvent)>(
                 if !field_owns_the_keystroke {
                     if let Some(text) = doc.get_selected_text() {
                         if !text.is_empty() {
-                            let _ = doc.shell_provider.set_clipboard_text(text);
+                            // Rich and plain together, so a target that
+                            // understands HTML keeps the formatting and every
+                            // other one still gets the text. Falls back to the
+                            // plain write when the selection has no markup
+                            // worth carrying.
+                            let _ = match doc.get_selected_html() {
+                                Some(html) => {
+                                    doc.shell_provider.set_clipboard_html(html, text)
+                                }
+                                None => doc.shell_provider.set_clipboard_text(text),
+                            };
                             return;
                         }
                     }
