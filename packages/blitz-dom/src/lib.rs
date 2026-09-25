@@ -49,6 +49,7 @@ mod html;
 mod iframe;
 /// Integration of taffy and the DOM.
 mod layout;
+mod mutation_record;
 mod mutator;
 pub mod paint_damage;
 mod query_selector;
@@ -107,6 +108,7 @@ pub use markup5ever::{
     LocalName, Namespace, NamespaceStaticSet, Prefix, PrefixStaticSet, QualName, local_name,
     namespace_prefix, namespace_url, ns,
 };
+pub use mutation_record::DomMutation;
 pub use mutator::DocumentMutator;
 pub use node::{Attribute, DocumentData, ElementData, Node, NodeData, SelectData, TextNodeData};
 pub use paint_damage::PaintDamage;
