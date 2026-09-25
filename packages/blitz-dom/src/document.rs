@@ -239,6 +239,9 @@ pub struct BaseDocument {
     pub(crate) viewport: Viewport,
     // Scroll within our viewport
     pub(crate) viewport_scroll: crate::Point<f64>,
+    /// Changes recorded for a script's `MutationObserver`, or `None` while no
+    /// observer is registered. See [`crate::DomMutation`].
+    pub(crate) mutation_log: Option<Vec<crate::DomMutation>>,
     /// CSS media type used to evaluate `@media` rules.
     pub(crate) media_type: MediaType,
     /// Strategy for Stylo's style traversal during `resolve`.
@@ -609,6 +612,7 @@ impl BaseDocument {
             subdocument_depth: config.subdocument_depth,
             devtool_settings: DevtoolSettings::default(),
             viewport_scroll: crate::Point::ZERO,
+            mutation_log: None,
             url: base_url,
             ua_stylesheets: HashMap::new(),
             nodes_to_stylesheet: BTreeMap::new(),
@@ -3895,6 +3899,55 @@ pub struct BoundingRect {
     pub y: f64,
     pub width: f64,
     pub height: f64,
+}
+
+/// The record of changes a script's `MutationObserver` reads. See
+/// [`crate::DomMutation`] for what is recorded and why.
+impl BaseDocument {
+    /// Start or stop recording changes. Stopping discards what was recorded
+    /// and not yet taken.
+    pub fn set_recording_mutations(&mut self, recording: bool) {
+        match (recording, self.mutation_log.is_some()) {
+            (true, false) => self.mutation_log = Some(Vec::new()),
+            (false, true) => self.mutation_log = None,
+            _ => {}
+        }
+    }
+
+    /// Whether changes are being recorded.
+    pub fn is_recording_mutations(&self) -> bool {
+        self.mutation_log.is_some()
+    }
+
+    /// Take every change recorded since the last call, oldest first.
+    pub fn take_mutations(&mut self) -> Vec<crate::DomMutation> {
+        self.mutation_log
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn record_mutation(&mut self, mutation: crate::DomMutation) {
+        if let Some(log) = self.mutation_log.as_mut() {
+            if log.len() < crate::mutation_record::MUTATION_LOG_CAP {
+                log.push(mutation);
+            }
+        }
+    }
+
+    /// Where `node_id` sits among its siblings: its parent and the siblings on
+    /// either side, as a child-list record reports them.
+    pub(crate) fn sibling_context(
+        &self,
+        node_id: NodeId,
+    ) -> Option<(NodeId, Option<NodeId>, Option<NodeId>)> {
+        let parent_id = self.nodes.get(node_id)?.parent?;
+        let siblings = &self.nodes.get(parent_id)?.children;
+        let index = siblings.iter().position(|id| *id == node_id)?;
+        let previous = index.checked_sub(1).map(|i| siblings[i]);
+        let next = siblings.get(index + 1).copied();
+        Some((parent_id, previous, next))
+    }
 }
 
 impl AsRef<BaseDocument> for BaseDocument {
