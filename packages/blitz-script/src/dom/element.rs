@@ -1462,12 +1462,28 @@ fn get_scroll_height(this: &JsValue, _: &[JsValue], context: &mut Context) -> Js
     })
 }
 
+/// `clientWidth` / `clientHeight`: the padding box without scrollbars, as in a
+/// browser. These returned the border box, so a bordered element reported its
+/// borders as usable space and a scroller reported its scrollbar as room for
+/// content: layout code that sizes children to `clientWidth` overflowed by
+/// exactly the border.
 fn get_client_width(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    box_metric(this, context, |node| node.final_layout().size.width)
+    box_metric(this, context, |node| {
+        let layout = node.final_layout();
+        (layout.size.width - layout.border.left - layout.border.right - layout.scrollbar_size.width)
+            .max(0.0)
+    })
 }
 
 fn get_client_height(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    box_metric(this, context, |node| node.final_layout().size.height)
+    box_metric(this, context, |node| {
+        let layout = node.final_layout();
+        (layout.size.height
+            - layout.border.top
+            - layout.border.bottom
+            - layout.scrollbar_size.height)
+            .max(0.0)
+    })
 }
 
 /// `offsetWidth` / `offsetHeight`: the border box, which is what every control
