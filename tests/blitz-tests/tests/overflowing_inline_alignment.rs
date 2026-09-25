@@ -26,9 +26,9 @@ use std::sync::Arc;
 
 /// The label of the row, with no space or hyphen anywhere parley could break.
 const UNBREAKABLE: &str = concat!(
-    "cd/Users/revenge/code/blitz-rust&&git-diff;echo===age===;",
-    "cd/Users/revenge/code/tauri-runtime-blitz&&git-status;echo===done===;",
-    "cd/Users/revenge/code/agencyzero&&cargo-build---release;echo===built===",
+    "the_first_part_of_a_row_label_that_runs_on_without_a_single_break;",
+    "the_second_part_keeps_going_well_past_the_width_of_the_row_it_is_in;",
+    "and_the_third_part_makes_sure_it_overflows_whatever_the_font_in_use",
 );
 
 fn document(button_style: &str) -> HtmlDocument {
