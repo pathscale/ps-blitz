@@ -384,6 +384,15 @@ impl ScriptRuntime {
             .build();
         register_global(&mut context, "performance", performance.into());
 
+        // The switch the prelude's `MutationObserver` flips: the document
+        // records changes only while an observer is registered.
+        register_global_fn(
+            &mut context,
+            "__blitzObserveMutations",
+            1,
+            observe_mutations,
+        );
+
         // Timers and window event listeners
         register_global_fn(&mut context, "setTimeout", 2, set_timeout);
         register_global_fn(&mut context, "clearTimeout", 1, clear_timer);
@@ -427,6 +436,129 @@ impl ScriptRuntime {
                 globalThis.queueMicrotask = function (callback) {
                     Promise.resolve().then(callback);
                 };
+            }
+            // `MutationObserver`, fed by the document's change log. The log
+            // records only while a registration exists, and `run_jobs` hands
+            // it to `__blitzDeliverMutations` at the end of each script turn.
+            // Records list plain arrays for `addedNodes`/`removedNodes`, which
+            // is what code iterating them with `for`, `length` or `forEach`
+            // needs; a live `NodeList` is not modelled.
+            if (typeof globalThis.MutationObserver !== "function") {
+                (function () {
+                    const registrations = [];
+                    const syncRecording = function () {
+                        globalThis.__blitzObserveMutations(registrations.length > 0);
+                    };
+                    const normalize = function (options) {
+                        const o = Object.assign({}, options || {});
+                        if ((o.attributeOldValue || o.attributeFilter) && o.attributes === undefined) {
+                            o.attributes = true;
+                        }
+                        if (o.characterDataOldValue && o.characterData === undefined) {
+                            o.characterData = true;
+                        }
+                        if (!o.childList && !o.attributes && !o.characterData) {
+                            throw new TypeError(
+                                "Failed to execute 'observe' on 'MutationObserver': The options object must set at least one of 'attributes', 'characterData', or 'childList' to true."
+                            );
+                        }
+                        return o;
+                    };
+                    const within = function (ancestor, node) {
+                        try {
+                            return ancestor === node
+                                || (typeof ancestor.contains === "function" && ancestor.contains(node));
+                        } catch (error) {
+                            return false;
+                        }
+                    };
+                    const MutationObserver = function (callback) {
+                        if (typeof callback !== "function") {
+                            throw new TypeError(
+                                "Failed to construct 'MutationObserver': parameter 1 is not of type 'Function'."
+                            );
+                        }
+                        this._callback = callback;
+                        this._records = [];
+                    };
+                    MutationObserver.prototype.observe = function (target, options) {
+                        if (!target || typeof target !== "object") {
+                            throw new TypeError(
+                                "Failed to execute 'observe' on 'MutationObserver': parameter 1 is not of type 'Node'."
+                            );
+                        }
+                        const normalized = normalize(options);
+                        const existing = registrations.find(
+                            (r) => r.observer === this && r.target === target
+                        );
+                        if (existing) {
+                            existing.options = normalized;
+                        } else {
+                            registrations.push({ observer: this, target: target, options: normalized });
+                        }
+                        syncRecording();
+                    };
+                    MutationObserver.prototype.disconnect = function () {
+                        for (let i = registrations.length - 1; i >= 0; i--) {
+                            if (registrations[i].observer === this) registrations.splice(i, 1);
+                        }
+                        this._records = [];
+                        syncRecording();
+                    };
+                    MutationObserver.prototype.takeRecords = function () {
+                        const records = this._records;
+                        this._records = [];
+                        return records;
+                    };
+                    globalThis.__blitzDeliverMutations = function (raw) {
+                        const notified = [];
+                        for (const entry of raw) {
+                            const type = entry[0];
+                            const target = entry[1];
+                            const name = entry[6];
+                            // One record per observer per change, however many
+                            // of its registrations match.
+                            const seen = [];
+                            for (const r of registrations) {
+                                if (seen.indexOf(r.observer) !== -1) continue;
+                                const o = r.options;
+                                if (r.target !== target && !(o.subtree && within(r.target, target))) continue;
+                                if (type === "childList" && !o.childList) continue;
+                                if (type === "attributes") {
+                                    if (!o.attributes) continue;
+                                    if (o.attributeFilter && o.attributeFilter.indexOf(name) === -1) continue;
+                                }
+                                if (type === "characterData" && !o.characterData) continue;
+                                const keepOld = type === "attributes"
+                                    ? o.attributeOldValue
+                                    : type === "characterData" && o.characterDataOldValue;
+                                seen.push(r.observer);
+                                r.observer._records.push({
+                                    type: type,
+                                    target: target,
+                                    addedNodes: entry[2],
+                                    removedNodes: entry[3],
+                                    previousSibling: entry[4],
+                                    nextSibling: entry[5],
+                                    attributeName: type === "attributes" ? name : null,
+                                    attributeNamespace: null,
+                                    oldValue: keepOld ? entry[7] : null
+                                });
+                                if (notified.indexOf(r.observer) === -1) notified.push(r.observer);
+                            }
+                        }
+                        for (const observer of notified) {
+                            const records = observer.takeRecords();
+                            if (!records.length) continue;
+                            try {
+                                observer._callback.call(observer, records, observer);
+                            } catch (error) {
+                                setTimeout(function () { throw error; }, 0);
+                            }
+                        }
+                    };
+                    globalThis.MutationObserver = MutationObserver;
+                })();
             }
             if (typeof globalThis.structuredClone !== "function") {
                 globalThis.structuredClone = function (input, options) {
@@ -831,9 +963,57 @@ impl ScriptRuntime {
 
     /// Run pending promise jobs (microtasks)
     pub fn run_jobs(&mut self, description: &str) {
-        if let Err(error) = self.context.run_jobs() {
-            report_js_error(&self.diagnostics, description, &error);
+        // Every script turn ends here, so this is where recorded DOM changes
+        // reach the page's `MutationObserver`s: after the turn's synchronous
+        // code and its microtasks, before anything renders, which is when a
+        // browser delivers them. A callback can queue jobs and change the DOM
+        // again, so this repeats until nothing is left. The cap stops an
+        // observer that rewrites what it observes from holding the thread;
+        // records past it wait for the next turn rather than being lost.
+        const MUTATION_DELIVERY_ROUNDS: usize = 32;
+        for _ in 0..MUTATION_DELIVERY_ROUNDS {
+            if let Err(error) = self.context.run_jobs() {
+                report_js_error(&self.diagnostics, description, &error);
+            }
+            if !self.deliver_mutations() {
+                return;
+            }
         }
+    }
+
+    /// Hand recorded DOM changes to the prelude's `MutationObserver`. Returns
+    /// whether there were any.
+    fn deliver_mutations(&mut self) -> bool {
+        let records = {
+            let mut doc = self.ctx.doc.borrow_mut();
+            if !doc.is_recording_mutations() {
+                return false;
+            }
+            doc.take_mutations()
+        };
+        if records.is_empty() {
+            return false;
+        }
+        let deliver = match self
+            .context
+            .global_object()
+            .get(js_string!("__blitzDeliverMutations"), &mut self.context)
+        {
+            Ok(value) => value,
+            Err(_) => return false,
+        };
+        let Some(deliver) = deliver.as_callable() else {
+            return false;
+        };
+        let values: Vec<JsValue> = records
+            .into_iter()
+            .filter_map(|record| mutation_record_value(&self.ctx, record, &mut self.context))
+            .collect();
+        let list = boa_engine::object::builtins::JsArray::from_iter(values, &mut self.context);
+        if let Err(error) = deliver.call(&JsValue::undefined(), &[list.into()], &mut self.context) {
+            report_js_error(&self.diagnostics, "MutationObserver delivery", &error);
+        }
+        true
     }
 
     /// The deadline of the soonest pending timer (if any)
@@ -1400,6 +1580,111 @@ fn get_property_value(
         // browser answers for one it does not recognise.
         _ => Ok(JsValue::from(js_string!(""))),
     }
+}
+
+/// `__blitzObserveMutations(on)`: the prelude's `MutationObserver` turns the
+/// document's change log on while any observer is registered and off when the
+/// last one disconnects, so a page without observers records nothing.
+fn observe_mutations(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let on = args.first().is_some_and(JsValue::to_boolean);
+    dom_ctx(context)?
+        .doc
+        .borrow_mut()
+        .set_recording_mutations(on);
+    Ok(JsValue::undefined())
+}
+
+/// One recorded change as the array the prelude's delivery function reads:
+/// `[type, target, added, removed, previousSibling, nextSibling,
+/// attributeName, oldValue]`. `None` when the target no longer exists.
+fn mutation_record_value(
+    ctx: &DomCtx,
+    record: blitz_dom::DomMutation,
+    context: &mut Context,
+) -> Option<JsValue> {
+    use blitz_dom::DomMutation;
+    use boa_engine::object::builtins::JsArray;
+
+    let exists = |id: NodeId| ctx.doc.borrow().get_node(id).is_some();
+    let node = |id: NodeId, context: &mut Context| -> JsValue {
+        if exists(id) {
+            node_wrapper(ctx, id, context).into()
+        } else {
+            JsValue::null()
+        }
+    };
+    let nodes = |ids: Vec<NodeId>, context: &mut Context| -> JsValue {
+        let values: Vec<JsValue> = ids
+            .into_iter()
+            .filter(|id| exists(*id))
+            .map(|id| node_wrapper(ctx, id, context).into())
+            .collect();
+        JsArray::from_iter(values, context).into()
+    };
+    let text = |value: Option<String>| -> JsValue {
+        value.map_or(JsValue::null(), |value| {
+            JsString::from(value.as_str()).into()
+        })
+    };
+
+    let fields: Vec<JsValue> = match record {
+        DomMutation::ChildList {
+            target,
+            added,
+            removed,
+            previous_sibling,
+            next_sibling,
+        } => {
+            if !exists(target) {
+                return None;
+            }
+            vec![
+                js_string!("childList").into(),
+                node(target, context),
+                nodes(added, context),
+                nodes(removed, context),
+                previous_sibling.map_or(JsValue::null(), |id| node(id, context)),
+                next_sibling.map_or(JsValue::null(), |id| node(id, context)),
+                JsValue::null(),
+                JsValue::null(),
+            ]
+        }
+        DomMutation::Attributes {
+            target,
+            name,
+            old_value,
+        } => {
+            if !exists(target) {
+                return None;
+            }
+            vec![
+                js_string!("attributes").into(),
+                node(target, context),
+                nodes(Vec::new(), context),
+                nodes(Vec::new(), context),
+                JsValue::null(),
+                JsValue::null(),
+                text(Some(name)),
+                text(old_value),
+            ]
+        }
+        DomMutation::CharacterData { target, old_value } => {
+            if !exists(target) {
+                return None;
+            }
+            vec![
+                js_string!("characterData").into(),
+                node(target, context),
+                nodes(Vec::new(), context),
+                nodes(Vec::new(), context),
+                JsValue::null(),
+                JsValue::null(),
+                JsValue::null(),
+                text(Some(old_value)),
+            ]
+        }
+    };
+    Some(JsArray::from_iter(fields, context).into())
 }
 
 fn ipc_post_message(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
