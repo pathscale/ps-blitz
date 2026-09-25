@@ -138,3 +138,63 @@ fn an_unsupported_property_reads_as_empty() {
 
     assert_eq!(value, "", "an unsupported property should read as unset");
 }
+
+fn boxed_page() -> ScriptDocument {
+    ScriptDocument::from_html(
+        r#"<html><head><style>
+             .box { width: 200px; height: 50px; padding: 10px 12px; border: 3px solid black; margin: 4px 6px; }
+             #content { box-sizing: content-box; }
+             #border  { box-sizing: border-box; }
+           </style></head>
+           <body style="margin:0">
+             <div id="content" class="box"></div>
+             <div id="border" class="box"></div>
+           </body></html>"#,
+        blitz_dom::DocumentConfig::default(),
+    )
+}
+
+/// Padding, border widths and margins read as used px values.
+///
+/// They were absent, so `parseFloat(style.paddingLeft)` was `NaN`, and code
+/// that subtracts padding from a measured box carried the `NaN` silently into
+/// the position or size it was computing.
+#[test]
+fn the_box_model_edges_are_reported() {
+    let mut doc = boxed_page();
+    doc.execute_scripts();
+    doc.inner_mut().resolve(0.0);
+
+    let edges = eval_string(
+        &mut doc,
+        "(() => { const s = getComputedStyle(document.getElementById('content'));
+                  return [s.paddingTop, s.paddingLeft, s.borderTopWidth,
+                          s.getPropertyValue('border-left-width'), s.marginTop, s.marginLeft].join(' '); })()",
+    );
+
+    assert_eq!(edges, "10px 12px 3px 3px 4px 6px");
+}
+
+/// `width` is the content box unless the element is `border-box`, as in a
+/// browser.
+#[test]
+fn width_follows_box_sizing() {
+    let mut doc = boxed_page();
+    doc.execute_scripts();
+    doc.inner_mut().resolve(0.0);
+
+    let content = eval_string(
+        &mut doc,
+        "getComputedStyle(document.getElementById('content')).width",
+    );
+    let border = eval_string(
+        &mut doc,
+        "getComputedStyle(document.getElementById('border')).width",
+    );
+
+    assert_eq!(content, "200px", "content-box: the specified content width");
+    assert_eq!(
+        border, "200px",
+        "border-box: the specified border-box width"
+    );
+}

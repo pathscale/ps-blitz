@@ -420,6 +420,27 @@ impl Node {
     pub fn computed_style_properties(&self) -> Option<Vec<(&'static str, String)>> {
         let style = self.primary_styles()?;
         let layout = *self.final_layout();
+        let (used_width, used_height) = if matches!(
+            style.clone_box_sizing(),
+            style::computed_values::box_sizing::T::BorderBox
+        ) {
+            (layout.size.width, layout.size.height)
+        } else {
+            (
+                (layout.size.width
+                    - layout.padding.left
+                    - layout.padding.right
+                    - layout.border.left
+                    - layout.border.right)
+                    .max(0.0),
+                (layout.size.height
+                    - layout.padding.top
+                    - layout.padding.bottom
+                    - layout.border.top
+                    - layout.border.bottom)
+                    .max(0.0),
+            )
+        };
         Some(vec![
             ("display", style.clone_display().to_css_string()),
             ("position", style.clone_position().to_css_string()),
@@ -454,8 +475,30 @@ impl Node {
             // The used values, not the specified ones. A page reading `width`
             // off `getComputedStyle` is nearly always asking how wide the box
             // ended up, and `auto` is not an answer it can use.
-            ("width", format!("{}px", layout.size.width)),
-            ("height", format!("{}px", layout.size.height)),
+            //
+            // Which box follows `box-sizing`, as in a browser: the content box
+            // unless the element is `border-box`. Reporting the border box for
+            // every element made `width - paddingLeft - paddingRight` (the
+            // usual content-width arithmetic) subtract the padding twice.
+            ("width", format!("{}px", used_width)),
+            ("height", format!("{}px", used_height)),
+            // The box model's edges, used values in px. Absent, a read of
+            // `paddingLeft` came back `undefined`, and `parseFloat(undefined)`
+            // is `NaN`, which then travelled silently into whatever position or
+            // size the page was computing: measuring code that subtracts
+            // padding or margins from a box placed things at NaN.
+            ("padding-top", format!("{}px", layout.padding.top)),
+            ("padding-right", format!("{}px", layout.padding.right)),
+            ("padding-bottom", format!("{}px", layout.padding.bottom)),
+            ("padding-left", format!("{}px", layout.padding.left)),
+            ("border-top-width", format!("{}px", layout.border.top)),
+            ("border-right-width", format!("{}px", layout.border.right)),
+            ("border-bottom-width", format!("{}px", layout.border.bottom)),
+            ("border-left-width", format!("{}px", layout.border.left)),
+            ("margin-top", format!("{}px", layout.margin.top)),
+            ("margin-right", format!("{}px", layout.margin.right)),
+            ("margin-bottom", format!("{}px", layout.margin.bottom)),
+            ("margin-left", format!("{}px", layout.margin.left)),
         ])
     }
 
