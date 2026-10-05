@@ -395,6 +395,10 @@ fn scroll_delta_for_key(doc: &BaseDocument, node_id: NodeId, key: &Key) -> Optio
         Key::PageUp => Some((0.0, page)),
         Key::ArrowDown => Some((0.0, -LINE)),
         Key::ArrowUp => Some((0.0, LINE)),
+        // Same invert as the vertical arrows: `scroll_node_by` subtracts the
+        // delta from the offset, so a negative x increases `scrollLeft`.
+        Key::ArrowRight => Some((-LINE, 0.0)),
+        Key::ArrowLeft => Some((LINE, 0.0)),
         Key::Home => Some((0.0, 1.0e7)),
         Key::End => Some((0.0, -1.0e7)),
         _ => None,

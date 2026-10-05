@@ -1,3 +1,4 @@
+use super::focus::generate_focus_events;
 use crate::{BaseDocument, node::GeneratedTextInputEvent, util::has_clipboard_modifier};
 use blitz_traits::node_id::NodeId;
 use blitz_traits::{
@@ -28,15 +29,22 @@ pub(crate) fn handle_key_or_input_event<F: FnMut(DomEvent)>(
     doc: &mut BaseDocument,
     target: NodeId,
     event: KeyboardOrTextInputEvent,
-    dispatch_event: F,
+    mut dispatch_event: F,
 ) {
     if let KeyboardOrTextInputEvent::KeyPress(event) = &event {
         if event.key == Key::Tab {
-            if event.modifiers.contains(Modifiers::SHIFT) {
-                doc.focus_prev_node();
-            } else {
-                doc.focus_next_node();
-            }
+            let backwards = event.modifiers.contains(Modifiers::SHIFT);
+            generate_focus_events(
+                doc,
+                &mut |doc| {
+                    if backwards {
+                        doc.focus_prev_node();
+                    } else {
+                        doc.focus_next_node();
+                    }
+                },
+                &mut dispatch_event,
+            );
             return;
         }
 
