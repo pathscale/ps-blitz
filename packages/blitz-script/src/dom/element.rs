@@ -355,6 +355,14 @@ fn is_svg_element(ctx: &DomCtx, node_id: NodeId) -> bool {
     element_namespace_uri(ctx, node_id) == "http://www.w3.org/2000/svg"
 }
 
+fn is_anchor(ctx: &DomCtx, node_id: NodeId) -> bool {
+    ctx.doc
+        .borrow()
+        .get_node(node_id)
+        .and_then(|node| node.element_data())
+        .is_some_and(|element| &*element.name.local == "a")
+}
+
 fn namespace_uri(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
@@ -504,6 +512,9 @@ fn get_href(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
     if is_svg_element(&ctx, node_id) {
+        if !is_anchor(&ctx, node_id) {
+            return Ok(JsValue::undefined());
+        }
         return Ok(svg_animated_string(
             node_id,
             get_svg_href_string,
@@ -536,6 +547,9 @@ fn get_target(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResu
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
     if is_svg_element(&ctx, node_id) {
+        if !is_anchor(&ctx, node_id) {
+            return Ok(JsValue::undefined());
+        }
         return Ok(svg_animated_string(
             node_id,
             get_svg_target_string,
