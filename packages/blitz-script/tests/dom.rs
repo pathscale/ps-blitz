@@ -1860,7 +1860,7 @@ fn anchor_href_is_the_resolved_absolute_url() {
 }
 
 #[test]
-fn svg_anchor_reflects_animated_strings_and_keeps_html_urls() {
+fn svg_anchor_reflects_animated_strings() {
     let doc = doc_from_html(
         r##"<svg xmlns="http://www.w3.org/2000/svg">
         <a id="link" href="#first" target="_self"></a></svg><div id="out"></div>
@@ -1880,6 +1880,19 @@ fn svg_anchor_reflects_animated_strings_and_keeps_html_urls() {
         text_of_selector(&doc, "#out"),
         "#first|#first|_self|#second|#second|#second|_blank|_blank"
     );
+}
+
+#[test]
+fn svg_anchor_properties_do_not_appear_on_generic_svg_elements() {
+    let doc = doc_from_html(
+        r##"<svg><g id="group" href="#not-link" target="_self"></g></svg>
+        <div id="out"></div><script>
+        const g = document.getElementById('group');
+        document.getElementById('out').textContent =
+            [g.href === undefined, g.target === undefined].join('|');
+        </script>"##,
+    );
+    assert_eq!(text_of_selector(&doc, "#out"), "true|true");
 }
 
 #[test]
