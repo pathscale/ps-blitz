@@ -1,0 +1,3639 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 30bdd412..3a117635 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -42,7 +42,7 @@ exclude = ["sites", "packages/blitz-wasm/guest", ".ps-observability", ".chuzz",
+ resolver = "2"
+ 
+ [workspace.package]
+-version = "0.4.13"
++version = "0.5.0"
+ license = "MIT OR Apache-2.0"
+ homepage = "https://github.com/pathscale/ps-blitz"
+ repository = "https://github.com/pathscale/ps-blitz"
+@@ -52,15 +52,15 @@ rust-version = "1.89.0"
+ 
+ [workspace.dependencies]
+ # Blitz dependencies(in-repo)
+-blitz = { package = "ps-blitz", version = "^0.4.0", path = "./packages/blitz" }
+-blitz-dom = { package = "ps-blitz-dom", version = "^0.4.0", path = "./packages/blitz-dom", default-features = false }
+-blitz-html = { package = "ps-blitz-html", version = "^0.4.0", path = "./packages/blitz-html", default-features = false }
+-blitz-script = { package = "ps-blitz-script", version = "^0.4.0", path = "./packages/blitz-script", default-features = false }
+-blitz-net = { package = "ps-blitz-net", version = "^0.4.0", path = "./packages/blitz-net", default-features = false }
+-blitz-paint = { package = "ps-blitz-paint", version = "^0.4.0", path = "./packages/blitz-paint", default-features = false }
+-blitz-shell = { package = "ps-blitz-shell", version = "^0.4.0", path = "./packages/blitz-shell", default-features = false }
+-blitz-traits = { package = "ps-blitz-traits", version = "^0.4.0", path = "./packages/blitz-traits", default-features = false }
+-stylo_taffy = { package = "ps-stylo-taffy", version = "^0.4.0", path = "./packages/stylo_taffy", default-features = false }
++blitz = { package = "ps-blitz", version = "^0.5.0", path = "./packages/blitz" }
++blitz-dom = { package = "ps-blitz-dom", version = "^0.5.0", path = "./packages/blitz-dom", default-features = false }
++blitz-html = { package = "ps-blitz-html", version = "^0.5.0", path = "./packages/blitz-html", default-features = false }
++blitz-script = { package = "ps-blitz-script", version = "^0.5.0", path = "./packages/blitz-script", default-features = false }
++blitz-net = { package = "ps-blitz-net", version = "^0.5.0", path = "./packages/blitz-net", default-features = false }
++blitz-paint = { package = "ps-blitz-paint", version = "^0.5.0", path = "./packages/blitz-paint", default-features = false }
++blitz-shell = { package = "ps-blitz-shell", version = "^0.5.0", path = "./packages/blitz-shell", default-features = false }
++blitz-traits = { package = "ps-blitz-traits", version = "^0.5.0", path = "./packages/blitz-traits", default-features = false }
++stylo_taffy = { package = "ps-stylo-taffy", version = "^0.5.0", path = "./packages/stylo_taffy", default-features = false }
+ dioxus-native = { package = "ps-dioxus-native", version = "^0.7", path = "./packages/dioxus-native", default-features = false }
+ dioxus-native-dom = { package = "ps-dioxus-native-dom", version = "^0.7", path = "./packages/dioxus-native-dom", default-features = false }
+ # 0.1.3, because `packages/debug_timer` is 0.1.3 and this asked for 0.1.2.
+@@ -89,13 +89,13 @@ debug_timer = { package = "ps-debug-timer", version = "^0.1", path = "./packages
+ accesskit_xplat = { package = "ps-accesskit-xplat", version = "^0.1", path = "./packages/accesskit_xplat", default-features = false }
+ browser-persistence = { path = "./apps/browser/persistence" }
+ blitz-test-harness = { path = "./packages/blitz-test-harness" }
+-blitz-dom-api = { package = "ps-blitz-dom-api", version = "^0.4.0", path = "./packages/blitz-dom-api" }
++blitz-dom-api = { package = "ps-blitz-dom-api", version = "^0.5.0", path = "./packages/blitz-dom-api" }
+ # Published to crates.io on its own 0.1 line, unlike everything else here,
+ # which tracks the workspace version. The `version` is what makes a
+ # consumer outside this repo resolvable, and it is what caught the copy
+ # that had drifted to `publish = false` and a workspace version.
+ dom-abi = { version = "^0.1.1", path = "./packages/dom-abi" }
+-blitz-platform-api = { package = "ps-blitz-platform-api", version = "^0.4.0", path = "./packages/blitz-platform-api" }
++blitz-platform-api = { package = "ps-blitz-platform-api", version = "^0.5.0", path = "./packages/blitz-platform-api" }
+ 
+ # Servo dependencies
+ style = { version = "^0.20.0", package = "stylo" }
+@@ -217,9 +217,6 @@ http = "^1.1.0"
+ data-url = "^0.3.1"
+ tokio = "^1.42"
+ reqwest = { version = "^0.13", default-features = false }
+-reqwest-middleware = { version = "^0.5.1", default-features = false }
+-http-cache-reqwest = { version = "1.0.0-alpha.6", default-features = false, features = ["reqwest-middleware"] }
+-http-cache = { version = "1.0.0-alpha.6", default-features = false }
+ 
+ # Media & Decoding
+ image = { version = "^0.25.6", default-features = false }
+@@ -352,3 +349,4 @@ tracing-subscriber = "0.3"
+ # node script has ever touched, which is why a removed node could never be
+ # freed: `createElement` caches a wrapper for all of them, so everything looked
+ # reachable for ever.
++
+diff --git a/packages/blitz-net/Cargo.toml b/packages/blitz-net/Cargo.toml
+index 27511c1d..1d5a5df7 100644
+--- a/packages/blitz-net/Cargo.toml
++++ b/packages/blitz-net/Cargo.toml
+@@ -19,33 +19,18 @@ rust-version.workspace = true
+ name = "blitz_net"
+ 
+ [features]
+-http2 = ["reqwest/http2"]
+-cookies = ["reqwest/cookies"]
+-# Servers send gzip or brotli by default. reqwest only sends Accept-Encoding
+-# for the codecs it was built with, so without these every response arrives
+-# uncompressed and every page costs more bytes than it should.
+-compression = ["reqwest/brotli", "reqwest/gzip", "reqwest/deflate", "reqwest/zstd"]
+-# `reqwest-middleware/multipart` as well as reqwest's own, and the `?` is what
+-# makes that correct: it enables the feature only if something else has already
+-# pulled `reqwest-middleware` in, rather than forcing that optional dependency
+-# on every build that wants multipart.
+-#
+-# Without it this feature did not compile at all whenever `cache` was also on.
+-# `cache` switches the `RequestBuilder` alias (`lib.rs:48`) to
+-# `reqwest_middleware::RequestBuilder`, and that type's `multipart` method is
+-# behind its own `multipart` feature, so `apply_body` called a method that had
+-# been compiled out:
+-#
+-#     error[E0599]: no method named `multipart` found for struct
+-#       `reqwest_middleware::RequestBuilder`
+-#
+-# Nothing caught it because every CI job builds default features only.
+-multipart = [
+-    "reqwest/multipart",
+-    "reqwest/stream",
+-    "reqwest-middleware?/multipart",
++# Reserved until the house HTTP/2 transport lands. HTTP/1.1 remains available.
++http2 = []
++# Enables the embedder-owned house CookieJar constructor.
++cookies = []
++# Advertise only the codecs decoded by the house HTTP client.
++compression = ["dep:flate2", "dep:brotli"]
++multipart = ["dep:psc-nanoid"]
++cache = [
++    "dep:worktable",
++    "dep:psc-nanoid",
++    "dep:httpdate",
+ ]
+-cache = ["dep:reqwest-middleware", "dep:http-cache-reqwest", "dep:directories", "dep:http-cache"]
+ tracing = ["dep:tracing"]
+ 
+ [dependencies]
+@@ -53,38 +38,26 @@ tracing = ["dep:tracing"]
+ blitz-traits = { workspace = true }
+ 
+ # Networking dependencies
+-tokio = { workspace = true, features = ["sync", "time"] }
+-# rustls, not native-tls, and this is not a preference.
+-#
+-# Every endpoint-libs backend in the fleet is TLS 1.3 only, and macOS
+-# native-tls offers a TLS 1.2 ClientHello with no `supported_versions`
+-# extension, so the handshake is refused before a byte of HTTP. The server
+-# says so plainly: `peer is incompatible: SupportedVersionsExtensionRequired`.
+-# A browser that cannot reach the sites it is meant to render is not a browser.
+-#
+-# `rustls` here also brings `rustls-platform-verifier`, so the trust anchors
+-# are the operating system's rather than a bundle compiled in. That is what a
+-# browser should do: a certificate the user's machine trusts, including one an
+-# employer installed, is one this engine trusts too.
+-reqwest = { workspace = true, features = ["charset", "rustls", "form"] }
+ data-url = { workspace = true }
++bytes = { workspace = true }
++url = { workspace = true }
+ 
+-# Caching
+-reqwest-middleware = { workspace = true, optional = true, features = ["form"]}
+-http-cache-reqwest = { workspace = true, optional = true, features = ["manager-cacache"] }
+-http-cache = { workspace = true, optional = true, features = ["url-standard"] }
+-directories = { workspace = true, optional = true }
++# NET-H1 codecs, matching chuzz.
++flate2 = { version = "1", optional = true }
++brotli = { version = "8", default-features = false, features = ["std"], optional = true }
+ 
+ tracing = { workspace = true, optional = true }
+ 
+-[dev-dependencies]
+-# `FetchProvider::fetch` hands work to `tokio::spawn`, which panics outside a
+-# runtime, so the tests need one. The library itself needs only `sync` and
+-# `time`; `rt-multi-thread` and `macros` are the test harness's.
+-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+-
+-[target.'cfg(target_os = "android")'.dependencies]
+-reqwest = { workspace = true, features = ["rustls"] }
++[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
++nagoya = { version = "^0.1.13", features = ["reactor"] }
++nago-rustls = { version = "^0.1.1", default-features = false }
++rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "std", "tls12"] }
++rustls-platform-verifier = "^0.6.2"
++# Required for durable metadata, house body identifiers and RFC HTTP dates.
++worktable = { version = "^1.10.0-beta2", default-features = false, features = ["std", "wti-std-search"], optional = true }
++psc-nanoid = { version = "^3.2", optional = true }
++httpdate = { version = "^1", optional = true }
+ 
+ [target.'cfg(target_arch = "wasm32")'.dependencies]
+ wasm-bindgen-futures = { workspace = true }
++
+diff --git a/packages/blitz-net/src/cache.rs b/packages/blitz-net/src/cache.rs
+new file mode 100644
+index 00000000..82bf016f
+--- /dev/null
++++ b/packages/blitz-net/src/cache.rs
+@@ -0,0 +1,892 @@
++//! RFC 9111 private disk cache for the native HTTP client.
++//!
++//! Open once per profile, then share the returned Arc with every H1 client.
++//! The embedder supplies the profile directory. No global cache path is used.
++//! Filesystem operations belong on a nagoya worker, never the reactor thread.
++//!
++//! Metadata is persisted in WorkTable. Immutable body files are synced before
++//! publishing their metadata, and retired only after persistence completes.
++//! Version 1 is a new schema. Future row changes require an inline migration.
++//!
++//! GET and HEAD have separate keys. Authorization, ranges, caller conditions,
++//! request bodies and redirected results conservatively bypass storage.
++//! Cookie, User-Agent and Accept-Encoding are matched in addition to Vary.
++//! Set-Cookie is accepted on live responses but never replayed from storage.
++
++use super::{Error, H1Client, MAX_BODY_BYTES, validate_request};
++use blitz_traits::platform::{
++    Bytes, FetchRequest, FetchResponse, HeaderMap, Method, StatusCode, Url,
++    http::{HeaderValue, header::HeaderName},
++};
++use nagoya::sync::Semaphore;
++use psc_nanoid::{Nanoid, alphabet::Base64UrlAlphabet};
++use std::{
++    fs::{self, File, OpenOptions},
++    io::{self, Read, Write},
++    path::{Path, PathBuf},
++    sync::atomic::{AtomicBool, AtomicU64, Ordering},
++    time::{SystemTime, UNIX_EPOCH},
++};
++use worktable::prelude::*;
++use worktable::worktable;
++
++const MAX_METADATA: usize = 48 * 1024;
++const MAX_KEY: usize = 16 * 1024;
++const MAX_FIELDS: usize = 1024;
++const MAX_HEURISTIC: u64 = 24 * 60 * 60;
++
++type Blob = Vec<u8>;
++
++worktable!(
++    name: HttpCacheMeta,
++    version: 1,
++    persist: true,
++    columns: {
++        key: String primary_key,
++        file: String,
++        status: u16,
++        headers: Blob,
++        variant: Blob,
++        stored: u64,
++        initial_age: u64,
++        body_length: u64,
++    },
++    config: {
++        page_size: 65_535,
++    }
++);
++
++/// A single-user cache shared by document, subresource and script requests.
++///
++/// Sharing across profiles is unsupported. Keep one open instance per profile.
++pub struct PrivateCache {
++    table: HttpCacheMetaWorkTable,
++    bodies: PathBuf,
++    gate: Semaphore,
++    generation: AtomicU64,
++    enabled: AtomicBool,
++}
++
++struct Loaded {
++    row: HttpCacheMetaRow,
++    response: FetchResponse,
++}
++
++impl PrivateCache {
++    /// Store under `<profile_directory>/http-cache`.
++    ///
++    /// The embedder may continue without a cache if opening fails.
++    pub async fn open(profile_directory: impl AsRef<Path>) -> io::Result<Arc<Self>> {
++        let _ = nagoya::runtime::background();
++        let directory = profile_directory.as_ref().join("http-cache");
++        let bodies = directory.join("bodies");
++        fs::create_dir_all(&bodies)?;
++        let path = directory
++            .to_str()
++            .ok_or_else(|| io::Error::other("cache path is not UTF-8"))?;
++        let config = DiskConfig::new_with_table_name(
++            path,
++            HttpCacheMetaWorkTable::name_snake_case(),
++            HttpCacheMetaWorkTable::version(),
++        );
++        let engine = HttpCacheMetaPersistenceEngine::new(config)
++            .await
++            .map_err(storage_error)?;
++        let table = HttpCacheMetaWorkTable::load(engine)
++            .await
++            .map_err(storage_error)?;
++
++        // Interrupted publications can leave immutable files without rows.
++        // No requests can use this instance until open returns.
++        let live: BTreeSet<String> = table
++            .select_all()
++            .execute()
++            .map_err(storage_error)?
++            .into_iter()
++            .map(|row| row.file)
++            .collect();
++        for entry in fs::read_dir(&bodies)? {
++            let entry = entry?;
++            let name = entry.file_name();
++            if let Some(name) = name.to_str()
++                && valid_file_name(name)
++                && !live.contains(name)
++            {
++                remove_file(&entry.path())?;
++            }
++        }
++
++        Ok(Arc::new(Self {
++            table,
++            bodies,
++            gate: Semaphore::new(1),
++            generation: AtomicU64::new(0),
++            enabled: AtomicBool::new(true),
++        }))
++    }
++
++    /// Remove persisted entries and body files, including interrupted writes.
++    pub async fn clear(&self) -> io::Result<()> {
++        let _permit = self.gate.acquire().await;
++        self.generation.fetch_add(1, Ordering::AcqRel);
++        self.enabled.store(false, Ordering::Release);
++        let rows = self.table.select_all().execute().map_err(storage_error)?;
++        for row in rows {
++            self.table.delete(row.key).await.map_err(storage_error)?;
++        }
++        self.table.wait_for_ops().await.map_err(storage_error)?;
++        for entry in fs::read_dir(&self.bodies)? {
++            let entry = entry?;
++            if entry
++                .file_name()
++                .to_str()
++                .is_some_and(valid_file_name)
++            {
++                remove_file(&entry.path())?;
++            }
++        }
++        sync_directory(&self.bodies)?;
++        self.enabled.store(true, Ordering::Release);
++        Ok(())
++    }
++
++    /// Drain persistence before the embedder shuts down its runtime.
++    pub async fn flush(&self) -> io::Result<()> {
++        let _permit = self.gate.acquire().await;
++        self.table.wait_for_ops().await.map_err(storage_error)
++    }
++
++    /// Close after all clients and other cache handles have been dropped.
++    pub async fn close(self: Arc<Self>) -> io::Result<()> {
++        let cache = Arc::try_unwrap(self)
++            .map_err(|_| io::Error::other("cache still has live handles"))?;
++        cache.table.close().await.map_err(storage_error)
++    }
++
++    pub(super) async fn fetch(
++        &self,
++        client: &H1Client,
++        request: FetchRequest,
++    ) -> Result<FetchResponse, Error> {
++        validate_request(&request)?;
++        let headers = client.prepare_headers(&request)?;
++        let request_policy = Policy::read(&headers);
++        let generation = self.generation.load(Ordering::Acquire);
++        let usable = eligible(&request, &headers) && !request_policy.no_store;
++        let loaded = if usable {
++            match self.load(&request, &headers).await {
++                Ok(loaded) => loaded,
++                Err(error) => {
++                    self.disable(error);
++                    None
++                }
++            }
++        } else {
++            None
++        };
++
++        if let Some(loaded) = &loaded
++            && reusable(loaded, &request_policy, SystemTime::now())
++        {
++            return Ok(aged_response(loaded, SystemTime::now()));
++        }
++
++        if request_policy.only_if_cached {
++            return Ok(FetchResponse::new(request.url, StatusCode::GATEWAY_TIMEOUT));
++        }
++
++        let mut conditional = headers.clone();
++        let mut validating = false;
++        if let Some(loaded) = &loaded {
++            if let Some(etag) = loaded.response.headers.get("etag") {
++                conditional.insert("if-none-match", etag.clone());
++                validating = true;
++            } else if let Some(modified) = loaded.response.headers.get("last-modified") {
++                conditional.insert("if-modified-since", modified.clone());
++                validating = true;
++            }
++        }
++
++        let mut started = SystemTime::now();
++        let mut response = client
++            .fetch_inner(request.clone(), Some(conditional))
++            .await?;
++        let mut received = SystemTime::now();
++
++        if validating && response.status == StatusCode::NOT_MODIFIED {
++            let loaded = loaded.as_ref().expect("validation has a stored response");
++            if same_url(&request.url, &response.url)
++                && validator_matches(&loaded.response.headers, &response.headers)
++            {
++                let mut merged = loaded.response.clone();
++                // A missing Age on a newly validated response means zero.
++                merged.headers.remove("age");
++                merged.headers.remove("date");
++                for name in response.headers.keys() {
++                    if !excluded_header(name.as_str())
++                        && name != "content-length"
++                        && name != "content-encoding"
++                    {
++                        merged.headers.remove(name);
++                        for value in response.headers.get_all(name).iter() {
++                            merged.headers.append(name.clone(), value.clone());
++                        }
++                    }
++                }
++                if !merged.headers.contains_key("date") {
++                    merged.headers.insert(
++                        "date",
++                        HeaderValue::from_str(&httpdate::fmt_http_date(received))
++                            .expect("an HTTP date is a header value"),
++                    );
++                }
++                let age = initial_age(&merged.headers, started, received);
++                self.publish(
++                    &request,
++                    &headers,
++                    &merged,
++                    started,
++                    received,
++                    generation,
++                )
++                .await;
++                set_age(&mut merged.headers, age);
++                return Ok(merged);
++            }
++
++            // A redirect or a changed validator cannot validate this entry.
++            started = SystemTime::now();
++            response = client
++                .fetch_inner(request.clone(), Some(headers.clone()))
++                .await?;
++            received = SystemTime::now();
++        }
++
++        if !safe_method(&request.method)
++            && (response.status.is_success() || response.status.is_redirection())
++        {
++            if let Err(error) = self.invalidate(&request, &response).await {
++                self.disable(error);
++            }
++        } else if usable && same_url(&request.url, &response.url) {
++            self.publish(
++                &request,
++                &headers,
++                &response,
++                started,
++                received,
++                generation,
++            )
++            .await;
++        }
++        Ok(response)
++    }
++
++    async fn load(
++        &self,
++        request: &FetchRequest,
++        headers: &HeaderMap,
++    ) -> io::Result<Option<Loaded>> {
++        let _permit = self.gate.acquire().await;
++        if !self.enabled.load(Ordering::Acquire) {
++            return Ok(None);
++        }
++        let Some(row) = self.table.select(key(request)) else {
++            return Ok(None);
++        };
++        let stored_headers = decode_headers(&row.headers)?;
++        if fingerprint(headers, &stored_headers)?.as_ref() != Some(&row.variant) {
++            return Ok(None);
++        }
++        if !valid_file_name(&row.file) || row.body_length > MAX_BODY_BYTES as u64 {
++            return Err(io::Error::other("invalid cache body metadata"));
++        }
++        let file = File::open(self.bodies.join(&row.file))?;
++        if file.metadata()?.len() != row.body_length {
++            return Err(io::Error::other("incomplete cache body"));
++        }
++        let mut body = Vec::new();
++        file.take(MAX_BODY_BYTES as u64 + 1).read_to_end(&mut body)?;
++        if body.len() as u64 != row.body_length {
++            return Err(io::Error::other("cache body changed while reading"));
++        }
++        let status = StatusCode::from_u16(row.status).map_err(storage_error)?;
++        let response = FetchResponse::new(request.url.clone(), status)
++            .headers(stored_headers)
++            .body(Bytes::from(body));
++        Ok(Some(Loaded { row, response }))
++    }
++
++    async fn publish(
++        &self,
++        request: &FetchRequest,
++        headers: &HeaderMap,
++        response: &FetchResponse,
++        started: SystemTime,
++        received: SystemTime,
++        generation: u64,
++    ) {
++        if let Err(error) = self
++            .store(request, headers, response, started, received, generation)
++            .await
++        {
++            self.disable(error);
++        }
++    }
++
++    async fn store(
++        &self,
++        request: &FetchRequest,
++        request_headers: &HeaderMap,
++        response: &FetchResponse,
++        started: SystemTime,
++        received: SystemTime,
++        generation: u64,
++    ) -> io::Result<()> {
++        let _permit = self.gate.acquire().await;
++        if !self.enabled.load(Ordering::Acquire)
++            || self.generation.load(Ordering::Acquire) != generation
++        {
++            return Ok(());
++        }
++
++        let key = key(request);
++        if key.len() > MAX_KEY {
++            return Ok(());
++        }
++        let policy = Policy::read(&response.headers);
++        let variant = fingerprint(request_headers, &response.headers)?;
++        let explicit = policy.max_age.is_some() || response.headers.contains_key("expires");
++        let cacheable = !policy.no_store
++            && response.status.as_u16() >= 200
++            && response.status != StatusCode::PARTIAL_CONTENT
++            && response.status != StatusCode::NOT_MODIFIED
++            && (explicit || heuristic_status(response.status))
++            && response.body.len() <= MAX_BODY_BYTES
++            && variant.is_some();
++
++        if !cacheable {
++            return self.evict(&key).await;
++        }
++
++        let mut stored_headers = response.headers.clone();
++        strip_hop_headers(&mut stored_headers);
++        stored_headers.remove("set-cookie");
++        let encoded = encode_headers(&stored_headers)?;
++        let file_name = Nanoid::<21, Base64UrlAlphabet>::new().to_string();
++        let path = self.bodies.join(&file_name);
++        let mut file = OpenOptions::new().write(true).create_new(true).open(&path)?;
++        let written = file
++            .write_all(&response.body)
++            .and_then(|_| file.sync_all());
++        drop(file);
++        if let Err(error) = written {
++            let _ = remove_file(&path);
++            return Err(error);
++        }
++        sync_directory(&self.bodies)?;
++
++        let old = self.table.select(key.clone());
++        // From this point cancellation may leave an orphan, but must never
++        // delete a file that a published row could reference.
++        self.table
++            .upsert(HttpCacheMetaRow {
++                key,
++                file: file_name,
++                status: response.status.as_u16(),
++                headers: encoded,
++                variant: variant.expect("cacheability checked the variant"),
++                stored: seconds(received),
++                initial_age: initial_age(&response.headers, started, received),
++                body_length: response.body.len() as u64,
++            })
++            .await
++            .map_err(storage_error)?;
++        self.table.wait_for_ops().await.map_err(storage_error)?;
++        if let Some(old) = old
++            && valid_file_name(&old.file)
++        {
++            remove_file(&self.bodies.join(old.file))?;
++        }
++        Ok(())
++    }
++
++    async fn evict(&self, key: &str) -> io::Result<()> {
++        if let Some(row) = self.table.select(key.to_owned()) {
++            self.table.delete(key.to_owned()).await.map_err(storage_error)?;
++            self.table.wait_for_ops().await.map_err(storage_error)?;
++            if valid_file_name(&row.file) {
++                remove_file(&self.bodies.join(row.file))?;
++            }
++        }
++        Ok(())
++    }
++
++    async fn invalidate(
++        &self,
++        request: &FetchRequest,
++        response: &FetchResponse,
++    ) -> io::Result<()> {
++        let _permit = self.gate.acquire().await;
++        self.generation.fetch_add(1, Ordering::AcqRel);
++        let mut urls = vec![request.url.clone()];
++        if response.url.origin() == request.url.origin() {
++            urls.push(response.url.clone());
++        }
++        for name in ["location", "content-location"] {
++            if let Some(value) = response.headers.get(name)
++                && let Ok(value) = value.to_str()
++                && let Ok(url) = response.url.join(value)
++                && url.origin() == request.url.origin()
++            {
++                urls.push(url);
++            }
++        }
++        for url in urls {
++            for method in [Method::GET, Method::HEAD] {
++                self.evict(&key(&FetchRequest::get(url.clone()).method(method)))
++                    .await?;
++            }
++        }
++        Ok(())
++    }
++
++    fn disable(&self, error: io::Error) {
++        // Cache failures cannot turn a successful network response into an
++        // error. Stop serving entries after any persistence failure.
++        self.enabled.store(false, Ordering::Release);
++        #[cfg(feature = "tracing")]
++        tracing::warn!(error = %error, "HTTP disk cache disabled");
++        #[cfg(not(feature = "tracing"))]
++        let _ = error;
++    }
++}
++
++fn eligible(request: &FetchRequest, headers: &HeaderMap) -> bool {
++    (request.method == Method::GET || request.method == Method::HEAD)
++        && request.body.is_none()
++        && key(request).len() <= MAX_KEY
++        && ![
++            "authorization",
++            "proxy-authorization",
++            "range",
++            "if-range",
++            "if-match",
++            "if-none-match",
++            "if-modified-since",
++            "if-unmodified-since",
++        ]
++        .iter()
++        .any(|name| headers.contains_key(*name))
++}
++
++fn safe_method(method: &Method) -> bool {
++    method == Method::GET
++        || method == Method::HEAD
++        || method == Method::OPTIONS
++        || method == Method::TRACE
++}
++
++fn key(request: &FetchRequest) -> String {
++    let mut url = request.url.clone();
++    url.set_fragment(None);
++    format!("{} {}", request.method, url)
++}
++
++fn same_url(left: &Url, right: &Url) -> bool {
++    let mut left = left.clone();
++    let mut right = right.clone();
++    left.set_fragment(None);
++    right.set_fragment(None);
++    left == right
++}
++
++fn heuristic_status(status: StatusCode) -> bool {
++    matches!(
++        status.as_u16(),
++        200 | 203 | 204 | 300 | 301 | 308 | 404 | 405 | 410 | 414 | 501
++    )
++}
++
++#[derive(Default)]
++struct Policy {
++    no_store: bool,
++    no_cache: bool,
++    must_revalidate: bool,
++    only_if_cached: bool,
++    max_age: Option<u64>,
++    min_fresh: Option<u64>,
++    max_stale: Option<u64>,
++}
++
++impl Policy {
++    fn read(headers: &HeaderMap) -> Self {
++        let mut policy = Self::default();
++        for value in headers.get_all("cache-control").iter() {
++            let Ok(value) = value.to_str() else {
++                policy.no_store = true;
++                policy.no_cache = true;
++                continue;
++            };
++            let Some(directives) = directives(value) else {
++                policy.no_store = true;
++                policy.no_cache = true;
++                continue;
++            };
++            for directive in directives {
++                let (name, value) = directive
++                    .split_once('=')
++                    .map(|(name, value)| (name.trim(), Some(value.trim())))
++                    .unwrap_or((directive.trim(), None));
++                match name.to_ascii_lowercase().as_str() {
++                    "no-store" => policy.no_store = true,
++                    // Field-qualified no-cache is conservatively validated
++                    // as a whole response. private remains cacheable here.
++                    "no-cache" => policy.no_cache = true,
++                    "must-revalidate" => policy.must_revalidate = true,
++                    "only-if-cached" => policy.only_if_cached = true,
++                    "max-age" => set_limit(&mut policy.max_age, delta(value)),
++                    "min-fresh" => set_limit(&mut policy.min_fresh, delta(value)),
++                    "max-stale" => set_limit(
++                        &mut policy.max_stale,
++                        value.map(|value| delta(Some(value))).unwrap_or(u64::MAX),
++                    ),
++                    _ => {}
++                }
++            }
++        }
++        if !headers.contains_key("cache-control") {
++            for value in headers.get_all("pragma").iter() {
++                if value
++                    .to_str()
++                    .ok()
++                    .is_some_and(|value| {
++                        value.split(',').any(|part| part.trim().eq_ignore_ascii_case("no-cache"))
++                    })
++                {
++                    policy.no_cache = true;
++                }
++            }
++        }
++        policy
++    }
++}
++
++fn directives(value: &str) -> Option<Vec<&str>> {
++    let mut quoted = false;
++    let mut escaped = false;
++    let mut start = 0;
++    let mut parts = Vec::new();
++    for (index, byte) in value.bytes().enumerate() {
++        if escaped {
++            escaped = false;
++        } else if quoted && byte == b'\\' {
++            escaped = true;
++        } else if byte == b'"' {
++            quoted = !quoted;
++        } else if byte == b',' && !quoted {
++            parts.push(&value[start..index]);
++            start = index + 1;
++        }
++    }
++    if quoted || escaped {
++        return None;
++    }
++    parts.push(&value[start..]);
++    Some(parts)
++}
++
++fn delta(value: Option<&str>) -> u64 {
++    let Some(value) = value else {
++        return 0;
++    };
++    let value = value
++        .strip_prefix('"')
++        .and_then(|value| value.strip_suffix('"'))
++        .unwrap_or(value);
++    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
++        return 0;
++    }
++    value.parse().unwrap_or(u64::MAX)
++}
++
++fn set_limit(slot: &mut Option<u64>, value: u64) {
++    // Duplicated directives are invalid. Choose the restrictive result.
++    *slot = Some(if slot.is_some() { 0 } else { value });
++}
++
++fn date(headers: &HeaderMap, name: &str) -> Option<SystemTime> {
++    let mut values = headers.get_all(name).iter();
++    let value = values.next()?;
++    if values.next().is_some() {
++        return None;
++    }
++    httpdate::parse_http_date(value.to_str().ok()?).ok()
++}
++
++fn seconds(time: SystemTime) -> u64 {
++    time.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
++}
++
++fn initial_age(headers: &HeaderMap, started: SystemTime, received: SystemTime) -> u64 {
++    let apparent = seconds(received).saturating_sub(seconds(
++        date(headers, "date").unwrap_or(received),
++    ));
++    let mut ages = headers.get_all("age").iter();
++    let age = ages
++        .next()
++        .map(|value| {
++            value
++                .to_str()
++                .ok()
++                .and_then(|value| {
++                    (!value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
++                        .then(|| value.parse::<u64>().unwrap_or(u64::MAX))
++                })
++                .unwrap_or(u64::MAX)
++        })
++        .unwrap_or(0);
++    let age = if ages.next().is_some() { u64::MAX } else { age };
++    let delay = received
++        .duration_since(started)
++        .map(|duration| duration.as_secs())
++        .unwrap_or(u64::MAX);
++    apparent.max(age.saturating_add(delay))
++}
++
++fn current_age(loaded: &Loaded, now: SystemTime) -> u64 {
++    loaded.row.initial_age.saturating_add(
++        seconds(now).checked_sub(loaded.row.stored).unwrap_or(u64::MAX),
++    )
++}
++
++fn lifetime(loaded: &Loaded, policy: &Policy) -> u64 {
++    if let Some(max_age) = policy.max_age {
++        return max_age;
++    }
++    let headers = &loaded.response.headers;
++    let date = date(headers, "date")
++        .map(seconds)
++        .unwrap_or(loaded.row.stored);
++    if headers.contains_key("expires") {
++        return self::date(headers, "expires")
++            .map(seconds)
++            .unwrap_or(0)
++            .saturating_sub(date);
++    }
++    if heuristic_status(loaded.response.status) {
++        return self::date(headers, "last-modified")
++            .map(|modified| date.saturating_sub(seconds(modified)) / 10)
++            .unwrap_or(0)
++            .min(MAX_HEURISTIC);
++    }
++    0
++}
++
++fn reusable(loaded: &Loaded, request: &Policy, now: SystemTime) -> bool {
++    let response = Policy::read(&loaded.response.headers);
++    if request.no_cache || response.no_cache || response.no_store {
++        return false;
++    }
++    let age = current_age(loaded, now);
++    if request.max_age.is_some_and(|limit| age > limit) {
++        return false;
++    }
++    let lifetime = lifetime(loaded, &response);
++    let min_fresh = request.min_fresh.unwrap_or(0);
++    if age.saturating_add(min_fresh) < lifetime {
++        return true;
++    }
++    !response.must_revalidate
++        && min_fresh == 0
++        && request
++            .max_stale
++            .is_some_and(|limit| age.saturating_sub(lifetime) <= limit)
++}
++
++fn aged_response(loaded: &Loaded, now: SystemTime) -> FetchResponse {
++    let mut response = loaded.response.clone();
++    set_age(&mut response.headers, current_age(loaded, now));
++    response
++}
++
++fn set_age(headers: &mut HeaderMap, age: u64) {
++    headers.insert(
++        "age",
++        HeaderValue::from_str(&age.to_string()).expect("an age is decimal"),
++    );
++}
++
++fn validator_matches(stored: &HeaderMap, updated: &HeaderMap) -> bool {
++    if let Some(etag) = updated.get("etag") {
++        let Some(old) = stored.get("etag") else {
++            return false;
++        };
++        let weak = |value: &HeaderValue| {
++            value.as_bytes().strip_prefix(b"W/").unwrap_or(value.as_bytes()).to_vec()
++        };
++        return weak(old) == weak(etag);
++    }
++    if let Some(modified) = updated.get("last-modified")
++        && stored.get("etag").is_none()
++    {
++        return stored.get("last-modified") == Some(modified);
++    }
++    true
++}
++
++fn excluded_header(name: &str) -> bool {
++    matches!(
++        name,
++        "connection"
++            | "keep-alive"
++            | "proxy-connection"
++            | "proxy-authenticate"
++            | "proxy-authorization"
++            | "te"
++            | "trailer"
++            | "transfer-encoding"
++            | "upgrade"
++            | "set-cookie"
++    )
++}
++
++fn strip_hop_headers(headers: &mut HeaderMap) {
++    let nominated: Vec<HeaderName> = headers
++        .get_all("connection")
++        .iter()
++        .filter_map(|value| value.to_str().ok())
++        .flat_map(|value| value.split(','))
++        .filter_map(|name| HeaderName::from_bytes(name.trim().as_bytes()).ok())
++        .collect();
++    for name in nominated {
++        headers.remove(name);
++    }
++    let names: Vec<HeaderName> = headers
++        .keys()
++        .filter(|name| excluded_header(name.as_str()))
++        .cloned()
++        .collect();
++    for name in names {
++        headers.remove(name);
++    }
++}
++
++fn fingerprint(request: &HeaderMap, response: &HeaderMap) -> io::Result<Option<Blob>> {
++    let mut names = vec![
++        HeaderName::from_static("cookie"),
++        HeaderName::from_static("user-agent"),
++        HeaderName::from_static("accept-encoding"),
++    ];
++    for value in response.get_all("vary").iter() {
++        let value = value.to_str().map_err(storage_error)?;
++        for name in value.split(',').map(str::trim).filter(|name| !name.is_empty()) {
++            if name == "*" {
++                return Ok(None);
++            }
++            names.push(HeaderName::from_bytes(name.as_bytes()).map_err(storage_error)?);
++        }
++    }
++    names.sort_unstable_by(|left, right| left.as_str().cmp(right.as_str()));
++    names.dedup();
++    if names.len() > MAX_FIELDS {
++        return Err(io::Error::other("too many Vary fields"));
++    }
++    let mut encoded = Vec::new();
++    for name in names {
++        encode_field(&mut encoded, name.as_str().as_bytes())?;
++        let values: Vec<&HeaderValue> = request.get_all(&name).iter().collect();
++        encoded.extend_from_slice(&(values.len() as u32).to_be_bytes());
++        for value in values {
++            encode_field(&mut encoded, value.as_bytes())?;
++        }
++    }
++    if encoded.len() > MAX_METADATA {
++        return Err(io::Error::other("cache variant metadata is too large"));
++    }
++    Ok(Some(encoded))
++}
++
++fn encode_headers(headers: &HeaderMap) -> io::Result<Blob> {
++    let mut encoded = Vec::new();
++    if headers.len() > MAX_FIELDS {
++        return Err(io::Error::other("too many cache headers"));
++    }
++    for (name, value) in headers.iter() {
++        encode_field(&mut encoded, name.as_str().as_bytes())?;
++        encode_field(&mut encoded, value.as_bytes())?;
++    }
++    Ok(encoded)
++}
++
++fn encode_field(encoded: &mut Blob, value: &[u8]) -> io::Result<()> {
++    if value.len() > MAX_METADATA
++        || encoded.len().saturating_add(value.len()).saturating_add(4) > MAX_METADATA
++    {
++        return Err(io::Error::other("cache metadata is too large"));
++    }
++    encoded.extend_from_slice(&(value.len() as u32).to_be_bytes());
++    encoded.extend_from_slice(value);
++    Ok(())
++}
++
++fn decode_headers(encoded: &[u8]) -> io::Result<HeaderMap> {
++    if encoded.len() > MAX_METADATA {
++        return Err(io::Error::other("cache metadata exceeds its limit"));
++    }
++    let mut remaining = encoded;
++    let mut headers = HeaderMap::new();
++    while !remaining.is_empty() {
++        if headers.len() >= MAX_FIELDS {
++            return Err(io::Error::other("too many stored headers"));
++        }
++        let name = HeaderName::from_bytes(decode_field(&mut remaining)?)
++            .map_err(storage_error)?;
++        let value = HeaderValue::from_bytes(decode_field(&mut remaining)?)
++            .map_err(storage_error)?;
++        headers.append(name, value);
++    }
++    Ok(headers)
++}
++
++fn decode_field<'a>(remaining: &mut &'a [u8]) -> io::Result<&'a [u8]> {
++    if remaining.len() < 4 {
++        return Err(io::Error::other("truncated cache metadata"));
++    }
++    let length = u32::from_be_bytes(
++        remaining[..4].try_into().expect("four bytes were checked"),
++    ) as usize;
++    *remaining = &remaining[4..];
++    if length > remaining.len() {
++        return Err(io::Error::other("truncated cache metadata field"));
++    }
++    let (field, rest) = remaining.split_at(length);
++    *remaining = rest;
++    Ok(field)
++}
++
++fn valid_file_name(name: &str) -> bool {
++    name.len() == 21
++        && name.bytes().all(|byte| {
++            byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'
++        })
++}
++
++fn remove_file(path: &Path) -> io::Result<()> {
++    match fs::remove_file(path) {
++        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
++        result => result,
++    }
++}
++
++fn sync_directory(path: &Path) -> io::Result<()> {
++    #[cfg(unix)]
++    File::open(path)?.sync_all()?;
++    #[cfg(not(unix))]
++    let _ = path;
++    Ok(())
++}
++
++fn storage_error(error: impl std::fmt::Display) -> io::Error {
++    io::Error::other(error.to_string())
++}
+diff --git a/packages/blitz-net/src/h1.rs b/packages/blitz-net/src/h1.rs
+new file mode 100644
+index 00000000..d17a51da
+--- /dev/null
++++ b/packages/blitz-net/src/h1.rs
+@@ -0,0 +1,835 @@
++//! Native HTTP/1.1 transport for document and script requests.
++//!
++//! NET-WIRE attaches this module to `Provider`. The transport accepts already
++//! encoded request bodies, leaving form encoding and local URL handling with
++//! the provider. HTTP error statuses are responses, not transport errors.
++//!
++//! Clones share the connection pool. All clients share nagoya's background
++//! runtime and one process reactor, so `fetch` also works under
++//! `nagoya::block_on` without an entered executor.
++
++#[cfg(feature = "cache")]
++#[path = "cache.rs"]
++pub mod cache;
++#[path = "pool.rs"]
++mod pool;
++#[path = "tls.rs"]
++mod tls;
++
++use blitz_traits::net::{
++    CookieJar,
++    http::{HeaderMap, HeaderValue, Method, header::HeaderName},
++};
++use blitz_traits::platform::{Bytes, FetchRequest, FetchResponse, StatusCode};
++use bytes::BytesMut;
++use nagoya::reactor::Reactor;
++use pool::{Origin, Pool};
++use std::{
++    fmt,
++    sync::{Arc, OnceLock},
++    time::Duration,
++};
++
++const MAX_HEAD: usize = 128 * 1024;
++const MAX_LINE: usize = 8 * 1024;
++const MAX_HEADERS: usize = 1024;
++const MAX_INFORMATIONAL: usize = 16;
++const MAX_REDIRECTS: usize = 20;
++
++/// Maximum wire body and maximum body after each decompression stage.
++pub const MAX_BODY_BYTES: usize = 1024 * 1024 * 1024;
++
++/// A transport failure. HTTP statuses remain available in `FetchResponse`.
++#[derive(Debug)]
++pub enum Error {
++    Io(String),
++    Write(String),
++    Dns(String),
++    Tls(String),
++    InvalidRequest(&'static str),
++    Protocol(&'static str),
++    UnsupportedScheme(String),
++    ClosedBeforeResponse,
++    TooLarge,
++    TooManyRedirects,
++    Timeout,
++}
++
++impl fmt::Display for Error {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::Io(detail) => write!(formatter, "HTTP I/O failed: {detail}"),
++            Self::Write(detail) => write!(formatter, "HTTP write failed: {detail}"),
++            Self::Dns(detail) => write!(formatter, "DNS failed: {detail}"),
++            Self::Tls(detail) => write!(formatter, "TLS failed: {detail}"),
++            Self::InvalidRequest(detail) => write!(formatter, "invalid request: {detail}"),
++            Self::Protocol(detail) => write!(formatter, "invalid HTTP response: {detail}"),
++            Self::UnsupportedScheme(scheme) => {
++                write!(formatter, "unsupported URL scheme: {scheme}")
++            }
++            Self::ClosedBeforeResponse => formatter.write_str("peer closed before the response"),
++            Self::TooLarge => formatter.write_str("HTTP response exceeds its safety limit"),
++            Self::TooManyRedirects => formatter.write_str("too many HTTP redirects"),
++            Self::Timeout => formatter.write_str("HTTP request timed out"),
++        }
++    }
++}
++
++impl std::error::Error for Error {}
++
++/// One HTTP/1.1 client shared by document loads and guest fetches.
++#[derive(Clone)]
++pub struct H1Client {
++    pool: Arc<Pool>,
++    reactor: &'static Reactor,
++    tls_config: Arc<nago_rustls::rustls::ClientConfig>,
++    user_agent: HeaderValue,
++    cookies: Option<Arc<dyn CookieJar>>,
++    timeout: Duration,
++    #[cfg(feature = "cache")]
++    cache: Option<Arc<cache::PrivateCache>>,
++}
++
++impl H1Client {
++    /// Use platform certificate verification and the process crypto provider.
++    ///
++    /// If no provider is installed, TLS configuration installs aws-lc-rs.
++    /// An embedder's already installed provider is retained.
++    pub fn new(
++        user_agent: &str,
++        cookies: Option<Arc<dyn CookieJar>>,
++    ) -> Result<Self, Error> {
++        Self::with_tls_config(user_agent, cookies, tls::default_config()?)
++    }
++
++    /// Use an explicit TLS policy, for example an embedder's private roots.
++    ///
++    /// ALPN is restricted to HTTP/1.1 because this transport cannot speak h2.
++    pub fn with_tls_config(
++        user_agent: &str,
++        cookies: Option<Arc<dyn CookieJar>>,
++        config: Arc<nago_rustls::rustls::ClientConfig>,
++    ) -> Result<Self, Error> {
++        let user_agent = HeaderValue::from_str(user_agent)
++            .map_err(|_| Error::InvalidRequest("invalid User-Agent"))?;
++        let mut config = (*config).clone();
++        config.alpn_protocols = vec![b"http/1.1".to_vec()];
++        Ok(Self {
++            pool: Arc::new(Pool::default()),
++            reactor: process_reactor()?,
++            tls_config: Arc::new(config),
++            user_agent,
++            cookies,
++            timeout: Duration::from_secs(120),
++            #[cfg(feature = "cache")]
++            cache: None,
++        })
++    }
++
++    /// Set the deadline covering permits, DNS, connections and all redirects.
++    pub fn with_timeout(mut self, timeout: Duration) -> Self {
++        self.timeout = timeout;
++        self
++    }
++
++    /// Attach the private cache opened for this embedder's profile.
++    ///
++    /// Client clones share the same cache. Without this call, requests use
++    /// the network and no cache directory is created.
++    #[cfg(feature = "cache")]
++    pub fn with_cache(mut self, cache: Arc<cache::PrivateCache>) -> Self {
++        self.cache = Some(cache);
++        self
++    }
++
++    /// Fetch an HTTP URL, following redirects and retaining response metadata.
++    ///
++    /// `data:` and `file:` remain provider operations. Every response head,
++    /// including redirects and errors, is delivered to the cookie jar before
++    /// any subsequent hop.
++    pub async fn fetch(&self, request: FetchRequest) -> Result<FetchResponse, Error> {
++        nagoya::timeout(self.timeout, async {
++            #[cfg(feature = "cache")]
++            if let Some(cache) = &self.cache {
++                return cache.fetch(self, request).await;
++            }
++            self.fetch_inner(request, None).await
++        })
++        .await
++        .map_err(|_| Error::Timeout)?
++    }
++
++    async fn fetch_inner(
++        &self,
++        mut request: FetchRequest,
++        mut initial_headers: Option<HeaderMap>,
++    ) -> Result<FetchResponse, Error> {
++        validate_request(&request)?;
++        for hop in 0..=MAX_REDIRECTS {
++            let key = Origin::from_url(&request.url)?;
++            let origin = self.pool.origin(key.clone());
++            let mut lease = origin.acquire().await;
++            let mut reused = lease.connection.is_some();
++            let headers = match initial_headers.take() {
++                Some(headers) => headers,
++                None => self.prepare_headers(&request)?,
++            };
++            let wire = loop {
++                if lease.connection.is_none() {
++                    let transport = tls::open(
++                        &key,
++                        &self.reactor.handle(),
++                        self.tls_config.clone(),
++                    )
++                    .await?;
++                    lease.connection = Some(Connection::new(transport));
++                }
++                let result = lease
++                    .connection
++                    .as_mut()
++                    .expect("a connection was installed")
++                    .exchange(&request, &headers, &key)
++                    .await;
++                match result {
++                    Err(Error::ClosedBeforeResponse | Error::Write(_))
++                        if reused
++                            && (request.method == Method::GET
++                                || request.method == Method::HEAD) =>
++                    {
++                        // A server can expire an idle socket before our TTL.
++                        // Only replay an idempotent request, and only once.
++                        lease.connection.take();
++                        reused = false;
++                    }
++                    result => break result?,
++                }
++            };
++
++            if let Some(jar) = &self.cookies {
++                jar.store_from_response(&request.url, &wire.headers);
++            }
++
++            if is_redirect(wire.status)
++                && let Some(location) = wire.headers.get("location")
++            {
++                if hop == MAX_REDIRECTS {
++                    return Err(Error::TooManyRedirects);
++                }
++                let location = location
++                    .to_str()
++                    .map_err(|_| Error::Protocol("invalid Location"))?;
++                let next_url = request
++                    .url
++                    .join(location)
++                    .map_err(|_| Error::Protocol("invalid redirect URL"))?;
++                let next_origin = Origin::from_url(&next_url)?;
++                if !next_url.username().is_empty() || next_url.password().is_some() {
++                    return Err(Error::InvalidRequest("redirect URL contains credentials"));
++                }
++                if key != next_origin {
++                    for name in [
++                        "authorization",
++                        "proxy-authorization",
++                        "cookie",
++                        "cookie2",
++                        "referer",
++                    ] {
++                        request.headers.remove(name);
++                    }
++                }
++
++                let switch_to_get = matches!(wire.status.as_u16(), 301 | 302)
++                    && request.method == Method::POST
++                    || wire.status == StatusCode::SEE_OTHER
++                        && request.method != Method::GET
++                        && request.method != Method::HEAD;
++                if switch_to_get {
++                    request.method = Method::GET;
++                    request.body = None;
++                    for name in [
++                        "content-type",
++                        "content-length",
++                        "content-encoding",
++                        "content-language",
++                        "content-location",
++                        "content-md5",
++                        "digest",
++                        "transfer-encoding",
++                    ] {
++                        request.headers.remove(name);
++                    }
++                }
++
++                lease.reusable = wire.reusable;
++                // Release this origin before acquiring the next hop's permit.
++                drop(lease);
++                request.url = next_url;
++                continue;
++            }
++
++            let mut response_headers = wire.headers;
++            let body = if wire.bodiless {
++                wire.body
++            } else {
++                decode_body(wire.body, &mut response_headers)?
++            };
++            // Decoding happens while the permit is held. Cancellation or a
++            // decoding error drops the socket rather than pooling it.
++            lease.reusable = wire.reusable;
++            return Ok(FetchResponse::new(request.url, wire.status)
++                .headers(response_headers)
++                .body(body));
++        }
++        Err(Error::TooManyRedirects)
++    }
++
++    fn prepare_headers(&self, request: &FetchRequest) -> Result<HeaderMap, Error> {
++        let mut headers = request.headers.clone();
++        let mut nominated = Vec::new();
++        for value in headers.get_all("connection").iter() {
++            let value = value
++                .to_str()
++                .map_err(|_| Error::InvalidRequest("invalid Connection header"))?;
++            for name in value.split(',') {
++                nominated.push(
++                    HeaderName::from_bytes(name.trim().as_bytes())
++                        .map_err(|_| Error::InvalidRequest("invalid Connection token"))?,
++                );
++            }
++        }
++        for name in nominated {
++            headers.remove(name);
++        }
++        // This transport writes a known-length body without a proxy or
++        // protocol upgrade. Caller framing must never reach the wire.
++        for name in [
++            "connection",
++            "keep-alive",
++            "proxy-connection",
++            "upgrade",
++            "te",
++            "trailer",
++            "transfer-encoding",
++            "content-length",
++            "expect",
++            "host",
++        ] {
++            headers.remove(name);
++        }
++        headers.insert("user-agent", self.user_agent.clone());
++
++        #[cfg(feature = "compression")]
++        if !headers.contains_key("accept-encoding") && !headers.contains_key("range") {
++            headers.insert(
++                "accept-encoding",
++                HeaderValue::from_static("br, gzip, deflate"),
++            );
++        }
++
++        if let Some(jar) = &self.cookies {
++            headers.remove("cookie");
++            if let Some(cookie) = jar.cookies_header(&request.url) {
++                headers.insert("cookie", cookie);
++            }
++        }
++        Ok(headers)
++    }
++}
++
++fn process_reactor() -> Result<&'static Reactor, Error> {
++    static REACTOR: OnceLock<Result<Reactor, String>> = OnceLock::new();
++    // nagoya owns this OnceLock itself, so clients never start another pool.
++    let _ = nagoya::runtime::background();
++    match REACTOR.get_or_init(|| Reactor::start().map_err(|error| error.to_string())) {
++        Ok(reactor) => Ok(reactor),
++        Err(error) => Err(Error::Io(error.clone())),
++    }
++}
++
++fn validate_request(request: &FetchRequest) -> Result<(), Error> {
++    Origin::from_url(&request.url)?;
++    if !request.url.username().is_empty() || request.url.password().is_some() {
++        return Err(Error::InvalidRequest("URL contains credentials"));
++    }
++    if request.method == Method::CONNECT || request.headers.contains_key("upgrade") {
++        return Err(Error::InvalidRequest("tunnels and upgrades are unsupported"));
++    }
++    if request.body.as_ref().is_some_and(|body| body.len() > MAX_BODY_BYTES) {
++        return Err(Error::TooLarge);
++    }
++    Ok(())
++}
++
++fn is_redirect(status: StatusCode) -> bool {
++    matches!(status.as_u16(), 301 | 302 | 303 | 307 | 308)
++}
++
++struct WireResponse {
++    status: StatusCode,
++    headers: HeaderMap,
++    body: Bytes,
++    bodiless: bool,
++    reusable: bool,
++}
++
++struct Head {
++    status: StatusCode,
++    headers: HeaderMap,
++    persistent: bool,
++}
++
++enum Framing {
++    Length(usize),
++    Chunked,
++    Eof,
++}
++
++pub(super) struct Connection {
++    transport: tls::Transport,
++    buffer: BytesMut,
++}
++
++impl Connection {
++    fn new(transport: tls::Transport) -> Self {
++        Self {
++            transport,
++            buffer: BytesMut::new(),
++        }
++    }
++
++    async fn exchange(
++        &mut self,
++        request: &FetchRequest,
++        headers: &HeaderMap,
++        origin: &Origin,
++    ) -> Result<WireResponse, Error> {
++        let close_after = has_token(&request.headers, "connection", "close")?;
++        let encoded = encode_request(request, headers, origin, close_after)?;
++        self.transport.write_all(&encoded).await?;
++        if let Some(body) = &request.body {
++            self.transport.write_all(body).await?;
++        }
++
++        let mut informational = 0;
++        let head = loop {
++            let head = self.read_head().await?;
++            if head.status == StatusCode::SWITCHING_PROTOCOLS {
++                return Err(Error::Protocol("unexpected protocol upgrade"));
++            }
++            if !head.status.is_informational() {
++                break head;
++            }
++            informational += 1;
++            if informational > MAX_INFORMATIONAL {
++                return Err(Error::Protocol("too many informational responses"));
++            }
++        };
++
++        let framing = framing(&head.headers)?;
++        let bodiless = request.method == Method::HEAD
++            || head.status == StatusCode::NO_CONTENT
++            || head.status == StatusCode::NOT_MODIFIED;
++        let mut reusable = head.persistent && !close_after;
++        let body = if bodiless {
++            Bytes::new()
++        } else {
++            match framing {
++                Framing::Length(length) => {
++                    if length > MAX_BODY_BYTES {
++                        return Err(Error::TooLarge);
++                    }
++                    self.ensure(length).await?;
++                    self.buffer.split_to(length).freeze()
++                }
++                Framing::Chunked => self.read_chunked().await?,
++                Framing::Eof => {
++                    reusable = false;
++                    loop {
++                        if self.buffer.len() > MAX_BODY_BYTES {
++                            return Err(Error::TooLarge);
++                        }
++                        if self.fill().await? == 0 {
++                            break;
++                        }
++                    }
++                    self.buffer.split().freeze()
++                }
++            }
++        };
++        // There is no pipelining. Unsolicited bytes cannot belong to another
++        // request and must not become the next response's status line.
++        reusable &= self.buffer.is_empty();
++        Ok(WireResponse {
++            status: head.status,
++            headers: head.headers,
++            body,
++            bodiless,
++            reusable,
++        })
++    }
++
++    async fn fill(&mut self) -> Result<usize, Error> {
++        self.transport.read_into(&mut self.buffer).await
++    }
++
++    async fn ensure(&mut self, length: usize) -> Result<(), Error> {
++        while self.buffer.len() < length {
++            if self.fill().await? == 0 {
++                return Err(Error::Protocol("connection closed inside the response"));
++            }
++        }
++        Ok(())
++    }
++
++    async fn read_head(&mut self) -> Result<Head, Error> {
++        loop {
++            if let Some(end) = find(&self.buffer, b"\r\n\r\n") {
++                if end + 4 > MAX_HEAD {
++                    return Err(Error::TooLarge);
++                }
++                let raw = self.buffer.split_to(end + 4).freeze();
++                return parse_head(&raw);
++            }
++            if self.buffer.len() >= MAX_HEAD {
++                return Err(Error::TooLarge);
++            }
++            match self.fill().await {
++                Ok(0) if self.buffer.is_empty() => return Err(Error::ClosedBeforeResponse),
++                Ok(0) => return Err(Error::Protocol("connection closed inside headers")),
++                Err(Error::Io(_)) if self.buffer.is_empty() => {
++                    return Err(Error::ClosedBeforeResponse);
++                }
++                result => {
++                    result?;
++                }
++            }
++        }
++    }
++
++    async fn line(&mut self, limit: usize) -> Result<Bytes, Error> {
++        loop {
++            if let Some(end) = find(&self.buffer, b"\r\n") {
++                if end > limit {
++                    return Err(Error::TooLarge);
++                }
++                let line = self.buffer.split_to(end).freeze();
++                let _ = self.buffer.split_to(2);
++                return Ok(line);
++            }
++            if self.buffer.len() > limit {
++                return Err(Error::TooLarge);
++            }
++            if self.fill().await? == 0 {
++                return Err(Error::Protocol("connection closed inside chunk framing"));
++            }
++        }
++    }
++
++    async fn read_chunked(&mut self) -> Result<Bytes, Error> {
++        let mut body = BytesMut::new();
++        loop {
++            let line = self.line(MAX_LINE).await?;
++            let digits = line.split(|byte| *byte == b';').next().unwrap_or_default();
++            if digits.is_empty() || !digits.iter().all(u8::is_ascii_hexdigit) {
++                return Err(Error::Protocol("invalid chunk size"));
++            }
++            let digits = std::str::from_utf8(digits)
++                .map_err(|_| Error::Protocol("invalid chunk size"))?;
++            let size = usize::from_str_radix(digits, 16)
++                .map_err(|_| Error::Protocol("invalid chunk size"))?;
++            if size == 0 {
++                self.read_trailers().await?;
++                return Ok(body.freeze());
++            }
++            if size > MAX_BODY_BYTES.saturating_sub(body.len()) {
++                return Err(Error::TooLarge);
++            }
++            let mut remaining = size;
++            while remaining != 0 {
++                if self.buffer.is_empty() && self.fill().await? == 0 {
++                    return Err(Error::Protocol("connection closed inside a chunk"));
++                }
++                let take = remaining.min(self.buffer.len());
++                let part = self.buffer.split_to(take);
++                body.extend_from_slice(&part);
++                remaining -= take;
++            }
++            self.ensure(2).await?;
++            if &self.buffer[..2] != b"\r\n" {
++                return Err(Error::Protocol("missing chunk terminator"));
++            }
++            let _ = self.buffer.split_to(2);
++        }
++    }
++
++    async fn read_trailers(&mut self) -> Result<(), Error> {
++        let mut total = 0;
++        let mut count = 0;
++        loop {
++            let line = self.line(MAX_LINE).await?;
++            total += line.len() + 2;
++            if total > MAX_HEAD {
++                return Err(Error::TooLarge);
++            }
++            if line.is_empty() {
++                return Ok(());
++            }
++            count += 1;
++            if count > MAX_HEADERS {
++                return Err(Error::TooLarge);
++            }
++            let (name, _) = parse_header(&line)?;
++            if matches!(
++                name.as_str(),
++                "content-length" | "transfer-encoding" | "host" | "connection" | "trailer"
++            ) {
++                return Err(Error::Protocol("framing field in trailers"));
++            }
++            // Consume trailers completely, but do not treat them as response
++            // headers or allow them to update cookies after the response head.
++        }
++    }
++}
++
++fn encode_request(
++    request: &FetchRequest,
++    headers: &HeaderMap,
++    origin: &Origin,
++    close_after: bool,
++) -> Result<Bytes, Error> {
++    let mut encoded = BytesMut::new();
++    encoded.extend_from_slice(request.method.as_str().as_bytes());
++    encoded.extend_from_slice(b" ");
++    let path = request.url.path();
++    encoded.extend_from_slice(if path.is_empty() { b"/" } else { path.as_bytes() });
++    if let Some(query) = request.url.query() {
++        encoded.extend_from_slice(b"?");
++        encoded.extend_from_slice(query.as_bytes());
++    }
++    encoded.extend_from_slice(b" HTTP/1.1\r\nHost: ");
++    encoded.extend_from_slice(origin.host_header().as_bytes());
++    encoded.extend_from_slice(if close_after {
++        b"\r\nConnection: close\r\n"
++    } else {
++        b"\r\nConnection: keep-alive\r\n"
++    });
++    for (name, value) in headers.iter() {
++        encoded.extend_from_slice(name.as_str().as_bytes());
++        encoded.extend_from_slice(b": ");
++        encoded.extend_from_slice(value.as_bytes());
++        encoded.extend_from_slice(b"\r\n");
++        if encoded.len() > MAX_HEAD {
++            return Err(Error::InvalidRequest("request headers are too large"));
++        }
++    }
++    if let Some(body) = &request.body {
++        encoded.extend_from_slice(b"Content-Length: ");
++        encoded.extend_from_slice(body.len().to_string().as_bytes());
++        encoded.extend_from_slice(b"\r\n");
++    }
++    encoded.extend_from_slice(b"\r\n");
++    if encoded.len() > MAX_HEAD {
++        return Err(Error::InvalidRequest("request headers are too large"));
++    }
++    Ok(encoded.freeze())
++}
++
++fn parse_head(raw: &[u8]) -> Result<Head, Error> {
++    for (index, byte) in raw.iter().enumerate() {
++        if *byte == b'\n' && (index == 0 || raw[index - 1] != b'\r')
++            || *byte == b'\r' && raw.get(index + 1) != Some(&b'\n')
++        {
++            return Err(Error::Protocol("headers require CRLF line endings"));
++        }
++    }
++    let mut lines = raw.split(|byte| *byte == b'\n');
++    let status_line = lines
++        .next()
++        .and_then(|line| line.strip_suffix(b"\r"))
++        .ok_or(Error::Protocol("missing status line"))?;
++    let mut fields = status_line.splitn(3, |byte| *byte == b' ');
++    let version = fields.next().unwrap_or_default();
++    let code = fields.next().unwrap_or_default();
++    let reason = fields.next().ok_or(Error::Protocol("invalid status line"))?;
++    if !matches!(version, b"HTTP/1.1" | b"HTTP/1.0")
++        || code.len() != 3
++        || !code.iter().all(u8::is_ascii_digit)
++        || reason.iter().any(|byte| *byte < b' ' && *byte != b'\t' || *byte == 127)
++    {
++        return Err(Error::Protocol("invalid status line"));
++    }
++    let status = StatusCode::from_bytes(code)
++        .map_err(|_| Error::Protocol("invalid status code"))?;
++    let mut headers = HeaderMap::new();
++    let mut count = 0;
++    for line in lines {
++        let line = line
++            .strip_suffix(b"\r")
++            .ok_or(Error::Protocol("invalid header line"))?;
++        if line.is_empty() {
++            break;
++        }
++        count += 1;
++        if count > MAX_HEADERS {
++            return Err(Error::TooLarge);
++        }
++        let (name, value) = parse_header(line)?;
++        headers.append(name, value);
++    }
++    let close = has_token(&headers, "connection", "close")?;
++    let persistent = !close
++        && (version == b"HTTP/1.1" || has_token(&headers, "connection", "keep-alive")?);
++    Ok(Head {
++        status,
++        headers,
++        persistent,
++    })
++}
++
++fn parse_header(line: &[u8]) -> Result<(HeaderName, HeaderValue), Error> {
++    let colon = line
++        .iter()
++        .position(|byte| *byte == b':')
++        .ok_or(Error::Protocol("header has no colon"))?;
++    let name = HeaderName::from_bytes(&line[..colon])
++        .map_err(|_| Error::Protocol("invalid header name"))?;
++    let value = HeaderValue::from_bytes(trim_ows(&line[colon + 1..]))
++        .map_err(|_| Error::Protocol("invalid header value"))?;
++    Ok((name, value))
++}
++
++fn trim_ows(mut bytes: &[u8]) -> &[u8] {
++    while bytes.first().is_some_and(|byte| matches!(byte, b' ' | b'\t')) {
++        bytes = &bytes[1..];
++    }
++    while bytes.last().is_some_and(|byte| matches!(byte, b' ' | b'\t')) {
++        bytes = &bytes[..bytes.len() - 1];
++    }
++    bytes
++}
++
++fn has_token(headers: &HeaderMap, name: &str, wanted: &str) -> Result<bool, Error> {
++    let mut found = false;
++    for value in headers.get_all(name).iter() {
++        let value = value
++            .to_str()
++            .map_err(|_| Error::Protocol("invalid header token list"))?;
++        found |= value
++            .split(',')
++            .any(|token| token.trim().eq_ignore_ascii_case(wanted));
++    }
++    Ok(found)
++}
++
++fn framing(headers: &HeaderMap) -> Result<Framing, Error> {
++    if headers.contains_key("transfer-encoding") {
++        if headers.contains_key("content-length") {
++            return Err(Error::Protocol("both Transfer-Encoding and Content-Length"));
++        }
++        let mut count = 0;
++        for value in headers.get_all("transfer-encoding").iter() {
++            let value = value
++                .to_str()
++                .map_err(|_| Error::Protocol("invalid Transfer-Encoding"))?;
++            for token in value.split(',') {
++                if !token.trim().eq_ignore_ascii_case("chunked") {
++                    return Err(Error::Protocol("unsupported transfer coding"));
++                }
++                count += 1;
++            }
++        }
++        if count != 1 {
++            return Err(Error::Protocol("invalid chunked transfer coding"));
++        }
++        return Ok(Framing::Chunked);
++    }
++    let mut length = None;
++    for value in headers.get_all("content-length").iter() {
++        let value = value
++            .to_str()
++            .map_err(|_| Error::Protocol("invalid Content-Length"))?;
++        for field in value.split(',') {
++            let field = field.trim();
++            if field.is_empty() || !field.as_bytes().iter().all(u8::is_ascii_digit) {
++                return Err(Error::Protocol("invalid Content-Length"));
++            }
++            let parsed = field
++                .parse::<usize>()
++                .map_err(|_| Error::Protocol("Content-Length overflow"))?;
++            if length.is_some_and(|previous| previous != parsed) {
++                return Err(Error::Protocol("conflicting Content-Length values"));
++            }
++            length = Some(parsed);
++        }
++    }
++    Ok(length.map_or(Framing::Eof, Framing::Length))
++}
++
++fn find(bytes: &[u8], needle: &[u8]) -> Option<usize> {
++    bytes.windows(needle.len()).position(|window| window == needle)
++}
++
++#[cfg(not(feature = "compression"))]
++fn decode_body(body: Bytes, _headers: &mut HeaderMap) -> Result<Bytes, Error> {
++    Ok(body)
++}
++
++#[cfg(feature = "compression")]
++fn decode_body(mut body: Bytes, headers: &mut HeaderMap) -> Result<Bytes, Error> {
++    let mut encodings = Vec::new();
++    for value in headers.get_all("content-encoding").iter() {
++        let value = value
++            .to_str()
++            .map_err(|_| Error::Protocol("invalid Content-Encoding"))?;
++        for encoding in value.split(',') {
++            let encoding = encoding.trim().to_ascii_lowercase();
++            if !matches!(encoding.as_str(), "identity" | "br" | "gzip" | "deflate") {
++                return Err(Error::Protocol("unsupported content coding"));
++            }
++            encodings.push(encoding);
++        }
++    }
++    if encodings.is_empty() || encodings.iter().all(|encoding| encoding == "identity") {
++        return Ok(body);
++    }
++    for encoding in encodings.iter().rev() {
++        body = match encoding.as_str() {
++            "identity" => body,
++            "br" => bounded_decode(brotli::Decompressor::new(body.as_ref(), 16 * 1024))?,
++            "gzip" => bounded_decode(flate2::read::MultiGzDecoder::new(body.as_ref()))?,
++            "deflate" => {
++                // HTTP deflate is zlib wrapped, but older servers send raw
++                // DEFLATE. Recognise a zlib header without retrying corrupt
++                // wrapped data as a different format.
++                let wrapped = body.len() >= 2
++                    && body[0] & 0x0f == 8
++                    && body[0] >> 4 <= 7
++                    && u16::from_be_bytes([body[0], body[1]]) % 31 == 0;
++                if wrapped {
++                    bounded_decode(flate2::read::ZlibDecoder::new(body.as_ref()))?
++                } else {
++                    bounded_decode(flate2::read::DeflateDecoder::new(body.as_ref()))?
++                }
++            }
++            _ => return Err(Error::Protocol("unsupported content coding")),
++        };
++    }
++    // These described the encoded representation, not the returned bytes.
++    headers.remove("content-encoding");
++    headers.remove("content-length");
++    Ok(body)
++}
++
++#[cfg(feature = "compression")]
++fn bounded_decode(reader: impl std::io::Read) -> Result<Bytes, Error> {
++    use std::io::Read;
++    let mut output = Vec::new();
++    reader
++        .take(MAX_BODY_BYTES as u64 + 1)
++        .read_to_end(&mut output)
++        .map_err(|error| Error::Io(error.to_string()))?;
++    if output.len() > MAX_BODY_BYTES {
++        return Err(Error::TooLarge);
++    }
++    Ok(Bytes::from(output))
++}
+diff --git a/packages/blitz-net/src/lib.rs b/packages/blitz-net/src/lib.rs
+index 78b7f998..6daadc78 100644
+--- a/packages/blitz-net/src/lib.rs
++++ b/packages/blitz-net/src/lib.rs
+@@ -4,41 +4,43 @@
+ //! the resources a document needs, and of
+ //! [`blitz_traits::platform::FetchProvider`], which serves a guest's `fetch()`.
+ //!
+-//! **Both run on the one client.** `Provider` holds a single `reqwest::Client`,
+-//! built once with HTTP/2, the cookie jar, the compression codecs and the
+-//! cacache disk cache, plus one per-host semaphore enforcing the browser's cap
+-//! of six concurrent requests per origin. A guest's `fetch` therefore shares
+-//! the connection pool, the cookies and the cache with the page's own loads,
+-//! and counts against the same concurrency budget, which is what a browser
+-//! does. A second client would have given a guest its own cookie jar and its
+-//! own six connections per host.
+-
+-use blitz_traits::net::{AbortSignal, Body, Bytes, NetHandler, NetProvider, NetWaker, Request};
++//! Both use one native HTTP/1.1 client, sharing its connection pool, cookie
++//! jar, compression codecs, private cache and six connection slots per origin.
++//! The `http2` feature is reserved for the subsequent HTTP/2 transport.
++//!
++//! Creating a native provider starts nagoya's process background runtime and
++//! the house client's shared reactor if absent. Multiple providers reuse them.
++//! Embedders do not need to enter an executor: callback requests use
++//! `nagoya::spawn`, and async methods also work under `nagoya::block_on`.
++//!
++//! Cookie persistence belongs to the embedder's cookie jar. Disk caching is
++//! attached explicitly with a profile directory; no global cache path is used.
++//! On wasm32, local URL handling remains available, but this native socket
++//! transport does not provide HTTP.
++
++#[cfg(not(target_arch = "wasm32"))]
++mod h1;
++
++use blitz_traits::net::{
++    AbortSignal, Body, Bytes, CookieJar as CookieStorage, NetHandler, NetProvider, NetWaker, Request,
++    http::{HeaderValue, header::CONTENT_TYPE},
++};
+ use blitz_traits::platform::{
+     FetchError, FetchHandler, FetchProvider, FetchRequest, FetchResponse, HeaderMap, StatusCode,
+ };
+ use data_url::DataUrl;
+-use std::{
+-    collections::HashMap,
+-    marker::PhantomData,
+-    pin::Pin,
+-    sync::{Arc, Mutex},
+-    task::Poll,
+-};
+-use tokio::sync::Semaphore;
++use std::{marker::PhantomData, pin::Pin, sync::Arc, task::Poll};
+ 
+ /// Cookie storage supplied to [`Provider::with_user_agent_and_cookie_provider`].
+ ///
+-/// Re-exported so an embedder can provide a persistent profile jar without
+-/// depending on reqwest directly. Reqwest invokes it for every response in a
+-/// redirect chain and before every request it sends.
++/// This house trait keeps embedders independent of the HTTP client. The provider
++/// consults the jar for each request and stores cookies from every response,
++/// including intermediate redirects and error responses.
+ #[cfg(feature = "cookies")]
+-pub use reqwest::cookie::CookieStore;
++pub use blitz_traits::net::CookieJar;
+ 
+-#[cfg(feature = "cache")]
+-use http_cache_reqwest::{
+-    CACacheManager, Cache, CacheMode, CacheOptions, HttpCache, HttpCacheOptions,
+-};
++#[cfg(all(feature = "cache", not(target_arch = "wasm32")))]
++pub use h1::cache::PrivateCache;
+ 
+ /// The `User-Agent` sent when a caller does not choose one.
+ ///
+@@ -51,31 +53,29 @@ use http_cache_reqwest::{
+ pub const DEFAULT_USER_AGENT: &str =
+     "Mozilla/5.0 (X11; Linux x86_64; rv:60.0) Gecko/20100101 Firefox/81.0";
+ 
+-/// Matches real browsers' per-origin cap of 6.
+-const PER_HOST_MAX_CONCURRENT: usize = 6;
+-
+-type HostLimits = Arc<Mutex<HashMap<String, Arc<Semaphore>>>>;
+-
+-#[cfg(feature = "cache")]
+-type Client = reqwest_middleware::ClientWithMiddleware;
+-#[cfg(not(feature = "cache"))]
+-type Client = reqwest::Client;
+-
+-#[cfg(feature = "cache")]
+-type RequestBuilder = reqwest_middleware::RequestBuilder;
+-#[cfg(not(feature = "cache"))]
+-type RequestBuilder = reqwest::RequestBuilder;
+-
+-#[cfg(feature = "cache")]
+-fn get_cache_path() -> std::path::PathBuf {
+-    use directories::ProjectDirs;
+-    let path = ProjectDirs::from("com", "DioxusLabs", "Blitz")
+-        .expect("Failed to find cache directory")
+-        .cache_dir()
+-        .to_owned();
+-    #[cfg(feature = "tracing")]
+-    tracing::info!(path = ?path.display(), "Using cache dir");
+-    path
++#[cfg(not(target_arch = "wasm32"))]
++type Client = h1::H1Client;
++
++#[cfg(target_arch = "wasm32")]
++#[derive(Clone)]
++struct Client;
++
++#[cfg(target_arch = "wasm32")]
++impl Client {
++    fn new(
++        user_agent: &str,
++        _cookies: Option<Arc<dyn CookieStorage>>,
++    ) -> Result<Self, FetchError> {
++        HeaderValue::from_str(user_agent)
++            .map_err(|error| FetchError::InvalidRequest(error.to_string()))?;
++        Ok(Self)
++    }
++
++    async fn fetch(&self, _request: FetchRequest) -> Result<FetchResponse, FetchError> {
++        Err(FetchError::Network(
++            "the native HTTP transport is unavailable on wasm32".to_owned(),
++        ))
++    }
+ }
+ 
+ #[cfg(target_arch = "wasm32")]
+@@ -91,16 +91,20 @@ where
+     F: Future + Send + 'static,
+     F::Output: Send + 'static,
+ {
+-    tokio::spawn(fut);
++    nagoya::spawn(fut);
+ }
+ 
++/// Document and script networking over one house client.
++///
++/// Native construction initializes the shared runtime and reactor. Supply a
++/// cookie jar for cookie storage and attach a profile cache before sharing the
++/// provider with documents.
+ pub struct Provider {
+     client: Client,
+     waker: Arc<dyn NetWaker>,
+-    per_host_limits: HostLimits,
+     user_agent: Arc<str>,
+-    #[cfg(feature = "cache")]
+-    cache_manager: CACacheManager,
++    #[cfg(all(feature = "cache", not(target_arch = "wasm32")))]
++    cache_manager: Option<Arc<PrivateCache>>,
+ }
+ impl Provider {
+     pub fn new(waker: Option<Arc<dyn NetWaker>>) -> Self {
+@@ -115,18 +119,13 @@ impl Provider {
+     /// with itself on only some would fetch a page assembled for two different
+     /// browsers.
+     pub fn with_user_agent(waker: Option<Arc<dyn NetWaker>>, user_agent: &str) -> Self {
+-        let builder = reqwest::Client::builder();
+-        #[cfg(feature = "cookies")]
+-        let builder = builder.cookie_store(true);
+-        Self::with_client_builder(waker, user_agent, builder)
++        Self::with_cookie_jar(waker, user_agent, None)
+     }
+ 
+     /// A provider that uses an embedder-owned cookie jar and identity.
+     ///
+-    /// The jar is installed on the provider's one reqwest client, so it sees
+-    /// intermediate redirects and error responses as well as the final
+-    /// successful response. It also supplies cookies for redirected requests;
+-    /// no parallel client or second cookie store is involved.
++    /// The jar supplies cookies for each request and receives cookies from
++    /// intermediate redirects, error responses, and final responses.
+     #[cfg(feature = "cookies")]
+     pub fn with_user_agent_and_cookie_provider<C>(
+         waker: Option<Arc<dyn NetWaker>>,
+@@ -134,55 +133,55 @@ impl Provider {
+         cookie_provider: Arc<C>,
+     ) -> Self
+     where
+-        C: CookieStore + 'static,
++        C: CookieJar,
+     {
+-        let builder = reqwest::Client::builder().cookie_provider(cookie_provider);
+-        Self::with_client_builder(waker, user_agent, builder)
++        Self::with_cookie_jar(waker, user_agent, Some(cookie_provider))
+     }
+ 
+-    fn with_client_builder(
++    fn with_cookie_jar(
+         waker: Option<Arc<dyn NetWaker>>,
+         user_agent: &str,
+-        builder: reqwest::ClientBuilder,
++        cookies: Option<Arc<dyn CookieStorage>>,
+     ) -> Self {
+-        let client = builder.build().unwrap();
+-
+-        #[cfg(feature = "cache")]
+-        let cache_manager = CACacheManager::new(get_cache_path(), true);
+-
+-        #[cfg(feature = "cache")]
+-        let client = reqwest_middleware::ClientBuilder::new(client)
+-            .with(Cache(HttpCache {
+-                mode: CacheMode::Default,
+-                manager: cache_manager.clone(),
+-                options: HttpCacheOptions {
+-                    // Evaluate cache policy as a single-user (private) cache, like a
+-                    // real browser, rather than a shared/proxy cache. The default
+-                    // (`shared: true`) treats any response carrying `Set-Cookie` without
+-                    // an explicit `Cache-Control: public`/`immutable` as immediately
+-                    // stale, forcing a revalidation request to the server on every load.
+-                    // Many CDNs (e.g. Wikimedia image hosts) serve images this way, so
+-                    // the shared-cache default defeats disk caching and gets us rate
+-                    // limited. A private cache honours heuristic freshness instead.
+-                    cache_options: Some(CacheOptions {
+-                        shared: false,
+-                        ..Default::default()
+-                    }),
+-                    ..Default::default()
+-                },
+-            }))
+-            .build();
+-
++        let client = Client::new(user_agent, cookies)
++            .expect("failed to initialize the house HTTP client");
+         let waker = waker.unwrap_or(Arc::new(DummyNetWaker));
+         Self {
+             client,
+             waker,
+-            per_host_limits: Arc::new(Mutex::new(HashMap::new())),
+             user_agent: Arc::from(user_agent),
+-            #[cfg(feature = "cache")]
+-            cache_manager,
++            #[cfg(all(feature = "cache", not(target_arch = "wasm32")))]
++            cache_manager: None,
+         }
+     }
++
++    /// Attach a cache already opened for this profile.
++    ///
++    /// Keep one open cache instance per profile. Document and script requests
++    /// share it, and cached Set-Cookie headers are never replayed.
++    #[cfg(all(feature = "cache", not(target_arch = "wasm32")))]
++    pub fn with_cache(mut self, cache: Arc<PrivateCache>) -> Self {
++        self.client = self.client.with_cache(cache.clone());
++        self.cache_manager = Some(cache);
++        self
++    }
++
++    /// Open persisted WorkTable metadata and bodies under the profile directory.
++    ///
++    /// Opening runs on a nagoya worker. Failure leaves the caller free to build
++    /// a provider without a cache instead.
++    #[cfg(all(feature = "cache", not(target_arch = "wasm32")))]
++    pub async fn with_cache_directory(
++        self,
++        profile_directory: impl AsRef<std::path::Path>,
++    ) -> std::io::Result<Self> {
++        let directory = profile_directory.as_ref().to_owned();
++        let cache = nagoya::spawn(async move { PrivateCache::open(directory).await })
++            .await
++            .ok_or_else(|| std::io::Error::other("cache opener was cancelled"))??;
++        Ok(self.with_cache(cache))
++    }
++
+     pub fn shared(waker: Option<Arc<dyn NetWaker>>) -> Arc<dyn NetProvider> {
+         Arc::new(Self::new(waker))
+     }
+@@ -203,13 +202,17 @@ impl Provider {
+         Arc::strong_count(&self.waker) - 1
+     }
+ 
+-    #[cfg(feature = "cache")]
++    #[cfg(all(feature = "cache", not(target_arch = "wasm32")))]
+     pub async fn clear_cache(&self) {
+-        if let Err(e) = self.cache_manager.clear().await {
+-            #[cfg(feature = "tracing")]
+-            tracing::error!("Failed to clear HTTP cache: {:?}", e);
+-            #[cfg(not(feature = "tracing"))]
+-            let _ = e;
++        if let Some(cache) = &self.cache_manager {
++            let cache = cache.clone();
++            let result = nagoya::spawn(async move { cache.clear().await }).await;
++            if let Some(Err(e)) = result {
++                #[cfg(feature = "tracing")]
++                tracing::error!("Failed to clear HTTP cache: {:?}", e);
++                #[cfg(not(feature = "tracing"))]
++                let _ = e;
++            }
+         }
+     }
+ }
+@@ -217,77 +220,9 @@ impl Provider {
+     async fn fetch_inner(
+         client: Client,
+         request: Request,
+-        per_host_limits: HostLimits,
+-        user_agent: Arc<str>,
+-    ) -> Result<(String, Bytes), ProviderError> {
+-        match request.url.scheme() {
+-            "data" => {
+-                let data_url = DataUrl::process(request.url.as_str())?;
+-                let decoded = data_url.decode_to_vec()?;
+-                Ok((request.url.to_string(), Bytes::from(decoded.0)))
+-            }
+-            "file" => {
+-                let file_content = std::fs::read(request.url.path())?;
+-                Ok((request.url.to_string(), Bytes::from(file_content)))
+-            }
+-            _ => Self::fetch_http(client, request, per_host_limits, user_agent).await,
+-        }
+-    }
+-
+-    async fn fetch_http(
+-        client: Client,
+-        request: Request,
+-        per_host_limits: HostLimits,
+-        user_agent: Arc<str>,
+     ) -> Result<(String, Bytes), ProviderError> {
+-        // Acquire a per-host permit, held for the duration of the request, to
+-        // keep total in-flight requests per origin bounded.
+-        let host_key = request
+-            .url
+-            .host_str()
+-            .map(str::to_owned)
+-            .unwrap_or_default();
+-        let semaphore = {
+-            let mut map = per_host_limits.lock().unwrap();
+-            map.entry(host_key)
+-                .or_insert_with(|| Arc::new(Semaphore::new(PER_HOST_MAX_CONCURRENT)))
+-                .clone()
+-        };
+-        let _permit = semaphore
+-            .acquire()
+-            .await
+-            .expect("per-host semaphore was closed");
+-
+-        let mut req = client
+-            .request(request.method, request.url)
+-            .headers(request.headers)
+-            .header("User-Agent", &*user_agent);
+-
+-        if let Some(content_type) = request.content_type.as_ref() {
+-            req = req.header("Content-Type", content_type);
+-        }
+-
+-        let req = req
+-            .apply_body(request.body, request.content_type.as_deref())
+-            .await;
+-        let response = req.send().await?;
+-        let status = response.status();
+-        let final_url = response.url().to_string();
+-
+-        if status.is_success() {
+-            return Ok((final_url, response.bytes().await?));
+-        }
+-
+-        #[cfg(feature = "tracing")]
+-        tracing::warn!(
+-            url = final_url.as_str(),
+-            status = status.as_u16(),
+-            "HTTP error status"
+-        );
+-        Err(ProviderError::HttpStatus {
+-            status,
+-            url: final_url,
+-        })
++        let response = Self::fetch_response_inner(client, request).await?;
++        Ok((response.url.to_string(), response.body))
+     }
+ 
+     #[allow(clippy::type_complexity)]
+@@ -300,17 +235,13 @@ impl Provider {
+         let url = request.url.to_string();
+ 
+         let client = self.client.clone();
+-        let per_host_limits = self.per_host_limits.clone();
+-        let user_agent = self.user_agent.clone();
+         spawn(async move {
+-            let result = Self::fetch_inner(client, request, per_host_limits, user_agent).await;
++            let result = Self::fetch_inner(client, request).await;
+ 
+             #[cfg(feature = "tracing")]
+             if let Err(e) = &result {
+-                #[cfg(feature = "tracing")]
+                 tracing::error!(url = url.as_str(), error = ?e, "Fetching");
+             } else {
+-                #[cfg(feature = "tracing")]
+                 tracing::info!(url = url.as_str(), "Success fetching");
+             }
+ 
+@@ -322,17 +253,12 @@ impl Provider {
+         #[cfg(feature = "tracing")]
+         let url = request.url.to_string();
+ 
+-        let client = self.client.clone();
+-        let per_host_limits = self.per_host_limits.clone();
+-        let user_agent = self.user_agent.clone();
+-        let result = Self::fetch_inner(client, request, per_host_limits, user_agent).await;
++        let result = Self::fetch_inner(self.client.clone(), request).await;
+ 
+         #[cfg(feature = "tracing")]
+         if let Err(e) = &result {
+-            #[cfg(feature = "tracing")]
+             tracing::error!(url = url.as_str(), error = ?e, "Fetching");
+         } else {
+-            #[cfg(feature = "tracing")]
+             tracing::info!(url = url.as_str(), "Success fetching");
+         }
+ 
+@@ -342,30 +268,19 @@ impl Provider {
+     /// Fetch, keeping the response metadata that [`Provider::fetch_async`]
+     /// discards.
+     ///
+-    /// `fetch_async` returns `(String, Bytes)`: the final URL and the body. That
+-    /// is the right shape for the overwhelmingly common case, a document or a
+-    /// subresource whose bytes are the whole answer, and it stays as it is.
+-    ///
+-    /// What it cannot answer is what the server *said* the bytes were. An
+-    /// embedder loading a WebAssembly module wants to reject
+-    /// `Content-Type: text/html` before handing the bytes to a parser that will
+-    /// report an offset into a file that is not a module at all. That check
+-    /// needs headers, and the headers already exist: `fetch_http` reads them off
+-    /// the response and drops them on the way out.
+-    ///
+-    /// Additive rather than a widening of `fetch_async`, deliberately. Changing
+-    /// that return type touches every caller in every embedder for a need only
+-    /// some of them have, and `HeaderMap` is a heap-allocated multimap the hot
+-    /// path would then build and clone for every subresource. This allocates
+-    /// only for the callers that ask.
+-    ///
+-    /// `data:` and `file:` URLs synthesise a response. A `data:` URL states its
+-    /// own mime type, so that becomes a real `Content-Type`; a `file:` URL has
+-    /// none, and a caller that requires one should read an absent header as
+-    /// unknown rather than as a mismatch.
++    /// HTTP error statuses remain errors on this document-loading API.
++    /// `FetchProvider` instead delivers every HTTP response, including errors.
++    /// A `data:` URL supplies its own Content-Type; a `file:` URL has none.
+     pub async fn fetch_response_async(
+         &self,
+         request: Request,
++    ) -> Result<FetchResponse, ProviderError> {
++        Self::fetch_response_inner(self.client.clone(), request).await
++    }
++
++    async fn fetch_response_inner(
++        client: Client,
++        request: Request,
+     ) -> Result<FetchResponse, ProviderError> {
+         let url = request.url.clone();
+         match url.scheme() {
+@@ -377,7 +292,7 @@ impl Provider {
+                     let decoded = data_url.decode_to_vec()?;
+                     let mut headers = HeaderMap::new();
+                     if let Ok(value) = data_url.mime_type().to_string().parse() {
+-                        headers.insert(blitz_traits::platform::http::header::CONTENT_TYPE, value);
++                        headers.insert(CONTENT_TYPE, value);
+                     }
+                     (Bytes::from(decoded.0), headers)
+                 };
+@@ -389,79 +304,48 @@ impl Provider {
+                 let file_content = std::fs::read(url.path())?;
+                 Ok(FetchResponse::new(url, StatusCode::OK).body(Bytes::from(file_content)))
+             }
+-            _ => {
+-                let client = self.client.clone();
+-                let per_host_limits = self.per_host_limits.clone();
+-                let user_agent = self.user_agent.clone();
+-                Self::fetch_http_response(client, request, per_host_limits, user_agent).await
++            "http" | "https" => {
++                let mut wire_request = FetchRequest::get(request.url).method(request.method);
++                wire_request.headers = request.headers;
++                let content_type = request.content_type.or_else(|| {
++                    wire_request
++                        .headers
++                        .get(CONTENT_TYPE)
++                        .and_then(|value| value.to_str().ok())
++                        .map(str::to_owned)
++                });
++                if let Some(content_type) = &content_type {
++                    let value = HeaderValue::from_str(content_type)
++                        .map_err(|error| ProviderError::InvalidRequest(error.to_string()))?;
++                    wire_request.headers.insert(CONTENT_TYPE, value);
++                }
++                wire_request.body = encode_body(
++                    request.body,
++                    content_type.as_deref(),
++                    &mut wire_request.headers,
++                )?;
++                let response = client
++                    .fetch(wire_request)
++                    .await
++                    .map_err(|error| ProviderError::Network(error.to_string()))?;
++
++                if !response.status.is_success() {
++                    #[cfg(feature = "tracing")]
++                    tracing::warn!(
++                        url = response.url.as_str(),
++                        status = response.status.as_u16(),
++                        "HTTP error status"
++                    );
++                    return Err(ProviderError::HttpStatus {
++                        status: response.status,
++                        url: response.url.to_string(),
++                    });
++                }
++                Ok(response)
+             }
++            scheme => Err(ProviderError::UnsupportedScheme(scheme.to_owned())),
+         }
+     }
+-
+-    /// The HTTP half of [`Provider::fetch_response_async`].
+-    ///
+-    /// Deliberately a sibling of [`Provider::fetch_http`] rather than a wrapper
+-    /// around it: that one consumes the response to get at the body and cannot
+-    /// hand back what it read on the way. The per-host permit, the user agent
+-    /// and the non-2xx handling are the same, so the two must be changed
+-    /// together.
+-    async fn fetch_http_response(
+-        client: Client,
+-        request: Request,
+-        per_host_limits: HostLimits,
+-        user_agent: Arc<str>,
+-    ) -> Result<FetchResponse, ProviderError> {
+-        let host_key = request
+-            .url
+-            .host_str()
+-            .map(str::to_owned)
+-            .unwrap_or_default();
+-        let semaphore = {
+-            let mut map = per_host_limits.lock().unwrap();
+-            map.entry(host_key)
+-                .or_insert_with(|| Arc::new(Semaphore::new(PER_HOST_MAX_CONCURRENT)))
+-                .clone()
+-        };
+-        let _permit = semaphore
+-            .acquire()
+-            .await
+-            .expect("per-host semaphore was closed");
+-
+-        let mut req = client
+-            .request(request.method, request.url)
+-            .headers(request.headers)
+-            .header("User-Agent", &*user_agent);
+-
+-        if let Some(content_type) = request.content_type.as_ref() {
+-            req = req.header("Content-Type", content_type);
+-        }
+-
+-        let req = req
+-            .apply_body(request.body, request.content_type.as_deref())
+-            .await;
+-        let response = req.send().await?;
+-        let status = response.status();
+-        let final_url = response.url().clone();
+-
+-        if !status.is_success() {
+-            #[cfg(feature = "tracing")]
+-            tracing::warn!(
+-                url = final_url.as_str(),
+-                status = status.as_u16(),
+-                "HTTP error status"
+-            );
+-            return Err(ProviderError::HttpStatus {
+-                status,
+-                url: final_url.to_string(),
+-            });
+-        }
+-
+-        // Read before the body, because taking the body consumes the response.
+-        let headers = response.headers().clone();
+-        Ok(FetchResponse::new(final_url, status)
+-            .headers(headers)
+-            .body(response.bytes().await?))
+-    }
+ }
+ 
+ /// The `fetch()` path.
+@@ -475,15 +359,14 @@ impl Provider {
+     async fn platform_fetch_inner(
+         client: Client,
+         request: FetchRequest,
+-        per_host_limits: HostLimits,
+-        user_agent: Arc<str>,
+     ) -> Result<FetchResponse, FetchError> {
+         match request.url.scheme() {
+             "data" => Self::platform_fetch_data(request),
+             "file" => Self::platform_fetch_file(request),
+-            "http" | "https" => {
+-                Self::platform_fetch_http(client, request, per_host_limits, user_agent).await
+-            }
++            "http" | "https" => client
++                .fetch(request)
++                .await
++                .map_err(|error| FetchError::Network(error.to_string())),
+             scheme => Err(FetchError::UnsupportedScheme(scheme.to_owned())),
+         }
+     }
+@@ -504,9 +387,7 @@ impl Provider {
+ 
+         let mut headers = HeaderMap::new();
+         if let Ok(value) = mime.parse() {
+-            // Via `reqwest`, which re-exports `http`'s header types. Naming
+-            // `http` directly would mean a new dependency for one constant.
+-            headers.insert(reqwest::header::CONTENT_TYPE, value);
++            headers.insert(CONTENT_TYPE, value);
+         }
+ 
+         Ok(FetchResponse::new(request.url, StatusCode::OK)
+@@ -536,70 +417,17 @@ impl Provider {
+ 
+         Ok(FetchResponse::new(request.url, StatusCode::OK).body(Bytes::from(body)))
+     }
+-
+-    async fn platform_fetch_http(
+-        client: Client,
+-        request: FetchRequest,
+-        per_host_limits: HostLimits,
+-        user_agent: Arc<str>,
+-    ) -> Result<FetchResponse, FetchError> {
+-        // The same per-origin permit the page's own loads take, so a guest
+-        // cannot open more connections to a host than a browser would.
+-        let host_key = request
+-            .url
+-            .host_str()
+-            .map(str::to_owned)
+-            .unwrap_or_default();
+-        let semaphore = {
+-            let mut map = per_host_limits.lock().unwrap();
+-            map.entry(host_key)
+-                .or_insert_with(|| Arc::new(Semaphore::new(PER_HOST_MAX_CONCURRENT)))
+-                .clone()
+-        };
+-        let _permit = semaphore
+-            .acquire()
+-            .await
+-            .expect("per-host semaphore was closed");
+-
+-        let mut req = client
+-            .request(request.method, request.url)
+-            .headers(request.headers)
+-            .header("User-Agent", &*user_agent);
+-
+-        if let Some(body) = request.body {
+-            req = req.body(body);
+-        }
+-
+-        let response = req
+-            .send()
+-            .await
+-            .map_err(|err| FetchError::Network(err.to_string()))?;
+-
+-        // Everything below here is what `fetch_inner` throws away.
+-        let status = response.status();
+-        let headers = response.headers().clone();
+-        let url = response.url().clone();
+-        let body = response
+-            .bytes()
+-            .await
+-            .map_err(|err| FetchError::Network(err.to_string()))?;
+-
+-        Ok(FetchResponse::new(url, status).headers(headers).body(body))
+-    }
+ }
+ 
+ impl FetchProvider for Provider {
+     fn fetch(&self, request: FetchRequest, handler: Box<dyn FetchHandler>) {
+         let client = self.client.clone();
+-        let per_host_limits = self.per_host_limits.clone();
+-        let user_agent = self.user_agent.clone();
+ 
+         #[cfg(feature = "tracing")]
+         let url = request.url.to_string();
+ 
+         spawn(async move {
+-            let result =
+-                Self::platform_fetch_inner(client, request, per_host_limits, user_agent).await;
++            let result = Self::platform_fetch_inner(client, request).await;
+ 
+             #[cfg(feature = "tracing")]
+             match &result {
+@@ -619,8 +447,6 @@ impl FetchProvider for Provider {
+ impl NetProvider for Provider {
+     fn fetch(&self, doc_id: usize, mut request: Request, handler: Box<dyn NetHandler>) {
+         let client = self.client.clone();
+-        let per_host_limits = self.per_host_limits.clone();
+-        let user_agent = self.user_agent.clone();
+ 
+         #[cfg(feature = "tracing")]
+         tracing::info!(url = request.url.as_str(), "Fetching");
+@@ -634,13 +460,11 @@ impl NetProvider for Provider {
+             let result = if let Some(signal) = signal {
+                 AbortFetch::new(
+                     signal,
+-                    Box::pin(async move {
+-                        Self::fetch_inner(client, request, per_host_limits, user_agent).await
+-                    }),
++                    Box::pin(async move { Self::fetch_inner(client, request).await }),
+                 )
+                 .await
+             } else {
+-                Self::fetch_inner(client, request, per_host_limits, user_agent).await
++                Self::fetch_inner(client, request).await
+             };
+ 
+             waker.wake(doc_id);
+@@ -707,11 +531,11 @@ pub enum ProviderError {
+     Io(std::io::Error),
+     DataUrl(data_url::DataUrlError),
+     DataUrlBase64(data_url::forgiving_base64::InvalidBase64),
+-    ReqwestError(reqwest::Error),
+-    #[cfg(feature = "cache")]
+-    ReqwestMiddlewareError(reqwest_middleware::Error),
++    Network(String),
++    InvalidRequest(String),
++    UnsupportedScheme(String),
+     HttpStatus {
+-        status: reqwest::StatusCode,
++        status: StatusCode,
+         url: String,
+     },
+ }
+@@ -723,14 +547,16 @@ impl std::fmt::Display for ProviderError {
+             Self::Io(e) => write!(f, "io error: {e}"),
+             Self::DataUrl(e) => write!(f, "data url error: {e:?}"),
+             Self::DataUrlBase64(e) => write!(f, "data url base64 error: {e:?}"),
+-            Self::ReqwestError(e) => write!(f, "reqwest error: {e}"),
+-            #[cfg(feature = "cache")]
+-            Self::ReqwestMiddlewareError(e) => write!(f, "reqwest middleware error: {e}"),
++            Self::Network(e) => write!(f, "network error: {e}"),
++            Self::InvalidRequest(e) => write!(f, "invalid request: {e}"),
++            Self::UnsupportedScheme(scheme) => write!(f, "unsupported URL scheme: {scheme}"),
+             Self::HttpStatus { status, url } => write!(f, "HTTP {status} for {url}"),
+         }
+     }
+ }
+ 
++impl std::error::Error for ProviderError {}
++
+ impl From<std::io::Error> for ProviderError {
+     fn from(value: std::io::Error) -> Self {
+         Self::Io(value)
+@@ -749,332 +575,124 @@ impl From<data_url::forgiving_base64::InvalidBase64> for ProviderError {
+     }
+ }
+ 
+-impl From<reqwest::Error> for ProviderError {
+-    fn from(value: reqwest::Error) -> Self {
+-        Self::ReqwestError(value)
+-    }
+-}
+-
+-#[cfg(feature = "cache")]
+-impl From<reqwest_middleware::Error> for ProviderError {
+-    fn from(value: reqwest_middleware::Error) -> Self {
+-        Self::ReqwestMiddlewareError(value)
+-    }
+-}
+-
+-trait ReqwestExt {
+-    async fn apply_body(self, body: Body, content_type: Option<&str>) -> Self;
+-}
+-impl ReqwestExt for RequestBuilder {
+-    async fn apply_body(self, body: Body, content_type: Option<&str>) -> Self {
+-        match body {
+-            Body::Bytes(bytes) => self.body(bytes),
+-            Body::Form(form_data) => match content_type {
+-                Some("application/x-www-form-urlencoded") => self.form(&form_data),
+-                #[cfg(feature = "multipart")]
+-                Some("multipart/form-data") => {
+-                    use blitz_traits::net::Entry;
+-                    use blitz_traits::net::EntryValue;
+-                    let mut form_data = form_data;
+-                    let mut form = reqwest::multipart::Form::new();
+-                    for Entry { name, value } in form_data.0.drain(..) {
+-                        form = match value {
+-                            EntryValue::String(value) => form.text(name, value),
+-                            EntryValue::File(path_buf) => form
+-                                .file(name, path_buf)
+-                                .await
+-                                .expect("Couldn't read form file from disk"),
+-                            EntryValue::EmptyFile => form.part(
+-                                name,
+-                                reqwest::multipart::Part::bytes(&[])
+-                                    .mime_str("application/octet-stream")
+-                                    .unwrap(),
+-                            ),
+-                        };
+-                    }
+-                    self.multipart(form)
++fn encode_body(
++    body: Body,
++    content_type: Option<&str>,
++    headers: &mut HeaderMap,
++) -> Result<Option<Bytes>, ProviderError> {
++    match body {
++        Body::Bytes(bytes) => Ok(Some(bytes)),
++        Body::Empty => Ok(None),
++        Body::Form(form) => {
++            let mime = content_type
++                .and_then(|value| value.split(';').next())
++                .map(str::trim)
++                .unwrap_or("");
++            if mime.eq_ignore_ascii_case("application/x-www-form-urlencoded") {
++                let mut encoded = url::form_urlencoded::Serializer::new(String::new());
++                for entry in &form.0 {
++                    encoded.append_pair(&entry.name, entry.value.as_ref());
+                 }
+-                _ => self,
+-            },
+-            Body::Empty => self,
+-        }
+-    }
+-}
+-
+-struct DummyNetWaker;
+-impl NetWaker for DummyNetWaker {
+-    fn wake(&self, _client_id: usize) {}
+-}
+-
+-#[cfg(test)]
+-mod tests {
+-    use super::*;
+-    use blitz_traits::net::Url;
+-
+-    /// A `data:` URL states its own mime type, so the synthesised response
+-    /// carries a real `Content-Type` rather than nothing.
+-    ///
+-    /// This is the case that makes the header meaningful for a caller checking
+-    /// one: a module inlined as a `data:` URL is as legitimate as a fetched
+-    /// one, and refusing it for having no type would be wrong.
+-    /// Serve exactly one HTTP request on loopback and hand back what was sent.
+-    ///
+-    /// A real socket rather than a mock, because the thing under test is a
+-    /// header on the wire. Asserting that the provider stored the string it was
+-    /// given would pass just as happily with the header never attached, which
+-    /// is the failure this exists to catch.
+-    fn capture_one_request() -> (Url, std::thread::JoinHandle<String>) {
+-        use std::io::{Read, Write};
+-
+-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback is available");
+-        let port = listener
+-            .local_addr()
+-            .expect("the socket has an address")
+-            .port();
+-        let handle = std::thread::spawn(move || {
+-            let (mut stream, _) = listener.accept().expect("the provider connects");
+-            let mut seen = Vec::new();
+-            let mut byte = [0u8; 1];
+-            // Read only the head. Reading to EOF would block: the client keeps
+-            // the connection open waiting for the response that follows.
+-            while !seen.ends_with(b"\r\n\r\n") {
+-                match stream.read(&mut byte) {
+-                    Ok(0) | Err(_) => break,
+-                    Ok(_) => seen.push(byte[0]),
++                return Ok(Some(Bytes::from(encoded.finish())));
++            }
++            if mime.eq_ignore_ascii_case("multipart/form-data") {
++                #[cfg(all(feature = "multipart", not(target_arch = "wasm32")))]
++                {
++                    return encode_multipart(form, headers).map(Some);
++                }
++                #[cfg(not(all(feature = "multipart", not(target_arch = "wasm32"))))]
++                {
++                    let _ = headers;
++                    return Err(ProviderError::InvalidRequest(
++                        "multipart requires the native multipart feature".to_owned(),
++                    ));
+                 }
+             }
+-            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+-            let _ = stream.flush();
+-            String::from_utf8_lossy(&seen).to_string()
+-        });
+-
+-        let url = Url::parse(&format!("http://127.0.0.1:{port}/")).expect("a valid loopback URL");
+-        (url, handle)
+-    }
+-
+-    /// A caller that names a user agent has it sent.
+-    ///
+-    /// Sites decide what markup to serve from this header, so a browser that
+-    /// cannot choose one is served whatever the default is taken for, and on a
+-    /// large share of the popular web that is a challenge page rather than the
+-    /// document.
+-    #[tokio::test]
+-    async fn a_chosen_user_agent_reaches_the_server() {
+-        let (url, server) = capture_one_request();
+-        let provider = Provider::with_user_agent(None, "Chuzz/1.0 (a stated identity)");
+-
+-        let _ = provider.fetch_async(Request::get(url)).await;
+-
+-        let request = server
+-            .join()
+-            .expect("the server thread finishes")
+-            .to_lowercase();
+-        assert!(
+-            request.contains("user-agent: chuzz/1.0 (a stated identity)"),
+-            "the chosen user agent should be on the wire, got:\n{request}"
+-        );
++            Err(ProviderError::InvalidRequest(
++                "unsupported form Content-Type".to_owned(),
++            ))
++        }
+     }
++}
+ 
+-    /// A caller that names none is unchanged by this being configurable.
+-    #[tokio::test]
+-    async fn the_default_user_agent_is_still_sent_when_none_is_chosen() {
+-        let (url, server) = capture_one_request();
+-        let provider = Provider::new(None);
+-
+-        let _ = provider.fetch_async(Request::get(url)).await;
+-
+-        let request = server
+-            .join()
+-            .expect("the server thread finishes")
+-            .to_lowercase();
+-        assert!(
+-            request.contains(&format!(
+-                "user-agent: {}",
+-                DEFAULT_USER_AGENT.to_lowercase()
+-            )),
+-            "the default user agent should be on the wire, got:\n{request}"
++#[cfg(all(feature = "multipart", not(target_arch = "wasm32")))]
++fn encode_multipart(
++    form: blitz_traits::net::FormData,
++    headers: &mut HeaderMap,
++) -> Result<Bytes, ProviderError> {
++    use blitz_traits::net::{Entry, EntryValue};
++    use psc_nanoid::{Nanoid, alphabet::Base64UrlAlphabet};
++    use std::io::Read;
++
++    let boundary = Nanoid::<21, Base64UrlAlphabet>::new().to_string();
++    let mut encoded = Vec::new();
++    for Entry { name, value } in form.0 {
++        let mut head = format!(
++            "--{boundary}\r\nContent-Disposition: form-data; name=\"{}\"",
++            multipart_parameter(&name),
+         );
+-    }
+-
+-    /// A consumer jar participates in the client's whole exchange. The first
+-    /// request reads its existing cookie, a redirect writes another cookie
+-    /// before the next request, and the final error response is written too.
+-    #[cfg(feature = "cookies")]
+-    #[tokio::test]
+-    async fn a_consumer_cookie_store_sees_redirects_and_error_responses() {
+-        use blitz_traits::net::http::HeaderValue;
+-        use std::io::{Read, Write};
+-
+-        #[derive(Default)]
+-        struct RecordingCookieStore {
+-            request_header: Mutex<String>,
+-            responses: Mutex<Vec<(String, Vec<String>)>>,
+-        }
+-
+-        impl CookieStore for RecordingCookieStore {
+-            fn set_cookies(
+-                &self,
+-                cookie_headers: &mut dyn Iterator<Item = &HeaderValue>,
+-                url: &Url,
+-            ) {
+-                let fields = cookie_headers
+-                    .filter_map(|header| header.to_str().ok().map(str::to_owned))
+-                    .collect::<Vec<_>>();
+-                let mut request_header = self.request_header.lock().unwrap();
+-                for pair in fields
+-                    .iter()
+-                    .filter_map(|field| field.split(';').next())
+-                    .filter(|pair| !pair.is_empty())
+-                {
+-                    if !request_header.is_empty() {
+-                        request_header.push_str("; ");
+-                    }
+-                    request_header.push_str(pair);
++        let body = match value {
++            EntryValue::String(value) => Bytes::from(value),
++            EntryValue::File(path) => {
++                let name = path.file_name().unwrap_or_default().to_string_lossy();
++                head.push_str(&format!(
++                    "; filename=\"{}\"\r\nContent-Type: application/octet-stream",
++                    multipart_parameter(&name),
++                ));
++                let file = std::fs::File::open(path)?;
++                let mut body = Vec::new();
++                file.take(h1::MAX_BODY_BYTES as u64 + 1)
++                    .read_to_end(&mut body)?;
++                if body.len() > h1::MAX_BODY_BYTES {
++                    return Err(ProviderError::InvalidRequest(
++                        "multipart file exceeds the body limit".to_owned(),
++                    ));
+                 }
+-                self.responses
+-                    .lock()
+-                    .unwrap()
+-                    .push((url.path().to_owned(), fields));
++                Bytes::from(body)
+             }
+-
+-            fn cookies(&self, _url: &Url) -> Option<HeaderValue> {
+-                let header = self.request_header.lock().unwrap();
+-                (!header.is_empty()).then(|| {
+-                    HeaderValue::from_str(&header).expect("the fixture cookie header is valid")
+-                })
++            EntryValue::EmptyFile => {
++                head.push_str("; filename=\"\"\r\nContent-Type: application/octet-stream");
++                Bytes::new()
+             }
++        };
++        head.push_str("\r\n\r\n");
++        let required = head
++            .len()
++            .checked_add(body.len())
++            .and_then(|length| length.checked_add(2))
++            .and_then(|length| length.checked_add(encoded.len()))
++            .ok_or_else(|| ProviderError::InvalidRequest("multipart body is too large".to_owned()))?;
++        if required > h1::MAX_BODY_BYTES {
++            return Err(ProviderError::InvalidRequest(
++                "multipart body exceeds the body limit".to_owned(),
++            ));
+         }
+-
+-        let listener =
+-            std::net::TcpListener::bind("127.0.0.1:0").expect("loopback listener is available");
+-        let port = listener
+-            .local_addr()
+-            .expect("listener has an address")
+-            .port();
+-        let server = std::thread::spawn(move || {
+-            let mut requests = Vec::new();
+-            for index in 0..2 {
+-                let (mut stream, _) = listener.accept().expect("the provider connects");
+-                let mut head = Vec::new();
+-                let mut byte = [0_u8; 1];
+-                while !head.ends_with(b"\r\n\r\n") {
+-                    match stream.read(&mut byte) {
+-                        Ok(0) | Err(_) => break,
+-                        Ok(_) => head.push(byte[0]),
+-                    }
+-                }
+-                requests.push(String::from_utf8_lossy(&head).to_ascii_lowercase());
+-                let response = if index == 0 {
+-                    "HTTP/1.1 302 Found\r\nLocation: /finish\r\nSet-Cookie: redirected=one; Path=/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+-                } else {
+-                    "HTTP/1.1 418 I'm a teapot\r\nSet-Cookie: final=two; Path=/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+-                };
+-                stream
+-                    .write_all(response.as_bytes())
+-                    .expect("fixture response writes");
+-            }
+-            requests
+-        });
+-
+-        let cookies = Arc::new(RecordingCookieStore {
+-            request_header: Mutex::new("seed=outbound".to_owned()),
+-            responses: Mutex::new(Vec::new()),
+-        });
+-        let provider = Provider::with_user_agent_and_cookie_provider(
+-            None,
+-            "FixtureBrowser/1.0",
+-            Arc::clone(&cookies),
+-        );
+-        let result = provider
+-            .fetch_response_async(Request::get(
+-                Url::parse(&format!("http://127.0.0.1:{port}/start"))
+-                    .expect("fixture URL is valid"),
+-            ))
+-            .await;
+-
+-        assert!(matches!(
+-            result,
+-            Err(ProviderError::HttpStatus { status, .. }) if status.as_u16() == 418
++        encoded.extend_from_slice(head.as_bytes());
++        encoded.extend_from_slice(&body);
++        encoded.extend_from_slice(b"\r\n");
++    }
++    let end = format!("--{boundary}--\r\n");
++    if end.len() > h1::MAX_BODY_BYTES.saturating_sub(encoded.len()) {
++        return Err(ProviderError::InvalidRequest(
++            "multipart body exceeds the body limit".to_owned(),
+         ));
+-        let requests = server.join().expect("fixture server finishes");
+-        assert!(requests[0].contains("cookie: seed=outbound"));
+-        assert!(requests[0].contains("user-agent: fixturebrowser/1.0"));
+-        assert!(requests[1].contains("cookie: seed=outbound; redirected=one"));
+-
+-        let responses = cookies.responses.lock().unwrap();
+-        assert_eq!(responses.len(), 2);
+-        assert_eq!(responses[0].0, "/start");
+-        assert!(responses[0].1[0].starts_with("redirected=one;"));
+-        assert_eq!(responses[1].0, "/finish");
+-        assert!(responses[1].1[0].starts_with("final=two;"));
+-    }
+-
+-    #[tokio::test]
+-    async fn a_data_url_reports_the_mime_type_it_declares() {
+-        let provider = Provider::new(None);
+-        let request = Request::get(
+-            // "hello" as base64, typed as a wasm module.
+-            Url::parse("data:application/wasm;base64,aGVsbG8=").unwrap(),
+-        );
+-
+-        let response = provider
+-            .fetch_response_async(request)
+-            .await
+-            .expect("a data URL resolves without a network");
+-
+-        assert_eq!(
+-            response
+-                .headers
+-                .get(blitz_traits::platform::http::header::CONTENT_TYPE)
+-                .and_then(|value| value.to_str().ok()),
+-            Some("application/wasm"),
+-        );
+-        assert_eq!(response.body.as_ref(), b"hello");
+-        assert_eq!(response.status, StatusCode::OK);
+-    }
+-
+-    /// A `file:` URL has no server and therefore no headers. The absence has to
+-    /// be an absence, not an empty string or a guess: a caller requiring a
+-    /// `Content-Type` must be able to tell "nobody said" from "said the wrong
+-    /// thing".
+-    #[tokio::test]
+-    async fn a_file_url_has_no_content_type_to_report() {
+-        let path = std::env::temp_dir().join("blitz-net-fetch-response-test.txt");
+-        std::fs::write(&path, b"file body").expect("a scratch file");
+-
+-        let provider = Provider::new(None);
+-        let url = Url::from_file_path(&path).expect("an absolute path");
+-        let response = provider
+-            .fetch_response_async(Request::get(url))
+-            .await
+-            .expect("a file URL resolves without a network");
+-
+-        assert!(
+-            response
+-                .headers
+-                .get(blitz_traits::platform::http::header::CONTENT_TYPE)
+-                .is_none(),
+-            "a file has no server to declare a type"
+-        );
+-        assert_eq!(response.body.as_ref(), b"file body");
+-
+-        let _ = std::fs::remove_file(&path);
+     }
++    encoded.extend_from_slice(end.as_bytes());
++    let content_type = HeaderValue::from_str(&format!("multipart/form-data; boundary={boundary}"))
++        .map_err(|error| ProviderError::InvalidRequest(error.to_string()))?;
++    headers.insert(CONTENT_TYPE, content_type);
++    Ok(Bytes::from(encoded))
++}
+ 
+-    /// `fetch_async` is untouched by this addition, which is the point of
+-    /// adding a method rather than widening it: every existing caller keeps the
+-    /// cheap `(String, Bytes)` shape and allocates no `HeaderMap`.
+-    #[tokio::test]
+-    async fn fetch_async_still_returns_the_narrow_shape() {
+-        let provider = Provider::new(None);
+-        let (url, bytes) = provider
+-            .fetch_async(Request::get(
+-                Url::parse("data:text/plain;base64,aGVsbG8=").unwrap(),
+-            ))
+-            .await
+-            .expect("a data URL resolves without a network");
++#[cfg(all(feature = "multipart", not(target_arch = "wasm32")))]
++fn multipart_parameter(value: &str) -> String {
++    value
++        .replace('\r', "%0D")
++        .replace('\n', "%0A")
++        .replace('"', "%22")
++}
+ 
+-        assert!(url.starts_with("data:"));
+-        assert_eq!(bytes.as_ref(), b"hello");
+-    }
++struct DummyNetWaker;
++impl NetWaker for DummyNetWaker {
++    fn wake(&self, _client_id: usize) {}
+ }
+diff --git a/packages/blitz-net/src/pool.rs b/packages/blitz-net/src/pool.rs
+new file mode 100644
+index 00000000..f787e5e7
+--- /dev/null
++++ b/packages/blitz-net/src/pool.rs
+@@ -0,0 +1,147 @@
++//! Connection ownership and the six-slot budget for each HTTP origin.
++
++use super::{Connection, Error};
++use blitz_traits::net::Url;
++use nagoya::sync::{Semaphore, SemaphorePermit};
++use std::{
++    collections::HashMap,
++    sync::{Arc, Mutex},
++    time::{Duration, Instant},
++};
++
++const PER_ORIGIN_SLOTS: usize = 6;
++const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
++const MAX_IDLE_ORIGINS: usize = 256;
++
++#[derive(Clone, Debug, Eq, Hash, PartialEq)]
++pub(super) struct Origin {
++    pub tls: bool,
++    pub host: Arc<str>,
++    pub port: u16,
++}
++
++impl Origin {
++    pub fn from_url(url: &Url) -> Result<Self, Error> {
++        let tls = match url.scheme() {
++            "https" => true,
++            "http" => false,
++            scheme => return Err(Error::UnsupportedScheme(scheme.to_owned())),
++        };
++        let host = url
++            .host_str()
++            .ok_or(Error::InvalidRequest("URL has no host"))?;
++        // URL serialisation includes brackets around IPv6 literals. DNS and
++        // rustls ServerName need the address without those brackets.
++        let host = host
++            .strip_prefix('[')
++            .and_then(|host| host.strip_suffix(']'))
++            .unwrap_or(host);
++        let port = url
++            .port_or_known_default()
++            .ok_or(Error::InvalidRequest("URL has no port"))?;
++        if port == 0 {
++            return Err(Error::InvalidRequest("URL port is zero"));
++        }
++        Ok(Self {
++            tls,
++            host: Arc::from(host),
++            port,
++        })
++    }
++
++    pub fn host_header(&self) -> String {
++        let host = if self.host.contains(':') {
++            format!("[{}]", self.host)
++        } else {
++            self.host.to_string()
++        };
++        if self.port == if self.tls { 443 } else { 80 } {
++            host
++        } else {
++            format!("{host}:{}", self.port)
++        }
++    }
++}
++
++#[derive(Default)]
++pub(super) struct Pool {
++    origins: Mutex<HashMap<Origin, Arc<OriginPool>>>,
++}
++
++impl Pool {
++    pub fn origin(&self, key: Origin) -> Arc<OriginPool> {
++        let mut origins = self.origins.lock().expect("HTTP origin pool poisoned");
++        if let Some(origin) = origins.get(&key) {
++            return origin.clone();
++        }
++        if origins.len() >= MAX_IDLE_ORIGINS {
++            // Keep every active origin and its shared semaphore. Idle origins
++            // can be dropped together with their sockets to bound retention.
++            origins.retain(|_, origin| Arc::strong_count(origin) > 1);
++        }
++        origins
++            .entry(key)
++            .or_insert_with(|| Arc::new(OriginPool::new()))
++            .clone()
++    }
++}
++
++pub(super) struct OriginPool {
++    slots: Semaphore,
++    idle: Mutex<Vec<Idle>>,
++}
++
++struct Idle {
++    connection: Connection,
++    since: Instant,
++}
++
++impl OriginPool {
++    fn new() -> Self {
++        Self {
++            slots: Semaphore::new(PER_ORIGIN_SLOTS),
++            idle: Mutex::new(Vec::new()),
++        }
++    }
++
++    pub async fn acquire(&self) -> Lease<'_> {
++        let permit = self.slots.acquire().await;
++        let connection = {
++            let mut idle = self.idle.lock().expect("HTTP idle pool poisoned");
++            idle.retain(|entry| entry.since.elapsed() < IDLE_TIMEOUT);
++            idle.pop().map(|entry| entry.connection)
++        };
++        Lease {
++            origin: self,
++            _permit: permit,
++            connection,
++            reusable: false,
++        }
++    }
++}
++
++/// Cancellation drops the connection unless the complete exchange succeeded.
++/// The borrowed permit remains held until this lease is dropped.
++pub(super) struct Lease<'a> {
++    origin: &'a OriginPool,
++    _permit: SemaphorePermit<'a>,
++    pub connection: Option<Connection>,
++    pub reusable: bool,
++}
++
++impl Drop for Lease<'_> {
++    fn drop(&mut self) {
++        if self.reusable
++            && let Some(connection) = self.connection.take()
++        {
++            self.origin
++                .idle
++                .lock()
++                .expect("HTTP idle pool poisoned")
++                .push(Idle {
++                    connection,
++                    since: Instant::now(),
++                });
++        }
++    }
++}
+diff --git a/packages/blitz-net/src/tls.rs b/packages/blitz-net/src/tls.rs
+new file mode 100644
+index 00000000..b245e03c
+--- /dev/null
++++ b/packages/blitz-net/src/tls.rs
+@@ -0,0 +1,130 @@
++//! Platform trust and nagoya socket transport.
++//!
++//! DNS always runs on a nagoya worker, including when the fetch future is
++//! polled directly by a caller or a local reactor.
++
++use super::{Error, pool::Origin};
++use bytes::BytesMut;
++use nago_rustls::{
++    TlsSession,
++    rustls::{self, ClientConfig, ClientConnection, crypto::CryptoProvider},
++    rustls_pki_types::ServerName,
++};
++use nagoya::{net::TcpStream, reactor::Handle};
++use rustls_platform_verifier::BuilderVerifierExt;
++use std::sync::{Arc, OnceLock};
++
++const READ_CHUNK: usize = 16 * 1024;
++
++pub(super) fn default_config() -> Result<Arc<ClientConfig>, Error> {
++    static CONFIG: OnceLock<Result<Arc<ClientConfig>, String>> = OnceLock::new();
++    match CONFIG.get_or_init(build_config) {
++        Ok(config) => Ok(config.clone()),
++        Err(error) => Err(Error::Tls(error.clone())),
++    }
++}
++
++fn build_config() -> Result<Arc<ClientConfig>, String> {
++    if CryptoProvider::get_default().is_none() {
++        // A racing embedder may install its provider first. Never replace it,
++        // and never ask rustls to infer one from the unified crate features.
++        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
++    }
++    let provider = CryptoProvider::get_default()
++        .cloned()
++        .ok_or_else(|| "no process crypto provider".to_owned())?;
++    let mut config = ClientConfig::builder_with_provider(provider)
++        .with_safe_default_protocol_versions()
++        .map_err(|error| error.to_string())?
++        .with_platform_verifier()
++        .map_err(|error| error.to_string())?
++        .with_no_client_auth();
++    config.alpn_protocols = vec![b"http/1.1".to_vec()];
++    Ok(Arc::new(config))
++}
++
++pub(super) async fn open(
++    origin: &Origin,
++    handle: &Handle,
++    config: Arc<ClientConfig>,
++) -> Result<Transport, Error> {
++    let host = origin.host.clone();
++    let port = origin.port;
++    let addresses = nagoya::spawn(async move {
++        nagoya::net::resolve(&host, port).map_err(|error| Error::Dns(error.to_string()))
++    })
++    .await
++    .ok_or_else(|| Error::Dns("resolver task was cancelled".to_owned()))??;
++
++    let stream = nagoya::net::connect_any(&addresses, handle)
++        .await
++        .map_err(|error| Error::Io(error.to_string()))?;
++    if !origin.tls {
++        return Ok(Transport::Plain(stream));
++    }
++
++    let name = ServerName::try_from(origin.host.to_string())
++        .map_err(|_| Error::InvalidRequest("invalid TLS server name"))?;
++    let session = ClientConnection::new(config, name)
++        .map_err(|error| Error::Tls(error.to_string()))?;
++    let mut tls = TlsSession::client(stream, session);
++    tls.handshake()
++        .await
++        .map_err(|error| Error::Tls(format!("handshake: {error}")))?;
++    if tls
++        .alpn_protocol()
++        .is_some_and(|protocol| protocol != b"http/1.1")
++    {
++        return Err(Error::Tls("peer negotiated an unsupported ALPN protocol".to_owned()));
++    }
++    Ok(Transport::Tls(Box::new(tls)))
++}
++
++pub(super) enum Transport {
++    Plain(TcpStream),
++    Tls(Box<TlsSession<TcpStream>>),
++}
++
++impl Transport {
++    pub async fn read_into(&mut self, buffer: &mut BytesMut) -> Result<usize, Error> {
++        match self {
++            Self::Plain(stream) => {
++                // Read directly into the destination's spare capacity.
++                buffer.reserve(READ_CHUNK);
++                stream
++                    .read_buf(buffer)
++                    .await
++                    .map_err(|error| Error::Io(error.to_string()))
++            }
++            Self::Tls(stream) => {
++                // TlsSession exposes an initialised plaintext slice rather
++                // than a read_buf operation. Avoid a second staging buffer.
++                let start = buffer.len();
++                buffer.resize(start + READ_CHUNK, 0);
++                match stream.read(&mut buffer[start..]).await {
++                    Ok(read) => {
++                        buffer.truncate(start + read);
++                        Ok(read)
++                    }
++                    Err(error) => {
++                        buffer.truncate(start);
++                        Err(Error::Io(error.to_string()))
++                    }
++                }
++            }
++        }
++    }
++
++    pub async fn write_all(&mut self, bytes: &[u8]) -> Result<(), Error> {
++        match self {
++            Self::Plain(stream) => stream
++                .write_all(bytes)
++                .await
++                .map_err(|error| Error::Write(error.to_string())),
++            Self::Tls(stream) => stream
++                .write_all(bytes)
++                .await
++                .map_err(|error| Error::Write(error.to_string())),
++        }
++    }
++}
+diff --git a/packages/blitz-net/tests/fetch_provider.rs b/packages/blitz-net/tests/fetch_provider.rs
+deleted file mode 100644
+index 36887005..00000000
+--- a/packages/blitz-net/tests/fetch_provider.rs
++++ /dev/null
+@@ -1,186 +0,0 @@
+-//! `blitz-net`'s [`FetchProvider`] implementation, end to end.
+-//!
+-//! # Why there is no HTTP here
+-//!
+-//! Every case below uses a `data:` or `file:` URL, and they go through the same
+-//! [`FetchProvider::fetch`] entry point, the same `spawn`, and the same
+-//! completion handler as an `https:` request does. What they do not need is a
+-//! network, a server, or a new dependency to stand one up.
+-//!
+-//! A test that reached a real host would be a test that fails on a train, and
+-//! one that started a local server would mean adding a server crate to prove
+-//! something about a client. The HTTP branch is exercised by the browser; what
+-//! is asserted here is the shape of the contract, which is where the bugs of
+-//! the "a 404 vanished" kind actually live.
+-
+-use std::sync::{Arc, Mutex};
+-
+-use blitz_net::Provider;
+-use blitz_traits::platform::{
+-    FetchError, FetchHandler, FetchProvider, FetchRequest, FetchResponse, StatusCode, Url,
+-};
+-
+-/// Where a [`Sink`] leaves the one answer its request produced.
+-type Slot = Arc<Mutex<Option<Result<FetchResponse, FetchError>>>>;
+-
+-/// Collects the one answer a request produces.
+-#[derive(Default)]
+-struct Sink(Slot);
+-
+-impl FetchHandler for Sink {
+-    fn complete(self: Box<Self>, result: Result<FetchResponse, FetchError>) {
+-        *self.0.lock().unwrap() = Some(result);
+-    }
+-}
+-
+-/// Issue one request and wait for its answer.
+-///
+-/// Polls rather than using a channel because the provider may answer *before*
+-/// `fetch` returns: a `data:` URL is decoded inline. A oneshot receiver would
+-/// work too, but polling makes the "may already be done" case impossible to get
+-/// wrong.
+-async fn fetch_one(url: &str) -> Result<FetchResponse, FetchError> {
+-    let provider = Provider::new(None);
+-    let slot: Slot = Arc::default();
+-
+-    provider.fetch(
+-        FetchRequest::get(Url::parse(url).expect("test URL should parse")),
+-        Box::new(Sink(slot.clone())),
+-    );
+-
+-    for _ in 0..2_000 {
+-        if let Some(answer) = slot.lock().unwrap().take() {
+-            return answer;
+-        }
+-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+-    }
+-    panic!("the provider never answered for {url}");
+-}
+-
+-#[tokio::test]
+-async fn a_data_url_answers_with_a_body_and_a_content_type() {
+-    let response = fetch_one("data:text/plain,hello%20world")
+-        .await
+-        .expect("a data URL should succeed");
+-
+-    assert_eq!(response.status, StatusCode::OK);
+-    assert_eq!(response.body.as_ref(), b"hello world");
+-    assert_eq!(
+-        response
+-            .headers
+-            .get(reqwest::header::CONTENT_TYPE)
+-            .and_then(|value| value.to_str().ok()),
+-        Some("text/plain"),
+-        "the content type encoded in the URL is the response's"
+-    );
+-}
+-
+-#[tokio::test]
+-async fn a_base64_data_url_is_decoded() {
+-    let response = fetch_one("data:application/json;base64,eyJvayI6dHJ1ZX0=")
+-        .await
+-        .expect("a base64 data URL should succeed");
+-
+-    assert_eq!(response.body.as_ref(), br#"{"ok":true}"#);
+-}
+-
+-#[tokio::test]
+-async fn a_file_url_answers_with_the_file() {
+-    let path = std::env::temp_dir().join("blitz-net-fetch-plain.txt");
+-    std::fs::write(&path, b"on disk").unwrap();
+-
+-    let url = Url::from_file_path(&path).expect("a temp path should convert to a URL");
+-    let response = fetch_one(url.as_str())
+-        .await
+-        .expect("an existing file should succeed");
+-
+-    assert_eq!(response.status, StatusCode::OK);
+-    assert_eq!(response.body.as_ref(), b"on disk");
+-
+-    std::fs::remove_file(&path).ok();
+-}
+-
+-/// The reason this path uses `Url::to_file_path` rather than `Url::path`, which
+-/// is what `NetProvider`'s own `file:` branch still uses.
+-///
+-/// `Url::path` hands back the percent-encoded path component, so this file is
+-/// looked up as `blitz-net%20fetch%20spaced.txt` and is not found. The failure
+-/// is a plain "no such file", which is exactly the kind that gets blamed on the
+-/// caller.
+-#[tokio::test]
+-async fn a_file_url_with_a_space_in_the_name_is_decoded_before_opening() {
+-    let path = std::env::temp_dir().join("blitz-net fetch spaced.txt");
+-    std::fs::write(&path, b"spaces are fine").unwrap();
+-
+-    let url = Url::from_file_path(&path).expect("a temp path should convert to a URL");
+-    assert!(
+-        url.as_str().contains("%20"),
+-        "the URL should be percent-encoded, or this test proves nothing: {url}"
+-    );
+-
+-    let response = fetch_one(url.as_str())
+-        .await
+-        .expect("a file with a space should be found");
+-    assert_eq!(response.body.as_ref(), b"spaces are fine");
+-
+-    std::fs::remove_file(&path).ok();
+-}
+-
+-#[tokio::test]
+-async fn a_missing_file_is_a_failure_and_not_an_empty_response() {
+-    let path = std::env::temp_dir().join("blitz-net-fetch-does-not-exist.txt");
+-    std::fs::remove_file(&path).ok();
+-    let url = Url::from_file_path(&path).unwrap();
+-
+-    let error = fetch_one(url.as_str())
+-        .await
+-        .expect_err("a missing file has no response");
+-    assert!(
+-        matches!(error, FetchError::Network(_)),
+-        "expected a network-class failure, got {error:?}"
+-    );
+-}
+-
+-#[tokio::test]
+-async fn an_unservable_scheme_says_so_rather_than_hanging() {
+-    let error = fetch_one("mailto:someone@example.com")
+-        .await
+-        .expect_err("mailto is not fetchable");
+-
+-    match error {
+-        FetchError::UnsupportedScheme(scheme) => assert_eq!(scheme, "mailto"),
+-        other => panic!("expected UnsupportedScheme, got {other:?}"),
+-    }
+-}
+-
+-/// One provider, many requests, and every handler gets its own answer. This is
+-/// the property that makes sharing the client safe.
+-#[tokio::test]
+-async fn concurrent_requests_do_not_cross_answers() {
+-    let provider = Arc::new(Provider::new(None));
+-    let slots: Vec<Slot> = (0..8).map(|_| Arc::default()).collect();
+-
+-    for (nth, slot) in slots.iter().enumerate() {
+-        provider.fetch(
+-            FetchRequest::get(Url::parse(&format!("data:text/plain,body-{nth}")).unwrap()),
+-            Box::new(Sink(slot.clone())),
+-        );
+-    }
+-
+-    for _ in 0..2_000 {
+-        if slots.iter().all(|slot| slot.lock().unwrap().is_some()) {
+-            break;
+-        }
+-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+-    }
+-
+-    for (nth, slot) in slots.iter().enumerate() {
+-        let answer = slot.lock().unwrap().take().expect("every request answers");
+-        let response = answer.expect("every data URL succeeds");
+-        assert_eq!(
+-            response.body.as_ref(),
+-            format!("body-{nth}").as_bytes(),
+-            "request {nth} received another request's body"
+-        );
+-    }
+-}
+diff --git a/packages/blitz-traits/src/net.rs b/packages/blitz-traits/src/net.rs
+index ddce27be..9a13a319 100644
+--- a/packages/blitz-traits/src/net.rs
++++ b/packages/blitz-traits/src/net.rs
+@@ -1,7 +1,7 @@
+ //! Abstractions of networking so that custom networking implementations can be provided
+ 
+ pub use bytes::Bytes;
+-pub use http::{self, HeaderMap, Method};
++pub use http::{self, HeaderMap, HeaderValue, Method};
+ use serde::{
+     Serialize,
+     ser::{SerializeSeq, SerializeTuple},
+@@ -13,6 +13,16 @@ use std::sync::{
+ use std::{ops::Deref, path::PathBuf};
+ pub use url::Url;
+ 
++/// A cookie jar used by network providers to supply request cookies and store
++/// cookies received in response headers.
++pub trait CookieJar: Send + Sync + 'static {
++    /// Returns the `Cookie` header to send with a request to `url`, if present.
++    fn cookies_header(&self, url: &Url) -> Option<HeaderValue>;
++
++    /// Stores cookies from the response headers received from `url`.
++    fn store_from_response(&self, url: &Url, headers: &HeaderMap);
++}
++
+ /// A type that fetches resources for a Document.
+ ///
+ /// This may be over the network via http(s), via the filesystem, or some other method.
+@@ -173,7 +183,8 @@ impl NetProvider for DummyNetProvider {
+ }
+ 
+ /// The AbortController interface represents a controller object that
+-/// allows you to abort one or more Web requests as and when desired.
++/// allows you to abort one or more Web requests as and when desired via
++/// `AbortController`.
+ ///
+ /// <https://developer.mozilla.org/en-US/docs/Web/API/AbortController>
+ #[derive(Debug, Default)]
+@@ -193,8 +204,7 @@ impl AbortController {
+ }
+ 
+ /// The AbortSignal interface represents a signal object that allows you to
+-/// communicate with an asynchronous operation (such as a fetch request) and
+-/// abort it if required via an AbortController object.
++/// communicate that an operation should be aborted via `AbortController`.
+ ///
+ /// <https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal>
+ #[derive(Debug, Default, Clone)]
+@@ -202,11 +212,9 @@ pub struct AbortSignal(Arc<AtomicBool>);
+ 
+ impl AbortSignal {
+     /// The aborted read-only property returns a value that indicates whether
+-    /// the asynchronous operations the signal is communicating with are
+-    /// aborted (true) or not (false).
+-    ///
+-    /// <https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal/aborted>
++    /// the asynchronous operations the signal is communicating with has been aborted.
+     pub fn aborted(&self) -> bool {
+         self.0.load(Ordering::SeqCst)
+     }
+ }
++
+

@@ -254,7 +254,8 @@ fn read_attr(ctx: &DomCtx, node_id: NodeId, name: &str) -> Option<String> {
         .attrs()
         .iter()
         .find(|attr| {
-            &*attr.name.local == local && attr.name.prefix.as_deref() == prefix
+            (&*attr.name.local == local && attr.name.prefix.as_deref() == prefix)
+                || (attr.name.prefix.is_none() && &*attr.name.local == name)
         })
         .map(|attr| attr.value.to_string())
 }
@@ -267,13 +268,34 @@ fn write_attr(ctx: &DomCtx, node_id: NodeId, name: &str, value: &str) {
     // like it touched no DOM at all while dirtying layout every time.
     let _t = crate::script_stats::Timed::new(ctx, "dom:attr=");
     let mut doc = ctx.mutate_doc();
-    doc.mutate().set_attribute(node_id, attr_name(name), value);
+    let qualified_name = existing_attr_name(&doc, node_id, name).unwrap_or_else(|| attr_name(name));
+    doc.mutate().set_attribute(node_id, qualified_name, value);
 }
 
 fn clear_attr(ctx: &DomCtx, node_id: NodeId, name: &str) {
     let _t = crate::script_stats::Timed::new(ctx, "dom:attr-remove");
     let mut doc = ctx.mutate_doc();
-    doc.mutate().clear_attribute(node_id, attr_name(name));
+    let qualified_name = existing_attr_name(&doc, node_id, name).unwrap_or_else(|| attr_name(name));
+    doc.mutate().clear_attribute(node_id, qualified_name);
+}
+
+fn existing_attr_name(
+    doc: &blitz_dom::BaseDocument,
+    node_id: NodeId,
+    name: &str,
+) -> Option<QualName> {
+    let (prefix, local) = name
+        .split_once(':')
+        .map_or((None, name), |(prefix, local)| (Some(prefix), local));
+    doc.get_node(node_id)?
+        .element_data()?
+        .attrs()
+        .iter()
+        .find(|attr| {
+            (&*attr.name.local == local && attr.name.prefix.as_deref() == prefix)
+                || (attr.name.prefix.is_none() && &*attr.name.local == name)
+        })
+        .map(|attr| attr.name.clone())
 }
 
 fn attr_getter(name: &str, this: &JsValue, context: &mut Context) -> JsResult<JsValue> {
