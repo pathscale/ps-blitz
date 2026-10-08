@@ -1858,3 +1858,64 @@ fn anchor_href_is_the_resolved_absolute_url() {
         "https://app.test/platform/all-users|https://example.test/x|true|true|/platform/all-users"
     );
 }
+
+#[test]
+fn svg_anchor_reflects_animated_strings() {
+    let doc = doc_from_html(
+        r##"<svg xmlns="http://www.w3.org/2000/svg">
+        <a id="link" href="#first" target="_self"></a></svg><div id="out"></div>
+        <script>
+        const a = document.getElementById('link');
+        const href = a.href;
+        const target = a.target;
+        const before = [href.baseVal, href.animVal, target.baseVal].join('|');
+        href.baseVal = '#second';
+        target.baseVal = '_blank';
+        document.getElementById('out').textContent = before + '|' +
+            [href.baseVal, href.animVal, a.getAttribute('href'),
+             target.animVal, a.getAttribute('target')].join('|');
+        </script>"##,
+    );
+    assert_eq!(
+        text_of_selector(&doc, "#out"),
+        "#first|#first|_self|#second|#second|#second|_blank|_blank"
+    );
+}
+
+#[test]
+fn svg_anchor_properties_do_not_appear_on_generic_svg_elements() {
+    let doc = doc_from_html(
+        r##"<svg><g id="group" href="#not-link" target="_self"></g></svg>
+        <div id="out"></div><script>
+        const g = document.getElementById('group');
+        document.getElementById('out').textContent =
+            [g.href === undefined, g.target === undefined].join('|');
+        </script>"##,
+    );
+    assert_eq!(text_of_selector(&doc, "#out"), "true|true");
+}
+
+#[test]
+fn svg_anchor_xlink_attribute_methods_round_trip() {
+    let doc = doc_from_html(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+        <a id="parsed" xlink:href="#old"></a><a id="dynamic"></a></svg><div id="out"></div>
+        <script>
+        const a = document.getElementById('parsed');
+        const b = document.getElementById('dynamic');
+        const before = a.href.baseVal;
+        a.setAttribute('xlink:href', '#new');
+        b.setAttribute('xlink:href', '#dynamic');
+        const after = [a.href.baseVal, a.getAttribute('xlink:href'), b.href.animVal].join('|');
+        a.removeAttribute('xlink:href');
+        b.removeAttribute('xlink:href');
+        document.getElementById('out').textContent = before + '|' + after + '|' +
+            [a.getAttribute('xlink:href') === null, a.href.baseVal === '',
+             b.getAttribute('xlink:href') === null, b.href.baseVal === ''].join('|');
+        </script>"##,
+    );
+    assert_eq!(
+        text_of_selector(&doc, "#out"),
+        "#old|#new|#new|#dynamic|true|true|true|true"
+    );
+}

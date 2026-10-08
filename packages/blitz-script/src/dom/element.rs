@@ -25,6 +25,7 @@ pub(crate) fn init_element_proto(proto: &JsObject, context: &mut Context) {
     define_accessor(proto, "id", Some(get_id), Some(set_id), context);
     define_accessor(proto, "src", Some(get_src), Some(set_src), context);
     define_accessor(proto, "href", Some(get_href), Some(set_href), context);
+    define_accessor(proto, "target", Some(get_target), Some(set_target), context);
     define_accessor(
         proto,
         "className",
@@ -246,10 +247,16 @@ fn read_attr(ctx: &DomCtx, node_id: NodeId, name: &str) -> Option<String> {
     let doc = ctx.doc.borrow();
     let node = doc.get_node(node_id)?;
     let element = node.element_data()?;
+    let (prefix, local) = name
+        .split_once(':')
+        .map_or((None, name), |(prefix, local)| (Some(prefix), local));
     element
         .attrs()
         .iter()
-        .find(|attr| &*attr.name.local == name)
+        .find(|attr| {
+            (&*attr.name.local == local && attr.name.prefix.as_deref() == prefix)
+                || (attr.name.prefix.is_none() && &*attr.name.local == name)
+        })
         .map(|attr| attr.value.to_string())
 }
 
@@ -261,13 +268,34 @@ fn write_attr(ctx: &DomCtx, node_id: NodeId, name: &str, value: &str) {
     // like it touched no DOM at all while dirtying layout every time.
     let _t = crate::script_stats::Timed::new(ctx, "dom:attr=");
     let mut doc = ctx.mutate_doc();
-    doc.mutate().set_attribute(node_id, attr_name(name), value);
+    let qualified_name = existing_attr_name(&doc, node_id, name).unwrap_or_else(|| attr_name(name));
+    doc.mutate().set_attribute(node_id, qualified_name, value);
 }
 
 fn clear_attr(ctx: &DomCtx, node_id: NodeId, name: &str) {
     let _t = crate::script_stats::Timed::new(ctx, "dom:attr-remove");
     let mut doc = ctx.mutate_doc();
-    doc.mutate().clear_attribute(node_id, attr_name(name));
+    let qualified_name = existing_attr_name(&doc, node_id, name).unwrap_or_else(|| attr_name(name));
+    doc.mutate().clear_attribute(node_id, qualified_name);
+}
+
+fn existing_attr_name(
+    doc: &blitz_dom::BaseDocument,
+    node_id: NodeId,
+    name: &str,
+) -> Option<QualName> {
+    let (prefix, local) = name
+        .split_once(':')
+        .map_or((None, name), |(prefix, local)| (Some(prefix), local));
+    doc.get_node(node_id)?
+        .element_data()?
+        .attrs()
+        .iter()
+        .find(|attr| {
+            (&*attr.name.local == local && attr.name.prefix.as_deref() == prefix)
+                || (attr.name.prefix.is_none() && &*attr.name.local == name)
+        })
+        .map(|attr| attr.name.clone())
 }
 
 fn attr_getter(name: &str, this: &JsValue, context: &mut Context) -> JsResult<JsValue> {
@@ -315,16 +343,30 @@ fn local_name(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<
     Ok(js_str(&name))
 }
 
+fn element_namespace_uri(ctx: &DomCtx, node_id: NodeId) -> String {
+    let doc = ctx.doc.borrow();
+    doc.get_node(node_id)
+        .and_then(|node| node.element_data())
+        .map(|element| element.name.ns.to_string())
+        .unwrap_or_default()
+}
+
+fn is_svg_element(ctx: &DomCtx, node_id: NodeId) -> bool {
+    element_namespace_uri(ctx, node_id) == "http://www.w3.org/2000/svg"
+}
+
+fn is_anchor(ctx: &DomCtx, node_id: NodeId) -> bool {
+    ctx.doc
+        .borrow()
+        .get_node(node_id)
+        .and_then(|node| node.element_data())
+        .is_some_and(|element| &*element.name.local == "a")
+}
+
 fn namespace_uri(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
-    let doc = ctx.doc.borrow();
-    let ns = doc
-        .get_node(node_id)
-        .and_then(|node| node.element_data())
-        .map(|element| element.name.ns.to_string())
-        .unwrap_or_default();
-    Ok(js_str(&ns))
+    Ok(js_str(&element_namespace_uri(&ctx, node_id)))
 }
 
 fn children(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
@@ -417,25 +459,70 @@ fn set_src(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<
     attr_setter("src", this, args, context)
 }
 
-/// The `href` IDL attribute, which is the *resolved absolute* URL.
+/// The `href` IDL attribute.
 ///
-/// Deliberately not `attr_getter`. An IDL `href` is absolute by definition, and
-/// the difference is not cosmetic: `@solidjs/router` intercepts in-app anchor
-/// clicks by reading `a.href` and handing it straight to `new URL(href)` with
-/// no base argument. With no `href` accessor at all the read was `undefined`,
-/// the router declined the click before it could call `preventDefault`, and the
-/// anchor's own default action ran instead. Every in-app navigation therefore
-/// became a full document load: a new script context, a re-bootstrapped
-/// application, and every WebSocket the page was holding closed with it.
-/// Reflecting the raw attribute rather than resolving it would move the same
-/// bug one step along, into `new URL("/platform/users")`, which throws.
+/// HTML elements expose the resolved absolute URL. SVG elements expose an
+/// SVGAnimatedString-like object whose `baseVal` and `animVal` contain the raw
+/// `href` attribute, falling back to `xlink:href`.
 ///
-/// Resolution is against the document URL. A `<base>` element is not consulted
-/// yet, which is the remaining gap here.
+/// The HTML path deliberately does not use `attr_getter`. An IDL `href` is
+/// absolute by definition, and `@solidjs/router` hands it straight to
+/// `new URL(href)` with no base argument. Resolution is against the document
+/// URL. A `<base>` element is not consulted yet.
+fn svg_animated_string(
+    node_id: NodeId,
+    getter: fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>,
+    setter: fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>,
+    context: &mut Context,
+) -> JsValue {
+    let object = JsObject::from_proto_and_data(
+        Some(context.intrinsics().constructors().object().prototype()),
+        super::NodeRef { node_id },
+    );
+    define_accessor(&object, "baseVal", Some(getter), Some(setter), context);
+    define_accessor(&object, "animVal", Some(getter), None, context);
+    object.into()
+}
+
+fn get_svg_href_string(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let _ = args;
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    let value = read_attr(&ctx, node_id, "href")
+        .or_else(|| read_attr(&ctx, node_id, "xlink:href"))
+        .unwrap_or_default();
+    Ok(js_str(&value))
+}
+
+fn get_svg_target_string(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let _ = args;
+    attr_getter("target", this, context)
+}
+
 fn get_href(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let _ = args;
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
+    if is_svg_element(&ctx, node_id) {
+        if !is_anchor(&ctx, node_id) {
+            return Ok(JsValue::undefined());
+        }
+        return Ok(svg_animated_string(
+            node_id,
+            get_svg_href_string,
+            set_href,
+            context,
+        ));
+    }
+
     // Undefined rather than the empty string when the content attribute is
     // absent. This proto is shared by every element, so a `div` reaches here
     // too, and a `div` has no `href` in any browser.
@@ -453,6 +540,28 @@ fn get_href(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult
 
 fn set_href(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     attr_setter("href", this, args, context)
+}
+
+fn get_target(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let _ = args;
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    if is_svg_element(&ctx, node_id) {
+        if !is_anchor(&ctx, node_id) {
+            return Ok(JsValue::undefined());
+        }
+        return Ok(svg_animated_string(
+            node_id,
+            get_svg_target_string,
+            set_target,
+            context,
+        ));
+    }
+    attr_getter("target", this, context)
+}
+
+fn set_target(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    attr_setter("target", this, args, context)
 }
 
 fn get_class_name(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
