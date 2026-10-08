@@ -12,6 +12,10 @@ Before activation:
 - Remove plaintext request Cookie values from persisted cache-variant metadata; review authenticated-response cache isolation.
 - Bound individual entries and total disk use, with eviction. A per-entry limit alone is insufficient.
 - Restore equivalent user-agent, redirect/cookie, concurrent callback, and data/file URL regression coverage removed by the proposal.
+- Sanitize consumed framing and hop-by-hop headers on live responses, including
+  Connection-nominated headers. Dechunking the body while retaining
+  Transfer-Encoding is not a valid response contract; cache-only filtering
+  does not fix it. Cover this with a live chunked-response regression.
 - Account explicitly for HTTP/2, proxy and zstd regressions. The proposed HTTP/2 feature is not an implementation.
 - Verify TLS, HTTP/1.1 framing, redirects, cancellation and cache semantics with the actual consumer, then run both default-disabled and all-feature package checks.
 

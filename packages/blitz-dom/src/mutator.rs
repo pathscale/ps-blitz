@@ -103,6 +103,30 @@ impl DocumentMutator<'_> {
         }
     }
 
+    // Attribute changes can affect sibling and :has() matches on the parent.
+    // Keep the wide hint conditional so unrelated siblings need not restyle.
+    fn restyle_parent_for_attribute_change(&mut self, parent_id: Option<NodeId>) {
+        let Some(parent_id) = parent_id else {
+            return;
+        };
+        let flags = self.doc.nodes[parent_id].selector_flags().get();
+        let child_dependent = ElementSelectorFlags::HAS_SLOW_SELECTOR
+            | ElementSelectorFlags::HAS_SLOW_SELECTOR_LATER_SIBLINGS
+            | ElementSelectorFlags::HAS_EDGE_CHILD_SELECTOR
+            | ElementSelectorFlags::HAS_EMPTY_SELECTOR
+            | ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_ANCESTOR
+            | ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_SIBLING
+            | ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_ANCESTOR_SIBLING;
+        if flags.intersects(child_dependent) {
+            if let Some(mut data) = self.doc.nodes[parent_id]
+                .stylo_element_data_opt_mut()
+                .and_then(|s| s.get_mut())
+            {
+                data.hint |= RestyleHint::restyle_subtree();
+            }
+        }
+    }
+
     // Query methods
 
     pub fn node_has_parent(&self, node_id: NodeId) -> bool {
@@ -339,7 +363,7 @@ impl DocumentMutator<'_> {
             }
         }
         if node_is_in_document {
-            self.doc.snapshot_node(node_id);
+            self.doc.snapshot_attribute(node_id, &name.local);
 
             // Damage is asserted only where an attribute can change what the
             // element renders without changing a computed value.
@@ -365,6 +389,7 @@ impl DocumentMutator<'_> {
                 });
 
             let node = &mut self.doc.nodes[node_id];
+            node.set_dirty_descendants();
             if let Some(mut data) = node.stylo_element_data_opt_mut().and_then(|s| s.get_mut()) {
                 data.hint |= RestyleHint::restyle_subtree();
                 if renders_from_attributes {
@@ -587,18 +612,25 @@ impl DocumentMutator<'_> {
             }
         }
         if node_is_in_document {
-            self.doc.snapshot_node(node_id);
-
-            let node = &mut self.doc.nodes[node_id];
-
-            if let Some(mut data) = node.stylo_element_data_opt_mut().and_then(|s| s.get_mut()) {
-                data.hint |= RestyleHint::restyle_subtree();
-                data.damage.insert(ALL_DAMAGE);
+            let removes_existing_attribute = self.doc.nodes[node_id]
+                .element_data()
+                .is_some_and(|element| element.attrs.iter().any(|attr| attr.name == name));
+            self.doc.snapshot_attribute(node_id, &name.local);
+            let parent_id = self.doc.nodes[node_id].parent;
+            {
+                let node = &mut self.doc.nodes[node_id];
+                node.set_dirty_descendants();
+                if let Some(mut data) = node.stylo_element_data_opt_mut().and_then(|s| s.get_mut())
+                {
+                    data.hint |= RestyleHint::restyle_subtree();
+                    data.damage.insert(ALL_DAMAGE);
+                }
+                // Make pending restyle hints reachable by traversal.
+                node.mark_ancestors_dirty();
             }
-
-            // Mark ancestors dirty so the style traversal visits this subtree.
-            // Without this, the traversal may skip nodes with pending RestyleHint/damage.
-            node.mark_ancestors_dirty();
+            if removes_existing_attribute {
+                self.restyle_parent_for_attribute_change(parent_id);
+            }
         }
 
         if name.local == local_name!("id") && node_is_in_document {

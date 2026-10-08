@@ -1920,6 +1920,18 @@ impl BaseDocument {
         }
     }
 
+    /// Preserve the original attributes and accumulate names changed before traversal.
+    pub(crate) fn snapshot_attribute(&mut self, node_id: NodeId, name: &markup5ever::LocalName) {
+        self.snapshot_node(node_id);
+        let opaque_node_id = TNode::opaque(&&self.nodes[node_id]);
+        if let Some(snapshot) = self.snapshots.get_mut(&opaque_node_id) {
+            let changed_attr = GenericAtomIdent(name.clone());
+            if !snapshot.changed_attrs.contains(&changed_attr) {
+                snapshot.changed_attrs.extend(std::iter::once(changed_attr));
+            }
+        }
+    }
+
     /// Snapshot a node and act on it, if it is still there.
     ///
     /// Tolerant of a node that has gone, because the ids reaching this are

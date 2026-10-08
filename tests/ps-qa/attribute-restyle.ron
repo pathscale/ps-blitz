@@ -1,0 +1,33 @@
+// Assert rendered geometry after mutation, not just attribute values.
+[
+    (
+        id: "attribute-restyle-arrives",
+        group: "attribute-restyle",
+        what: "the fixture loads",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "heading:Attribute restyle",
+        expect: Present,
+    ),
+    (
+        id: "attribute-restyle-rematches",
+        group: "attribute-restyle",
+        what: "attribute writes and removals update descendant, sibling and relative geometry",
+        open: None,
+        hover: None,
+        click: Some("checkbox:Run attribute restyle checks"),
+        subject: "heading:Attribute restyle checks passed",
+        expect: Present,
+    ),
+    (
+        id: "attribute-restyle-control-paints",
+        group: "attribute-restyle",
+        what: "the control paints without depending on font metrics",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "checkbox:Run attribute restyle checks",
+        expect: PaintsNamed,
+    ),
+]

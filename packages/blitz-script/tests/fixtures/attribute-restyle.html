@@ -1,0 +1,93 @@
+<!doctype html>
+<html>
+  <head>
+    <style>
+      .probe { display: block; width: 24px; height: 24px; background: green; }
+      .probe[data-open="true"],
+      .probe[aria-pressed="true"],
+      #ancestor[data-open="true"] .probe,
+      #sibling-trigger[data-open="true"] + .probe,
+      .probe[data-first="true"][data-second="true"],
+      #relative:has(> [data-open="true"]) { width: 72px; }
+      #panel { display: none; width: 72px; height: 24px; background: green; }
+      #panel[data-open="true"] { display: block; }
+    </style>
+  </head>
+  <body>
+    <h1>Attribute restyle</h1>
+    <input type="checkbox" id="run" aria-label="Run attribute restyle checks">
+    <h2 id="result">Attribute restyle checks ready</h2>
+    <div class="probe" id="dataset"></div>
+    <div class="probe" id="existing" data-open="false"></div>
+    <div class="probe" id="aria" aria-pressed="false"></div>
+    <div id="ancestor"><div class="probe" id="descendant"></div></div>
+    <div><div id="sibling-trigger"></div><div class="probe" id="sibling"></div></div>
+    <div class="probe" id="batch"></div>
+    <div class="probe" id="relative"><div id="relative-trigger"></div></div>
+    <div id="panel"></div>
+    <script>
+      const element = (id) => document.getElementById(id);
+      const expectWidth = (id, expected) => {
+        const actual = element(id).getBoundingClientRect().width;
+        if (Math.abs(actual - expected) > 0.5) {
+          throw new Error(id + ": expected width " + expected + ", got " + actual);
+        }
+      };
+      element("run").addEventListener("click", () => {
+        try {
+          // Force initial styles, then force layout after each mutation.
+          for (const id of ["dataset", "existing", "aria", "descendant", "sibling", "batch", "relative"]) {
+            expectWidth(id, 24);
+          }
+          expectWidth("panel", 0);
+          element("dataset").dataset.open = "true";
+          expectWidth("dataset", 72);
+          element("dataset").dataset.open = "false";
+          expectWidth("dataset", 24);
+          element("dataset").dataset.open = "true";
+          expectWidth("dataset", 72);
+          delete element("dataset").dataset.open;
+          expectWidth("dataset", 24);
+          element("dataset").setAttribute("data-open", "true");
+          expectWidth("dataset", 72);
+          element("dataset").removeAttribute("data-open");
+          expectWidth("dataset", 24);
+          element("existing").setAttribute("data-open", "true");
+          expectWidth("existing", 72);
+          element("existing").setAttribute("data-open", "false");
+          expectWidth("existing", 24);
+          element("aria").setAttribute("aria-pressed", "true");
+          expectWidth("aria", 72);
+          element("aria").removeAttribute("aria-pressed");
+          expectWidth("aria", 24);
+          element("ancestor").dataset.open = "true";
+          expectWidth("descendant", 72);
+          delete element("ancestor").dataset.open;
+          expectWidth("descendant", 24);
+          element("sibling-trigger").setAttribute("data-open", "true");
+          expectWidth("sibling", 72);
+          element("sibling-trigger").removeAttribute("data-open");
+          expectWidth("sibling", 24);
+          // Two new names must accumulate in the same original snapshot.
+          element("batch").setAttribute("data-first", "true");
+          element("batch").setAttribute("data-second", "true");
+          expectWidth("batch", 72);
+          element("batch").removeAttribute("data-first");
+          element("batch").removeAttribute("data-second");
+          expectWidth("batch", 24);
+          element("relative-trigger").setAttribute("data-open", "true");
+          expectWidth("relative", 72);
+          element("relative-trigger").removeAttribute("data-open");
+          expectWidth("relative", 24);
+          element("panel").dataset.open = "true";
+          expectWidth("panel", 72);
+          delete element("panel").dataset.open;
+          expectWidth("panel", 0);
+          element("result").textContent = "Attribute restyle checks passed";
+        } catch (error) {
+          element("result").textContent = "Attribute restyle checks failed: " + error.message;
+        }
+      });
+    </script>
+  </body>
+</html>
