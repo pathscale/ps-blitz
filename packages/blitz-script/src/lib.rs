@@ -44,6 +44,7 @@ mod document;
 mod dom;
 mod event_handler;
 mod fetch;
+mod job_budget;
 mod module;
 mod runtime;
 pub mod script_stats;

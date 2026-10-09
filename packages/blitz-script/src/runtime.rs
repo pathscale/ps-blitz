@@ -11,6 +11,7 @@ use blitz_dom::BaseDocument;
 use blitz_dom::NodeId;
 use blitz_traits::events::{BlitzPointerId, DomEvent, DomEventData, EventState};
 use boa_engine::builtins::promise::PromiseState;
+use boa_engine::job::SimpleJobExecutor;
 use boa_engine::object::builtins::JsPromise;
 use boa_engine::object::{JsObject, ObjectInitializer};
 use boa_engine::property::Attribute;
@@ -26,6 +27,7 @@ use web_time::{Duration, Instant};
 
 use crate::dom::event::{EventRef, create_event, create_event_for_dom_event, set_event_path};
 use crate::dom::{define_accessor, dom_ctx, node_wrapper};
+use crate::job_budget::{JobBudget, JobSlice};
 use crate::module::{BlitzModuleLoader, SharedFetcher};
 use crate::state::{DomCtx, Listener};
 
@@ -150,6 +152,8 @@ pub(crate) struct ScriptRuntime {
     pub ctx: DomCtx,
     diagnostics: Rc<RefCell<RuntimeDiagnostics>>,
     module_loader: Rc<BlitzModuleLoader>,
+    job_executor: Rc<SimpleJobExecutor>,
+    job_budget: Rc<JobBudget>,
     /// Module evaluations that had not settled when their script ran.
     ///
     /// Top-level `await` makes this ordinary rather than exceptional: a module
@@ -176,8 +180,10 @@ impl ScriptRuntime {
         // process's working directory, which for a browser is both useless and
         // the wrong thing to expose to a page.
         let module_loader = Rc::new(BlitzModuleLoader::new(fetcher, base_url.cloned()));
+        let job_executor = Rc::new(SimpleJobExecutor::new());
         let mut context = Context::builder()
             .module_loader(Rc::clone(&module_loader))
+            .job_executor(Rc::clone(&job_executor))
             .build()
             .expect("building the script context should not fail");
         /*
@@ -425,6 +431,8 @@ impl ScriptRuntime {
             ctx,
             diagnostics,
             module_loader,
+            job_executor,
+            job_budget: Rc::new(JobBudget::default()),
             pending_modules: Vec::new(),
             focussed_text_value: None,
         };
@@ -961,36 +969,57 @@ impl ScriptRuntime {
         }
     }
 
-    /// Run pending promise jobs (microtasks)
+    pub(crate) fn begin_job_slice(&self) -> JobSlice {
+        self.job_budget.begin()
+    }
+
+    pub(crate) fn job_budget(&self) -> Duration {
+        self.job_budget.duration()
+    }
+
+    pub(crate) fn set_job_budget(&self, duration: Duration) {
+        self.job_budget.set_duration(duration);
+    }
+
+    pub(crate) fn jobs_remain(&self) -> bool {
+        self.job_executor.has_pending_jobs(&self.context)
+    }
+
+    /// Run pending promise jobs (microtasks) within the current slice.
     pub fn run_jobs(&mut self, description: &str) {
         self.run_jobs_with_progress(description);
     }
 
-    /// Drain microtasks and report whether mutation delivery did work.
+    /// Run a slice and report jobs executed, queued work, or mutation delivery.
     ///
-    /// Reaching the mutation delivery cap reports progress so a settle loop
-    /// continues draining under its deadline instead of declaring the page
-    /// idle with synchronous observer work still pending.
+    /// Every drain in a poll shares one deadline. Observer delivery still
+    /// happens at the slice end, including when promise jobs remain queued.
+    /// Observer callbacks can enqueue more jobs and mutations; those jobs use
+    /// the remaining budget and records retain the existing delivery cap.
     pub(crate) fn run_jobs_with_progress(&mut self, description: &str) -> bool {
-        // Every script turn ends here, so this is where recorded DOM changes
-        // reach the page's `MutationObserver`s: after the turn's synchronous
-        // code and its microtasks, before anything renders, which is when a
-        // browser delivers them. A callback can queue jobs and change the DOM
-        // again, so this repeats until nothing is left. The cap stops an
-        // observer that rewrites what it observes from holding the thread;
-        // records past it wait for the next turn rather than being lost.
+        let _slice = self.begin_job_slice();
+        let before = self.job_executor.executed_job_count();
         const MUTATION_DELIVERY_ROUNDS: usize = 32;
         let mut delivered = false;
         for _ in 0..MUTATION_DELIVERY_ROUNDS {
-            if let Err(error) = self.context.run_jobs() {
+            if let Err(error) = Rc::clone(&self.job_executor)
+                .run_jobs_with_budget(&mut self.context, self.job_budget.remaining())
+            {
                 report_js_error(&self.diagnostics, description, &error);
             }
             if !self.deliver_mutations() {
-                return delivered;
+                return delivered
+                    || self.jobs_remain()
+                    || self.job_executor.executed_job_count() != before;
             }
             delivered = true;
+            if self.job_budget.exhausted() {
+                break;
+            }
         }
         delivered
+            || self.jobs_remain()
+            || self.job_executor.executed_job_count() != before
     }
 
     /// Hand recorded DOM changes to the prelude's `MutationObserver`. Returns
@@ -1028,9 +1057,17 @@ impl ScriptRuntime {
         true
     }
 
-    /// The deadline of the soonest pending timer (if any)
+    /// The deadline of the soonest pending DOM or Boa timer (if any).
     pub fn next_timer_deadline(&self) -> Option<Instant> {
-        self.ctx.state.borrow().timers.next_deadline()
+        let dom = self.ctx.state.borrow().timers.next_deadline();
+        let boa = self
+            .job_executor
+            .next_job_timeout(&self.context)
+            .map(|delay| Instant::now() + delay);
+        match (dom, boa) {
+            (Some(dom), Some(boa)) => Some(dom.min(boa)),
+            (dom, boa) => dom.or(boa),
+        }
     }
 
     /// Free detached nodes whose wrappers script no longer holds.

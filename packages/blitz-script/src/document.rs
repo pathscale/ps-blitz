@@ -12,7 +12,7 @@ use blitz_dom::{
 use blitz_html::{DocumentHtmlParser, HtmlProvider};
 use blitz_traits::events::{BlitzPointerEvent, DomEvent, UiEvent};
 use url::Url;
-use web_time::Instant;
+use web_time::{Duration, Instant};
 
 use crate::event_handler::ScriptEventHandler;
 use crate::fetch::{DefaultScriptFetcher, ScriptFetcher};
@@ -68,6 +68,8 @@ pub struct ScriptDocument {
     /// call reach the earlier object.
     fetcher: SharedFetcher,
     scripts_executed: bool,
+    startup_events_pending: bool,
+    load_event_pending: bool,
     /// Which `<script>` nodes have already run.
     ///
     /// By node rather than a single "done" flag, because scripts keep arriving
@@ -121,11 +123,33 @@ impl ScriptDocument {
             base_url,
             fetcher,
             scripts_executed: false,
+            startup_events_pending: false,
+            load_event_pending: false,
             executed_scripts: std::collections::HashSet::new(),
             poll_hook: None,
             waker: Arc::new(Mutex::new(None)),
             timer_thread: None,
         }
+    }
+
+    /// Set the microtask budget shared by all drains in one poll.
+    ///
+    /// Defaults to 16 milliseconds. Individual jobs run to completion and
+    /// cannot be preempted. Panics if `duration` is zero.
+    pub fn set_job_budget(&mut self, duration: Duration) {
+        self.runtime.set_job_budget(duration);
+    }
+
+    /// The configured microtask budget.
+    pub fn job_budget(&self) -> Duration {
+        self.runtime.job_budget()
+    }
+
+    /// Whether immediate Boa jobs remain for a later host tick.
+    ///
+    /// Future timers and suspended module evaluations alone do not count.
+    pub fn has_pending_jobs(&self) -> bool {
+        self.runtime.jobs_remain()
     }
 
     /// Override the [`ScriptFetcher`] used to load external (`src="..."`) scripts.
@@ -176,15 +200,15 @@ impl ScriptDocument {
     /// Does nothing if scripts have already been executed.
     pub fn execute_scripts(&mut self) {
         let _profiling = self.runtime.ctx.enter_profiling_boundary();
+        let _slice = self.runtime.begin_job_slice();
         if self.scripts_executed {
             return;
         }
         self.scripts_executed = true;
+        self.startup_events_pending = true;
 
         self.run_pending_scripts();
-
-        self.runtime.dispatch_document_event("DOMContentLoaded");
-        self.runtime.dispatch_window_event("load");
+        self.finish_startup_events();
 
         self.request_redraw();
         self.arm_timer_thread();
@@ -306,6 +330,10 @@ impl ScriptDocument {
     /// hidden until the bundle's `load` arrives — so a script that ran silently
     /// would still leave the page blank.
     fn run_pending_scripts(&mut self) -> bool {
+        let _slice = self.runtime.begin_job_slice();
+        if self.runtime.jobs_remain() {
+            return false;
+        }
         // Collect first, then run: executing a script can append more, and the
         // borrow on the document has to be released before any of them runs.
         let pending: Vec<PendingScript> = self
@@ -352,6 +380,9 @@ impl ScriptDocument {
                     let Some(url) = self.resolve_script_url(&src) else {
                         eprintln!("blitz-script: could not resolve script URL {src:?}");
                         self.runtime.dispatch_node_event(script.node_id, "error");
+                        if self.runtime.jobs_remain() {
+                            break;
+                        }
                         continue;
                     };
                     let fetcher = Rc::clone(&self.fetcher.borrow());
@@ -392,6 +423,41 @@ impl ScriptDocument {
                     }
                 }
             }
+            // Preserve the checkpoint before the next script, even when it
+            // takes several host ticks to finish the queued promise jobs.
+            if self.runtime.jobs_remain() {
+                break;
+            }
+        }
+        ran
+    }
+
+    fn finish_startup_events(&mut self) -> bool {
+        if !(self.startup_events_pending || self.load_event_pending)
+            || self.runtime.jobs_remain()
+        {
+            return false;
+        }
+        if self.startup_events_pending
+            && self
+                .collect_scripts()
+                .iter()
+                .any(|script| !self.executed_scripts.contains(&script.node_id))
+        {
+            return false;
+        }
+
+        let mut ran = false;
+        if self.startup_events_pending {
+            self.startup_events_pending = false;
+            self.load_event_pending = true;
+            self.runtime.dispatch_document_event("DOMContentLoaded");
+            ran = true;
+        }
+        if self.load_event_pending && !self.runtime.jobs_remain() {
+            self.load_event_pending = false;
+            self.runtime.dispatch_window_event("load");
+            ran = true;
         }
         ran
     }
@@ -579,6 +645,7 @@ impl ScriptDocument {
         let profiling_boundary = self.runtime.ctx.enter_profiling_boundary();
         let profiling = profiling_boundary.enabled();
         let poll_started = profiling.then(std::time::Instant::now);
+        let _slice = self.runtime.begin_job_slice();
         let ran = self.poll_inner(task_context, profiling, settle_timers);
         if let Some(started) = poll_started {
             crate::script_stats::record_poll(started.elapsed(), ran);
@@ -657,12 +724,9 @@ impl ScriptDocument {
         };
 
         let mut ran = subdocument_changes;
-        if settle_timers.is_some() {
-            // A timer-free pass still drains promises and observer work.
-            // Do this before collecting scripts so microtasks that append
-            // script elements have those scripts executed in the same pass.
-            ran |= self.runtime.run_jobs_with_progress("settle microtasks");
-        }
+        // Every poll resumes a yielded checkpoint, including a timer-free
+        // settle pass. Jobs do not need a timer or a dummy eval to advance.
+        ran |= self.runtime.run_jobs_with_progress("poll microtasks");
 
         // Execute scripts on first poll if they haven't been run explicitly
         if !self.scripts_executed {
@@ -681,6 +745,7 @@ impl ScriptDocument {
             // a runtime-injected bundle ever runs.
             ran |= self.run_pending_scripts();
         }
+        ran |= self.finish_startup_events();
 
         if settle_timers.unwrap_or(true) {
             ran |= self.runtime.run_due_timers(profiling);
@@ -709,6 +774,13 @@ impl ScriptDocument {
         // is cheap and the answer is current.
         self.runtime.sweep_detached_nodes();
 
+        if self.runtime.jobs_remain() {
+            ran = true;
+            self.request_redraw();
+            if let Some(cx) = &task_context {
+                cx.waker().wake_by_ref();
+            }
+        }
         self.arm_timer_thread();
         ran
     }
