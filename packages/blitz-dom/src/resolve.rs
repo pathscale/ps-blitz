@@ -24,8 +24,6 @@ thread_local! {
 use style::properties::ComputedValues;
 use style::properties::generated::longhands::position::computed_value::T as Position;
 use style::selector_parser::RestyleDamage;
-use style::values::computed::Rotate;
-use style::values::generics::transform::{Scale, Translate};
 use taffy::AvailableSpace;
 
 use crate::{
@@ -323,6 +321,9 @@ impl BaseDocument {
         }
 
         self.clamp_scroll_offsets();
+        self.resolve_hoisted_positions();
+        self.correct_hoisted_fixed_positions();
+        self.resolve_hoisted_clips();
         self.trace_escaped_inline_fragments();
 
         // Resolve transforms
@@ -678,11 +679,10 @@ impl BaseDocument {
     /// `layout_children`, so painting and hit testing follow the hoist without
     /// further work.
     ///
-    /// Note this is not yet the full containing block a browser would use. The
-    /// root element takes its height from its content, whereas the initial
-    /// containing block is always viewport-sized, so `inset: 0` still sizes
-    /// against the document rather than the viewport. Closing that gap needs an
-    /// ICB distinct from the root element.
+    /// The containing-block pass uses viewport dimensions independently of
+    /// the root element's content height. It temporarily restores authored
+    /// child slots to obtain static positions before returning these boxes
+    /// to the root for painting and viewport scrolling.
     ///
     /// A transformed ancestor becomes the containing block for its fixed
     /// descendants, so those are left where they are.
@@ -699,7 +699,10 @@ impl BaseDocument {
 
         let mut hoisted: Vec<NodeId> = Vec::new();
         let mut sticky: Vec<NodeId> = Vec::new();
-        collect_fixed(self, root_id, false, &mut hoisted, &mut sticky);
+        let root_transformed = self.nodes[root_id]
+            .primary_styles()
+            .is_some_and(|styles| establishes_containing_block(&styles));
+        collect_fixed(self, root_id, root_transformed, &mut hoisted, &mut sticky);
         self.sticky_nodes = sticky;
         self.fixed_nodes = hoisted.clone();
 
@@ -719,6 +722,8 @@ impl BaseDocument {
         let still_fixed: HashSet<NodeId> = hoisted.iter().copied().collect();
         self.hoisted_fixed_parents
             .retain(|node_id, _| still_fixed.contains(node_id));
+        self.hoisted_fixed_indices
+            .retain(|node_id, _| still_fixed.contains(node_id));
 
         for node_id in hoisted {
             let Some(parent_id) = self.nodes[node_id].layout_parent.get() else {
@@ -734,6 +739,9 @@ impl BaseDocument {
             self.hoisted_fixed_parents.insert(node_id, parent_id);
 
             if let Some(children) = self.nodes[parent_id].layout_children.borrow_mut().as_mut() {
+                if let Some(index) = children.iter().position(|id| *id == node_id) {
+                    self.hoisted_fixed_indices.insert(node_id, index);
+                }
                 children.retain(|id| *id != node_id);
             }
             if let Some(children) = self.nodes[root_id].layout_children.borrow_mut().as_mut() {
@@ -795,11 +803,7 @@ impl BaseDocument {
         /// TODO: `filter`, `backdrop-filter`, `will-change`, `contain` and
         /// `perspective` also do this.
         fn establishes_containing_block(styles: &ComputedValues) -> bool {
-            let box_styles = styles.get_box();
-            !box_styles.transform.0.is_empty()
-                || !matches!(box_styles.translate, Translate::None)
-                || !matches!(box_styles.rotate, Rotate::None)
-                || !matches!(box_styles.scale, Scale::None)
+            crate::layout::abspos::establishes_transform_containing_block(styles)
         }
     }
 
@@ -817,12 +821,8 @@ impl BaseDocument {
     /// their containing block, so they are not viewport-anchored at all and
     /// `hoist_fixed_position_nodes` does not collect them.
     ///
-    /// This does not give a fixed box the containing block CSS asks for. That
-    /// is still the root element, which takes its height from its content, so
-    /// `bottom` and `inset` resolve against the document rather than against a
-    /// viewport-sized initial containing block. Closing that needs an ICB node
-    /// distinct from the root element, which `fixed_position.rs` records as an
-    /// ignored test.
+    /// Sizing and insets are resolved against the viewport by the
+    /// containing-block layout pass. This method applies scrolling only.
     pub(crate) fn resolve_fixed_positions(&mut self) {
         let scroll = self.viewport_scroll;
         if scroll == self.fixed_scroll_offset {
@@ -1102,17 +1102,20 @@ impl BaseDocument {
 
         for (node_id, host) in placements {
             let host_abs = self.nodes[host].absolute_position(0.0, 0.0);
-            let Some(context) = self.nodes[host].stacking_context.as_mut() else {
+            let host_scroll = *self.nodes[host].scroll_offset();
+            let Some(mut context) = self.nodes[host].stacking_context.take() else {
                 continue;
             };
             for child in context.children.iter_mut() {
                 if child.node_id == node_id {
                     child.position = taffy::Point {
-                        x: root_abs.x - host_abs.x,
-                        y: root_abs.y - host_abs.y,
+                        x: root_abs.x - host_abs.x + host_scroll.x as f32,
+                        y: root_abs.y - host_abs.y + host_scroll.y as f32,
                     };
                 }
             }
+            context.compute_content_size(self);
+            self.nodes[host].stacking_context = Some(context);
         }
     }
 
@@ -1132,6 +1135,7 @@ impl BaseDocument {
     /// to the root and [`Self::correct_hoisted_fixed_positions`] restores their
     /// authored stacking-context offset separately.
     pub(crate) fn resolve_hoisted_positions(&mut self) {
+        self.resolve_abspos_positions();
         let hosts: Vec<NodeId> = self
             .nodes
             .iter()
@@ -1169,17 +1173,17 @@ impl BaseDocument {
 
             for child in context.children.iter_mut() {
                 let node = &self.nodes[child.node_id];
-                if node
-                    .primary_styles()
-                    .is_some_and(|styles| styles.clone_position() == Position::Fixed)
-                {
+                if self.fixed_nodes.contains(&child.node_id) {
                     continue;
                 }
                 let child_position = node.absolute_position(0.0, 0.0);
                 let child_layout_position = node.final_layout().location;
+                let host_scroll = self.nodes[host].scroll_offset();
                 child.position = taffy::Point {
-                    x: child_position.x - host_position.x - child_layout_position.x,
-                    y: child_position.y - host_position.y - child_layout_position.y,
+                    x: child_position.x - host_position.x - child_layout_position.x
+                        + host_scroll.x as f32,
+                    y: child_position.y - host_position.y - child_layout_position.y
+                        + host_scroll.y as f32,
                 };
             }
 
@@ -1219,8 +1223,11 @@ impl BaseDocument {
                     // scrolling does, and `absolute_position` applies that.
                     let position = node.absolute_position(0.0, 0.0);
                     let layout = node.final_layout();
-                    let left = position.x - host_position.x;
-                    let top = position.y - host_position.y;
+                    // Paint and hit testing use the host's unscrolled content
+                    // coordinates, applying its scroll offset once afterwards.
+                    let host_scroll = self.nodes[host].scroll_offset();
+                    let left = position.x - host_position.x + host_scroll.x as f32;
+                    let top = position.y - host_position.y + host_scroll.y as f32;
                     // The padding box, matching what paint clips content to.
                     child.clips.push(taffy::Rect {
                         left: left + layout.border.left,
@@ -1232,6 +1239,19 @@ impl BaseDocument {
             }
 
             self.nodes[host].stacking_context = Some(context);
+        }
+    }
+
+    /// Scrolling can move containing blocks without a style or layout pass.
+    /// Update shared box locations before refreshing paint offsets and clips.
+    pub(crate) fn resolve_positioned_scroll(&mut self) {
+        self.resolve_sticky_positions();
+        self.resolve_fixed_positions();
+        self.resolve_hoisted_positions();
+        self.correct_hoisted_fixed_positions();
+        self.resolve_hoisted_clips();
+        if let Some(root) = self.try_root_element().map(|node| node.id) {
+            self.resolve_transforms(root);
         }
     }
 
@@ -1340,8 +1360,18 @@ impl BaseDocument {
 
         // println!("\n\nRESOLVE LAYOUT\n===========\n");
 
+        let fixed_parents = self.restore_fixed_layout_parents();
         taffy::compute_root_layout(self, root_element_id, available_space);
+        let placements = self.resolve_abspos_layout(
+            crate::dom_node_id(root_element_id),
+            taffy::Size {
+                width: size.width.to_f32_px(),
+                height: size.height.to_f32_px(),
+            },
+        );
+        self.finish_fixed_layout_parents(fixed_parents);
         taffy::round_layout(self, root_element_id);
+        self.finish_abspos_placements(placements);
 
         // Rounding rewrites every location from taffy's own output, discarding
         // the sticky and fixed displacements written into them along with
@@ -1358,31 +1388,8 @@ impl BaseDocument {
         // doing this any earlier reads cells that are still zero.
         self.assign_table_row_layouts();
 
-        // Taffy currently maps CSS `position: fixed` to absolute positioning,
-        // which leaves the box relative to its DOM layout parent. A portal
-        // mounted after a full-height application root therefore starts one
-        // viewport below the window even with `top: 0`. Cancel the layout
-        // parent's document-space offset so fixed boxes use the viewport as
-        // their containing block, as CSS requires.
-        let fixed_nodes = self
-            .nodes
-            .iter()
-            .filter_map(|(node_id, node)| {
-                let is_fixed = node
-                    .primary_styles()
-                    .is_some_and(|style| style.clone_position() == Position::Fixed);
-                is_fixed.then_some((node_id, node.layout_parent.get()))
-            })
-            .collect::<Vec<_>>();
-
-        for (node_id, parent_id) in fixed_nodes {
-            let Some(parent_id) = parent_id else {
-                continue;
-            };
-            let parent_position = self.nodes[parent_id].absolute_position(0.0, 0.0);
-            self.nodes[node_id].final_layout_mut().location.x -= parent_position.x;
-            self.nodes[node_id].final_layout_mut().location.y -= parent_position.y;
-        }
+        // Fixed locations already use the viewport, or their transformed
+        // containing block. No document-origin cancellation is needed here.
 
         // println!("\n\n");
         // taffy::print_tree(self, root_node_id)

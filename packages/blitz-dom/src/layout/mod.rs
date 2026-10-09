@@ -265,6 +265,7 @@ pub mod layout_counters {
     }
 }
 
+pub(crate) mod abspos;
 pub(crate) mod construct;
 pub(crate) mod damage;
 pub(crate) mod inline;

@@ -294,6 +294,12 @@ pub struct BaseDocument {
     /// paints beneath every background between them and disappears.
     pub(crate) hoisted_fixed_parents: HashMap<NodeId, NodeId>,
 
+    /// Authored child slots restored temporarily for static-position layout.
+    pub(crate) hoisted_fixed_indices: HashMap<NodeId, usize>,
+
+    /// Escaped absolute boxes whose explicit axes follow a containing block.
+    pub(crate) abspos_placements: Vec<crate::layout::abspos::AbsposPlacement>,
+
     /// Every `position: fixed` node whose containing block is the viewport,
     /// which is every one of them except those under a transformed ancestor.
     ///
@@ -603,6 +609,8 @@ impl BaseDocument {
 
         let mut doc = Self {
             hoisted_fixed_parents: HashMap::new(),
+            hoisted_fixed_indices: HashMap::new(),
+            abspos_placements: Vec::new(),
             fixed_nodes: Vec::new(),
             fixed_scroll_offset: crate::Point::ZERO,
             sticky_nodes: Vec::new(),
@@ -2715,7 +2723,7 @@ impl BaseDocument {
     ) -> bool {
         let has_changed = self.scroll_node_by_inner(node_id, x, y, dispatch_event);
         if has_changed {
-            self.resolve_sticky_positions();
+            self.resolve_positioned_scroll();
         }
         has_changed
     }
@@ -2920,8 +2928,7 @@ impl BaseDocument {
             // against, and the containing block a fixed box is pinned to, so
             // both move with this and not with the next relayout. See
             // `resolve_sticky_positions` and `resolve_fixed_positions`.
-            self.resolve_sticky_positions();
-            self.resolve_fixed_positions();
+            self.resolve_positioned_scroll();
         }
         has_changed
     }

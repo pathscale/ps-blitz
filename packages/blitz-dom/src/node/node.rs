@@ -1595,19 +1595,18 @@ impl Node {
             *scrollbar = Some(sb);
         }
 
-        if self.flags.is_inline_root() {
-            let content_box_offset = taffy::Point {
-                x: self.final_layout().padding.left + self.final_layout().border.left,
-                y: self.final_layout().padding.top + self.final_layout().border.top,
-            };
-            x -= content_box_offset.x;
-            y -= content_box_offset.y;
-        }
+        // Child layouts and hoisted offsets use border-box coordinates.
+        // Only glyph hit testing below uses the inline content-box origin.
 
         // Positive z_index hoisted children
         if matches_hoisted_content {
             if let Some(hoisted) = &self.stacking_context {
                 for hoisted_child in hoisted.pos_z_hoisted_children().rev() {
+                    if hoisted_child.clips.iter().any(|clip| {
+                        x < clip.left || x > clip.right || y < clip.top || y > clip.bottom
+                    }) {
+                        continue;
+                    }
                     let x = x - hoisted_child.position.x;
                     let y = y - hoisted_child.position.y;
                     if let Some(hit) = self
@@ -1631,6 +1630,11 @@ impl Node {
         if matches_hoisted_content {
             if let Some(hoisted) = &self.stacking_context {
                 for hoisted_child in hoisted.neg_z_hoisted_children().rev() {
+                    if hoisted_child.clips.iter().any(|clip| {
+                        x < clip.left || x > clip.right || y < clip.top || y > clip.bottom
+                    }) {
+                        continue;
+                    }
                     let x = x - hoisted_child.position.x;
                     let y = y - hoisted_child.position.y;
                     if let Some(hit) = self
@@ -1645,6 +1649,8 @@ impl Node {
 
         // Inline children
         if self.flags.is_inline_root() {
+            x -= self.final_layout().padding.left + self.final_layout().border.left;
+            y -= self.final_layout().padding.top + self.final_layout().border.top;
             let element_data = &self.element_data().unwrap();
             if let Some(ild) = element_data.inline_layout_data.as_ref() {
                 let layout = &ild.layout;
