@@ -868,7 +868,11 @@ impl BaseDocument {
                 // TODO: more complete hoisting detection
                 // z-index applies to static flex/grid items too
                 // (css-flexbox-1 §painting, css-grid-1 §z-order).
-                if z_index != 0 && (position != Position::Static || is_flex_or_grid) {
+                // Zero-z-index out-of-flow boxes also escape intermediate
+                // overflow clips when their containing block lies outside.
+                if position.is_absolutely_positioned()
+                    || (z_index != 0 && (position != Position::Static || is_flex_or_grid))
+                {
                     // A hoisted fixed node paints in the stacking context its
                     // box tree gives it, not the one the hoist moved it to.
                     // `hoist_fixed_position_nodes` reparents it onto the root

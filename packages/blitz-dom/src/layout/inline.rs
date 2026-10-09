@@ -938,7 +938,7 @@ fn f32_max(a: f32, b: f32) -> f32 {
 
 /// Perform absolute layout on all absolutely positioned children.
 #[inline]
-fn layout_abspos_child(
+pub(crate) fn layout_abspos_child(
     tree: &mut impl taffy::LayoutBlockContainer,
     item_id: u64,
     static_position: Point<f32>,
@@ -1043,20 +1043,30 @@ fn layout_abspos_child(
             .maybe_clamp(min_size, max_size);
     }
 
+    // Shrink-to-fit space is the space left by the insets and margins.
+    // Percentages still resolve against the complete containing block.
+    let available_space = Size {
+        width: AvailableSpace::Definite(
+            (area_width - left.unwrap_or(0.0) - right.unwrap_or(0.0)
+                - margin.left.unwrap_or(0.0) - margin.right.unwrap_or(0.0))
+                .max(0.0)
+                .maybe_clamp(min_size.width, max_size.width),
+        ),
+        height: AvailableSpace::Definite(
+            (area_height - top.unwrap_or(0.0) - bottom.unwrap_or(0.0)
+                - margin.top.unwrap_or(0.0) - margin.bottom.unwrap_or(0.0))
+                .max(0.0)
+                .maybe_clamp(min_size.height, max_size.height),
+        ),
+    };
+
     let measured_size = tree
         .compute_child_layout(
             node_id,
             taffy::LayoutInput {
                 known_dimensions,
                 parent_size: area_size.map(Some),
-                available_space: Size {
-                    width: AvailableSpace::Definite(
-                        area_width.maybe_clamp(min_size.width, max_size.width),
-                    ),
-                    height: AvailableSpace::Definite(
-                        area_height.maybe_clamp(min_size.height, max_size.height),
-                    ),
-                },
+                available_space,
                 sizing_mode: SizingMode::ContentSize,
                 run_mode: RunMode::ComputeSize,
                 axis: taffy::RequestedAxis::Both,
@@ -1074,14 +1084,7 @@ fn layout_abspos_child(
         taffy::LayoutInput {
             known_dimensions: final_size.map(Some),
             parent_size: area_size.map(Some),
-            available_space: Size {
-                width: AvailableSpace::Definite(
-                    area_width.maybe_clamp(min_size.width, max_size.width),
-                ),
-                height: AvailableSpace::Definite(
-                    area_height.maybe_clamp(min_size.height, max_size.height),
-                ),
-            },
+            available_space,
             sizing_mode: SizingMode::ContentSize,
             run_mode: RunMode::PerformLayout,
             axis: taffy::RequestedAxis::Both,
