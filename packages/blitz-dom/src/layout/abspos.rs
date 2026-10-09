@@ -1,8 +1,10 @@
 //! Resolve out-of-flow boxes after their containing blocks have been sized.
 //!
 //! The first Taffy pass supplies normal flow and hypothetical static positions.
-//! Only boxes whose containing block differs from their layout parent, and
-//! children of inline formatting contexts, need a second layout.
+//! Only boxes whose containing block differs from their layout parent need a
+//! second layout. Viewport-fixed boxes use the viewport rather than the root.
+
+use std::collections::{HashMap, HashSet};
 
 use blitz_traits::node_id::NodeId;
 use style::properties::ComputedValues;
@@ -24,6 +26,22 @@ pub(crate) struct AbsposPlacement {
     offset: Point<f32>,
     auto_x: bool,
     auto_y: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct AbsposCandidate {
+    pub(crate) node_id: NodeId,
+    pub(crate) containing_block: Option<NodeId>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) struct AbsposInputs {
+    containing_block: Option<NodeId>,
+    parent: NodeId,
+    origin: Point<f32>,
+    area: Size<f32>,
+    parent_origin: Point<f32>,
+    direction: Direction,
 }
 
 pub(crate) struct FixedLayoutParents {
@@ -120,137 +138,222 @@ impl BaseDocument {
         }
     }
 
-    pub(crate) fn resolve_abspos_layout(
-        &mut self,
-        root: NodeId,
-        viewport: Size<f32>,
-    ) -> Vec<AbsposPlacement> {
-        let mut placements = Vec::new();
-        self.resolve_abspos_subtree(root, None, None, viewport, &mut placements);
-        placements
+    /// Find the containing block through the box tree, including flattened
+    /// positioned inline ancestors and the authored parent of a fixed box.
+    pub(crate) fn abspos_containing_block(
+        &self,
+        node_id: NodeId,
+        fixed: bool,
+    ) -> Option<NodeId> {
+        let mut current = node_id;
+        loop {
+            if let Some(id) = self.abspos_inline_ancestor(current, None, fixed) {
+                return Some(id);
+            }
+            let node = self.nodes.get(current)?;
+            let parent = if current == node_id
+                && node.layout_parent.get() == Some(self.root_element().id)
+            {
+                self.hoisted_fixed_parents.get(&current).copied()
+                    .or(node.layout_parent.get())
+            } else {
+                node.layout_parent.get()
+            }?;
+            let ancestor = self.nodes.get(parent)?;
+            if ancestor.primary_styles().is_some_and(|styles| {
+                establishes_transform_containing_block(&styles)
+                    || (!fixed && styles.clone_position() != Position::Static)
+            }) {
+                return Some(parent);
+            }
+            current = parent;
+        }
     }
 
-    fn resolve_abspos_subtree(
+    /// Zero-z-index boxes need paint hoisting only when normal painting would
+    /// apply an overflow clip between the box and its containing block.
+    pub(crate) fn abspos_escapes_clip(&self, node_id: NodeId) -> bool {
+        let node = &self.nodes[node_id];
+        let Some(styles) = node.primary_styles() else {
+            return false;
+        };
+        let position = styles.clone_position();
+        if !position.is_absolutely_positioned() {
+            return false;
+        }
+        let cb = self.abspos_containing_block(node_id, position == Position::Fixed);
+        let mut current = node.layout_parent.get();
+        while let Some(id) = current {
+            if Some(id) == cb {
+                break;
+            }
+            let Some(ancestor) = self.nodes.get(id) else {
+                break;
+            };
+            if ancestor.style_source_opt().is_some()
+                && (ancestor.style().overflow.x != Overflow::Visible
+                    || ancestor.style().overflow.y != Overflow::Visible)
+            {
+                return true;
+            }
+            current = ancestor.layout_parent.get();
+        }
+        false
+    }
+
+    pub(crate) fn resolve_abspos_layout(
         &mut self,
-        node_id: NodeId,
-        absolute_cb: Option<NodeId>,
-        fixed_cb: Option<NodeId>,
+        _root: NodeId,
         viewport: Size<f32>,
-        placements: &mut Vec<AbsposPlacement>,
-    ) -> bool {
-        let Some(node) = self.nodes.get(node_id) else {
-            return false;
-        };
-        if node.is_display_none() || node.style_source_opt().is_none() {
-            return false;
-        }
+    ) -> Vec<AbsposPlacement> {
+        let mut previous: HashMap<_, _> = std::mem::take(&mut self.abspos_placements)
+            .into_iter()
+            .map(|placement| (placement.node_id, placement))
+            .collect();
+        let mut placements = Vec::new();
+        let mut changed_ancestors = HashSet::new();
 
-        let (position, transformed, inline_level) = node
-            .primary_styles()
-            .map(|styles| {
-                (
-                    styles.clone_position(),
-                    establishes_transform_containing_block(&styles),
-                    styles.get_box().original_display.outside() == DisplayOutside::Inline,
-                )
-            })
-            .unwrap_or((Position::Static, false, false));
-        let parent = node.layout_parent.get();
-        let mut changed = false;
+        // The existing fixed/sticky walk maintains this list in preorder.
+        // An outer correction can therefore damage a later nested candidate.
+        for index in 0..self.abspos_candidates.len() {
+            let candidate = self.abspos_candidates[index];
+            let node_id = candidate.node_id;
+            let Some(node) = self.nodes.get(node_id) else {
+                continue;
+            };
+            if node.is_display_none() || node.style_source_opt().is_none() {
+                continue;
+            }
+            let Some(parent) = node.layout_parent.get() else {
+                continue;
+            };
+            let cb = candidate.containing_block;
+            if cb.is_some_and(|id| !self.nodes.contains_key(id)) {
+                continue;
+            }
+            if cb == Some(parent) {
+                continue;
+            }
 
-        if position.is_absolutely_positioned() {
-            if let Some(parent) = parent {
-                let cb = self.abspos_inline_ancestor(
-                    node_id,
-                    if position == Position::Fixed { fixed_cb } else { absolute_cb },
-                    position == Position::Fixed,
-                );
-                let needs_layout =
-                    cb != Some(parent) || self.nodes[parent].flags.is_inline_root();
+            let (position, inline_level) = node.primary_styles()
+                .map(|styles| {
+                    (
+                        styles.clone_position(),
+                        styles.get_box().original_display.outside() == DisplayOutside::Inline,
+                    )
+                })
+                .unwrap_or((Position::Static, false));
+            if !position.is_absolutely_positioned() {
+                continue;
+            }
 
-                if needs_layout {
-                    let old = *self.nodes[node_id].unrounded_layout();
-                    let direction = self.nodes[parent].style().direction;
-                    let style = self.nodes[node_id].style();
-                    let auto_x = style.inset.left.is_auto() && style.inset.right.is_auto();
-                    let auto_y = style.inset.top.is_auto() && style.inset.bottom.is_auto();
-                    let (origin, area) = cb
-                        .map(|id| self.abspos_padding_box(id, false))
-                        .unwrap_or((Point::ZERO, viewport));
-                    let parent_origin = self.abspos_layout_origin(parent, false);
+            let (origin, area) = cb
+                .map(|id| self.abspos_padding_box(id, false))
+                .unwrap_or((Point::ZERO, viewport));
+            let parent_origin = self.abspos_layout_origin(parent, false);
+            let direction = self.nodes[parent].style().direction;
+            let inputs = AbsposInputs {
+                containing_block: cb,
+                parent,
+                origin,
+                area,
+                parent_origin,
+                direction,
+            };
 
-                    // PerformLayout cache entries own side effects on descendant
-                    // boxes. They cannot survive a second pass with a different
-                    // containing block, even when one set of inputs matches.
-                    self.release_abspos_subtree(node_id);
-                    layout_abspos_child(
-                        self,
-                        node_id.as_u64(),
-                        old.location,
-                        inline_level,
-                        area,
-                        Point {
-                            x: origin.x - parent_origin.x,
-                            y: origin.y - parent_origin.y,
-                        },
-                        direction,
-                    );
-                    let layout = self.nodes[node_id].unrounded_layout_mut();
-                    layout.order = old.order;
-
-                    // Preserve the hypothetical static anchor independently on
-                    // each auto-inset axis. Percentage margins use the new CB.
-                    if auto_x {
-                        layout.location.x = if inline_level && direction == Direction::Rtl {
-                            old.location.x + old.size.width + old.margin.right
-                                - layout.size.width - layout.margin.right
-                        } else {
-                            old.location.x - old.margin.left + layout.margin.left
-                        };
-                    }
-                    if auto_y {
-                        layout.location.y = old.location.y - old.margin.top + layout.margin.top;
-                    }
-                    self.release_abspos_subtree(node_id);
-                    changed = true;
-
-                    // Viewport-fixed nodes use the existing viewport-scroll pin
-                    // after they are returned to the root. Other escaped boxes
-                    // need their intermediate ancestors' scrolling cancelled.
-                    if position != Position::Fixed || cb.is_some() {
-                        placements.push(AbsposPlacement {
-                            node_id,
-                            containing_block: cb,
-                            offset: Point::ZERO,
-                            auto_x,
-                            auto_y,
-                        });
-                    }
+            if self.incremental_layout
+                && !self.abspos_written.contains(&node_id)
+                && self.abspos_inputs.get(&node_id) == Some(&inputs)
+            {
+                if let Some(placement) = previous.remove(&node_id) {
+                    placements.push(placement);
                 }
+                continue;
+            }
+
+            let old: Layout = *self.nodes[node_id].unrounded_layout();
+            let style = self.nodes[node_id].style();
+            let auto_x = style.inset.left.is_auto() && style.inset.right.is_auto();
+            let auto_y = style.inset.top.is_auto() && style.inset.bottom.is_auto();
+
+            // PerformLayout cache entries own descendant side effects. Clear
+            // only the damaged candidate subtree before changing its inputs.
+            self.release_abspos_subtree(node_id);
+            layout_abspos_child(
+                self,
+                node_id.as_u64(),
+                old.location,
+                inline_level,
+                area,
+                Point {
+                    x: origin.x - parent_origin.x,
+                    y: origin.y - parent_origin.y,
+                },
+                direction,
+            );
+            let layout = self.nodes[node_id].unrounded_layout_mut();
+            layout.order = old.order;
+
+            // Preserve the hypothetical static anchor independently on
+            // each auto-inset axis. Percentage margins use the new CB.
+            if auto_x {
+                layout.location.x = if inline_level && direction == Direction::Rtl {
+                    old.location.x + old.size.width + old.margin.right
+                        - layout.size.width - layout.margin.right
+                } else {
+                    old.location.x - old.margin.left + layout.margin.left
+                };
+            }
+            if auto_y {
+                layout.location.y = old.location.y - old.margin.top + layout.margin.top;
+            }
+            self.release_abspos_subtree(node_id);
+            self.abspos_inputs.insert(node_id, inputs);
+
+            // Keep ancestor caches: their retained descendant side effects
+            // now contain the corrected boxes. Clearing them would force the
+            // same hypothetical pass on the next unchanged resolve.
+            let mut current = Some(node_id);
+            while let Some(id) = current {
+                if !changed_ancestors.insert(id) {
+                    break;
+                }
+                current = self.nodes[id].layout_parent.get();
+            }
+
+            // Viewport-fixed nodes use the existing viewport-scroll pin
+            // after they are returned to the root. Other escaped boxes
+            // need their intermediate ancestors' scrolling cancelled.
+            if position != Position::Fixed || cb.is_some() {
+                placements.push(AbsposPlacement {
+                    node_id,
+                    containing_block: cb,
+                    offset: Point::ZERO,
+                    auto_x,
+                    auto_y,
+                });
             }
         }
 
-        let absolute_cb = if position != Position::Static || transformed {
-            Some(node_id)
-        } else {
-            absolute_cb
-        };
-        let fixed_cb = if transformed { Some(node_id) } else { fixed_cb };
-        let children = self.nodes[node_id].layout_children.borrow().clone();
-        if let Some(children) = children {
-            for child in children {
-                changed |= self.resolve_abspos_subtree(
-                    child, absolute_cb, fixed_cb, viewport, placements,
-                );
-            }
+        // Rebuild only paths affected by a correction, deepest first.
+        let mut changed: Vec<_> = changed_ancestors.into_iter()
+            .map(|id| {
+                let mut depth = 0;
+                let mut current = self.nodes[id].layout_parent.get();
+                while let Some(parent) = current {
+                    depth += 1;
+                    current = self.nodes[parent].layout_parent.get();
+                }
+                (depth, id)
+            })
+            .collect();
+        changed.sort_unstable_by(|left, right| right.0.cmp(&left.0));
+        for (_, id) in changed {
+            self.rebuild_abspos_content_size(id);
+            self.nodes[id].insert_damage(RestyleDamage::RECALCULATE_OVERFLOW);
         }
-
-        if changed {
-            self.rebuild_abspos_content_size(node_id);
-            self.nodes[node_id].cache_release();
-            self.nodes[node_id].insert_damage(RestyleDamage::RECALCULATE_OVERFLOW);
-        }
-        changed
+        self.abspos_written.clear();
+        placements
     }
 
     /// Non-atomic positioned inline ancestors are flattened out of the layout

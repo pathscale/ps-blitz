@@ -398,6 +398,12 @@ impl BaseDocument {
         #[cfg(feature = "log-phase-times")]
         layout_counters::note_computed(dom_node_id(node_id));
 
+        if inputs.run_mode == taffy::RunMode::PerformLayout
+            && dom_node_id(node_id) == self.root_element().id
+        {
+            self.abspos_normal_layout = true;
+        }
+
         // Read before the node is borrowed mutably: a `<select>` is sized from
         // its options, which are other nodes.
         let select_metrics = self.select_metrics(dom_node_id(node_id));
@@ -825,6 +831,10 @@ impl LayoutPartialTree for BaseDocument {
     }
 
     fn set_unrounded_layout(&mut self, node_id: NodeId, layout: &Layout) {
+        let id = dom_node_id(node_id);
+        if self.abspos_candidate_ids.contains(&id) {
+            self.abspos_written.insert(id);
+        }
         *self.node_from_id_mut(node_id).unrounded_layout_mut() = *layout;
     }
 

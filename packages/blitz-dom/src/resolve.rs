@@ -702,7 +702,30 @@ impl BaseDocument {
         let root_transformed = self.nodes[root_id]
             .primary_styles()
             .is_some_and(|styles| establishes_containing_block(&styles));
-        collect_fixed(self, root_id, root_transformed, &mut hoisted, &mut sticky);
+        let mut escaped = if self.abspos_candidates_dirty || !self.incremental_layout {
+            Some(Vec::new())
+        } else {
+            None
+        };
+        collect_fixed(
+            self,
+            root_id,
+            root_transformed,
+            &mut hoisted,
+            &mut sticky,
+            &mut escaped,
+        );
+        if let Some(candidates) = escaped {
+            self.abspos_candidate_ids = candidates.iter()
+                .map(|candidate| candidate.node_id)
+                .collect();
+            let ids = &self.abspos_candidate_ids;
+            self.abspos_inputs.retain(|id, _| ids.contains(id));
+            self.abspos_written.retain(|id| ids.contains(id));
+            self.abspos_candidates = candidates;
+            self.abspos_candidates_dirty = false;
+            self.abspos_layout_dirty = true;
+        }
         self.sticky_nodes = sticky;
         self.fixed_nodes = hoisted.clone();
 
@@ -756,6 +779,7 @@ impl BaseDocument {
             under_transform: bool,
             out: &mut Vec<NodeId>,
             sticky: &mut Vec<NodeId>,
+            escaped: &mut Option<Vec<crate::layout::abspos::AbsposCandidate>>,
         ) {
             let children = doc.nodes[node_id].layout_children.borrow().clone();
             let Some(children) = children else {
@@ -782,10 +806,26 @@ impl BaseDocument {
                     continue;
                 }
 
-                match styles.clone_position() {
+                let position = styles.clone_position();
+                match position {
                     Position::Fixed if !under_transform => out.push(child_id),
                     Position::Sticky => sticky.push(child_id),
                     _ => {}
+                }
+
+                if let Some(escaped) = escaped.as_mut() {
+                    if position.is_absolutely_positioned() {
+                        let cb = doc.abspos_containing_block(
+                            child_id,
+                            position == Position::Fixed,
+                        );
+                        if cb != child.layout_parent.get() {
+                            escaped.push(crate::layout::abspos::AbsposCandidate {
+                                node_id: child_id,
+                                containing_block: cb,
+                            });
+                        }
+                    }
                 }
 
                 collect_fixed(
@@ -794,6 +834,7 @@ impl BaseDocument {
                     under_transform || establishes_containing_block(&styles),
                     out,
                     sticky,
+                    escaped,
                 );
             }
         }
@@ -1136,11 +1177,9 @@ impl BaseDocument {
     /// authored stacking-context offset separately.
     pub(crate) fn resolve_hoisted_positions(&mut self) {
         self.resolve_abspos_positions();
-        let hosts: Vec<NodeId> = self
-            .nodes
-            .iter()
-            .filter_map(|(node_id, node)| node.stacking_context.is_some().then_some(node_id))
-            .collect();
+        let nodes = &self.nodes;
+        self.hoisted_position_hosts.retain(|id| nodes.contains_key(*id));
+        let hosts: Vec<NodeId> = self.hoisted_position_hosts.iter().copied().collect();
 
         for host in hosts {
             let host_position = self.nodes[host].absolute_position(0.0, 0.0);
@@ -1204,10 +1243,11 @@ impl BaseDocument {
             return;
         }
 
-        // By index, leaving the list in place: it belongs to the last flush,
-        // and layout can run more than once against it.
-        for index in 0..self.hoisted_clip_hosts.len() {
-            let host = self.hoisted_clip_hosts[index];
+        // Retain registrations from skipped subtrees across style flushes.
+        let nodes = &self.nodes;
+        self.hoisted_clip_hosts.retain(|id| nodes.contains_key(*id));
+        let hosts: Vec<NodeId> = self.hoisted_clip_hosts.iter().copied().collect();
+        for host in hosts {
             let Some(mut context) = self.nodes[host].stacking_context.take() else {
                 continue;
             };
@@ -1322,6 +1362,7 @@ impl BaseDocument {
         for result in results {
             match result.data {
                 ConstructionTaskResultData::InlineLayout(layout) => {
+                    self.abspos_layout_dirty = true;
                     // The node and every layout ancestor. The shaped layout
                     // that lands here has not been broken into lines yet, and
                     // an ancestor still holding a cached layout never descends,
@@ -1349,6 +1390,14 @@ impl BaseDocument {
     /// TODO: update taffy to use an associated type instead of slab key
     /// TODO: update taffy to support traited styles so we don't even need to rely on taffy for storage
     pub fn resolve_layout(&mut self) {
+        // Preserve corrected boxes, fixed parent slots, caches and positional
+        // offsets when neither style/tree changes nor layout damage occurred.
+        if self.incremental_layout
+            && !self.abspos_layout_dirty
+            && !self.abspos_candidates_dirty
+        {
+            return;
+        }
         let size = self.stylist.device().au_viewport_size();
 
         let available_space = taffy::Size {
@@ -1360,8 +1409,16 @@ impl BaseDocument {
 
         // println!("\n\nRESOLVE LAYOUT\n===========\n");
 
+        let root_id = crate::dom_node_id(root_element_id);
+        let previous_content_size = self.nodes[root_id].unrounded_layout().content_size;
+        self.abspos_normal_layout = false;
         let fixed_parents = self.restore_fixed_layout_parents();
         taffy::compute_root_layout(self, root_element_id, available_space);
+        // A cached root output predates the correction of descendant extents.
+        // Its descendant boxes remain corrected; preserve the root's extent too.
+        if !self.abspos_normal_layout {
+            self.nodes[root_id].unrounded_layout_mut().content_size = previous_content_size;
+        }
         let placements = self.resolve_abspos_layout(
             crate::dom_node_id(root_element_id),
             taffy::Size {
@@ -1372,6 +1429,7 @@ impl BaseDocument {
         self.finish_fixed_layout_parents(fixed_parents);
         taffy::round_layout(self, root_element_id);
         self.finish_abspos_placements(placements);
+        self.abspos_layout_dirty = false;
 
         // Rounding rewrites every location from taffy's own output, discarding
         // the sticky and fixed displacements written into them along with

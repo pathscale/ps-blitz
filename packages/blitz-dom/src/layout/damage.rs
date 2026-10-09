@@ -68,6 +68,19 @@ impl BaseDocument {
         if !damage.is_empty() {
             self.paint_damage.note_own_damage(node_id);
         }
+        let style_changed = {
+            let node = &self.nodes[node_id];
+            match (node.primary_styles(), node.style_source_opt()) {
+                (Some(current), Some(cached)) => !ServoArc::ptr_eq(&current, cached),
+                (None, None) => false,
+                _ => true,
+            }
+        };
+        self.abspos_candidates_dirty |= style_changed
+            || damage.intersects(CONSTRUCT_BOX | CONSTRUCT_FC | CONSTRUCT_DESCENDENT);
+        self.abspos_layout_dirty |= damage.intersects(
+            ONLY_RELAYOUT | CONSTRUCT_BOX | CONSTRUCT_FC | CONSTRUCT_DESCENDENT,
+        );
         damage |= damage_from_parent;
 
         // Flush updated pseudo-element styles to their anonymous nodes so that
@@ -506,10 +519,10 @@ impl BaseDocument {
     }
 
     pub fn flush_styles_to_layout(&mut self, node_id: NodeId) {
-        // Rebuilt by the walk below, and stale otherwise: an incremental flush
-        // can rebuild a context whose hoisted children no longer cross
-        // anything that clips.
-        self.hoisted_clip_hosts.clear();
+        // Skipped subtrees retain their contexts and host registrations.
+        let nodes = &self.nodes;
+        self.hoisted_clip_hosts.retain(|id| nodes.contains_key(*id));
+        self.hoisted_position_hosts.retain(|id| nodes.contains_key(*id));
         self.flush_styles_to_layout_impl(node_id, None);
     }
 
@@ -676,6 +689,10 @@ impl BaseDocument {
             return;
         }
 
+        if style_changed && self.abspos_candidate_ids.contains(&node_id) {
+            self.abspos_written.insert(node_id);
+        }
+
         let display = {
             let node = self.nodes.get_mut(node_id).unwrap();
             let damage = node.damage().unwrap_or(ALL_DAMAGE);
@@ -756,6 +773,7 @@ impl BaseDocument {
                 *node.style_mut() = taffy_style;
                 *node.display_constructed_as_mut() = display_constructed_as;
                 if layout_inputs_changed {
+                    self.abspos_layout_dirty = true;
                     node.cache_mut().clear();
                     if let Some(inline_layout) = node
                         .data
@@ -812,6 +830,8 @@ impl BaseDocument {
         // This walk could not reach a hidden subtree before, because hiding a
         // pane emptied its layout children and stylo discarded its styles.
         if matches!(display, taffy::Display::None) {
+            self.hoisted_clip_hosts.remove(&node_id);
+            self.hoisted_position_hosts.remove(&node_id);
             return;
         }
 
@@ -865,12 +885,13 @@ impl BaseDocument {
                 let position = style.clone_position();
                 let z_index = style.clone_z_index().integer_or(0);
 
-                // TODO: more complete hoisting detection
                 // z-index applies to static flex/grid items too
                 // (css-flexbox-1 §painting, css-grid-1 §z-order).
-                // Zero-z-index out-of-flow boxes also escape intermediate
-                // overflow clips when their containing block lies outside.
-                if position.is_absolutely_positioned()
+                // Ordinary absolute children stay in the normal paint tree.
+                // Hoist zero-z-index boxes only across an intermediate clip,
+                // or to restore an already reparented fixed box's paint host.
+                if self.hoisted_fixed_parents.contains_key(&child_id)
+                    || self.abspos_escapes_clip(child_id)
                     || (z_index != 0 && (position != Position::Static || is_flex_or_grid))
                 {
                     // A hoisted fixed node paints in the stacking context its
@@ -918,6 +939,8 @@ impl BaseDocument {
             || (parent_stacking_context.is_some() && !stacking_context.children.is_empty());
         *self.nodes[node_id].subtree_hoists_mut() = feeds_an_ancestor;
 
+        self.hoisted_clip_hosts.remove(&node_id);
+        self.hoisted_position_hosts.remove(&node_id);
         if let Some(parent_stacking_context) = parent_stacking_context {
             let position = self.nodes[node_id].final_layout().location;
             let scroll_offset = *self.nodes[node_id].scroll_offset();
@@ -965,7 +988,10 @@ impl BaseDocument {
                 .iter()
                 .any(|child| !child.clip_ancestors.is_empty())
             {
-                self.hoisted_clip_hosts.push(node_id);
+                self.hoisted_clip_hosts.insert(node_id);
+            }
+            if !stacking_context.children.is_empty() {
+                self.hoisted_position_hosts.insert(node_id);
             }
             self.nodes[node_id].stacking_context = Some(Box::new(new_stacking_context));
         }

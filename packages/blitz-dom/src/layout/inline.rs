@@ -703,6 +703,18 @@ impl BaseDocument {
         .maybe_max(container_pb.sum_axes().map(Some));
 
         let container_direction = self.nodes[node_id].style().direction;
+        // Absolute children use the parent's padding box in the first pass.
+        // This also handles positioned inline roots without a correction pass.
+        let abspos_area = Size {
+            width: (final_size.width - border.left - border.right
+                - scrollbar_gutter.x).max(0.0),
+            height: (final_size.height - border.top - border.bottom
+                - scrollbar_gutter.y).max(0.0),
+        };
+        let abspos_offset = Point {
+            x: border.left,
+            y: border.top,
+        };
 
         // Store sizes and positions of inline boxes.
         //
@@ -801,7 +813,7 @@ impl BaseDocument {
                         let is_floated = false;
 
                         if node.style().position == Position::Absolute {
-                            let direction = node.style().direction;
+                            let direction = container_direction;
 
                             // The static position of an absolutely positioned box depends on the
                             // display its hypothetical box would have had (the display specified
@@ -828,8 +840,8 @@ impl BaseDocument {
                                 ibox.id,
                                 static_position,
                                 is_inline_level,
-                                final_size,
-                                taffy::Point::ZERO,
+                                abspos_area,
+                                abspos_offset,
                                 direction,
                             );
                         } else if is_floated {
