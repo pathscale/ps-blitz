@@ -145,6 +145,23 @@ pub trait Document: Any + 'static {
         false
     }
 
+    /// Drain immediate work for a host's settle loop.
+    ///
+    /// Pass `run_timers = true` only on the first pass to allow one batch of
+    /// due timer and animation callbacks. Subsequent passes must leave those
+    /// callbacks scheduled while draining scripts and microtasks.
+    ///
+    /// Documents that execute timers must override this method. Wrappers that
+    /// poll child documents must propagate the policy to their children.
+    fn poll_for_settle(
+        &mut self,
+        task_context: Option<TaskContext>,
+        run_timers: bool,
+    ) -> bool {
+        let _ = run_timers;
+        self.poll(task_context)
+    }
+
     /// Get the [`Document`]'s id
     fn id(&self) -> usize {
         self.inner().id
@@ -1002,6 +1019,23 @@ impl BaseDocument {
     ///
     /// Returns `true` if any sub-document reported changes.
     pub fn poll_subdocuments(&mut self, waker: Option<&Waker>) -> bool {
+        self.poll_subdocuments_inner(waker, None)
+    }
+
+    /// Propagate a settle pass's timer policy to every child document.
+    pub fn poll_subdocuments_for_settle(
+        &mut self,
+        waker: Option<&Waker>,
+        run_timers: bool,
+    ) -> bool {
+        self.poll_subdocuments_inner(waker, Some(run_timers))
+    }
+
+    fn poll_subdocuments_inner(
+        &mut self,
+        waker: Option<&Waker>,
+        settle_timers: Option<bool>,
+    ) -> bool {
         let mut has_changes = false;
         let node_ids: Vec<NodeId> = self.sub_document_nodes.iter().copied().collect();
         for node_id in node_ids {
@@ -1013,7 +1047,10 @@ impl BaseDocument {
                 continue;
             };
             let task_context = waker.map(TaskContext::from_waker);
-            has_changes |= sub_doc.poll(task_context);
+            has_changes |= match settle_timers {
+                Some(run_timers) => sub_doc.poll_for_settle(task_context, run_timers),
+                None => sub_doc.poll(task_context),
+            };
         }
         has_changes
     }
