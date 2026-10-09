@@ -300,6 +300,17 @@ pub struct BaseDocument {
     /// Escaped absolute boxes whose explicit axes follow a containing block.
     pub(crate) abspos_placements: Vec<crate::layout::abspos::AbsposPlacement>,
 
+    /// Maintained during the existing fixed/sticky walk on style or tree changes.
+    pub(crate) abspos_candidates: Vec<crate::layout::abspos::AbsposCandidate>,
+    pub(crate) abspos_candidate_ids: HashSet<NodeId>,
+    pub(crate) abspos_inputs: HashMap<NodeId, crate::layout::abspos::AbsposInputs>,
+    /// Candidates whose hypothetical layouts or styles were written this pass.
+    pub(crate) abspos_written: HashSet<NodeId>,
+    pub(crate) abspos_candidates_dirty: bool,
+    pub(crate) abspos_layout_dirty: bool,
+    /// Whether the normal root layout missed its PerformLayout cache.
+    pub(crate) abspos_normal_layout: bool,
+
     /// Every `position: fixed` node whose containing block is the viewport,
     /// which is every one of them except those under a transformed ancestor.
     ///
@@ -340,7 +351,10 @@ pub struct BaseDocument {
     /// Collected while flushing styles so that `resolve_hoisted_clips` visits
     /// those contexts alone, rather than scanning every node in the document
     /// after every layout to find the handful that hoist anything at all.
-    pub(crate) hoisted_clip_hosts: Vec<NodeId>,
+    pub(crate) hoisted_clip_hosts: HashSet<NodeId>,
+
+    /// Contexts with hoisted paint children, maintained by the style flush.
+    pub(crate) hoisted_position_hosts: HashSet<NodeId>,
 
     // Stylo
     /// The Stylo engine
@@ -611,11 +625,19 @@ impl BaseDocument {
             hoisted_fixed_parents: HashMap::new(),
             hoisted_fixed_indices: HashMap::new(),
             abspos_placements: Vec::new(),
+            abspos_candidates: Vec::new(),
+            abspos_candidate_ids: HashSet::new(),
+            abspos_inputs: HashMap::new(),
+            abspos_written: HashSet::new(),
+            abspos_candidates_dirty: true,
+            abspos_layout_dirty: true,
+            abspos_normal_layout: false,
             fixed_nodes: Vec::new(),
             fixed_scroll_offset: crate::Point::ZERO,
             sticky_nodes: Vec::new(),
             sticky_offsets: HashMap::new(),
-            hoisted_clip_hosts: Vec::new(),
+            hoisted_clip_hosts: HashSet::new(),
+            hoisted_position_hosts: HashSet::new(),
             id,
             tx,
             rx: Some(rx),
