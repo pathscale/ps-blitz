@@ -963,6 +963,15 @@ impl ScriptRuntime {
 
     /// Run pending promise jobs (microtasks)
     pub fn run_jobs(&mut self, description: &str) {
+        self.run_jobs_with_progress(description);
+    }
+
+    /// Drain microtasks and report whether mutation delivery did work.
+    ///
+    /// Reaching the mutation delivery cap reports progress so a settle loop
+    /// continues draining under its deadline instead of declaring the page
+    /// idle with synchronous observer work still pending.
+    pub(crate) fn run_jobs_with_progress(&mut self, description: &str) -> bool {
         // Every script turn ends here, so this is where recorded DOM changes
         // reach the page's `MutationObserver`s: after the turn's synchronous
         // code and its microtasks, before anything renders, which is when a
@@ -971,14 +980,17 @@ impl ScriptRuntime {
         // observer that rewrites what it observes from holding the thread;
         // records past it wait for the next turn rather than being lost.
         const MUTATION_DELIVERY_ROUNDS: usize = 32;
+        let mut delivered = false;
         for _ in 0..MUTATION_DELIVERY_ROUNDS {
             if let Err(error) = self.context.run_jobs() {
                 report_js_error(&self.diagnostics, description, &error);
             }
             if !self.deliver_mutations() {
-                return;
+                return delivered;
             }
+            delivered = true;
         }
+        delivered
     }
 
     /// Hand recorded DOM changes to the prelude's `MutationObserver`. Returns

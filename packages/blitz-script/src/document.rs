@@ -293,7 +293,7 @@ impl ScriptDocument {
     /// Loaders wait on those before continuing — nofilter.io keeps the body
     /// hidden until the bundle's `load` arrives — so a script that ran silently
     /// would still leave the page blank.
-    fn run_pending_scripts(&mut self) {
+    fn run_pending_scripts(&mut self) -> bool {
         // Collect first, then run: executing a script can append more, and the
         // borrow on the document has to be released before any of them runs.
         let pending: Vec<PendingScript> = self
@@ -301,6 +301,7 @@ impl ScriptDocument {
             .into_iter()
             .filter(|script| !self.executed_scripts.contains(&script.node_id))
             .collect();
+        let ran = !pending.is_empty();
 
         // Import maps first, across the whole batch. A page is free to write
         // its map after the module that needs it, and a map installed too late
@@ -380,6 +381,7 @@ impl ScriptDocument {
                 }
             }
         }
+        ran
     }
 
     /// Find `<script>` elements in document order
@@ -543,18 +545,35 @@ impl Document for ScriptDocument {
     }
 
     fn poll(&mut self, task_context: Option<TaskContext>) -> bool {
+        self.poll_with_timer_policy(task_context, None)
+    }
+
+    fn poll_for_settle(
+        &mut self,
+        task_context: Option<TaskContext>,
+        run_timers: bool,
+    ) -> bool {
+        self.poll_with_timer_policy(task_context, Some(run_timers))
+    }
+}
+
+impl ScriptDocument {
+    /// `None` preserves normal polling; `Some` selects a settle pass's policy.
+    fn poll_with_timer_policy(
+        &mut self,
+        task_context: Option<TaskContext>,
+        settle_timers: Option<bool>,
+    ) -> bool {
         let profiling_boundary = self.runtime.ctx.enter_profiling_boundary();
         let profiling = profiling_boundary.enabled();
         let poll_started = profiling.then(std::time::Instant::now);
-        let ran = self.poll_inner(task_context, profiling);
+        let ran = self.poll_inner(task_context, profiling, settle_timers);
         if let Some(started) = poll_started {
             crate::script_stats::record_poll(started.elapsed(), ran);
         }
         ran
     }
-}
 
-impl ScriptDocument {
     /// Move a semantic automation pointer to the exact resolved DOM node.
     ///
     /// Normal window input remains coordinate hit-tested through
@@ -594,7 +613,12 @@ impl ScriptDocument {
 
     /// The real poll. Split out so every exit path is timed by the wrapper
     /// above rather than by a stopwatch threaded through each early return.
-    fn poll_inner(&mut self, task_context: Option<TaskContext>, profiling: bool) -> bool {
+    fn poll_inner(
+        &mut self,
+        task_context: Option<TaskContext>,
+        profiling: bool,
+        settle_timers: Option<bool>,
+    ) -> bool {
         // Store the waker so the timer thread can wake the event loop
         if let Some(cx) = &task_context {
             let mut waker = self.waker.lock().unwrap();
@@ -611,13 +635,24 @@ impl ScriptDocument {
         // is one: its `<web-view>` elements own the page documents. Poll those
         // children at the same outer boundary so their timers, resource
         // completions, and script work continue to make progress.
-        let subdocument_changes = self
-            .inner
-            .borrow_mut()
-            .poll_subdocuments(task_context.as_ref().map(TaskContext::waker));
+        let subdocument_changes = {
+            let mut inner = self.inner.borrow_mut();
+            let waker = task_context.as_ref().map(TaskContext::waker);
+            match settle_timers {
+                Some(run_timers) => inner.poll_subdocuments_for_settle(waker, run_timers),
+                None => inner.poll_subdocuments(waker),
+            }
+        };
+
+        let mut ran = subdocument_changes;
+        if settle_timers.is_some() {
+            // A timer-free pass still drains promises and observer work.
+            // Do this before collecting scripts so microtasks that append
+            // script elements have those scripts executed in the same pass.
+            ran |= self.runtime.run_jobs_with_progress("settle microtasks");
+        }
 
         // Execute scripts on first poll if they haven't been run explicitly
-        let mut ran = subdocument_changes;
         if !self.scripts_executed {
             // One-time: parsing and running the application bundle. Separated
             // because it is startup cost, and folding it into the steady-state
@@ -632,10 +667,12 @@ impl ScriptDocument {
             // Steady state: pick up any script the page appended since the last
             // turn. Cheap when there are none, and it is the only path by which
             // a runtime-injected bundle ever runs.
-            self.run_pending_scripts();
+            ran |= self.run_pending_scripts();
         }
 
-        ran |= self.runtime.run_due_timers(profiling);
+        if settle_timers.unwrap_or(true) {
+            ran |= self.runtime.run_due_timers(profiling);
+        }
 
         // A module that opened with a top-level `await` may have settled since
         // the last turn. Checking here is what turns a silent half-mounted page
