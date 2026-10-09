@@ -46,6 +46,7 @@ mod event_handler;
 mod fetch;
 mod job_budget;
 mod module;
+mod raster;
 mod runtime;
 pub mod script_stats;
 mod state;
@@ -60,4 +61,5 @@ pub use boa_runtime;
 pub use debug_control::DebugController;
 pub use document::ScriptDocument;
 pub use fetch::{DefaultScriptFetcher, FetchError, ScriptFetcher};
+pub use raster::raster_image_for_attribute;
 
