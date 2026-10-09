@@ -216,6 +216,18 @@ impl ScriptDocument {
         }
     }
 
+    /// Extend the native JavaScript surface on the document's owning thread.
+    ///
+    /// The callback does not execute a microtask checkpoint or request a
+    /// redraw. Poll hooks can therefore deliver native values and report work
+    /// only when an event actually reaches the page.
+    pub fn with_js_context<R>(
+        &mut self,
+        callback: impl FnOnce(&mut boa_engine::Context) -> R,
+    ) -> R {
+        callback(&mut self.runtime.context)
+    }
+
     /// Evaluate arbitrary JavaScript code in the document's script context
     pub fn eval(&mut self, code: &str) {
         let _profiling = self.runtime.ctx.enter_profiling_boundary();

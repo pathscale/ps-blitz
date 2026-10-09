@@ -50,7 +50,13 @@ pub mod script_stats;
 mod state;
 mod timers;
 
+// Embedders extending the native script surface must use the same Boa types
+// and registry dependencies as this engine.
+pub use boa_engine;
+pub use boa_runtime;
+
 #[cfg(feature = "debug-control")]
 pub use debug_control::DebugController;
 pub use document::ScriptDocument;
 pub use fetch::{DefaultScriptFetcher, FetchError, ScriptFetcher};
+
