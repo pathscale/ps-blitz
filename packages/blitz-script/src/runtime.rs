@@ -841,6 +841,9 @@ impl ScriptRuntime {
             "<blitz-bootstrap>",
         );
 
+        crate::domc::install(&mut runtime.context);
+        runtime.eval_internal(include_str!("domc.js"), "<blitz-domc>");
+
         runtime
     }
 
@@ -867,6 +870,7 @@ impl ScriptRuntime {
         if let Err(error) = self.context.eval(source) {
             report_js_error(&self.diagnostics, description, &error);
         }
+        crate::domc::set_current_script(&self.context, None);
         self.run_jobs(description);
     }
 
@@ -1006,6 +1010,40 @@ impl ScriptRuntime {
 
     pub(crate) fn begin_job_slice(&self) -> JobSlice {
         self.job_budget.begin()
+    }
+
+    pub(crate) fn set_document_ready_state(&mut self, next: &'static str) -> bool {
+        if !crate::domc::set_ready_state(&self.context, next) {
+            return false;
+        }
+        let root_id = self.ctx.doc.borrow().root_node().id;
+        self.dispatch_node_event(root_id, "readystatechange");
+        true
+    }
+
+    pub(crate) fn has_pending_module_evaluations(&self) -> bool {
+        self.pending_modules
+            .iter()
+            .any(|(promise, _)| matches!(promise.state(), PromiseState::Pending))
+    }
+
+    pub(crate) fn poll_domc(&mut self) -> bool {
+        let global = self.context.global_object().clone();
+        let result = global
+            .get(js_string!("__blitzDOMCPoll"), &mut self.context)
+            .and_then(|value| {
+                let Some(function) = value.as_object() else {
+                    return Ok(JsValue::from(false));
+                };
+                function.call(&JsValue::undefined(), &[], &mut self.context)
+            });
+        match result {
+            Ok(value) => value.to_boolean(),
+            Err(error) => {
+                report_js_error(&self.diagnostics, "media query changes", &error);
+                false
+            }
+        }
     }
 
     pub(crate) fn job_budget(&self) -> Duration {
@@ -1594,86 +1632,10 @@ impl ScriptRuntime {
 /// which at least stopped loudly. Three sites in a hundred-site corpus died on
 /// that error.
 ///
-/// The returned object carries a fixed set of properties as own keys and a
-/// `getPropertyValue` that reads them. A property outside the set returns the
-/// empty string, which is what a real browser returns for one it does not
-/// recognise, so a caller cannot tell an unsupported property from an unset
-/// one. That is the honest limit of this: it answers well for what it covers
-/// and says nothing for the rest.
+/// The declaration retains its element and reads live computed values after a
+/// synchronous layout flush. Longhand serialization belongs to Stylo.
 fn get_computed_style(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let Some(node_id) = args.first().and_then(crate::dom::node_id_of_value) else {
-        return Err(JsNativeError::typ()
-            .with_message("getComputedStyle expects an element")
-            .into());
-    };
-
-    let properties = {
-        let ctx = dom_ctx(context)?;
-        let doc = ctx.doc.borrow();
-        doc.get_node(node_id)
-            .and_then(|node| node.computed_style_properties())
-            .unwrap_or_default()
-    };
-
-    let mut declaration = ObjectInitializer::new(context);
-    for (name, value) in &properties {
-        // Both spellings, because scripts read `style.fontSize` as often as
-        // they call `getPropertyValue("font-size")`.
-        let camel: String = {
-            let mut out = String::with_capacity(name.len());
-            let mut upper = false;
-            for ch in name.chars() {
-                if ch == '-' {
-                    upper = true;
-                } else if upper {
-                    out.extend(ch.to_uppercase());
-                    upper = false;
-                } else {
-                    out.push(ch);
-                }
-            }
-            out
-        };
-        declaration.property(
-            js_string!(*name),
-            JsValue::from(js_string!(value.as_str())),
-            Attribute::all(),
-        );
-        if camel != *name {
-            declaration.property(
-                js_string!(camel.as_str()),
-                JsValue::from(js_string!(value.as_str())),
-                Attribute::all(),
-            );
-        }
-    }
-    declaration.function(
-        NativeFunction::from_fn_ptr(get_property_value),
-        js_string!("getPropertyValue"),
-        1,
-    );
-    Ok(declaration.build().into())
-}
-
-/// `CSSStyleDeclaration.getPropertyValue(name)` over the object built above.
-fn get_property_value(
-    this: &JsValue,
-    args: &[JsValue],
-    context: &mut Context,
-) -> JsResult<JsValue> {
-    let name = args
-        .first()
-        .unwrap_or(&JsValue::undefined())
-        .to_string(context)?;
-    let Some(object) = this.as_object() else {
-        return Ok(JsValue::from(js_string!("")));
-    };
-    match object.get(name, context) {
-        Ok(value) if !value.is_undefined() => Ok(value),
-        // A property this does not carry reads as unset, which is what a real
-        // browser answers for one it does not recognise.
-        _ => Ok(JsValue::from(js_string!(""))),
-    }
+    crate::domc::get_computed_style(args, context)
 }
 
 /// `__blitzObserveMutations(on)`: the prelude's `MutationObserver` turns the

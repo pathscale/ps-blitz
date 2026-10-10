@@ -368,6 +368,12 @@ impl ScriptDocument {
             pending.into_iter().partition(|script| script.deferred);
 
         for script in immediate.into_iter().chain(deferred) {
+            if self.startup_events_pending && script.deferred {
+                self.runtime.set_document_ready_state("interactive");
+                if self.runtime.jobs_remain() {
+                    break;
+                }
+            }
             // Marked before running, not after: a script that appends another
             // copy of itself, or that throws, must not be retried on every
             // poll for the life of the page.
@@ -391,6 +397,10 @@ impl ScriptDocument {
                             if script.kind == ScriptKind::Module {
                                 self.runtime.eval_module(&code, Some(&url), url.as_str());
                             } else {
+                                crate::domc::set_current_script(
+                                    &self.runtime.context,
+                                    Some(script.node_id),
+                                );
                                 self.runtime.eval_at(&code, Some(&url), url.as_str());
                             }
                             self.runtime.dispatch_node_event(script.node_id, "load");
@@ -414,6 +424,10 @@ impl ScriptDocument {
                                 "<inline module>",
                             );
                         } else {
+                            crate::domc::set_current_script(
+                                &self.runtime.context,
+                                Some(script.node_id),
+                            );
                             self.runtime.eval_at(
                                 &script.inline_text,
                                 base_url.as_ref(),
@@ -449,15 +463,30 @@ impl ScriptDocument {
 
         let mut ran = false;
         if self.startup_events_pending {
+            ran |= self.runtime.set_document_ready_state("interactive");
+            if self.runtime.jobs_remain() {
+                return ran;
+            }
             self.startup_events_pending = false;
             self.load_event_pending = true;
             self.runtime.dispatch_document_event("DOMContentLoaded");
             ran = true;
         }
-        if self.load_event_pending && !self.runtime.jobs_remain() {
-            self.load_event_pending = false;
-            self.runtime.dispatch_window_event("load");
-            ran = true;
+        let resources_pending = {
+            let doc = self.inner.borrow();
+            doc.has_pending_critical_resources() || doc.pending_image_count() != 0
+        };
+        if self.load_event_pending
+            && !self.runtime.jobs_remain()
+            && !resources_pending
+            && !self.runtime.has_pending_module_evaluations()
+        {
+            ran |= self.runtime.set_document_ready_state("complete");
+            if !self.runtime.jobs_remain() {
+                self.load_event_pending = false;
+                self.runtime.dispatch_window_event("load");
+                ran = true;
+            }
         }
         ran
     }
@@ -724,6 +753,7 @@ impl ScriptDocument {
         };
 
         let mut ran = subdocument_changes;
+        ran |= self.runtime.poll_domc();
         // Every poll resumes a yielded checkpoint, including a timer-free
         // settle pass. Jobs do not need a timer or a dummy eval to advance.
         ran |= self.runtime.run_jobs_with_progress("poll microtasks");

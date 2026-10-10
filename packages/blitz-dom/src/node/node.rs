@@ -1774,6 +1774,18 @@ impl Node {
         scale: f64,
         scrollbar: &mut Option<crate::node::ScrollbarRef>,
     ) -> Option<HitResult> {
+        self.hit_inner_collect(x, y, scale, scrollbar, &mut None)
+    }
+
+    /// Use the input hit traversal either for the foremost hit or for every hit.
+    pub(crate) fn hit_inner_collect(
+        &self,
+        x: f32,
+        y: f32,
+        scale: f64,
+        scrollbar: &mut Option<crate::node::ScrollbarRef>,
+        hits: &mut Option<Vec<HitResult>>,
+    ) -> Option<HitResult> {
         use style::computed_values::pointer_events::T as PointerEvents;
         use style::computed_values::visibility::T as Visibility;
 
@@ -1877,7 +1889,7 @@ impl Node {
                     let y = y - hoisted_child.position.y;
                     if let Some(hit) = self
                         .with(hoisted_child.node_id)
-                        .hit_inner(x, y, scale, scrollbar)
+                        .hit_inner_collect(x, y, scale, scrollbar, hits)
                     {
                         return Some(hit);
                     }
@@ -1887,7 +1899,10 @@ impl Node {
 
         // Call `.hit()` on each child in turn. If any return `Some` then return that value. Else return `Some(self.id).
         for child_id in self.paint_children.borrow().iter().flatten().rev() {
-            if let Some(hit) = self.with(*child_id).hit_inner(x, y, scale, scrollbar) {
+            if let Some(hit) = self
+                .with(*child_id)
+                .hit_inner_collect(x, y, scale, scrollbar, hits)
+            {
                 return Some(hit);
             }
         }
@@ -1905,7 +1920,7 @@ impl Node {
                     let y = y - hoisted_child.position.y;
                     if let Some(hit) = self
                         .with(hoisted_child.node_id)
-                        .hit_inner(x, y, scale, scrollbar)
+                        .hit_inner_collect(x, y, scale, scrollbar, hits)
                     {
                         return Some(hit);
                     }
@@ -1932,12 +1947,17 @@ impl Node {
                         .primary_styles()
                         .is_some_and(|style| style.clone_pointer_events() == PointerEvents::None);
                     if !text_pointer_events_none {
-                        return Some(HitResult {
+                        let hit = HitResult {
                             node_id,
                             x,
                             y,
                             is_text: true,
-                        });
+                        };
+                        if let Some(hits) = hits.as_mut() {
+                            hits.push(hit);
+                        } else {
+                            return Some(hit);
+                        }
                     }
                 }
             }
@@ -1945,12 +1965,17 @@ impl Node {
 
         // Self (this node)
         if matches_self && !pointer_events_none {
-            return Some(HitResult {
+            let hit = HitResult {
                 node_id: self.id,
                 x,
                 y,
                 is_text: false,
-            });
+            };
+            if let Some(hits) = hits.as_mut() {
+                hits.push(hit);
+            } else {
+                return Some(hit);
+            }
         }
 
         None
