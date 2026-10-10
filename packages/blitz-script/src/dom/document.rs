@@ -28,6 +28,14 @@ pub(crate) fn init_document_proto(proto: &JsObject, context: &mut Context) {
     define_accessor(proto, "implementation", Some(implementation), None, context);
     define_accessor(proto, "title", Some(title), None, context);
     define_accessor(proto, "defaultView", Some(default_view), None, context);
+    define_accessor(
+        proto,
+        "location",
+        Some(get_location),
+        Some(set_location),
+        context,
+    );
+    define_accessor(proto, "domain", Some(get_domain), Some(set_domain), context);
 
     define_method(proto, "createElement", 1, create_element, context);
     define_method(proto, "createElementNS", 2, create_element_ns, context);
@@ -138,6 +146,68 @@ fn active_element(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsRes
 fn default_view(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let _ = this_node_id(this)?;
     Ok(context.global_object().into())
+}
+
+/// `document.location`: the window's `Location`, the same object.
+fn get_location(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let _ = this_node_id(this)?;
+    context
+        .global_object()
+        .get(js_string!("location"), context)
+}
+
+/// `document.location = url` navigates, as `location.href = url` does.
+fn set_location(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let _ = this_node_id(this)?;
+    let location = context
+        .global_object()
+        .get(js_string!("location"), context)?;
+    if let Some(location) = location.as_object() {
+        location.set(
+            js_string!("href"),
+            args.first().cloned().unwrap_or_default(),
+            true,
+            context,
+        )?;
+    }
+    Ok(JsValue::undefined())
+}
+
+/// `document.domain`: the host of the document's URL.
+fn get_domain(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let _ = this_node_id(this)?;
+    let location = context
+        .global_object()
+        .get(js_string!("location"), context)?;
+    match location.as_object() {
+        Some(location) => location.get(js_string!("hostname"), context),
+        None => Ok(js_string!("").into()),
+    }
+}
+
+/// Setting `document.domain` to the current host or one of its parent
+/// domains is accepted and changes nothing, which is what Chromium does now
+/// that documents are origin-keyed; anything else is a SecurityError.
+fn set_domain(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let requested = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?
+        .to_ascii_lowercase();
+    let current = get_domain(this, &[], context)?
+        .to_string(context)?
+        .to_std_string_escaped()
+        .to_ascii_lowercase();
+    let allowed = !requested.is_empty()
+        && (current == requested
+            || (current.ends_with(&requested)
+                && current[..current.len() - requested.len()].ends_with('.')
+                && requested.contains('.')));
+    if !allowed {
+        return Err(boa_engine::JsNativeError::error()
+            .with_message(format!(
+                "SecurityError: '{requested}' is not a suffix of '{current}'"
+            ))
+            .into());
+    }
+    Ok(JsValue::undefined())
 }
 
 // === Node creation ===
