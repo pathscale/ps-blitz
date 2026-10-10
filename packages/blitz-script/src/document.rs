@@ -153,6 +153,13 @@ impl ScriptDocument {
         self.runtime.jobs_remain()
     }
 
+    /// When the soonest page timer is due, so a host can sleep exactly until
+    /// then instead of on a fixed tick (a `setTimeout(0)` continuation should
+    /// not wait for the host's next frame).
+    pub fn next_timer_deadline(&self) -> Option<std::time::Instant> {
+        self.runtime.next_timer_deadline()
+    }
+
     /// Override the [`ScriptFetcher`] used to load external (`src="..."`) scripts.
     /// The default fetcher supports `file:` and `data:` URLs.
     pub fn with_fetcher(self, fetcher: impl ScriptFetcher) -> Self {
