@@ -133,6 +133,20 @@ fn report_js_error(
     eprintln!("Uncaught JS error in {what}: {error}");
 }
 
+#[derive(Clone, Trace, Finalize, boa_engine::JsData)]
+struct HandlerErrorReporter {
+    #[unsafe_ignore_trace]
+    diagnostics: Rc<RefCell<RuntimeDiagnostics>>,
+}
+
+pub(crate) fn report_handler_error(context: &Context, what: &str, error: &JsError) {
+    if let Some(reporter) = context.get_data::<HandlerErrorReporter>() {
+        report_js_error(&reporter.diagnostics, what, error);
+    } else {
+        eprintln!("Uncaught JS error in {what}: {error}");
+    }
+}
+
 fn listener_error_context(
     event_name: &str,
     target: &str,
@@ -226,6 +240,9 @@ impl ScriptRuntime {
         let ctx = DomCtx::new(doc);
         context.insert_data(ctx.clone());
         let diagnostics = Rc::new(RefCell::new(RuntimeDiagnostics::default()));
+        context.insert_data(HandlerErrorReporter {
+            diagnostics: Rc::clone(&diagnostics),
+        });
 
         Console::register_with_logger(
             CapturingLogger {
@@ -1115,6 +1132,7 @@ impl ScriptRuntime {
         const MUTATION_DELIVERY_ROUNDS: usize = 32;
         let mut delivered = false;
         for _ in 0..MUTATION_DELIVERY_ROUNDS {
+            crate::dom::inline_handlers::sync(&self.ctx, &mut self.context);
             crate::dom::custom_elements::checkpoint(&self.ctx, &mut self.context);
             if let Err(error) = Rc::clone(&self.job_executor)
                 .run_jobs_with_budget(&mut self.context, self.job_budget.remaining())
@@ -1403,6 +1421,7 @@ impl ScriptRuntime {
     ) -> bool {
         let ctx = self.ctx.clone();
         let context = &mut self.context;
+        crate::dom::inline_handlers::sync(&ctx, context);
         let on_name = JsString::from(format!("on{name}"));
 
         #[cfg(feature = "shadow-dom")]
@@ -1450,6 +1469,11 @@ impl ScriptRuntime {
         }
 
         // Fast path: bail if no listener of this type could possibly be registered
+        let window_handler = bubbles
+            && context
+                .global_object()
+                .get(on_name, context)
+                .is_ok_and(|handler| handler.is_callable());
         let may_have_listeners = {
             let state = ctx.state.borrow();
             let registry_hit = chain.iter().any(|node_id| {
@@ -1462,12 +1486,11 @@ impl ScriptRuntime {
                 .window_listeners
                 .get(name)
                 .is_some_and(|listeners| !listeners.is_empty());
-            // `on<event>` handlers can only exist on nodes that script has touched
-            // (i.e. nodes with a cached wrapper)
+            // Recorded content attributes have already seeded their wrappers.
             let wrapper_hit = chain
                 .iter()
                 .any(|node_id| state.node_wrappers.contains_key(node_id));
-            registry_hit || wrapper_hit
+            registry_hit || wrapper_hit || window_handler
         };
         if !may_have_listeners {
             return false;
@@ -1514,31 +1537,6 @@ impl ScriptRuntime {
                 }
             }
             crate::dom::node::sync_node_listener_callbacks(&ctx, node_id, context);
-            // Upgraded: the cache is weak, and a wrapper the collector has
-            // taken cannot be carrying an `on<event>` handler, because holding
-            // one would have kept it alive.
-            let wrapper = ctx
-                .state
-                .borrow()
-                .node_wrappers
-                .get(&node_id)
-                .and_then(boa_engine::object::WeakJsObject::upgrade);
-            if let Some(wrapper) = wrapper {
-                if let Ok(handler) = wrapper.get(on_name.clone(), context) {
-                    if let Some(handler) = handler.as_object() {
-                        if handler.is_callable() {
-                            callbacks.push(handler);
-                        }
-                    }
-                }
-            }
-
-            if callbacks.is_empty() {
-                if !bubbles {
-                    break;
-                }
-                continue;
-            }
 
             let current_target: JsValue = node_wrapper(&ctx, node_id, context).into();
             let phase = if node_id == chain[0] { 2 } else { 3 };
@@ -1563,6 +1561,13 @@ impl ScriptRuntime {
                 }
             }
 
+            let wrapper = node_wrapper(&ctx, node_id, context);
+            any_called |= crate::dom::inline_handlers::invoke(
+                &ctx, &wrapper, &event_obj, name, context,
+            );
+            if event_ref(&event_obj, &|event| event.stopped_immediate.get()) {
+                break 'chain;
+            }
             if !bubbles || event_ref(&event_obj, &|event| event.stopped.get()) {
                 break;
             }
@@ -1581,25 +1586,29 @@ impl ScriptRuntime {
                     None => Vec::new(),
                 }
             };
-            if !listeners.is_empty() {
-                let global: JsValue = context.global_object().into();
-                crate::dom::define_value(&event_obj, "eventPhase", JsValue::from(3), context);
-                crate::dom::define_value(&event_obj, "currentTarget", global.clone(), context);
-                for listener in listeners {
-                    any_called = true;
-                    if let Err(error) =
-                        listener
-                            .callback
-                            .call(&global, &[event_obj.clone().into()], context)
-                    {
-                        let what =
-                            listener_error_context(name, "window", &listener.callback, context);
-                        report_js_error(&self.diagnostics, &what, &error);
-                    }
-                    if event_ref(&event_obj, &|event| event.stopped_immediate.get()) {
-                        break;
-                    }
+            let window = context.global_object().clone();
+            let global: JsValue = window.clone().into();
+            crate::dom::define_value(&event_obj, "eventPhase", JsValue::from(3), context);
+            crate::dom::define_value(&event_obj, "currentTarget", global.clone(), context);
+            for listener in listeners {
+                any_called = true;
+                if let Err(error) =
+                    listener
+                        .callback
+                        .call(&global, &[event_obj.clone().into()], context)
+                {
+                    let what =
+                        listener_error_context(name, "window", &listener.callback, context);
+                    report_js_error(&self.diagnostics, &what, &error);
                 }
+                if event_ref(&event_obj, &|event| event.stopped_immediate.get()) {
+                    break;
+                }
+            }
+            if !event_ref(&event_obj, &|event| event.stopped_immediate.get()) {
+                any_called |= crate::dom::inline_handlers::invoke(
+                    &ctx, &window, &event_obj, name, context,
+                );
             }
         }
 
@@ -1691,19 +1700,16 @@ impl ScriptRuntime {
             }
         }
 
-        // `window.onload = ...` style handler
-        let on_name = JsString::from(format!("on{name}"));
-        if let Ok(handler) = context.global_object().get(on_name, context) {
-            if let Some(handler) = handler.as_object() {
-                if handler.is_callable() {
-                    any_called = true;
-                    if let Err(error) = handler.call(&global, &[event_obj.into()], context) {
-                        let what = listener_error_context(name, "window.on*", &handler, context);
-                        report_js_error(&self.diagnostics, &what, &error);
-                    }
-                }
-            }
+        if !event_obj
+            .downcast_ref::<EventRef>()
+            .is_some_and(|event| event.stopped_immediate.get())
+        {
+            let window = context.global_object().clone();
+            any_called |= crate::dom::inline_handlers::invoke(
+                &ctx, &window, &event_obj, name, context,
+            );
         }
+        crate::dom::define_value(&event_obj, "currentTarget", JsValue::null(), context);
 
         if any_called {
             self.run_jobs("event microtasks");
@@ -2254,16 +2260,13 @@ fn dispatch_window_supplied_event(
         }
     }
 
-    // The `window.on<event>` form, which is how a page most often listens for
-    // `popstate`.
-    let on_name = JsString::from(format!("on{event_type}"));
+    // The `window.on<event>` form, including lazy body/frameset handlers.
     if !event
         .downcast_ref::<EventRef>()
         .is_some_and(|event| event.stopped_immediate.get())
-        && let Some(handler) = context.global_object().get(on_name, context)?.as_object()
-        && handler.is_callable()
     {
-        handler.call(&global, &[event.clone().into()], context)?;
+        let window = context.global_object().clone();
+        crate::dom::inline_handlers::invoke(&ctx, &window, &event, &event_type, context);
     }
 
     crate::dom::define_value(&event, "currentTarget", JsValue::null(), context);

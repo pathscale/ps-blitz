@@ -55,6 +55,10 @@ pub struct ElementData {
     /// The element's attributes
     pub attrs: Attributes,
 
+    /// Raw event handler content attributes. Script-assigned handlers live in
+    /// the script runtime instead. Absent on elements without on* attributes.
+    pub inline_event_attributes: Option<Box<Vec<Attribute>>>,
+
     /// Whether the element is focussable
     pub is_focussable: bool,
 
@@ -348,6 +352,7 @@ impl Clone for ElementData {
             name: self.name.clone(),
             id: self.id.clone(),
             attrs: self.attrs.clone(),
+            inline_event_attributes: self.inline_event_attributes.clone(),
             is_focussable: self.is_focussable,
             style_attribute: self.style_attribute.clone(),
             special_data: self.special_data.clone(),
@@ -504,6 +509,15 @@ impl ElementData {
     }
 
     pub fn new(name: QualName, attrs: Vec<Attribute>) -> Self {
+        let handlers: Vec<_> = attrs
+            .iter()
+            .filter(|attr| {
+                attr.name.ns == markup5ever::ns!()
+                    && attr.name.local.as_ref().starts_with("on")
+            })
+            .cloned()
+            .collect();
+        let inline_event_attributes = (!handlers.is_empty()).then(|| Box::new(handlers));
         let id_attr_atom = attrs
             .iter()
             .find(|attr| &attr.name.local == "id")
@@ -514,6 +528,7 @@ impl ElementData {
             name,
             id: id_attr_atom,
             attrs: Attributes::new(attrs),
+            inline_event_attributes,
             is_focussable: false,
             style_attribute: Default::default(),
             inline_layout_data: None,

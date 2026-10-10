@@ -16,6 +16,7 @@ pub(crate) mod event_interfaces;
 mod event_target;
 mod geometry;
 mod html_element;
+pub(crate) mod inline_handlers;
 pub(crate) mod interfaces;
 pub(crate) mod node;
 mod parsing;
@@ -135,6 +136,7 @@ pub(crate) fn node_wrapper(ctx: &DomCtx, node_id: NodeId, context: &mut Context)
         state.connected_wrappers.insert(node_id, wrapper.clone());
     }
     drop(state);
+    inline_handlers::seed(ctx, node_id, &wrapper, context);
     pin_detached_document(ctx, node_id, &wrapper, context);
     wrapper
 }
@@ -534,26 +536,15 @@ pub(crate) const ON_HANDLER_PREFIX: &str = "__blitz_internal_on_";
 /// Every CDN loader has this shape: create a script, set `onload`, append it,
 /// return, and wait on the promise the script resolves. Keeping its wrapper
 /// alive preserves the callback until the script load is acknowledged.
-fn define_on_event_accessor(proto: &JsObject, event_type: &'static str, context: &mut Context) {
-    // The event name is captured as the `'static` string it already is, so
-    // both closures stay `Copy` and need no unsafe constructor. Building the
-    // key costs one small allocation, on a path taken when a handler is read
-    // or written rather than once per frame.
+pub(crate) fn define_on_event_accessor(
+    proto: &JsObject,
+    event_type: &'static str,
+    context: &mut Context,
+) {
     let getter = FunctionObjectBuilder::new(
         context.realm(),
         NativeFunction::from_copy_closure(move |this, _args, context| {
-            let Some(object) = this.as_object() else {
-                return Ok(JsValue::null());
-            };
-            let stored = object.get(
-                JsString::from(format!("{ON_HANDLER_PREFIX}{event_type}")),
-                context,
-            )?;
-            Ok(if stored.is_undefined() {
-                JsValue::null()
-            } else {
-                stored
-            })
+            inline_handlers::get(this, event_type, context)
         }),
     )
     .name(JsString::from(format!("get on{event_type}")))
@@ -563,27 +554,7 @@ fn define_on_event_accessor(proto: &JsObject, event_type: &'static str, context:
     let setter = FunctionObjectBuilder::new(
         context.realm(),
         NativeFunction::from_copy_closure(move |this, args, context| {
-            let Some(object) = this.as_object() else {
-                return Ok(JsValue::undefined());
-            };
-            let value = args.first().cloned().unwrap_or(JsValue::null());
-            define_value(
-                &object,
-                &format!("{ON_HANDLER_PREFIX}{event_type}"),
-                value,
-                context,
-            );
-            // A handler on a node already in the document has to outlive the
-            // reference the page is about to drop. One assigned before
-            // insertion is rooted by the insertion instead: rooting a detached
-            // node here would keep alive exactly what the weak cache exists to
-            // release.
-            if let Ok(ctx) = dom_ctx(context)
-                && let Some(node_id) = node_id_of_value(this)
-            {
-                crate::dom::node::root_inline_event_handlers(&ctx, node_id, context);
-            }
-            Ok(JsValue::undefined())
+            inline_handlers::set(this, args, event_type, context)
         }),
     )
     .name(JsString::from(format!("set on{event_type}")))
@@ -652,4 +623,5 @@ pub(crate) fn init_protos(ctx: &DomCtx, context: &mut Context) {
     shadow::init(ctx, context);
     range::init(context);
     parsing::install(ctx, context);
+    inline_handlers::install(context);
 }

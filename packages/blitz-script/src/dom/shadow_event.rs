@@ -2,7 +2,7 @@
 
 use blitz_dom::NodeId;
 use boa_engine::object::JsObject;
-use boa_engine::{Context, JsNativeError, JsResult, JsString, JsValue, js_string};
+use boa_engine::{Context, JsNativeError, JsResult, JsValue, js_string};
 
 use super::{
     define_value,
@@ -47,6 +47,7 @@ pub(crate) fn dispatch(
             .with_message("dispatchEvent requires an Event")
             .into());
     }
+    super::inline_handlers::sync(ctx, context);
     let _dispatch = begin_dispatch(event, scripted, context)?;
     let name = to_rust_string(&event.get(js_string!("type"), context)?, context)?;
     let bubbles = event.get(js_string!("bubbles"), context)?.to_boolean();
@@ -136,6 +137,9 @@ pub(crate) fn dispatch(
                     break;
                 }
             }
+            if !immediate(event) {
+                called |= super::inline_handlers::invoke(ctx, &global, event, &name, context);
+            }
         }
         let prevented = cancelable
             && event
@@ -192,16 +196,7 @@ fn invoke(
     };
     super::node::sync_node_listener_callbacks(ctx, entry.id, context);
     let wrapper = node_wrapper(ctx, entry.id, context);
-    let mut callbacks = callbacks;
-    if !capture {
-        if let Some(handler) = wrapper
-            .get(JsString::from(format!("on{name}")), context)?
-            .as_callable()
-        {
-            callbacks.push(handler.clone());
-        }
-    }
-    if callbacks.is_empty() {
+    if callbacks.is_empty() && capture {
         return Ok(false);
     }
 
@@ -226,11 +221,17 @@ fn invoke(
         path.push(context.global_object().clone());
     }
     set_event_path(event, path);
+    let mut called = false;
     for callback in callbacks {
+        called = true;
         let _ = callback.call(&wrapper.clone().into(), &[event.clone().into()], context);
         if immediate(event) {
             break;
         }
     }
-    Ok(true)
+    if !capture && !immediate(event) {
+        called |= super::inline_handlers::invoke(ctx, &wrapper, event, name, context);
+    }
+    Ok(called)
 }
+
