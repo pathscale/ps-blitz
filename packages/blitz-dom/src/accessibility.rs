@@ -167,9 +167,8 @@ impl BaseDocument {
         let mut nodes = std::collections::HashMap::new();
         let mut window = AccessKitNode::new(Role::Window);
 
-        self.visit(|node_id, node| {
-            let parent = node
-                .parent
+        self.visit_flattened(|node_id, parent_id, node| {
+            let parent = parent_id
                 .and_then(|parent_id| nodes.get_mut(&parent_id))
                 .map(|(_, parent)| parent)
                 .unwrap_or(&mut window);

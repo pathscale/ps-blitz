@@ -7,8 +7,8 @@ use boa_engine::{
 };
 
 use super::{
-    define_accessor, define_method, define_value, dom_ctx, element, js_str, node_or_null,
-    node_wrapper, this_node_id, to_rust_string,
+    define_accessor, define_method, dom_ctx, element, js_str, node_or_null, node_wrapper,
+    this_node_id, to_rust_string,
 };
 use crate::state::DomCtx;
 
@@ -37,7 +37,10 @@ pub(crate) fn init(ctx: &DomCtx, context: &mut Context) {
     };
 
     let root = JsObject::with_object_proto(context.intrinsics());
-    root.set_prototype(Some(node.clone()));
+    root.set_prototype(Some(super::interfaces::prototype(
+        "DocumentFragment",
+        context,
+    )));
     define_accessor(&root, "host", Some(host), None, context);
     define_accessor(&root, "mode", Some(mode), None, context);
     define_accessor(
@@ -57,7 +60,6 @@ pub(crate) fn init(ctx: &DomCtx, context: &mut Context) {
     );
     define_method(&root, "getElementById", 1, get_element_by_id, context);
 
-    define_method(&node, "getRootNode", 0, get_root_node, context);
     define_accessor(&node, "assignedSlot", Some(assigned_slot), None, context);
     define_method(&element, "attachShadow", 1, attach_shadow, context);
     define_accessor(&element, "shadowRoot", Some(shadow_root), None, context);
@@ -66,23 +68,14 @@ pub(crate) fn init(ctx: &DomCtx, context: &mut Context) {
     define_method(&element, "assignedElements", 0, assigned_elements, context);
 
     context.insert_data(ShadowProtos { root: root.clone() });
-    context
-        .register_global_callable(
-            js_string!("ShadowRoot"),
-            0,
-            NativeFunction::from_fn_ptr(illegal_constructor),
-        )
-        .expect("failed to register ShadowRoot");
-    let constructor = context
-        .global_object()
-        .get(js_string!("ShadowRoot"), context)
-        .expect("ShadowRoot constructor missing")
-        .as_object()
-        .expect("ShadowRoot constructor is not an object");
-    constructor
-        .set(js_string!("prototype"), root.clone(), true, context)
-        .expect("failed to set ShadowRoot prototype");
-    define_value(&root, "constructor", constructor.into(), context);
+    super::interfaces::register(
+        "ShadowRoot",
+        Some("DocumentFragment"),
+        root.clone(),
+        0,
+        NativeFunction::from_fn_ptr(illegal_constructor),
+        context,
+    );
     super::sheets::init(&document, &root, context);
 }
 
@@ -191,26 +184,6 @@ fn mode(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValu
     } else {
         "closed"
     }))
-}
-
-fn get_root_node(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let ctx = dom_ctx(context)?;
-    let id = this_node_id(this)?;
-    let composed = match args.first().and_then(JsValue::as_object) {
-        Some(options) => options.get(js_string!("composed"), context)?.to_boolean(),
-        None => false,
-    };
-    let root_id = {
-        let doc = ctx.doc.borrow();
-        let mut id = doc.dom_root_id(id);
-        if composed {
-            while let Some(root) = doc.get_node(id).and_then(|node| node.shadow_root_data()) {
-                id = doc.dom_root_id(root.host);
-            }
-        }
-        id
-    };
-    Ok(node_wrapper(&ctx, root_id, context).into())
 }
 
 fn get_element_by_id(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
@@ -329,7 +302,7 @@ pub(crate) fn deliver_slot_changes(ctx: &DomCtx, context: &mut Context) -> bool 
     for id in slots {
         let target: JsValue = node_wrapper(ctx, id, context).into();
         let event = super::event::create_event(ctx, "slotchange", true, false, &target, context);
-        let _ = super::shadow_event::dispatch(ctx, id, &event, context);
+        let _ = super::shadow_event::dispatch(ctx, id, &event, false, context);
     }
     delivered
 }
