@@ -2,6 +2,7 @@
 
 pub(crate) mod attr;
 pub(crate) mod tree;
+pub(crate) mod traversal;
 
 use std::cell::{Cell, RefCell};
 use std::sync::{RwLock, Weak};
@@ -56,6 +57,7 @@ pub(crate) fn install(ctx: &DomCtx, context: &mut Context) {
     attr::install(&attr_proto, &map_proto, &element, &document, context);
     interface("Attr", &attr_proto, context);
     interface("NamedNodeMap", &map_proto, context);
+    traversal::install(&document, context);
 }
 
 fn illegal_constructor(_: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
