@@ -1443,9 +1443,11 @@ impl BaseDocument {
             .element_data()
             .and_then(|element| element.inline_event_attributes.as_deref())
         {
-            self.inline_handler_changes.extend(attributes.iter().map(|attr| {
-                (id, attr.name.clone(), Some(attr.value.clone()))
-            }));
+            self.inline_handler_changes.extend(
+                attributes
+                    .iter()
+                    .map(|attr| (id, attr.name.clone(), Some(attr.value.clone()))),
+            );
         }
         id
     }
@@ -1631,10 +1633,7 @@ impl BaseDocument {
                 let old_count = context.children.len();
                 context.children.retain(|child| {
                     !removed.contains(&child.node_id)
-                        && !child
-                            .clip_ancestors
-                            .iter()
-                            .any(|id| removed.contains(id))
+                        && !child.clip_ancestors.iter().any(|id| removed.contains(id))
                 });
                 if old_count != context.children.len() {
                     // Filtering changes the split between negative and
@@ -1687,14 +1686,16 @@ impl BaseDocument {
                     element.inline_layout_data = None;
                     reconstruct = true;
                 }
-                if element.list_item_data.as_ref().is_some_and(|item| {
-                    match &item.position {
+                if element
+                    .list_item_data
+                    .as_ref()
+                    .is_some_and(|item| match &item.position {
                         crate::node::ListItemLayoutPosition::Outside(layout) => {
                             layout_references_removed(layout, removed)
                         }
                         crate::node::ListItemLayoutPosition::Inside => false,
-                    }
-                }) {
+                    })
+                {
                     element.list_item_data = None;
                     reconstruct = true;
                 }
@@ -1706,7 +1707,10 @@ impl BaseDocument {
                     reconstruct = true;
                 }
                 #[cfg(feature = "shadow-dom")]
-                if element.assigned_slot.is_some_and(|id| removed.contains(&id)) {
+                if element
+                    .assigned_slot
+                    .is_some_and(|id| removed.contains(&id))
+                {
                     element.assigned_slot = None;
                     reconstruct = true;
                 }
@@ -1770,7 +1774,8 @@ impl BaseDocument {
             let nodes = &self.nodes;
             self.shadow_host_nodes.retain(|id| nodes.contains_key(*id));
             self.dirty_shadow_hosts.retain(|id| nodes.contains_key(*id));
-            self.pending_slot_changes.retain(|id| nodes.contains_key(*id));
+            self.pending_slot_changes
+                .retain(|id| nodes.contains_key(*id));
             self.signaled_slots.retain(|id| nodes.contains_key(*id));
             self.dirty_shadow_hosts
                 .extend(self.shadow_host_nodes.iter().copied());
@@ -1812,8 +1817,11 @@ impl BaseDocument {
         let node = self.nodes.remove(node_id);
         if let Some(node) = &node {
             self.dropped_node_ids.insert(node_id);
-            self.dropped_node_parents
-                .extend([node.parent, node.layout_parent.get()].into_iter().flatten());
+            self.dropped_node_parents.extend(
+                [node.parent, node.layout_parent.get()]
+                    .into_iter()
+                    .flatten(),
+            );
             self.purge_dropped_node_references();
         }
         node
@@ -3849,8 +3857,27 @@ impl BaseDocument {
         false
     }
 
+    /// SVG graphics bounds in the element's user coordinate system.
+    /// Callers must flush layout before reading, as for client rectangles.
+    pub fn get_svg_bbox(&self, node_id: NodeId) -> Option<BoundingRect> {
+        #[cfg(feature = "svg")]
+        {
+            self.svg_user_bbox(node_id)
+        }
+        #[cfg(not(feature = "svg"))]
+        {
+            let _ = node_id;
+            None
+        }
+    }
+
     /// Computes the size and position of the `Node` relative to the viewport
     pub fn get_client_bounding_rect(&self, node_id: NodeId) -> Option<BoundingRect> {
+        #[cfg(feature = "svg")]
+        if let Some(root) = self.svg_geometry_root(node_id) {
+            return self.svg_client_rect(root, node_id);
+        }
+
         // Non-atomic inline elements have no layout box of their own: return
         // the union of their per-line-box fragment rects.
         if let Some(rects) = self.inline_fragment_rects(node_id) {
@@ -3949,6 +3976,10 @@ impl BaseDocument {
     /// return a single rect. Non-atomic inline elements (which are laid out as style
     /// spans within an inline root's text layout) return one rect per line box.
     pub fn node_client_rects(&self, node_id: NodeId) -> Vec<BoundingRect> {
+        #[cfg(feature = "svg")]
+        if self.svg_geometry_root(node_id).is_some() {
+            return self.get_client_bounding_rect(node_id).into_iter().collect();
+        }
         match self.inline_fragment_rects(node_id) {
             Some(rects) => rects
                 .into_iter()
@@ -4636,7 +4667,10 @@ impl BaseDocument {
         if name.ns != markup5ever::ns!() || !name.local.as_ref().starts_with("on") {
             return;
         }
-        let Some(element) = self.nodes.get_mut(node_id).and_then(|node| node.element_data_mut())
+        let Some(element) = self
+            .nodes
+            .get_mut(node_id)
+            .and_then(|node| node.element_data_mut())
         else {
             return;
         };
@@ -4672,7 +4706,8 @@ impl BaseDocument {
                 element.inline_event_attributes = None;
             }
         }
-        self.inline_handler_changes.push((node_id, name.clone(), value));
+        self.inline_handler_changes
+            .push((node_id, name.clone(), value));
     }
 
     /// Take content handler changes in mutation order.

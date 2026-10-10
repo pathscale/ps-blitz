@@ -271,6 +271,8 @@ pub(crate) mod damage;
 pub(crate) mod inline;
 pub(crate) mod list;
 pub(crate) mod replaced;
+#[cfg(feature = "svg")]
+pub(crate) mod svg_geometry;
 pub(crate) mod table;
 
 use self::replaced::{ReplacedContext, is_replaced_element, replaced_measure_function};

@@ -968,6 +968,22 @@ impl<'a> TElement for BlitzNode<'a> {
             ));
         };
 
+        // SVG pointer-events is a presentation attribute. Putting it in the
+        // cascade lets CSS override it and descendants restore auto.
+        if elem.name.ns.as_ref() == "http://www.w3.org/2000/svg"
+            && let Some(value) = elem.attr(markup5ever::LocalName::from("pointer-events"))
+        {
+            use style::computed_values::pointer_events::T as PointerEvents;
+            let value = match value.trim() {
+                "none" => Some(PointerEvents::None),
+                "auto" => Some(PointerEvents::Auto),
+                _ => None,
+            };
+            if let Some(value) = value {
+                push_style(PropertyDeclaration::PointerEvents(value));
+            }
+        }
+
         fn parse_color_attr(value: &str) -> Option<(u8, u8, u8, f32)> {
             if !value.starts_with('#') {
                 return None;

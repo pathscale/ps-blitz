@@ -112,7 +112,7 @@ pub fn implicit_role(element: &ElementData) -> Role {
 
         // Interactive
         // An <a> is only a link when it has an href.
-        "a" => match element.attr(local_name!("href")) {
+        "a" => match element.link_href() {
             Some(_) => Role::Link,
             None => Role::GenericContainer,
         },

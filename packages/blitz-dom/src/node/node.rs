@@ -1417,6 +1417,21 @@ impl Node {
         self.write_outer_html_in_style(writer, OutputStyle::Normal, 0, Some(current_color));
     }
 
+    #[cfg(feature = "svg")]
+    pub(crate) fn write_outer_html_with_svg_ids(
+        &self,
+        writer: &mut String,
+        ids: &std::collections::HashMap<NodeId, String>,
+    ) {
+        self.write_outer_html_in_style_with_svg_ids(
+            writer,
+            OutputStyle::Normal,
+            0,
+            None,
+            Some(ids),
+        );
+    }
+
     pub fn write_outer_html_pretty(&self, writer: &mut String) {
         self.write_outer_html_in_style(writer, OutputStyle::Pretty, 0, None);
     }
@@ -1427,6 +1442,23 @@ impl Node {
         style: OutputStyle,
         nesting: usize,
         current_color_override: Option<&str>,
+    ) {
+        self.write_outer_html_in_style_with_svg_ids(
+            writer,
+            style,
+            nesting,
+            current_color_override,
+            None,
+        );
+    }
+
+    fn write_outer_html_in_style_with_svg_ids(
+        &self,
+        writer: &mut String,
+        style: OutputStyle,
+        nesting: usize,
+        current_color_override: Option<&str>,
+        svg_ids: Option<&std::collections::HashMap<NodeId, String>>,
     ) {
         const INDENT: &str = "  ";
         let has_children = !self.children.is_empty();
@@ -1466,10 +1498,32 @@ impl Node {
                         writer.push_str(INDENT);
                     }
                 }
+                // A hyperlink is a graphics container in the image source.
+                // Its live DOM name, attributes and event ancestry stay intact.
+                let tag_name = if svg_ids.is_some()
+                    && data.name.ns.as_ref() == "http://www.w3.org/2000/svg"
+                    && data.name.local == local_name!("a")
+                {
+                    "g"
+                } else {
+                    data.name.local.as_ref()
+                };
+                let svg_id = svg_ids.and_then(|ids| ids.get(&self.id));
                 writer.push('<');
-                writer.push_str(&data.name.local);
+                writer.push_str(tag_name);
+                if let Some(id) = svg_id {
+                    writer.push_str(" id=\"");
+                    encode_quoted_attribute_to_string(id, writer);
+                    writer.push('"');
+                }
 
                 for attr in data.attrs() {
+                    if svg_id.is_some()
+                        && attr.name.ns.as_ref().is_empty()
+                        && attr.name.local == local_name!("id")
+                    {
+                        continue;
+                    }
                     writer.push(' ');
                     if let Some(prefix) = attr
                         .name
@@ -1503,11 +1557,12 @@ impl Node {
 
                 if has_children {
                     for &child_id in &self.children {
-                        self.tree()[child_id].write_outer_html_in_style(
+                        self.tree()[child_id].write_outer_html_in_style_with_svg_ids(
                             writer,
                             style,
                             nesting + 1,
                             current_color_override,
+                            svg_ids,
                         );
                     }
 
@@ -1517,7 +1572,7 @@ impl Node {
                         }
                     }
                     writer.push_str("</");
-                    writer.push_str(&data.name.local);
+                    writer.push_str(tag_name);
                     writer.push('>');
                     if matches!(style, OutputStyle::Pretty) {
                         writer.push('\n');
@@ -2102,6 +2157,12 @@ impl Node {
                     }
                 }
             }
+        }
+
+        // Inline SVG descendants have image geometry instead of layout boxes.
+        #[cfg(feature = "svg")]
+        if matches_self && let Some(hit) = self.hit_inline_svg(x, y, hits) {
+            return Some(hit);
         }
 
         // Inline children

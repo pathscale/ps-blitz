@@ -76,6 +76,15 @@ impl BaseDocument {
                 _ => true,
             }
         };
+        // SVG computed values can change the serialized image without
+        // changing a taffy box. Rebuild the image and geometry together.
+        #[cfg(feature = "svg")]
+        if super::svg_geometry::is_svg(&self.nodes[node_id])
+            && (style_changed || !damage.is_empty())
+        {
+            damage.insert(CONSTRUCT_BOX);
+        }
+
         self.abspos_candidates_dirty |=
             style_changed || damage.intersects(CONSTRUCT_BOX | CONSTRUCT_FC | CONSTRUCT_DESCENDENT);
         self.abspos_layout_dirty |=
@@ -94,6 +103,10 @@ impl BaseDocument {
         let flattened_children = self.nodes[node_id].flattened_children.clone();
         let layout_children = std::mem::take(self.nodes[node_id].layout_children.get_mut());
         let use_layout_children = self.nodes[node_id].should_traverse_layout_children();
+        // SVG image roots have empty layout children but live DOM descendants.
+        #[cfg(feature = "svg")]
+        let use_layout_children =
+            use_layout_children && !super::svg_geometry::is_svg(&self.nodes[node_id]);
         // A host or assigned slot must follow its current composition. Its
         // retained box children may still describe the previous assignment.
         #[cfg(feature = "shadow-dom")]

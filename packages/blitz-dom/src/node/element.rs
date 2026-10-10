@@ -72,6 +72,10 @@ pub struct ElementData {
     ///   - The text editor for input/textarea elements
     pub special_data: SpecialElementData,
 
+    /// DOM geometry owned by an inline SVG root, rebuilt with its image.
+    #[cfg(feature = "svg")]
+    pub(crate) svg_geometry: Option<Arc<crate::layout::svg_geometry::SvgGeometry>>,
+
     pub background_images: Vec<Option<ImageResourceData>>,
 
     pub mask_images: Vec<Option<ImageResourceData>>,
@@ -356,6 +360,8 @@ impl Clone for ElementData {
             is_focussable: self.is_focussable,
             style_attribute: self.style_attribute.clone(),
             special_data: self.special_data.clone(),
+            #[cfg(feature = "svg")]
+            svg_geometry: None,
             background_images: self.background_images.clone(),
             mask_images: self.mask_images.clone(),
             inline_layout_data: self.inline_layout_data.clone(),
@@ -512,8 +518,7 @@ impl ElementData {
         let handlers: Vec<_> = attrs
             .iter()
             .filter(|attr| {
-                attr.name.ns == markup5ever::ns!()
-                    && attr.name.local.as_ref().starts_with("on")
+                attr.name.ns == markup5ever::ns!() && attr.name.local.as_ref().starts_with("on")
             })
             .cloned()
             .collect();
@@ -534,6 +539,8 @@ impl ElementData {
             inline_layout_data: None,
             list_item_data: None,
             special_data: SpecialElementData::None,
+            #[cfg(feature = "svg")]
+            svg_geometry: None,
             template_contents: None,
             shadow_root: None,
             assigned_slot: None,
@@ -585,6 +592,22 @@ impl ElementData {
             .iter()
             .find(|attr| attr.name.ns == markup5ever::ns!() && name == attr.name.local)?;
         Some(&attr.value)
+    }
+
+    /// SVG links accept xlink:href, with an unnamespaced href taking precedence.
+    pub fn link_href(&self) -> Option<&str> {
+        self.attr(local_name!("href")).or_else(|| {
+            if self.name.ns != markup5ever::ns!(svg) {
+                return None;
+            }
+            self.attrs()
+                .iter()
+                .find(|attr| {
+                    attr.name.ns == markup5ever::ns!(xlink)
+                        && attr.name.local == local_name!("href")
+                })
+                .map(|attr| attr.value.as_ref())
+        })
     }
 
     pub fn attr_parsed<T: FromStr>(&self, name: impl PartialEq<LocalName>) -> Option<T> {

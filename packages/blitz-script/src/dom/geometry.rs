@@ -720,6 +720,21 @@ fn bounding_rect(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResu
     Ok(new_rect("DOMRect", values, context).into())
 }
 
+fn svg_bbox(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let id = this_node_id(this)?;
+    let ctx = dom_ctx(context)?;
+    ctx.flush_layout();
+    let rect = ctx.doc.borrow().get_svg_bbox(id).ok_or_else(|| {
+        JsNativeError::typ().with_message("getBBox requires an SVG graphics element")
+    })?;
+    Ok(new_rect(
+        "DOMRect",
+        [rect.x, rect.y, rect.width, rect.height],
+        context,
+    )
+    .into())
+}
+
 fn client_rects(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let boxes = boxes(this, context)?;
     let items = boxes
@@ -988,4 +1003,6 @@ pub(super) fn init(element: &JsObject, context: &mut Context) {
     }
     define_method(element, "getBoundingClientRect", 0, bounding_rect, context);
     define_method(element, "getClientRects", 0, client_rects, context);
+    let svg = super::interfaces::prototype("SVGElement", context);
+    define_method(&svg, "getBBox", 0, svg_bbox, context);
 }
