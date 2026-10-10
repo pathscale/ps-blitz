@@ -632,9 +632,11 @@ impl Node {
 
     pub fn set_restyle_hint(&mut self, hint: RestyleHint) {
         if let Some(stylo_element_data) = self.stylo_element_data_opt_mut() {
-            if let Some(mut element_data) = stylo_element_data.get_mut() {
-                element_data.hint.insert(hint);
-            }
+            // A new shadow host or slot can acquire descendants that already
+            // have styles. Preserve the subtree hint before its first style
+            // traversal so those descendants also rematch their rules.
+            let mut element_data = stylo_element_data.ensure_init_mut();
+            element_data.hint.insert(hint);
         }
         // Mark all ancestors as having dirty descendants so the style traversal
         // will visit this node's subtree
@@ -685,9 +687,10 @@ impl Node {
 
         while let Some(parent) = current {
             if let Some(flag) = parent.dirty_descendants_flag() {
-                if flag.swap(true, Ordering::Relaxed) {
-                    break;
-                }
+                // New elements start dirty, and insertion or slot assignment
+                // can change the ancestry of an already-dirty element. Its
+                // flag does not prove that this ancestor chain is dirty.
+                flag.store(true, Ordering::Relaxed);
             }
             current = parent.flattened_parent();
         }
