@@ -8,6 +8,7 @@ mod custom_widget;
 mod element;
 mod node;
 pub(crate) mod scrollbar;
+pub mod script_custom_element;
 mod select;
 mod stylo_data;
 mod text;

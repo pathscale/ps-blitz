@@ -27,6 +27,7 @@ mod geometry;
 mod html_element;
 
 use blitz_dom::NodeId;
+use blitz_dom::node::NodeData;
 use blitz_dom::{LocalName, Namespace, QualName};
 use boa_engine::object::{FunctionObjectBuilder, JsObject, WeakJsObject};
 use boa_engine::property::{PropertyDescriptor, PropertyKey};
@@ -89,21 +90,23 @@ pub(crate) fn node_wrapper(ctx: &DomCtx, node_id: NodeId, context: &mut Context)
         return wrapper;
     }
 
+    let custom_prototype = custom_elements::element_prototype(ctx, node_id, context);
     let proto = {
         let doc = ctx.doc.borrow();
         let state = ctx.state.borrow();
         let data = doc.get_node(node_id).map(|node| &node.data);
-        #[cfg(feature = "shadow-dom")]
-        if matches!(data, Some(blitz_dom::node::NodeData::ShadowRoot(_))) {
-            shadow::root_proto(context)
-        } else {
-            interfaces::node_prototype(data, state.protos(), context)
+        let is_element = matches!(
+            data,
+            Some(NodeData::Element(_)) | Some(NodeData::AnonymousBlock(_))
+        );
+        match custom_prototype {
+            // A defined custom element takes its class's prototype.
+            Some(custom) if is_element => custom,
+            #[cfg(feature = "shadow-dom")]
+            _ if matches!(data, Some(NodeData::ShadowRoot(_))) => shadow::root_proto(context),
+            _ => interfaces::node_prototype(data, state.protos(), context),
         }
-        #[cfg(not(feature = "shadow-dom"))]
-        interfaces::node_prototype(data, state.protos(), context)
     };
-    #[cfg(not(feature = "shadow-dom"))]
-    let _ = context;
 
     let wrapper = JsObject::from_proto_and_data(Some(proto), NodeRef { node_id });
     let connected = ctx
@@ -335,7 +338,12 @@ pub(crate) fn define_method(
     body: NativeFnPtr,
     context: &mut Context,
 ) {
-    let function = FunctionObjectBuilder::new(context.realm(), NativeFunction::from_fn_ptr(body))
+    let function = FunctionObjectBuilder::new(
+        context.realm(),
+        NativeFunction::from_copy_closure(move |this, args, context| {
+            custom_elements::native_scope(this, args, context, body)
+        }),
+    )
         .name(JsString::from(name))
         .length(length)
         .build();
@@ -367,7 +375,12 @@ pub(crate) fn define_accessor(
             .build()
     });
     let setter = setter.map(|s| {
-        FunctionObjectBuilder::new(context.realm(), NativeFunction::from_fn_ptr(s))
+        FunctionObjectBuilder::new(
+            context.realm(),
+            NativeFunction::from_copy_closure(move |this, args, context| {
+                custom_elements::native_scope(this, args, context, s)
+            }),
+        )
             .name(JsString::from(format!("set {name}")))
             .length(1)
             .build()

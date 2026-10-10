@@ -105,6 +105,11 @@ pub struct Node {
     /// searches while walking an unchanged sibling list. Mutations need not
     /// maintain this field: readers always validate it against the child list.
     child_index_hint: Cell<usize>,
+    /// The owning document, including when this node is detached.
+    /// Document nodes themselves have no owner.
+    pub owner_document: Option<NodeId>,
+    /// Script custom element candidates in this shadow-including subtree.
+    pub custom_element_subtree_count: usize,
     // What are our children?
     pub children: ThinVec<NodeId>,
     /// Our parent in the layout hierachy: a separate list that includes anonymous collections of inline elements
@@ -373,6 +378,8 @@ impl Node {
             id,
             parent: None,
             child_index_hint: Cell::new(0),
+            owner_document: None,
+            custom_element_subtree_count: 0,
             children: ThinVec::new(),
             layout_parent: Cell::new(None),
             layout_children: RefCell::new(None),

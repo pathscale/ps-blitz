@@ -482,6 +482,9 @@ pub struct BaseDocument {
     #[cfg(feature = "shadow-dom")]
     pub(crate) custom_element_nodes: HashSet<NodeId>,
 
+    /// Native candidate index and mutation reactions for JavaScript custom elements.
+    pub(crate) script_custom_elements: crate::node::script_custom_element::Registry,
+
     /// Cache of loaded images, keyed by URL. Allows reusing images across multiple
     /// elements without re-fetching from the network.
     pub(crate) image_cache: HashMap<String, ImageData>,
@@ -712,6 +715,7 @@ impl BaseDocument {
 
             deferred_construction_nodes: Vec::new(),
             paint_damage: Default::default(),
+            script_custom_elements: Default::default(),
             image_cache: HashMap::new(),
             pending_images: HashMap::new(),
             pending_critical_resources: HashSet::new(),
@@ -1180,6 +1184,7 @@ impl BaseDocument {
         // `children` list (which holds light-DOM children); it is referenced via
         // the host's `ElementData::shadow_root` field instead.
         self.nodes[shadow_root_id].parent = Some(host_id);
+        self.nodes[shadow_root_id].owner_document = self.nodes[host_id].owner_document;
         if self.nodes[host_id].flags.is_in_document() {
             self.nodes[shadow_root_id]
                 .flags
@@ -1310,9 +1315,14 @@ impl BaseDocument {
     pub fn create_node(&mut self, node_data: NodeData) -> NodeId {
         let tree_ptr = self.nodes.as_mut() as *mut NodeTree;
         let guard = self.guard.clone();
-
-        self.nodes
-            .insert_with_key(|id| Node::new(tree_ptr, id, guard, node_data))
+        let is_document = matches!(node_data, NodeData::Document(_));
+        let id = self.nodes
+            .insert_with_key(|id| Node::new(tree_ptr, id, guard, node_data));
+        if !is_document {
+            self.nodes[id].owner_document = Some(self.root_node_id);
+        }
+        self.register_script_custom_element(id);
+        id
     }
 
     /// Remove a node from the node tree, clearing any interaction state
@@ -1320,6 +1330,7 @@ impl BaseDocument {
     /// it so that stale NodeIds are never dereferenced after the slot is freed.
     pub(crate) fn remove_node_from_tree(&mut self, node_id: NodeId) -> Option<Node> {
         self.clear_interaction_state_for_removed_node(node_id);
+        self.forget_script_custom_element(node_id);
         self.nodes.remove(node_id)
     }
 
@@ -1504,9 +1515,11 @@ impl BaseDocument {
         let template_contents = node
             .element_data()
             .and_then(|element| element.template_contents);
+        let owner_document = node.owner_document;
 
         // Create new node
         let new_node_id = self.create_node(data);
+        self.nodes[new_node_id].owner_document = owner_document;
         if let Some(contents) = template_contents {
             let cloned_contents = self.deep_clone_node(contents);
             self.nodes[new_node_id]
@@ -1522,6 +1535,7 @@ impl BaseDocument {
             .collect();
         for &child_id in &new_children {
             self.nodes[child_id].parent = Some(new_node_id);
+            self.attach_script_custom_element_subtree(child_id, new_node_id);
         }
         self.nodes[new_node_id].children = new_children;
 

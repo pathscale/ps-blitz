@@ -106,7 +106,6 @@ pub(crate) fn install(context: &mut Context) {
     define_accessor(&document_proto, "hidden", Some(hidden), None, context);
     define_accessor(&document_proto, "characterSet", Some(character_set), None, context);
     define_accessor(&document_proto, "domain", Some(domain), None, context);
-    define_method(&document_proto, "adoptNode", 1, adopt_node, context);
     define_method(
         &document_proto,
         "elementFromPoint",
@@ -396,31 +395,6 @@ fn element_from_point(this: &JsValue, args: &[JsValue], context: &mut Context) -
 fn elements_from_point(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ids = point_ids(this, args, context)?;
     wrap_ids(ids, context)
-}
-
-fn adopt_node(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    if !is_main_document(this, context)? {
-        return Err(exception(
-            "NotSupportedError",
-            "Adoption into a detached document needs per-node document ownership",
-            context,
-        ));
-    }
-    let value = args.first().cloned().unwrap_or_else(JsValue::undefined);
-    let id = this_node_id(&value)?;
-    let ctx = dom_ctx(context)?;
-    let unsupported = {
-        let doc = ctx.doc.borrow();
-        matches!(
-            doc.get_node(id).map(|node| &node.data),
-            Some(NodeData::Document(_)) | Some(NodeData::ShadowRoot(_)) | None
-        )
-    };
-    if unsupported {
-        return Err(exception("NotSupportedError", "This node cannot be adopted", context));
-    }
-    crate::dom::remove_and_free_node(&ctx, id, context);
-    Ok(value)
 }
 
 fn sheet_owners(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {

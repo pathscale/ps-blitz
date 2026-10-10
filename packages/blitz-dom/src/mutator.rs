@@ -372,6 +372,7 @@ impl DocumentMutator<'_> {
         if name.local == local_name!("slot") || name.local == local_name!("name") {
             self.doc.note_shadow_tree_change(node_id);
         }
+        self.doc.record_script_custom_element_attribute(node_id, &name, Some(value));
         let node_is_in_document = self.doc.nodes[node_id].flags.is_in_document();
         if node_is_in_document && self.doc.is_recording_mutations() {
             // Recorded even when the value does not change: a browser reports
@@ -626,6 +627,7 @@ impl DocumentMutator<'_> {
         if name.local == local_name!("slot") || name.local == local_name!("name") {
             self.doc.note_shadow_tree_change(node_id);
         }
+        self.doc.record_script_custom_element_attribute(node_id, &name, None);
         let node_is_in_document = self.doc.nodes[node_id].flags.is_in_document();
         if node_is_in_document && self.doc.is_recording_mutations() {
             // Removing an attribute that is not there changes nothing, and a
@@ -1026,6 +1028,7 @@ impl DocumentMutator<'_> {
 
     pub fn remove_node(&mut self, node_id: NodeId) {
         self.record_removal(node_id);
+        self.doc.detach_script_custom_element_subtree(node_id);
         let node_is_in_document = self.doc.nodes[node_id].flags.is_in_document();
         // Process the subtree *before* severing the parent link so that
         // interaction state referencing removed nodes can retarget to the
@@ -1068,6 +1071,7 @@ impl DocumentMutator<'_> {
         on_drop: &mut dyn FnMut(NodeId),
     ) -> Option<Node> {
         self.record_removal(node_id);
+        self.doc.detach_script_custom_element_subtree(node_id);
         let node_is_in_document = self.doc.nodes[node_id].flags.is_in_document();
         self.process_removed_subtree(node_id);
         self.invalidate_layout_parent_edge(node_id);
@@ -1132,6 +1136,7 @@ impl DocumentMutator<'_> {
         let children = mem::take(&mut parent.children);
         self.mutations_occurred |= parent_is_in_doc && !children.is_empty();
         for child_id in children {
+            self.doc.detach_script_custom_element_subtree(child_id);
             self.process_removed_subtree(child_id);
             self.invalidate_layout_parent_edge(child_id);
             let _ = self.doc.drop_node_ignoring_parent(child_id);
@@ -1217,6 +1222,7 @@ impl DocumentMutator<'_> {
         // child list that still contains the moved nodes.
         for child_id in child_ids.iter().copied() {
             self.record_removal(child_id);
+            self.doc.detach_script_custom_element_subtree(child_id);
             self.invalidate_layout_parent_edge(child_id);
             let child = &mut self.doc.nodes[child_id];
             let child_was_in_doc = child.flags.is_in_document();
@@ -1265,6 +1271,7 @@ impl DocumentMutator<'_> {
             let child = &mut self.doc.nodes[child_id];
             let child_was_in_doc = child.flags.is_in_document();
             child.parent = Some(parent_id);
+            self.doc.attach_script_custom_element_subtree(child_id, parent_id);
 
             if new_parent_is_in_document && !child_was_in_doc {
                 self.process_added_subtree(child_id);

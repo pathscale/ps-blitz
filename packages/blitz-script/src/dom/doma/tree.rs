@@ -580,8 +580,10 @@ fn insert(
     for id in nodes {
         crate::dom::mark_node_reattached(ctx, id);
         crate::dom::node::root_inline_event_handlers(ctx, id, context);
-        crate::dom::custom_elements::upgrade_if_defined(ctx, id, context)?;
     }
+    // Custom element reactions for the inserted subtrees (upgrades,
+    // connectedCallback), from the native mutation records.
+    crate::dom::custom_elements::checkpoint(ctx, context);
     Ok(())
 }
 
