@@ -1471,7 +1471,12 @@ impl Node {
 
                 for attr in data.attrs() {
                     writer.push(' ');
-                    if let Some(prefix) = &attr.name.prefix {
+                    if let Some(prefix) = attr
+                        .name
+                        .prefix
+                        .as_ref()
+                        .filter(|prefix| !prefix.is_empty())
+                    {
                         writer.push_str(prefix);
                         writer.push(':');
                     }
@@ -1552,7 +1557,12 @@ impl Node {
                 writer.push_str(&data.name.local);
                 for attr in data.attrs() {
                     writer.push(' ');
-                    if let Some(prefix) = &attr.name.prefix {
+                    if let Some(prefix) = attr
+                        .name
+                        .prefix
+                        .as_ref()
+                        .filter(|prefix| !prefix.is_empty())
+                    {
                         writer.push_str(prefix);
                         writer.push(':');
                     }
