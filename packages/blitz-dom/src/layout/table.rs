@@ -35,6 +35,20 @@ pub struct TableContext {
     pub border_collapse: BorderCollapse,
 }
 
+impl TableContext {
+    pub(crate) fn references_removed_nodes(
+        &self,
+        removed: &std::collections::HashSet<NodeId>,
+    ) -> bool {
+        self.cells.iter().any(|cell| removed.contains(&cell.node_id))
+            || self.rows.iter().any(|row| removed.contains(&row.node_id))
+            || self
+                .row_groups
+                .iter()
+                .any(|group| removed.contains(&group.node_id))
+    }
+}
+
 // #[derive(Debug, Clone, Eq, PartialEq)]
 // pub enum TableItemKind {
 //     Row,
@@ -92,9 +106,8 @@ pub(crate) fn build_table_context(
     style.item_is_table = true;
     // Use `dense` row-flow so that each cell scans the row from its
     // leftmost column for the first free track. Without `dense`,
-    // `place_definite_secondary_axis_item` keeps a per-item secondary
-    // cursor across rows, which means cells in later rows do not
-    // backfill columns freed up by rowspan cells from earlier rows.
+    // Taffy's placement cursor advances globally across rows, which means
+    // cells in later rows do not backfill columns freed up by rowspan cells.
     style.grid_auto_flow = taffy::GridAutoFlow::RowDense;
     style.grid_auto_columns = Vec::new();
     style.grid_auto_rows = Vec::new();
