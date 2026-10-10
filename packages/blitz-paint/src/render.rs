@@ -292,7 +292,11 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         parent_style_transform: Affine,
         clip_rect: Rect,
     ) {
-        let node = &self.dom.as_ref().tree()[node_id];
+        // A cached paint or hoisted child list can name a node that the
+        // detached-node sweep has since freed; a freed node paints nothing.
+        let Some(node) = self.dom.as_ref().tree().get(node_id) else {
+            return;
+        };
 
         // Early return if the element is hidden
         if matches!(node.style().display, taffy::Display::None) {
@@ -676,7 +680,9 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         parent_style_transform: Affine,
         clip_rect: Rect,
     ) {
-        let node = &self.dom.as_ref().tree()[node_id];
+        let Some(node) = self.dom.as_ref().tree().get(node_id) else {
+            return;
+        };
 
         match &node.data {
             NodeData::Element(_) | NodeData::AnonymousBlock(_) => {
