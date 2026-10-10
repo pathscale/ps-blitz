@@ -163,8 +163,8 @@ impl TreeSink for PreloadSink {
         attributes: Vec<Attribute>,
         _: ElementFlags,
     ) -> Self::Handle {
-        let script = (name.local.as_ref() == "script")
-            .then(|| ScriptTag::from_attributes(&attributes));
+        let script =
+            (name.local.as_ref() == "script").then(|| ScriptTag::from_attributes(&attributes));
         let node = PreloadNode::new(Some(name), script);
         if node.script.is_some() {
             self.scripts.borrow_mut().push(Rc::clone(&node));
@@ -256,4 +256,3 @@ impl TreeSink for PreloadSink {
         }
     }
 }
-
