@@ -255,6 +255,8 @@ pub struct BaseDocument {
     /// Changes recorded for a script's `MutationObserver`, or `None` while no
     /// observer is registered. See [`crate::DomMutation`].
     pub(crate) mutation_log: Option<Vec<crate::DomMutation>>,
+    /// Content handler changes, independent of MutationObserver recording.
+    inline_handler_changes: Vec<(NodeId, crate::QualName, Option<crate::node::AttrAtom>)>,
     /// Weak registrations make pages without live ranges pay only a branch.
     pub(crate) live_ranges: Vec<crate::range::WeakRange>,
     /// Script Selection shares the same live range object as getRangeAt().
@@ -694,6 +696,7 @@ impl BaseDocument {
             devtool_settings: DevtoolSettings::default(),
             viewport_scroll: crate::Point::ZERO,
             mutation_log: None,
+            inline_handler_changes: Vec::new(),
             live_ranges: Vec::new(),
             dom_selection: None,
             url: base_url,
@@ -1436,6 +1439,14 @@ impl BaseDocument {
             self.nodes[id].owner_document = Some(self.root_node_id);
         }
         self.register_script_custom_element(id);
+        if let Some(attributes) = self.nodes[id]
+            .element_data()
+            .and_then(|element| element.inline_event_attributes.as_deref())
+        {
+            self.inline_handler_changes.extend(attributes.iter().map(|attr| {
+                (id, attr.name.clone(), Some(attr.value.clone()))
+            }));
+        }
         id
     }
 
@@ -4614,6 +4625,63 @@ pub struct BoundingRect {
 /// The record of changes a script's `MutationObserver` reads. See
 /// [`crate::DomMutation`] for what is recorded and why.
 impl BaseDocument {
+    /// Update the raw content handler state at the attribute mutation boundary.
+    /// Equal-value writes still replace a compiled or script-assigned handler.
+    pub(crate) fn record_inline_handler_attribute(
+        &mut self,
+        node_id: NodeId,
+        name: &crate::QualName,
+        value: Option<&str>,
+    ) {
+        if name.ns != markup5ever::ns!() || !name.local.as_ref().starts_with("on") {
+            return;
+        }
+        let Some(element) = self.nodes.get_mut(node_id).and_then(|node| node.element_data_mut())
+        else {
+            return;
+        };
+        let value = value.map(crate::node::AttrAtom::from);
+        if let Some(value) = &value {
+            let attributes = element
+                .inline_event_attributes
+                .get_or_insert_with(|| Box::new(Vec::new()));
+            if let Some(attribute) = attributes
+                .iter_mut()
+                .find(|attribute| attribute.name.local == name.local)
+            {
+                attribute.name = name.clone();
+                attribute.value = value.clone();
+            } else {
+                attributes.push(crate::node::Attribute {
+                    name: name.clone(),
+                    value: value.clone(),
+                });
+            }
+        } else {
+            let Some(attributes) = element.inline_event_attributes.as_mut() else {
+                return;
+            };
+            let Some(index) = attributes
+                .iter()
+                .position(|attribute| attribute.name.local == name.local)
+            else {
+                return;
+            };
+            attributes.remove(index);
+            if attributes.is_empty() {
+                element.inline_event_attributes = None;
+            }
+        }
+        self.inline_handler_changes.push((node_id, name.clone(), value));
+    }
+
+    /// Take content handler changes in mutation order.
+    pub fn take_inline_handler_changes(
+        &mut self,
+    ) -> Vec<(NodeId, crate::QualName, Option<crate::node::AttrAtom>)> {
+        std::mem::take(&mut self.inline_handler_changes)
+    }
+
     /// Start or stop recording changes. Stopping discards what was recorded
     /// and not yet taken.
     pub fn set_recording_mutations(&mut self, recording: bool) {

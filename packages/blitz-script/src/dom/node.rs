@@ -1061,7 +1061,9 @@ pub(crate) fn dispatch_event(
     let bubbles = event
         .get(boa_engine::js_string!("bubbles"), context)?
         .to_boolean();
+    super::inline_handlers::sync(&ctx, context);
     let chain = ctx.doc.borrow().node_chain(target_id);
+    let reaches_window = chain.last() == Some(&ctx.doc.borrow().root_node().id);
     let target: JsValue = node_wrapper(&ctx, target_id, context).into();
     super::define_value(&event, "target", target.clone(), context);
     define_value(&event, "srcElement", target, context);
@@ -1072,7 +1074,6 @@ pub(crate) fn dispatch_event(
         .collect();
     event_path.push(context.global_object().clone());
     set_event_path(&event, event_path);
-    let on_name = boa_engine::JsString::from(format!("on{event_type}"));
 
     'chain: for node_id in chain {
         let mut callbacks = Vec::new();
@@ -1092,22 +1093,6 @@ pub(crate) fn dispatch_event(
             }
         }
         sync_node_listener_callbacks(&ctx, node_id, context);
-        // Upgraded: the cache is weak, and a node whose wrapper has been
-        // collected cannot be carrying an `on<event>` handler, because holding
-        // one would have kept the wrapper alive.
-        if let Some(wrapper) = ctx
-            .state
-            .borrow()
-            .node_wrappers
-            .get(&node_id)
-            .and_then(boa_engine::object::WeakJsObject::upgrade)
-        {
-            if let Some(handler) = wrapper.get(on_name.clone(), context)?.as_object()
-                && handler.is_callable()
-            {
-                callbacks.push(handler.clone());
-            }
-        }
 
         let current_target: JsValue = node_wrapper(&ctx, node_id, context).into();
         define_value(&event, "currentTarget", current_target.clone(), context);
@@ -1120,6 +1105,8 @@ pub(crate) fn dispatch_event(
                 break 'chain;
             }
         }
+        let wrapper = node_wrapper(&ctx, node_id, context);
+        super::inline_handlers::invoke(&ctx, &wrapper, &event, &event_type, context);
         let stopped = event
             .downcast_ref::<EventRef>()
             .is_some_and(|event| event.stopped.get());
@@ -1128,6 +1115,16 @@ pub(crate) fn dispatch_event(
         }
     }
 
+    if reaches_window && bubbles
+        && !event
+            .downcast_ref::<EventRef>()
+            .is_some_and(|event| event.stopped.get())
+    {
+        let window = context.global_object().clone();
+        define_value(&event, "currentTarget", window.clone().into(), context);
+        define_value(&event, "eventPhase", JsValue::from(3), context);
+        super::inline_handlers::invoke(&ctx, &window, &event, &event_type, context);
+    }
     define_value(&event, "currentTarget", JsValue::null(), context);
     define_value(&event, "eventPhase", JsValue::from(0), context);
     let prevented = event
