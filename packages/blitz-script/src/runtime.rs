@@ -873,6 +873,10 @@ impl ScriptRuntime {
         crate::domc::install(&mut runtime.context);
         runtime.eval_internal(include_str!("domc.js"), "<blitz-domc>");
         runtime.eval_internal(include_str!("domexc.js"), "<blitz-domexc>");
+        let loader = Rc::clone(&runtime.module_loader);
+        crate::docwrite::install(&mut runtime.context, loader);
+        crate::fonts::install(&mut runtime.context);
+        runtime.eval_internal(include_str!("docwrite.js"), "<blitz-docwrite>");
 
         runtime
     }
@@ -1059,21 +1063,24 @@ impl ScriptRuntime {
 
     pub(crate) fn poll_domc(&mut self) -> bool {
         let global = self.context.global_object().clone();
-        let result = global
-            .get(js_string!("__blitzDOMCPoll"), &mut self.context)
-            .and_then(|value| {
-                let Some(function) = value.as_object() else {
-                    return Ok(JsValue::from(false));
-                };
-                function.call(&JsValue::undefined(), &[], &mut self.context)
-            });
-        match result {
-            Ok(value) => value.to_boolean(),
-            Err(error) => {
-                report_js_error(&self.diagnostics, "media query changes", &error);
-                false
+        let mut changed = false;
+        for name in ["__blitzDOMCPoll", "__blitzDocwritePoll"] {
+            let result = global
+                .get(boa_engine::JsString::from(name), &mut self.context)
+                .and_then(|value| {
+                    let Some(function) = value.as_object() else {
+                        return Ok(JsValue::from(false));
+                    };
+                    function.call(&JsValue::undefined(), &[], &mut self.context)
+                });
+            match result {
+                Ok(value) => changed |= value.to_boolean(),
+                Err(error) => {
+                    report_js_error(&self.diagnostics, "document platform changes", &error);
+                }
             }
         }
+        changed
     }
 
     pub(crate) fn job_budget(&self) -> Duration {

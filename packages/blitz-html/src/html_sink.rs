@@ -61,6 +61,7 @@ pub struct DocumentHtmlParser<'m, 'doc> {
     pub quirks_mode: Cell<QuirksMode>,
     pub is_xml: bool,
     document_id: Option<NodeId>,
+    parsing_document: bool,
 }
 
 impl<'m, 'doc> DocumentHtmlParser<'m, 'doc> {
@@ -85,6 +86,7 @@ impl<'m, 'doc> DocumentHtmlParser<'m, 'doc> {
             quirks_mode: Cell::new(QuirksMode::NoQuirks),
             is_xml: false,
             document_id: None,
+            parsing_document: true,
         }
     }
 
@@ -183,15 +185,19 @@ impl<'m, 'doc> DocumentHtmlParser<'m, 'doc> {
             || rest[..tag_end].contains("xmlns='http://www.w3.org/1999/xhtml'")
     }
 
-    pub fn parse_into_mutator<'a, 'd>(mutr: &'a mut DocumentMutator<'d>, html: &str) {
-        let mut sink = DocumentHtmlParser::new(mutr);
-
-        let is_xhtml_doc = html.starts_with("<?xml")
+    pub fn is_xhtml_document(html: &str) -> bool {
+        html.starts_with("<?xml")
             || html.starts_with("<!DOCTYPE") && {
                 let first_line = html.lines().next().unwrap();
                 first_line.contains("XHTML") || first_line.contains("xhtml")
             }
-            || Self::root_element_has_xhtml_namespace(html);
+            || Self::root_element_has_xhtml_namespace(html)
+    }
+
+    pub fn parse_into_mutator<'a, 'd>(mutr: &'a mut DocumentMutator<'d>, html: &str) {
+        let mut sink = DocumentHtmlParser::new(mutr);
+
+        let is_xhtml_doc = Self::is_xhtml_document(html);
 
         if is_xhtml_doc {
             // Parse as XHTML
@@ -225,7 +231,8 @@ impl<'m, 'doc> DocumentHtmlParser<'m, 'doc> {
         element_id: NodeId,
         html: &str,
     ) {
-        let sink = DocumentHtmlParser::new(mutr);
+        let mut sink = DocumentHtmlParser::new(mutr);
+        sink.parsing_document = false;
 
         let opts = ParseOpts {
             tokenizer: TokenizerOpts::default(),
@@ -428,6 +435,13 @@ impl<'m, 'doc> TreeSink for DocumentHtmlParser<'m, 'doc> {
 
     fn set_quirks_mode(&self, mode: QuirksMode) {
         self.quirks_mode.set(mode);
+        if self.parsing_document {
+            self.mutr().doc.set_document_quirks_mode(match mode {
+                QuirksMode::NoQuirks => 0,
+                QuirksMode::LimitedQuirks => 1,
+                QuirksMode::Quirks => 2,
+            });
+        }
     }
 
     fn add_attrs_if_missing(&self, target: &Self::Handle, attrs: Vec<html5ever::Attribute>) {

@@ -288,6 +288,8 @@ impl BaseDocument {
             &self.shell_provider,
             &self.guard.read(),
             self.abort_signal.as_ref(),
+            &mut self.web_fonts,
+            self.font_epoch,
         );
         self.nodes_to_stylesheet.insert(node_id, sheet.clone());
         self.nodes[node_id].element_data_mut().unwrap().special_data =
@@ -405,6 +407,8 @@ impl BaseDocument {
                 &self.shell_provider,
                 &self.guard.read(),
                 self.abort_signal.as_ref(),
+                &mut self.web_fonts,
+                self.font_epoch,
             );
         }
         self.shell_provider.request_redraw();

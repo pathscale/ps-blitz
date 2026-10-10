@@ -1,3 +1,6 @@
+#[path = "web_fonts.rs"]
+pub mod web_fonts;
+
 use blitz_traits::node_id::NodeId;
 use selectors::context::QuirksMode;
 use std::sync::atomic::Ordering as Ao;
@@ -61,6 +64,7 @@ pub enum Resource {
     Svg(ImageType, crate::node::SvgImageData),
     Css(DocumentStyleSheet),
     Font(Bytes, FontFaceOverrides),
+    TrackedFont(Bytes, FontFaceOverrides, Arc<web_fonts::WebFont>),
     /// HTML fetched for an `<iframe>` element's `src`
     DocumentSrc(String),
     /// A stylesheet fetched for an `@import` rule, and the rule it belongs to.
@@ -284,10 +288,29 @@ impl NetHandler for ResourceHandler<NestedStylesheetHandler> {
 struct FontFaceHandler {
     format: FontFaceSourceFormatKeyword,
     overrides: FontFaceOverrides,
+    ticket: Option<Arc<web_fonts::WebFont>>,
+    queued: bool,
+}
+impl Drop for FontFaceHandler {
+    fn drop(&mut self) {
+        if !self.queued {
+            if let Some(ticket) = &self.ticket {
+                ticket.finish(false);
+            }
+        }
+    }
 }
 impl NetHandler for ResourceHandler<FontFaceHandler> {
     fn bytes(mut self: Box<Self>, resolved_url: String, bytes: Bytes) {
         let result = self.data.parse(bytes);
+        let result = match (result, self.data.ticket.as_ref()) {
+            (Ok(Resource::Font(bytes, overrides)), Some(ticket)) => {
+                self.data.queued = true;
+                Ok(Resource::TrackedFont(bytes, overrides, Arc::clone(ticket)))
+            }
+            (Ok(Resource::None), Some(_)) => Err(String::from("Unsupported font data")),
+            (result, _) => result,
+        };
         self.respond(resolved_url, result)
     }
 }
@@ -372,6 +395,8 @@ pub(crate) fn fetch_font_face(
     shell_provider: &Arc<dyn ShellProvider>,
     read_guard: &SharedRwLockReadGuard,
     abort_signal: Option<&AbortSignal>,
+    fonts: &mut Vec<Arc<web_fonts::WebFont>>,
+    epoch: usize,
 ) {
     sheet
         .contents(read_guard)
@@ -464,6 +489,15 @@ pub(crate) fn fetch_font_face(
                 });
 
             if let Some((url, format)) = preferred_source {
+                let ticket = web_fonts::WebFont::new(
+                    overrides.clone(),
+                    Some(url.clone()),
+                    None,
+                    true,
+                    epoch,
+                    shell_provider.clone(),
+                );
+                fonts.push(Arc::clone(&ticket));
                 network_provider.fetch(
                     doc_id,
                     stamped_request(url, abort_signal),
@@ -472,7 +506,12 @@ pub(crate) fn fetch_font_face(
                         doc_id,
                         node_id,
                         shell_provider.clone(),
-                        FontFaceHandler { format, overrides },
+                        FontFaceHandler {
+                            format,
+                            overrides,
+                            ticket: Some(ticket),
+                            queued: false,
+                        },
                     ),
                 );
             }
@@ -484,6 +523,46 @@ pub(crate) fn fetch_font_face(
 /// angle distinctly; CSS's bare `normal` is parsed as `Oblique(0deg, 0deg)`
 /// by stylo (see the `FontStyle::parse` impl in stylo's `font_face.rs`), so
 /// that pattern is treated as `Normal` here.
+fn load_script_font(doc: &mut crate::BaseDocument, face: &Arc<web_fonts::WebFont>) {
+    if !face.start() {
+        return;
+    }
+    let mut handler = FontFaceHandler {
+        format: FontFaceSourceFormatKeyword::None,
+        overrides: face.overrides.clone(),
+        ticket: Some(Arc::clone(face)),
+        queued: false,
+    };
+    if let Some(bytes) = &face.data {
+        match handler.parse(bytes.clone()) {
+            Ok(Resource::Font(bytes, overrides)) => {
+                handler.queued = true;
+                doc.load_resource(ResourceLoadResponse {
+                    request_id: usize::MAX,
+                    node_id: None,
+                    resolved_url: None,
+                    result: Ok(Resource::TrackedFont(bytes, overrides, Arc::clone(face))),
+                });
+            }
+            _ => face.finish(false),
+        }
+    } else if let Some(url) = &face.source {
+        doc.net_provider.fetch(
+            crate::Document::id(doc),
+            stamped_request(url.clone(), doc.abort_signal.as_ref()),
+            ResourceHandler::boxed(
+                doc.tx.clone(),
+                crate::Document::id(doc),
+                None,
+                doc.shell_provider.clone(),
+                handler,
+            ),
+        );
+    } else {
+        face.finish(false);
+    }
+}
+
 fn stylo_to_fontique_style(style: &FontStyleRange) -> parley::fontique::FontStyle {
     use parley::fontique::FontStyle as Fq;
     match style {

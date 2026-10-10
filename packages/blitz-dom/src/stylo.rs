@@ -204,7 +204,11 @@ impl<'a> TDocument for BlitzNode<'a> {
     }
 
     fn quirks_mode(&self) -> QuirksMode {
-        QuirksMode::NoQuirks
+        match &self.data {
+            NodeData::Document(data) if data.quirks_mode == 1 => QuirksMode::LimitedQuirks,
+            NodeData::Document(data) if data.quirks_mode == 2 => QuirksMode::Quirks,
+            _ => QuirksMode::NoQuirks,
+        }
     }
 
     fn shared_lock(&self) -> &SharedRwLock {

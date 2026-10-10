@@ -116,6 +116,7 @@ impl ScriptDocument {
         let inner = Rc::new(RefCell::new(doc));
         let fetcher: SharedFetcher = Rc::new(RefCell::new(Rc::new(DefaultScriptFetcher)));
         let runtime = ScriptRuntime::new(Rc::clone(&inner), base_url.as_ref(), Rc::clone(&fetcher));
+        crate::docwrite::prepare(&runtime.context, html, Rc::clone(&fetcher));
 
         Self {
             inner,
@@ -207,7 +208,16 @@ impl ScriptDocument {
         self.scripts_executed = true;
         self.startup_events_pending = true;
 
-        self.run_pending_scripts();
+        crate::docwrite::begin(&mut self.runtime.context);
+        loop {
+            let progressed = self.run_pending_scripts();
+            if !progressed
+                || self.runtime.jobs_remain()
+                || !crate::docwrite::active(&self.runtime.context)
+            {
+                break;
+            }
+        }
         self.finish_startup_events();
 
         self.request_redraw();
@@ -334,14 +344,28 @@ impl ScriptDocument {
         if self.runtime.jobs_remain() {
             return false;
         }
+        if crate::docwrite::take_restart(&self.runtime.context) {
+            self.executed_scripts.clear();
+            self.startup_events_pending = true;
+            self.load_event_pending = false;
+        }
+        let parsed = crate::docwrite::advance(&mut self.runtime.context);
+        let generation = crate::docwrite::generation(&self.runtime.context);
+        if parsed {
+            self.runtime.ctx.mark_layout_dirty();
+        }
         // Collect first, then run: executing a script can append more, and the
         // borrow on the document has to be released before any of them runs.
         let pending: Vec<PendingScript> = self
             .collect_scripts()
             .into_iter()
             .filter(|script| !self.executed_scripts.contains(&script.node_id))
+            .filter(|script| {
+                !crate::docwrite::was_executed(&self.runtime.context, script.node_id)
+                    && (!script.deferred || !crate::docwrite::active(&self.runtime.context))
+            })
             .collect();
-        let ran = !pending.is_empty();
+        let ran = parsed || !pending.is_empty();
 
         // Import maps first, across the whole batch. A page is free to write
         // its map after the module that needs it, and a map installed too late
@@ -368,6 +392,9 @@ impl ScriptDocument {
             pending.into_iter().partition(|script| script.deferred);
 
         for script in immediate.into_iter().chain(deferred) {
+            if generation != crate::docwrite::generation(&self.runtime.context) {
+                break;
+            }
             if self.startup_events_pending && script.deferred {
                 self.runtime.set_document_ready_state("interactive");
                 if self.runtime.jobs_remain() {
@@ -447,14 +474,17 @@ impl ScriptDocument {
     }
 
     fn finish_startup_events(&mut self) -> bool {
-        if !(self.startup_events_pending || self.load_event_pending) || self.runtime.jobs_remain() {
+        if !(self.startup_events_pending || self.load_event_pending)
+            || self.runtime.jobs_remain()
+            || crate::docwrite::active(&self.runtime.context)
+        {
             return false;
         }
         if self.startup_events_pending
-            && self
-                .collect_scripts()
-                .iter()
-                .any(|script| !self.executed_scripts.contains(&script.node_id))
+            && self.collect_scripts().iter().any(|script| {
+                !self.executed_scripts.contains(&script.node_id)
+                    && !crate::docwrite::was_executed(&self.runtime.context, script.node_id)
+            })
         {
             return false;
         }
