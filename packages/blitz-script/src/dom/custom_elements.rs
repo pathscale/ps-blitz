@@ -998,7 +998,7 @@ fn html_constructor(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
     let ctx = dom_ctx(context)?;
     let attributes = if definition.customized {
         vec![Attribute {
-            name: qual_name("is"),
+            name: qual_name_ns("is", ""),
             value: name.as_str().into(),
         }]
     } else {
@@ -1035,7 +1035,7 @@ fn created_element(
         if !is.is_undefined() {
             let is = to_rust_string(&is, context)?;
             attributes.push(Attribute {
-                name: qual_name("is"),
+                name: qual_name_ns("is", ""),
                 value: is.as_str().into(),
             });
         }
