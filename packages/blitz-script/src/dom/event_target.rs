@@ -1,16 +1,25 @@
-//! EventTarget instances own their listeners in Boa's traced heap.
+//! Listeners for `EventTarget` live in Boa's traced heap.
+//!
+//! `new EventTarget()`, subclasses that call `super()`, and
+//! `Reflect.construct` install a listener slot in the constructor. Window and
+//! DOM nodes keep the listener lists they already had. Any other object whose
+//! prototype chain includes `EventTarget.prototype` gets a slot on first use.
+//! A non-object, or an object outside that chain and without a slot, throws
+//! TypeError "Illegal invocation".
 
 use std::cell::Cell;
 use std::sync::Arc;
 
+use boa_engine::object::builtins::JsWeakMap;
 use boa_engine::object::{FunctionObjectBuilder, JsObject};
 use boa_engine::{
-    Context, Finalize, JsData, JsNativeError, JsResult, JsString, JsValue, NativeFunction, Trace,
+    Context, Finalize, JsData, JsError, JsNativeError, JsResult, JsString, JsValue, NativeFunction,
+    Trace,
 };
 use boa_gc::GcRefCell;
 
 use super::event::{EventRef, set_event_path};
-use super::{define_value, js_str, node_id_of_value, to_rust_string};
+use super::{define_value, node_id_of_value, to_rust_string};
 
 #[derive(Clone, Trace, Finalize)]
 struct Listener {
@@ -31,6 +40,15 @@ struct Target {
     listeners: GcRefCell<Vec<Listener>>,
     #[unsafe_ignore_trace]
     next_id: Cell<u64>,
+}
+
+/// Per-realm lists for receivers that implement `EventTarget` but were not
+/// constructed by it (`Object.create(EventTarget.prototype)`, a shim whose
+/// prototype was linked afterwards). The map is a rooted `Gc` handle in host
+/// data, so the lists stay alive for as long as their keys do, including when
+/// the receiver is sealed and cannot grow an own property.
+struct ListenerRegistry {
+    map: JsObject,
 }
 
 pub(super) fn construct(
@@ -77,48 +95,112 @@ enum Method {
     Dispatch,
 }
 
-/// EventTarget.prototype's methods work on every EventTarget, not only on
-/// script-constructed ones: the window and DOM nodes keep their own native
-/// listener lists, so a call on them (ShadyDOM keeps
-/// `EventTarget.prototype.addEventListener` and calls it on `window`) goes to
-/// that implementation.
-fn delegate(
-    object: &JsObject,
-    method: Method,
+enum Prepared {
+    Store(JsObject),
+    Done(JsResult<JsValue>),
+}
+
+fn illegal() -> JsError {
+    JsNativeError::typ()
+        .with_message("Illegal invocation")
+        .into()
+}
+
+fn install_registry(context: &mut Context) {
+    let map = JsWeakMap::new(context).into();
+    context.insert_data(ListenerRegistry { map });
+}
+
+fn registry(context: &mut Context) -> JsWeakMap {
+    let map = context
+        .get_data::<ListenerRegistry>()
+        .expect("EventTarget listener registry")
+        .map
+        .clone();
+    JsWeakMap::from_object(map).expect("EventTarget listener registry")
+}
+
+fn fresh_target() -> Target {
+    Target {
+        listeners: GcRefCell::new(Vec::new()),
+        next_id: Cell::new(0),
+    }
+}
+
+fn lazy_store(object: &JsObject, context: &mut Context) -> JsResult<JsObject> {
+    let map = registry(context);
+    let existing = map.get(object, context)?;
+    if let Some(host) = existing.as_object()
+        && host.downcast_ref::<Target>().is_some()
+    {
+        return Ok(host);
+    }
+    let host = JsObject::from_proto_and_data(None, fresh_target());
+    map.set(object, host.clone().into(), context)?;
+    Ok(host)
+}
+
+/// A cyclic `[[Prototype]]` must stop. Real interface chains are far shorter.
+fn in_event_target_chain(object: &JsObject, context: &Context) -> bool {
+    let expected = super::interfaces::prototype("EventTarget", context);
+    let mut current = object.prototype();
+    for _ in 0..128 {
+        let Some(proto) = current else {
+            return false;
+        };
+        if JsObject::equals(&proto, &expected) {
+            return true;
+        }
+        current = proto.prototype();
+    }
+    false
+}
+
+/// `EventTarget.prototype`'s methods work on every EventTarget, not only on
+/// script-constructed ones. Window and DOM nodes keep their own native
+/// listener lists (ShadyDOM keeps `EventTarget.prototype.addEventListener`
+/// and calls it on `window`). A receiver with no slot whose chain still
+/// reaches `EventTarget.prototype` gets a list on first use.
+fn prepare(
     this: &JsValue,
+    method: Method,
     args: &[JsValue],
     context: &mut Context,
-) -> Option<JsResult<JsValue>> {
+) -> JsResult<Prepared> {
+    let Some(object) = this.as_object() else {
+        return Err(illegal());
+    };
     if object.downcast_ref::<Target>().is_some() {
-        return None;
+        return Ok(Prepared::Store(object));
     }
-    if JsObject::equals(object, &context.global_object()) {
-        return Some(match method {
+    if JsObject::equals(&object, &context.global_object()) {
+        return Ok(Prepared::Done(match method {
             Method::Add => crate::runtime::window_add_event_listener(this, args, context),
             Method::Remove => crate::runtime::window_remove_event_listener(this, args, context),
             Method::Dispatch => crate::runtime::window_dispatch_event(this, args, context),
-        });
+        }));
     }
-    if super::node_id_of_value(this).is_some() {
-        return Some(match method {
+    if node_id_of_value(this).is_some() {
+        return Ok(Prepared::Done(match method {
             Method::Add => super::node::add_event_listener(this, args, context),
             Method::Remove => super::node::remove_event_listener(this, args, context),
             Method::Dispatch => super::node::dispatch_event(this, args, context),
-        });
+        }));
     }
-    None
+    if in_event_target_chain(&object, context) {
+        return Ok(Prepared::Store(lazy_store(&object, context)?));
+    }
+    Err(illegal())
 }
 
 fn add(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let object = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("Invalid EventTarget receiver"))?;
-    if let Some(result) = delegate(&object, Method::Add, this, args, context) {
-        return result;
-    }
-    let target = object
+    let store = match prepare(this, Method::Add, args, context)? {
+        Prepared::Done(result) => return result,
+        Prepared::Store(store) => store,
+    };
+    let target = store
         .downcast_ref::<Target>()
-        .ok_or_else(|| JsNativeError::typ().with_message("Invalid EventTarget receiver"))?;
+        .expect("validated EventTarget");
     let kind: Arc<str> =
         to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?.into();
     let Some(callback) = args.get(1).and_then(JsValue::as_object) else {
@@ -153,15 +235,13 @@ fn add(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsVa
 }
 
 fn remove(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let object = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("Invalid EventTarget receiver"))?;
-    if let Some(result) = delegate(&object, Method::Remove, this, args, context) {
-        return result;
-    }
-    let target = object
+    let store = match prepare(this, Method::Remove, args, context)? {
+        Prepared::Done(result) => return result,
+        Prepared::Store(store) => store,
+    };
+    let target = store
         .downcast_ref::<Target>()
-        .ok_or_else(|| JsNativeError::typ().with_message("Invalid EventTarget receiver"))?;
+        .expect("validated EventTarget");
     let kind = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
     let Some(callback) = args.get(1).and_then(JsValue::as_object) else {
         return Ok(JsValue::undefined());
@@ -176,17 +256,11 @@ fn remove(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<J
 }
 
 fn dispatch(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let object = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("Invalid EventTarget receiver"))?;
-    if let Some(result) = delegate(&object, Method::Dispatch, this, args, context) {
-        return result;
-    }
-    if object.downcast_ref::<Target>().is_none() {
-        return Err(JsNativeError::typ()
-            .with_message("Invalid EventTarget receiver")
-            .into());
-    }
+    let store = match prepare(this, Method::Dispatch, args, context)? {
+        Prepared::Done(result) => return result,
+        Prepared::Store(store) => store,
+    };
+    let receiver = this.as_object().expect("validated EventTarget");
     let event = args
         .first()
         .and_then(JsValue::as_object)
@@ -217,8 +291,8 @@ fn dispatch(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult
     define_value(&event, "currentTarget", this.clone(), context);
     define_value(&event, "isTrusted", JsValue::from(false), context);
     define_value(&event, "eventPhase", JsValue::from(2), context);
-    set_event_path(&event, vec![object.clone()]);
-    let mut snapshot = object
+    set_event_path(&event, vec![receiver]);
+    let mut snapshot = store
         .downcast_ref::<Target>()
         .expect("validated EventTarget")
         .listeners
@@ -234,7 +308,7 @@ fn dispatch(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult
                 .get(boa_engine::js_string!("aborted"), context)?
                 .to_boolean()
         {
-            object
+            store
                 .downcast_ref::<Target>()
                 .expect("validated EventTarget")
                 .listeners
@@ -242,7 +316,7 @@ fn dispatch(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult
                 .retain(|entry| entry.id != listener.id);
             continue;
         }
-        let present = object
+        let present = store
             .downcast_ref::<Target>()
             .expect("validated EventTarget")
             .listeners
@@ -253,7 +327,7 @@ fn dispatch(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult
             continue;
         }
         if listener.once {
-            object
+            store
                 .downcast_ref::<Target>()
                 .expect("validated EventTarget")
                 .listeners
@@ -309,6 +383,7 @@ fn dispatch(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult
 }
 
 pub(super) fn init(node: &JsObject, context: &mut Context) {
+    install_registry(context);
     let proto = super::interfaces::prototype("EventTarget", context);
     for (name, length, native) in [
         ("addEventListener", 2, add as super::NativeFnPtr),
@@ -340,5 +415,4 @@ pub(super) fn init(node: &JsObject, context: &mut Context) {
         node.delete_property_or_throw(JsString::from(name), context)
             .expect("failed to move EventTarget method");
     }
-    let _ = js_str;
 }
