@@ -367,10 +367,10 @@ impl BaseDocument {
         name: &QualName,
         new_value: Option<&str>,
     ) {
-        if !matches!(
-            self.script_custom_element_state(node_id),
-            State::Custom | State::Upgrading
-        ) {
+        // Upgrade queues the existing attributes before calling the constructor.
+        // Constructor writes occur in the precustomized state and must not add
+        // another set of attribute reactions behind those upgrade callbacks.
+        if self.script_custom_element_state(node_id) != State::Custom {
             return;
         }
         let candidate = &self.script_custom_elements.candidates[&node_id];
@@ -384,10 +384,9 @@ impl BaseDocument {
         let old_value = self.nodes[node_id]
             .element_data()
             .and_then(|element| {
-                element
-                    .attrs
-                    .iter()
-                    .find(|attribute| attribute.name == *name)
+                element.attrs.iter().find(|attribute| {
+                    attribute.name.ns == name.ns && attribute.name.local == name.local
+                })
             })
             .map(|attribute| attribute.value.to_string());
         if old_value.is_none() && new_value.is_none() {

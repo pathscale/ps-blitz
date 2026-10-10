@@ -59,7 +59,14 @@ fn ensure_mutable(this: &JsValue, context: &mut Context) -> JsResult<NodeId> {
     Ok(node_id)
 }
 
-fn style_set_trap(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn style_set_trap(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    // Proxy traps do not pass through define_method or define_accessor.
+    // Named CSS properties must finish their reaction scope before the next
+    // write can queue another style value for the same element.
+    super::custom_elements::native_scope(this, args, context, style_set_trap_body)
+}
+
+fn style_set_trap_body(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let target = args.first().cloned().unwrap_or_else(JsValue::undefined);
     ensure_mutable(&target, context)?;
     let key_value = &args.get(1).cloned().unwrap_or_default();
@@ -225,7 +232,12 @@ fn set_css_text(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsRe
     let node_id = ensure_mutable(this, context)?;
     let ctx = dom_ctx(context)?;
     let _t = crate::script_stats::Timed::new(&ctx, "dom:style=");
-    let css = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
+    let value = &args.first().cloned().unwrap_or_default();
+    let css = if value.is_null() {
+        String::new()
+    } else {
+        to_rust_string(value, context)?
+    };
     ctx.mutate_doc()
         .mutate()
         .set_attribute(node_id, attr_name("style"), &css);
