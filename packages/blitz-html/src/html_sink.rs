@@ -213,7 +213,7 @@ impl<'m, 'doc> DocumentHtmlParser<'m, 'doc> {
                 tokenizer: TokenizerOpts::default(),
                 tree_builder: TreeBuilderOpts {
                     exact_errors: false,
-                    scripting_enabled: false, // Enables parsing of <noscript> tags
+                    scripting_enabled: true, // scripting runs, so noscript contents are text
                     iframe_srcdoc: false,
                     drop_doctype: false,
                     quirks_mode: QuirksMode::NoQuirks,
@@ -238,7 +238,7 @@ impl<'m, 'doc> DocumentHtmlParser<'m, 'doc> {
             tokenizer: TokenizerOpts::default(),
             tree_builder: TreeBuilderOpts {
                 exact_errors: false,
-                scripting_enabled: false, // Enables parsing of <noscript> tags
+                scripting_enabled: true, // scripting runs, so noscript contents are text
                 iframe_srcdoc: false,
                 drop_doctype: true,
                 quirks_mode: QuirksMode::NoQuirks,
