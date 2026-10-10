@@ -91,17 +91,7 @@ fn registry(context: &Context) -> RegistryContext {
 }
 
 fn dom_error(name: &str, message: &str, context: &mut Context) -> JsError {
-    let error: JsError = JsNativeError::error()
-        .with_message(message.to_owned())
-        .into();
-    let value = match error.into_opaque(context) {
-        Ok(value) => value,
-        Err(error) => return error,
-    };
-    if let Some(object) = value.as_object() {
-        let _ = object.set(js_string!("name"), js_str(name), true, context);
-    }
-    JsError::from_opaque(value)
+    crate::dom_exception::error(name, message, context)
 }
 
 fn check_receiver(this: &JsValue, context: &mut Context) -> JsResult<()> {

@@ -1114,10 +1114,19 @@ fn write_class_tokens(ctx: &DomCtx, node_id: NodeId, tokens: &[String]) {
 
 fn class_token(value: &JsValue, context: &mut Context) -> JsResult<String> {
     let token = to_rust_string(value, context)?;
-    if token.is_empty() || token.chars().any(|ch| ch.is_ascii_whitespace()) {
-        return Err(JsNativeError::syntax()
-            .with_message("classList token must be non-empty and contain no ASCII whitespace")
-            .into());
+    if token.is_empty() {
+        return Err(crate::dom_exception::error(
+            "SyntaxError",
+            "classList token must not be empty",
+            context,
+        ));
+    }
+    if token.chars().any(|ch| ch.is_ascii_whitespace()) {
+        return Err(crate::dom_exception::error(
+            "InvalidCharacterError",
+            "classList token contains ASCII whitespace",
+            context,
+        ));
     }
     Ok(token)
 }
@@ -1702,10 +1711,12 @@ fn get_bounding_client_rect(
 // === Scoped selector queries ===
 
 /// The SyntaxError a selector API throws for a selector it cannot parse.
-pub(crate) fn invalid_selector(selector: &str) -> boa_engine::JsError {
-    JsNativeError::syntax()
-        .with_message(format!("'{selector}' is not a valid selector"))
-        .into()
+pub(crate) fn invalid_selector(selector: &str, context: &mut Context) -> boa_engine::JsError {
+    crate::dom_exception::error(
+        "SyntaxError",
+        &format!("'{selector}' is not a valid selector"),
+        context,
+    )
 }
 
 // Selector APIs match within the receiver's own subtree, so they work on a
@@ -1724,7 +1735,7 @@ pub(crate) fn query_selector(
         .doc
         .borrow()
         .query_selector_in(node_id, &selector)
-        .map_err(|_| invalid_selector(&selector))?;
+        .map_err(|_| invalid_selector(&selector, context))?;
     Ok(super::node_or_null(&ctx, result, context))
 }
 
@@ -1741,7 +1752,7 @@ pub(crate) fn query_selector_all(
         .doc
         .borrow()
         .query_selector_all_in(node_id, &selector)
-        .map_err(|_| invalid_selector(&selector))?;
+        .map_err(|_| invalid_selector(&selector, context))?;
     let wrappers: Vec<JsValue> = matches
         .into_iter()
         .map(|match_id| node_wrapper(&ctx, match_id, context).into())
@@ -1757,7 +1768,7 @@ fn matches_selector(this: &JsValue, args: &[JsValue], context: &mut Context) -> 
         .doc
         .borrow()
         .matches_selector(node_id, &selector)
-        .map_err(|_| invalid_selector(&selector))?;
+        .map_err(|_| invalid_selector(&selector, context))?;
     Ok(JsValue::from(is_match))
 }
 
@@ -1769,7 +1780,7 @@ fn closest(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<
         .doc
         .borrow()
         .closest(node_id, &selector)
-        .map_err(|_| invalid_selector(&selector))?;
+        .map_err(|_| invalid_selector(&selector, context))?;
     Ok(super::node_or_null(&ctx, result, context))
 }
 

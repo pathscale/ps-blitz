@@ -100,15 +100,7 @@ fn interface(name: &str, proto: &JsObject, context: &mut Context) {
 }
 
 pub(crate) fn dom_error(name: &str, message: &str, context: &mut Context) -> JsError {
-    let error = ObjectInitializer::new(context)
-        .property(js_string!("name"), JsString::from(name), Attribute::all())
-        .property(
-            js_string!("message"),
-            JsString::from(message),
-            Attribute::all(),
-        )
-        .build();
-    JsError::from_opaque(error.into())
+    crate::dom_exception::error(name, message, context)
 }
 
 pub(crate) fn index_arg(args: &[JsValue], context: &mut Context) -> JsResult<usize> {

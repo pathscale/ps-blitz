@@ -4,7 +4,7 @@ use std::cell::{Cell, RefCell};
 
 use blitz_traits::events::{BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, DomEventData};
 use boa_engine::object::builtins::JsArray;
-use boa_engine::object::{FunctionObjectBuilder, JsObject, ObjectInitializer};
+use boa_engine::object::{FunctionObjectBuilder, IntegrityLevel, JsObject, ObjectInitializer};
 use boa_engine::property::{Attribute, PropertyDescriptor};
 use boa_engine::{
     Context, Finalize, JsData, JsError, JsNativeError, JsResult, JsString, JsSymbol, JsValue,
@@ -39,6 +39,7 @@ const CLASSES: &[(&str, &str)] = &[
     ("CompositionEvent", "UIEvent"),
     ("DragEvent", "MouseEvent"),
     ("ClipboardEvent", "Event"),
+    ("MessageEvent", "Event"),
 ];
 
 #[derive(Trace, Finalize, JsData)]
@@ -69,6 +70,8 @@ enum Kind {
     Interface(&'static str),
     Touches,
     Ranges,
+    MessageSource,
+    Ports,
 }
 
 #[derive(Clone, Copy)]
@@ -153,6 +156,10 @@ fn fields(class: &str) -> &'static [Field] {
         "CompositionEvent" => fields!["data" => String],
         "DragEvent" => fields!["dataTransfer" => Interface("DataTransfer")],
         "ClipboardEvent" => fields!["clipboardData" => Interface("DataTransfer")],
+        "MessageEvent" => fields![
+            "data" => Any, "origin" => String, "lastEventId" => String,
+            "source" => MessageSource, "ports" => Ports
+        ],
         _ => &[],
     }
 }
@@ -195,11 +202,7 @@ pub(crate) fn timestamp(context: &Context) -> f64 {
 }
 
 pub(crate) fn named_error(name: &str, message: &str, context: &mut Context) -> JsError {
-    let error = JsNativeError::error()
-        .with_message(message.to_owned())
-        .into_opaque(context);
-    define_value(&error, "name", js_str(name), context);
-    JsError::from_opaque(error.into())
+    crate::dom_exception::error(name, message, context)
 }
 
 fn require_event(this: &JsValue, class: &str) -> JsResult<JsObject> {
@@ -389,6 +392,7 @@ fn bind_constructor(
 }
 
 pub(crate) fn register(base: &JsObject, context: &mut Context) {
+    crate::dom_exception::register(context);
     let mut prototypes: Vec<JsObject> = Vec::with_capacity(CLASSES.len());
     let mut constructors: Vec<JsObject> = Vec::with_capacity(CLASSES.len());
     for &(class, parent_class) in CLASSES {
@@ -428,6 +432,7 @@ pub(crate) fn register(base: &JsObject, context: &mut Context) {
                 | "KeyboardEvent"
                 | "CompositionEvent"
                 | "StorageEvent"
+                | "MessageEvent"
         ) {
             let method = match class {
                 "CustomEvent" => "initCustomEvent",
@@ -435,6 +440,7 @@ pub(crate) fn register(base: &JsObject, context: &mut Context) {
                 "MouseEvent" => "initMouseEvent",
                 "KeyboardEvent" => "initKeyboardEvent",
                 "CompositionEvent" => "initCompositionEvent",
+                "MessageEvent" => "initMessageEvent",
                 _ => "initStorageEvent",
             };
             let function = FunctionObjectBuilder::new(
@@ -671,10 +677,17 @@ fn convert(kind: Kind, value: JsValue, context: &mut Context) -> JsResult<JsValu
         return Ok(match kind {
             Kind::Boolean => JsValue::from(false),
             Kind::String => js_str(""),
-            Kind::NullableString | Kind::Any | Kind::Interface(_) => JsValue::null(),
+            Kind::NullableString | Kind::Any | Kind::Interface(_) | Kind::MessageSource => {
+                JsValue::null()
+            }
             Kind::Double(default) => JsValue::from(default),
             Kind::Touches => make_touch_list(Vec::new(), context).into(),
             Kind::Ranges => JsArray::from_iter([], context).into(),
+            Kind::Ports => {
+                let ports: JsObject = JsArray::from_iter([], context).into();
+                ports.set_integrity_level(IntegrityLevel::Frozen, context)?;
+                ports.into()
+            }
             _ => JsValue::from(0),
         });
     }
@@ -727,6 +740,25 @@ fn convert(kind: Kind, value: JsValue, context: &mut Context) -> JsResult<JsValu
         Kind::Ranges => {
             let items = sequence(&value, "StaticRange", context)?;
             JsArray::from_iter(items.into_iter().map(Into::into), context).into()
+        }
+        Kind::MessageSource if value.is_null() => JsValue::null(),
+        Kind::MessageSource => {
+            if !has_interface(&value, "Window", context)?
+                && !has_interface(&value, "MessagePort", context)?
+                && !has_interface(&value, "ServiceWorker", context)?
+            {
+                return Err(JsNativeError::typ()
+                    .with_message("Invalid MessageEvent source")
+                    .into());
+            }
+            value
+        }
+        Kind::Ports => {
+            let items = sequence(&value, "MessagePort", context)?;
+            let ports: JsObject =
+                JsArray::from_iter(items.into_iter().map(Into::into), context).into();
+            ports.set_integrity_level(IntegrityLevel::Frozen, context)?;
+            ports.into()
         }
     })
 }
@@ -989,6 +1021,7 @@ pub(crate) fn legacy_init(
         ],
         "CompositionEvent" => &["view", "data"],
         "StorageEvent" => &["key", "oldValue", "newValue", "url", "storageArea"],
+        "MessageEvent" => &["data", "origin", "lastEventId", "source", "ports"],
         _ => &[],
     };
     let mut values = Vec::with_capacity(names.len());
@@ -1048,6 +1081,7 @@ fn create_event_legacy(
         "touchevent" => "TouchEvent",
         "hashchangeevent" => "HashChangeEvent",
         "storageevent" => "StorageEvent",
+        "messageevent" => "MessageEvent",
         _ => {
             return Err(named_error(
                 "NotSupportedError",

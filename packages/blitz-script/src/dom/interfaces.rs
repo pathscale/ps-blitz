@@ -133,17 +133,7 @@ pub(super) fn construction_prototype(
 }
 
 pub(super) fn exception(name: &str, message: &str, context: &mut Context) -> JsError {
-    let error: JsError = JsNativeError::error()
-        .with_message(message.to_owned())
-        .into();
-    let value = match error.into_opaque(context) {
-        Ok(value) => value,
-        Err(error) => return error,
-    };
-    if let Some(object) = value.as_object() {
-        define_value(&object, "name", js_str(name), context);
-    }
-    JsError::from_opaque(value)
+    crate::dom_exception::error(name, message, context)
 }
 
 fn node_constructor(
@@ -545,4 +535,5 @@ pub(super) fn init(context: &mut Context) {
     super::collections::init(&node, &element, &document, context);
     super::geometry::init(&element, context);
     super::html_element::init(&element, context);
+    crate::media::install(&prototype("HTMLMediaElement", context), context);
 }

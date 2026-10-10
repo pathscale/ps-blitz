@@ -409,6 +409,12 @@ impl ScriptRuntime {
             1,
             window_dispatch_history_event,
         );
+        register_global_fn(
+            &mut context,
+            "__blitzDispatchMessageEvent",
+            1,
+            window_dispatch_history_event,
+        );
         register_global_fn(&mut context, "__blitzRandomU32", 0, random_u32);
 
         let mut runtime = Self {
@@ -554,26 +560,36 @@ impl ScriptRuntime {
                 })();
             }
             if (typeof globalThis.structuredClone !== "function") {
+                const Exception = globalThis.DOMException;
+                const exceptionName = Object.getOwnPropertyDescriptor(Exception.prototype, "name").get;
+                const exceptionMessage = Object.getOwnPropertyDescriptor(Exception.prototype, "message").get;
                 globalThis.structuredClone = function (input, options) {
                     if (options && options.transfer && options.transfer.length) {
-                        throw new TypeError("structuredClone transfer is not supported");
+                        throw new Exception("structuredClone transfer is not supported", "DataCloneError");
                     }
 
                     const seen = new Map();
                     const clone = function (value) {
                         if (value === null || typeof value !== "object") {
                             if (typeof value === "function" || typeof value === "symbol") {
-                                throw new TypeError("value cannot be structured-cloned");
+                                throw new Exception("value cannot be structured-cloned", "DataCloneError");
                             }
                             return value;
                         }
                         if (value === globalThis || typeof value.nodeType === "number") {
-                            throw new TypeError("value cannot be structured-cloned");
+                            throw new Exception("value cannot be structured-cloned", "DataCloneError");
                         }
                         if (seen.has(value)) return seen.get(value);
 
                         let copy;
-                        if (Array.isArray(value)) {
+                        if (value instanceof Exception) {
+                            copy = new Exception(
+                                exceptionMessage.call(value),
+                                exceptionName.call(value),
+                            );
+                            seen.set(value, copy);
+                            return copy;
+                        } else if (Array.isArray(value)) {
                             copy = [];
                         } else if (value instanceof Date) {
                             return new Date(value.getTime());
@@ -597,8 +613,9 @@ impl ScriptRuntime {
                                 return new DataView(buffer, value.byteOffset, value.byteLength);
                             }
                             return new value.constructor(buffer, value.byteOffset, value.length);
-                        } else if (value instanceof WeakMap || value instanceof WeakSet || value instanceof Promise) {
-                            throw new TypeError("value cannot be structured-cloned");
+                        } else if (value instanceof WeakMap || value instanceof WeakSet || value instanceof Promise ||
+                            (typeof MessagePort === "function" && value instanceof MessagePort)) {
+                            throw new Exception("value cannot be structured-cloned", "DataCloneError");
                         } else {
                             copy = Object.create(Object.getPrototypeOf(value) === null ? null : Object.prototype);
                         }
@@ -638,7 +655,7 @@ impl ScriptRuntime {
                             throw new TypeError("getRandomValues requires an integer TypedArray");
                         }
                         if (array.byteLength > 65536) {
-                            throw new TypeError("getRandomValues quota exceeded");
+                            throw new DOMException("getRandomValues quota exceeded", "QuotaExceededError");
                         }
                         for (let index = 0; index < array.length; index += 1) {
                             array[index] = randomU32();
@@ -656,12 +673,15 @@ impl ScriptRuntime {
                 const dispatchHistoryEvent = globalThis.__blitzDispatchHistoryEvent;
                 const resolveHistoryUrl = function (url) {
                     if (url === undefined || url === null) return globalThis.location.href;
-                    const resolved = new URL(String(url), globalThis.location.href);
+                    let resolved;
+                    try {
+                        resolved = new URL(String(url), globalThis.location.href);
+                    } catch (error) {
+                        throw new DOMException("Invalid history URL", "SecurityError");
+                    }
                     const current = new URL(globalThis.location.href);
                     if (resolved.origin !== current.origin) {
-                        const error = new Error("History URL must have the document's origin");
-                        error.name = "SecurityError";
-                        throw error;
+                        throw new DOMException("History URL must have the document's origin", "SecurityError");
                     }
                     return resolved.href;
                 };
@@ -852,6 +872,7 @@ impl ScriptRuntime {
 
         crate::domc::install(&mut runtime.context);
         runtime.eval_internal(include_str!("domc.js"), "<blitz-domc>");
+        runtime.eval_internal(include_str!("domexc.js"), "<blitz-domexc>");
 
         runtime
     }
@@ -1835,10 +1856,9 @@ fn clipboard_write_text(_: &JsValue, args: &[JsValue], context: &mut Context) ->
     let promise = if wrote {
         JsPromise::resolve(JsValue::undefined(), context)
     } else {
-        JsPromise::reject(
-            JsNativeError::error().with_message("the clipboard is unavailable"),
-            context,
-        )
+        let error =
+            crate::dom_exception::error("NotAllowedError", "the clipboard is unavailable", context);
+        JsPromise::reject(error, context)
     };
     Ok(JsValue::from(promise?))
 }
@@ -1854,10 +1874,14 @@ fn clipboard_read_text(_: &JsValue, _: &[JsValue], context: &mut Context) -> JsR
         .get_clipboard_text();
     let promise = match read {
         Ok(text) => JsPromise::resolve(JsValue::from(JsString::from(text)), context),
-        Err(_) => JsPromise::reject(
-            JsNativeError::error().with_message("the clipboard is unavailable"),
-            context,
-        ),
+        Err(_) => {
+            let error = crate::dom_exception::error(
+                "NotAllowedError",
+                "the clipboard is unavailable",
+                context,
+            );
+            JsPromise::reject(error, context)
+        }
     };
     Ok(JsValue::from(promise?))
 }
@@ -1903,11 +1927,13 @@ fn scroll_viewport(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsRe
     Ok(JsValue::new(changed))
 }
 
-fn random_u32(_: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+fn random_u32(_: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     getrandom::u32().map(JsValue::new).map_err(|error| {
-        JsNativeError::error()
-            .with_message(format!("secure random generation failed: {error}"))
-            .into()
+        crate::dom_exception::error(
+            "OperationError",
+            &format!("secure random generation failed: {error}"),
+            context,
+        )
     })
 }
 
@@ -2013,9 +2039,11 @@ fn location_assign(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsRe
     let ctx = dom_ctx(context)?;
     let url = crate::dom::to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
     if !ctx.doc.borrow().navigate_to_url(&url) {
-        return Err(JsNativeError::typ()
-            .with_message(format!("{url} is not a valid URL"))
-            .into());
+        return Err(crate::dom_exception::error(
+            "SyntaxError",
+            &format!("{url} is not a valid URL"),
+            context,
+        ));
     }
     Ok(JsValue::undefined())
 }
