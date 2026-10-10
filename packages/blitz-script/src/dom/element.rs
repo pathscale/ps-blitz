@@ -1660,30 +1660,26 @@ fn get_bounding_client_rect(
 
 // === Scoped selector queries ===
 
-fn is_descendant_of(doc: &blitz_dom::BaseDocument, node_id: NodeId, ancestor_id: NodeId) -> bool {
-    let mut current = doc.get_node(node_id).and_then(|node| node.parent);
-    while let Some(id) = current {
-        if id == ancestor_id {
-            return true;
-        }
-        current = doc.get_node(id).and_then(|node| node.parent);
-    }
-    false
+/// The SyntaxError a selector API throws for a selector it cannot parse.
+pub(crate) fn invalid_selector(selector: &str) -> boa_engine::JsError {
+    JsNativeError::syntax()
+        .with_message(format!("'{selector}' is not a valid selector"))
+        .into()
 }
 
+// Selector APIs match within the receiver's own subtree, so they work on a
+// detached tree (built with innerHTML before insertion) exactly as on a
+// connected one, and cost the subtree rather than the whole document.
 fn query_selector(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
     let selector = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
 
-    let result = {
-        let doc = ctx.doc.borrow();
-        doc.query_selector_all(&selector).ok().and_then(|matches| {
-            matches
-                .into_iter()
-                .find(|match_id| is_descendant_of(&doc, *match_id, node_id))
-        })
-    };
+    let result = ctx
+        .doc
+        .borrow()
+        .query_selector_in(node_id, &selector)
+        .map_err(|_| invalid_selector(&selector))?;
     Ok(super::node_or_null(&ctx, result, context))
 }
 
@@ -1696,17 +1692,11 @@ fn query_selector_all(
     let node_id = this_node_id(this)?;
     let selector = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
 
-    let matches: Vec<NodeId> = {
-        let doc = ctx.doc.borrow();
-        doc.query_selector_all(&selector)
-            .map(|matches| {
-                matches
-                    .into_iter()
-                    .filter(|match_id| is_descendant_of(&doc, *match_id, node_id))
-                    .collect()
-            })
-            .unwrap_or_default()
-    };
+    let matches = ctx
+        .doc
+        .borrow()
+        .query_selector_all_in(node_id, &selector)
+        .map_err(|_| invalid_selector(&selector))?;
     let wrappers: Vec<JsValue> = matches
         .into_iter()
         .map(|match_id| node_wrapper(&ctx, match_id, context).into())
@@ -1721,8 +1711,8 @@ fn matches_selector(this: &JsValue, args: &[JsValue], context: &mut Context) -> 
     let is_match = ctx
         .doc
         .borrow()
-        .query_selector_all(&selector)
-        .is_ok_and(|matches| matches.contains(&node_id));
+        .matches_selector(node_id, &selector)
+        .map_err(|_| invalid_selector(&selector))?;
     Ok(JsValue::from(is_match))
 }
 
@@ -1730,19 +1720,10 @@ fn closest(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
     let selector = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
-    let result = {
-        let doc = ctx.doc.borrow();
-        let matches = doc.query_selector_all(&selector).unwrap_or_default();
-        let mut current = Some(node_id);
-        let mut result = None;
-        while let Some(id) = current {
-            if matches.contains(&id) {
-                result = Some(id);
-                break;
-            }
-            current = doc.get_node(id).and_then(|node| node.parent);
-        }
-        result
-    };
+    let result = ctx
+        .doc
+        .borrow()
+        .closest(node_id, &selector)
+        .map_err(|_| invalid_selector(&selector))?;
     Ok(super::node_or_null(&ctx, result, context))
 }
