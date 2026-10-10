@@ -5,7 +5,9 @@ use boa_engine::object::JsObject;
 use boa_engine::{Context, JsNativeError, JsResult, JsString, JsValue, js_string};
 
 use super::{
-    define_value, event::{EventRef, set_event_path}, node_wrapper, to_rust_string,
+    define_value,
+    event::{EventRef, set_event_path},
+    node_wrapper, to_rust_string,
 };
 use crate::state::DomCtx;
 
@@ -18,11 +20,15 @@ pub(crate) struct DispatchResult {
 }
 
 fn stopped(event: &JsObject) -> bool {
-    event.downcast_ref::<EventRef>().is_some_and(|data| data.stopped.get())
+    event
+        .downcast_ref::<EventRef>()
+        .is_some_and(|data| data.stopped.get())
 }
 
 fn immediate(event: &JsObject) -> bool {
-    event.downcast_ref::<EventRef>().is_some_and(|data| data.stopped_immediate.get())
+    event
+        .downcast_ref::<EventRef>()
+        .is_some_and(|data| data.stopped_immediate.get())
 }
 
 struct Entry {
@@ -38,14 +44,23 @@ pub(crate) fn dispatch(
     context: &mut Context,
 ) -> JsResult<DispatchResult> {
     if event.downcast_ref::<EventRef>().is_none() {
-        return Err(JsNativeError::typ().with_message("dispatchEvent requires an Event").into());
+        return Err(JsNativeError::typ()
+            .with_message("dispatchEvent requires an Event")
+            .into());
     }
-    if event.get(JsString::from(DISPATCHING), context)?.to_boolean() {
-        return Err(JsNativeError::typ().with_message("InvalidStateError: event is dispatching").into());
+    if event
+        .get(JsString::from(DISPATCHING), context)?
+        .to_boolean()
+    {
+        return Err(JsNativeError::typ()
+            .with_message("InvalidStateError: event is dispatching")
+            .into());
     }
     let name = to_rust_string(&event.get(js_string!("type"), context)?, context)?;
     if name.is_empty() {
-        return Err(JsNativeError::typ().with_message("InvalidStateError: empty event type").into());
+        return Err(JsNativeError::typ()
+            .with_message("InvalidStateError: empty event type")
+            .into());
     }
     let bubbles = event.get(js_string!("bubbles"), context)?.to_boolean();
     let composed = event.get(js_string!("composed"), context)?.to_boolean();
@@ -54,11 +69,15 @@ pub(crate) fn dispatch(
         let mut doc = ctx.doc.borrow_mut();
         let path = doc.shadow_event_path(target_id, composed);
         let document_id = doc.root_node().id;
-        let entries: Vec<_> = path.iter().copied().map(|id| Entry {
-            id,
-            target: doc.retarget_shadow_event(target_id, id),
-            visible: doc.visible_shadow_event_path(&path, id),
-        }).collect();
+        let entries: Vec<_> = path
+            .iter()
+            .copied()
+            .map(|id| Entry {
+                id,
+                target: doc.retarget_shadow_event(target_id, id),
+                visible: doc.visible_shadow_event_path(&path, id),
+            })
+            .collect();
         (
             entries,
             path.last() == Some(&document_id),
@@ -110,21 +129,33 @@ pub(crate) fn dispatch(
             define_value(event, "srcElement", target, context);
             define_value(event, "currentTarget", global.clone().into(), context);
             define_value(event, "eventPhase", JsValue::from(3), context);
-            let mut path: Vec<_> = outer_path.iter()
-                .map(|&id| node_wrapper(ctx, id, context)).collect();
+            let mut path: Vec<_> = outer_path
+                .iter()
+                .map(|&id| node_wrapper(ctx, id, context))
+                .collect();
             path.push(global.clone());
             set_event_path(event, path);
             for listener in listeners {
                 called = true;
-                let _ = listener.callback.call(&global.clone().into(), &[event.clone().into()], context);
+                let _ = listener.callback.call(
+                    &global.clone().into(),
+                    &[event.clone().into()],
+                    context,
+                );
                 if immediate(event) {
                     break;
                 }
             }
         }
-        let prevented = cancelable && event.downcast_ref::<EventRef>()
-            .is_some_and(|data| data.prevented.get());
-        Ok(DispatchResult { called, prevented, stopped: stopped(event) })
+        let prevented = cancelable
+            && event
+                .downcast_ref::<EventRef>()
+                .is_some_and(|data| data.prevented.get());
+        Ok(DispatchResult {
+            called,
+            prevented,
+            stopped: stopped(event),
+        })
     })();
 
     define_value(event, DISPATCHING, JsValue::from(false), context);
@@ -149,10 +180,15 @@ fn invoke(
     let callbacks = {
         let mut state = ctx.state.borrow_mut();
         let mut callbacks = Vec::new();
-        if let Some(listeners) = state.node_listeners.get_mut(&entry.id)
+        if let Some(listeners) = state
+            .node_listeners
+            .get_mut(&entry.id)
             .and_then(|by_type| by_type.get_mut(name))
         {
-            for listener in listeners.iter().filter(|listener| listener.capture == capture) {
+            for listener in listeners
+                .iter()
+                .filter(|listener| listener.capture == capture)
+            {
                 if let Some(callback) = listener.callback.upgrade() {
                     callbacks.push(callback);
                 }
@@ -165,7 +201,10 @@ fn invoke(
     let wrapper = node_wrapper(ctx, entry.id, context);
     let mut callbacks = callbacks;
     if !capture {
-        if let Some(handler) = wrapper.get(JsString::from(format!("on{name}")), context)?.as_callable() {
+        if let Some(handler) = wrapper
+            .get(JsString::from(format!("on{name}")), context)?
+            .as_callable()
+        {
             callbacks.push(handler.clone());
         }
     }
@@ -177,10 +216,19 @@ fn invoke(
     define_value(event, "target", target.clone(), context);
     define_value(event, "srcElement", target, context);
     define_value(event, "currentTarget", wrapper.clone().into(), context);
-    let phase = if entry.id == entry.target { 2 } else if capture { 1 } else { 3 };
+    let phase = if entry.id == entry.target {
+        2
+    } else if capture {
+        1
+    } else {
+        3
+    };
     define_value(event, "eventPhase", JsValue::from(phase), context);
-    let mut path: Vec<_> = entry.visible.iter()
-        .map(|&id| node_wrapper(ctx, id, context)).collect();
+    let mut path: Vec<_> = entry
+        .visible
+        .iter()
+        .map(|&id| node_wrapper(ctx, id, context))
+        .collect();
     if reaches_window {
         path.push(context.global_object().clone());
     }
@@ -193,4 +241,3 @@ fn invoke(
     }
     Ok(true)
 }
-

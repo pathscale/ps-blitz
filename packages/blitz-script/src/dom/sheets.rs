@@ -1,11 +1,12 @@
 //! Constructable stylesheets use Stylo's parser and shared stylesheet objects.
 
 use boa_engine::object::{
-    JsObject, builtins::{JsArray, JsPromise, JsProxyBuilder},
+    JsObject,
+    builtins::{JsArray, JsPromise, JsProxyBuilder},
 };
 use boa_engine::{
-    Context, Finalize, JsData, JsNativeError, JsResult, JsString, JsValue, NativeFunction,
-    Trace, js_string,
+    Context, Finalize, JsData, JsNativeError, JsResult, JsString, JsValue, NativeFunction, Trace,
+    js_string,
 };
 use style::shared_lock::ToCssWithGuard;
 use style::stylesheets::{
@@ -14,8 +15,8 @@ use style::stylesheets::{
 };
 
 use super::{
-    define_accessor, define_method, define_value, dom_ctx, js_str, node_id_of_value,
-    this_node_id, to_rust_string,
+    define_accessor, define_method, define_value, dom_ctx, js_str, node_id_of_value, this_node_id,
+    to_rust_string,
 };
 
 const ADOPTED: &str = "__blitz_adopted_stylesheets__";
@@ -61,16 +62,34 @@ pub(crate) fn init(document: &JsObject, root: &JsObject, context: &mut Context) 
     define_accessor(&rule, "cssText", Some(rule_text), None, context);
     define_accessor(&rule, "type", Some(rule_type), None, context);
     for owner in [document, root] {
-        define_accessor(owner, "adoptedStyleSheets", Some(get_adopted), Some(set_adopted), context);
+        define_accessor(
+            owner,
+            "adoptedStyleSheets",
+            Some(get_adopted),
+            Some(set_adopted),
+            context,
+        );
     }
-    context.insert_data(SheetProtos { sheet: sheet.clone(), list, rule });
-    context.register_global_callable(
-        js_string!("CSSStyleSheet"), 0, NativeFunction::from_fn_ptr(constructor),
-    ).expect("failed to register CSSStyleSheet");
-    let constructor = context.global_object().get(js_string!("CSSStyleSheet"), context)
-        .expect("CSSStyleSheet constructor missing").as_object()
+    context.insert_data(SheetProtos {
+        sheet: sheet.clone(),
+        list,
+        rule,
+    });
+    context
+        .register_global_callable(
+            js_string!("CSSStyleSheet"),
+            0,
+            NativeFunction::from_fn_ptr(constructor),
+        )
+        .expect("failed to register CSSStyleSheet");
+    let constructor = context
+        .global_object()
+        .get(js_string!("CSSStyleSheet"), context)
+        .expect("CSSStyleSheet constructor missing")
+        .as_object()
         .expect("CSSStyleSheet constructor is not an object");
-    constructor.set(js_string!("prototype"), sheet.clone(), true, context)
+    constructor
+        .set(js_string!("prototype"), sheet.clone(), true, context)
         .expect("failed to set CSSStyleSheet prototype");
     define_value(&sheet, "constructor", constructor.into(), context);
 }
@@ -83,9 +102,18 @@ fn constructor(_: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<Js
 }
 
 fn sheet_of(value: &JsValue) -> JsResult<DocumentStyleSheet> {
-    value.as_object()
-        .and_then(|object| object.downcast_ref::<SheetRef>().map(|data| data.sheet.clone()))
-        .ok_or_else(|| JsNativeError::typ().with_message("CSSStyleSheet receiver required").into())
+    value
+        .as_object()
+        .and_then(|object| {
+            object
+                .downcast_ref::<SheetRef>()
+                .map(|data| data.sheet.clone())
+        })
+        .ok_or_else(|| {
+            JsNativeError::typ()
+                .with_message("CSSStyleSheet receiver required")
+                .into()
+        })
 }
 
 fn changed(sheet: &DocumentStyleSheet, context: &mut Context) -> JsResult<()> {
@@ -134,16 +162,19 @@ fn insert_rule(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsRes
         let guard = sheet.0.shared_lock.read();
         let contents = sheet.contents(&guard);
         let rules = contents.rules.clone();
-        let rule = rules.read_with(&guard).parse_rule_for_insert(
-            &sheet.0.shared_lock,
-            &text,
-            contents,
-            index,
-            CssRuleTypes::from_bits(0),
-            None,
-            None,
-            AllowImportRules::No,
-        ).map_err(rule_error)?;
+        let rule = rules
+            .read_with(&guard)
+            .parse_rule_for_insert(
+                &sheet.0.shared_lock,
+                &text,
+                contents,
+                index,
+                CssRuleTypes::from_bits(0),
+                None,
+                None,
+                AllowImportRules::No,
+            )
+            .map_err(rule_error)?;
         (rules, rule)
     };
     {
@@ -156,14 +187,20 @@ fn insert_rule(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsRes
 
 fn delete_rule(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let sheet = sheet_of(this)?;
-    let index = args.first().unwrap_or(&JsValue::undefined()).to_u32(context)? as usize;
+    let index = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .to_u32(context)? as usize;
     let rules = {
         let guard = sheet.0.shared_lock.read();
         sheet.contents(&guard).rules.clone()
     };
     {
         let mut guard = sheet.0.shared_lock.write();
-        rules.write_with(&mut guard).remove_rule(index).map_err(rule_error)?;
+        rules
+            .write_with(&mut guard)
+            .remove_rule(index)
+            .map_err(rule_error)?;
     }
     changed(&sheet, context)?;
     Ok(JsValue::undefined())
@@ -178,17 +215,32 @@ fn css_rules(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<J
     }
     let proto = context.get_data::<SheetProtos>().unwrap().list.clone();
     let target = JsObject::from_proto_and_data(
-        Some(proto), RuleListRef { sheet: object.clone() },
+        Some(proto),
+        RuleListRef {
+            sheet: object.clone(),
+        },
     );
-    let list: JsObject = JsProxyBuilder::new(target).get(rule_list_get).build(context)?.into();
+    let list: JsObject = JsProxyBuilder::new(target)
+        .get(rule_list_get)
+        .build(context)?
+        .into();
     define_value(&object, RULE_LIST, list.clone().into(), context);
     Ok(list.into())
 }
 
 fn rule_list_sheet(value: &JsValue) -> JsResult<JsObject> {
-    value.as_object()
-        .and_then(|object| object.downcast_ref::<RuleListRef>().map(|data| data.sheet.clone()))
-        .ok_or_else(|| JsNativeError::typ().with_message("CSSRuleList receiver required").into())
+    value
+        .as_object()
+        .and_then(|object| {
+            object
+                .downcast_ref::<RuleListRef>()
+                .map(|data| data.sheet.clone())
+        })
+        .ok_or_else(|| {
+            JsNativeError::typ()
+                .with_message("CSSRuleList receiver required")
+                .into()
+        })
 }
 
 fn rule_at(sheet_object: &JsObject, index: usize, context: &mut Context) -> JsResult<JsValue> {
@@ -202,8 +254,13 @@ fn rule_at(sheet_object: &JsObject, index: usize, context: &mut Context) -> JsRe
     };
     let proto = context.get_data::<SheetProtos>().unwrap().rule.clone();
     Ok(JsObject::from_proto_and_data(
-        Some(proto), RuleRef { rule, sheet: sheet_object.clone() },
-    ).into())
+        Some(proto),
+        RuleRef {
+            rule,
+            sheet: sheet_object.clone(),
+        },
+    )
+    .into())
 }
 
 fn rule_list_get(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
@@ -228,13 +285,21 @@ fn rule_list_get(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResu
                 context.realm(),
                 NativeFunction::from_copy_closure_with_captures(
                     |_, args, sheet, context| {
-                        let index = args.first().unwrap_or(&JsValue::undefined()).to_u32(context)?;
+                        let index = args
+                            .first()
+                            .unwrap_or(&JsValue::undefined())
+                            .to_u32(context)?;
                         let value = rule_at(sheet, index as usize, context)?;
-                        Ok(if value.is_undefined() { JsValue::null() } else { value })
+                        Ok(if value.is_undefined() {
+                            JsValue::null()
+                        } else {
+                            value
+                        })
                     },
                     sheet_object,
                 ),
-            ).build();
+            )
+            .build();
             return Ok(function.into());
         }
     }
@@ -244,15 +309,24 @@ fn rule_list_get(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResu
 
 fn rule_item(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let sheet = rule_list_sheet(this)?;
-    let index = args.first().unwrap_or(&JsValue::undefined()).to_u32(context)?;
+    let index = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .to_u32(context)?;
     let value = rule_at(&sheet, index as usize, context)?;
-    Ok(if value.is_undefined() { JsValue::null() } else { value })
+    Ok(if value.is_undefined() {
+        JsValue::null()
+    } else {
+        value
+    })
 }
 
 fn rule_text(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    let object = this.as_object()
+    let object = this
+        .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("CSSRule receiver required"))?;
-    let data = object.downcast_ref::<RuleRef>()
+    let data = object
+        .downcast_ref::<RuleRef>()
         .ok_or_else(|| JsNativeError::typ().with_message("CSSRule receiver required"))?;
     let sheet = sheet_of(&data.sheet.clone().into())?;
     let guard = sheet.0.shared_lock.read();
@@ -260,9 +334,11 @@ fn rule_text(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue
 }
 
 fn rule_type(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    let object = this.as_object()
+    let object = this
+        .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("CSSRule receiver required"))?;
-    let data = object.downcast_ref::<RuleRef>()
+    let data = object
+        .downcast_ref::<RuleRef>()
         .ok_or_else(|| JsNativeError::typ().with_message("CSSRule receiver required"))?;
     Ok(JsValue::from(data.rule.rule_type() as u32))
 }
@@ -274,13 +350,20 @@ fn owner_id(this: &JsValue, context: &mut Context) -> JsResult<blitz_dom::NodeId
         node.is_shadow_root() || matches!(node.data, blitz_dom::NodeData::Document(_))
     });
     if !valid {
-        return Err(JsNativeError::typ().with_message("Document or ShadowRoot receiver required").into());
+        return Err(JsNativeError::typ()
+            .with_message("Document or ShadowRoot receiver required")
+            .into());
     }
     Ok(id)
 }
 
-fn sheets_from_array(object: &JsObject, context: &mut Context) -> JsResult<Vec<DocumentStyleSheet>> {
-    let length = object.get(js_string!("length"), context)?.to_length(context)?;
+fn sheets_from_array(
+    object: &JsObject,
+    context: &mut Context,
+) -> JsResult<Vec<DocumentStyleSheet>> {
+    let length = object
+        .get(js_string!("length"), context)?
+        .to_length(context)?;
     let mut sheets = Vec::new();
     for index in 0..length {
         sheets.push(sheet_of(&object.get(index as u32, context)?)?);
@@ -321,9 +404,13 @@ fn get_adopted(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult
 
 fn set_adopted(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     owner_id(this, context)?;
-    let input = args.first().and_then(JsValue::as_object)
+    let input = args
+        .first()
+        .and_then(JsValue::as_object)
         .ok_or_else(|| JsNativeError::typ().with_message("adoptedStyleSheets requires an array"))?;
-    let length = input.get(js_string!("length"), context)?.to_length(context)?;
+    let length = input
+        .get(js_string!("length"), context)?
+        .to_length(context)?;
     let mut values = Vec::new();
     for index in 0..length {
         let value = input.get(index as u32, context)?;
@@ -335,24 +422,36 @@ fn set_adopted(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsRes
 }
 
 fn adopted_array_set(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let target = args.first().and_then(JsValue::as_object)
+    let target = args
+        .first()
+        .and_then(JsValue::as_object)
         .ok_or_else(|| JsNativeError::typ().with_message("Missing adopted stylesheet array"))?;
-    let key = args.get(1).unwrap_or(&JsValue::undefined()).to_property_key(context)?;
+    let key = args
+        .get(1)
+        .unwrap_or(&JsValue::undefined())
+        .to_property_key(context)?;
     let value = args.get(2).cloned().unwrap_or(JsValue::undefined());
-    if args.get(1).and_then(JsValue::as_string)
+    if args
+        .get(1)
+        .and_then(JsValue::as_string)
         .is_some_and(|key| key.to_std_string_lossy().parse::<u32>().is_ok())
     {
         sheet_of(&value)?;
     }
     target.set(key, value, true, context)?;
-    let owner = target.get(JsString::from(OWNER), context)?.as_object()
+    let owner = target
+        .get(JsString::from(OWNER), context)?
+        .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("Missing adopted stylesheet owner"))?;
-    let active = owner.get(JsString::from(ADOPTED_TARGET), context)?.as_object();
+    let active = owner
+        .get(JsString::from(ADOPTED_TARGET), context)?
+        .as_object();
     if active.is_some_and(|active| JsObject::equals(&active, &target)) {
         let sheets = sheets_from_array(&target, context)?;
         let id = node_id_of_value(&owner.into()).unwrap();
-        dom_ctx(context)?.mutate_doc().set_adopted_stylesheets(id, sheets);
+        dom_ctx(context)?
+            .mutate_doc()
+            .set_adopted_stylesheets(id, sheets);
     }
     Ok(JsValue::from(true))
 }
-

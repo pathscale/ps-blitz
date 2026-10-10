@@ -16,8 +16,8 @@ use boa_engine::object::builtins::JsPromise;
 use boa_engine::object::{FunctionObjectBuilder, JsObject};
 use boa_engine::property::Attribute as PropertyAttribute;
 use boa_engine::{
-    Context, Finalize, JsData, JsError, JsNativeError, JsResult, JsString, JsValue,
-    NativeFunction, Trace, js_string,
+    Context, Finalize, JsData, JsError, JsNativeError, JsResult, JsString, JsValue, NativeFunction,
+    Trace, js_string,
 };
 use rustc_hash::FxHashMap;
 
@@ -91,7 +91,9 @@ fn registry(context: &Context) -> RegistryContext {
 }
 
 fn dom_error(name: &str, message: &str, context: &mut Context) -> JsError {
-    let error: JsError = JsNativeError::error().with_message(message.to_owned()).into();
+    let error: JsError = JsNativeError::error()
+        .with_message(message.to_owned())
+        .into();
     let value = match error.into_opaque(context) {
         Ok(value) => value,
         Err(error) => return error,
@@ -144,8 +146,14 @@ fn valid_name(name: &str) -> bool {
         })
         && !matches!(
             name,
-            "annotation-xml" | "color-profile" | "font-face" | "font-face-src"
-                | "font-face-uri" | "font-face-format" | "font-face-name" | "missing-glyph"
+            "annotation-xml"
+                | "color-profile"
+                | "font-face"
+                | "font-face-src"
+                | "font-face-uri"
+                | "font-face-format"
+                | "font-face-name"
+                | "missing-glyph"
         )
 }
 
@@ -170,10 +178,9 @@ fn builtin_interface(tag: &str) -> Option<&'static str> {
         "template" => "HTMLTemplateElement",
         "textarea" => "HTMLTextAreaElement",
         "ul" => "HTMLUListElement",
-        "abbr" | "address" | "article" | "aside" | "b" | "bdi" | "bdo" | "code"
-        | "dd" | "dfn" | "dt" | "em" | "footer" | "header" | "hgroup" | "i"
-        | "main" | "nav" | "s" | "section" | "small" | "strong" | "sub" | "sup"
-        | "u" | "var" => "HTMLElement",
+        "abbr" | "address" | "article" | "aside" | "b" | "bdi" | "bdo" | "code" | "dd" | "dfn"
+        | "dt" | "em" | "footer" | "header" | "hgroup" | "i" | "main" | "nav" | "s" | "section"
+        | "small" | "strong" | "sub" | "sup" | "u" | "var" => "HTMLElement",
         _ => return None,
     })
 }
@@ -235,9 +242,21 @@ pub(crate) fn install(ctx: &DomCtx, context: &mut Context) {
         construct: interface_construct,
     });
     for (name, length, body) in [
-        ("__blitzHTMLConstructor", 2, html_constructor as super::NativeFnPtr),
-        ("__blitzDOMPrototype", 1, interface_prototype as super::NativeFnPtr),
-        ("__blitzCEInitialize", 1, initialize_sequence as super::NativeFnPtr),
+        (
+            "__blitzHTMLConstructor",
+            2,
+            html_constructor as super::NativeFnPtr,
+        ),
+        (
+            "__blitzDOMPrototype",
+            1,
+            interface_prototype as super::NativeFnPtr,
+        ),
+        (
+            "__blitzCEInitialize",
+            1,
+            initialize_sequence as super::NativeFnPtr,
+        ),
     ] {
         context
             .register_global_callable(
@@ -252,7 +271,13 @@ pub(crate) fn install(ctx: &DomCtx, context: &mut Context) {
     define_method(&document, "createElementNS", 2, create_element_ns, context);
     define_method(&document, "createTextNode", 1, create_text, context);
     define_method(&document, "createComment", 1, create_comment, context);
-    define_method(&document, "createDocumentFragment", 0, create_fragment, context);
+    define_method(
+        &document,
+        "createDocumentFragment",
+        0,
+        create_fragment,
+        context,
+    );
     define_method(&document, "adoptNode", 1, adopt_node, context);
     define_method(&document, "importNode", 2, import_node, context);
 }
@@ -270,11 +295,7 @@ fn interface_prototype(_: &JsValue, args: &[JsValue], context: &mut Context) -> 
 
 /// Select the HTML interface prototype, or the captured custom prototype when
 /// reconstructing a weakly cached wrapper.
-pub(crate) fn element_prototype(
-    ctx: &DomCtx,
-    node: NodeId,
-    context: &Context,
-) -> Option<JsObject> {
+pub(crate) fn element_prototype(ctx: &DomCtx, node: NodeId, context: &Context) -> Option<JsObject> {
     let ce = registry_context(context)?;
     let doc = ctx.doc.borrow();
     let element = doc.get_node(node)?.element_data()?;
@@ -297,28 +318,45 @@ pub(crate) fn element_prototype(
 pub(crate) fn define(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     check_receiver(this, context)?;
     let name = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
-    let Some(constructor) = args.get(1).and_then(JsValue::as_object)
+    let Some(constructor) = args
+        .get(1)
+        .and_then(JsValue::as_object)
         .filter(|constructor| constructor.is_constructor())
     else {
-        return Err(JsNativeError::typ().with_message("Constructor required").into());
+        return Err(JsNativeError::typ()
+            .with_message("Constructor required")
+            .into());
     };
     if !valid_name(&name) {
-        return Err(dom_error("SyntaxError", "Invalid custom element name", context));
+        return Err(dom_error(
+            "SyntaxError",
+            "Invalid custom element name",
+            context,
+        ));
     }
     let ce = registry(context);
     {
         let state = ce.state.borrow();
         if state.defining {
             drop(state);
-            return Err(dom_error("NotSupportedError", "A definition is already running", context));
+            return Err(dom_error(
+                "NotSupportedError",
+                "A definition is already running",
+                context,
+            ));
         }
         if state.definitions.contains_key(&name)
-            || state.definitions.values().any(|definition| {
-                JsObject::equals(&definition.constructor, &constructor)
-            })
+            || state
+                .definitions
+                .values()
+                .any(|definition| JsObject::equals(&definition.constructor, &constructor))
         {
             drop(state);
-            return Err(dom_error("NotSupportedError", "Duplicate custom element definition", context));
+            return Err(dom_error(
+                "NotSupportedError",
+                "Duplicate custom element definition",
+                context,
+            ));
         }
     }
     ce.state.borrow_mut().defining = true;
@@ -328,20 +366,31 @@ pub(crate) fn define(this: &JsValue, args: &[JsValue], context: &mut Context) ->
         let mut customized = false;
         if let Some(options) = args.get(2).filter(|value| !value.is_null_or_undefined()) {
             let Some(options) = options.as_object() else {
-                return Err(JsNativeError::typ().with_message("Options must be a dictionary").into());
+                return Err(JsNativeError::typ()
+                    .with_message("Options must be a dictionary")
+                    .into());
             };
             let extends = options.get(js_string!("extends"), context)?;
             if !extends.is_undefined() {
                 local_name = to_rust_string(&extends, context)?;
                 let Some(builtin) = builtin_interface(&local_name) else {
-                    return Err(dom_error("NotSupportedError", "Unsupported extends element", context));
+                    return Err(dom_error(
+                        "NotSupportedError",
+                        "Unsupported extends element",
+                        context,
+                    ));
                 };
                 interface = builtin;
                 customized = true;
             }
         }
-        let Some(prototype) = constructor.get(js_string!("prototype"), context)?.as_object() else {
-            return Err(JsNativeError::typ().with_message("Constructor prototype must be an object").into());
+        let Some(prototype) = constructor
+            .get(js_string!("prototype"), context)?
+            .as_object()
+        else {
+            return Err(JsNativeError::typ()
+                .with_message("Constructor prototype must be an object")
+                .into());
         };
         let connected = callback(&prototype, "connectedCallback", context)?;
         let disconnected = callback(&prototype, "disconnectedCallback", context)?;
@@ -351,11 +400,19 @@ pub(crate) fn define(this: &JsValue, args: &[JsValue], context: &mut Context) ->
         if attribute_changed.is_some() {
             let value = constructor.get(js_string!("observedAttributes"), context)?;
             if !value.is_undefined() {
-                let sequence = ce.state.borrow().sequence.clone().expect("CE sequence helper missing");
-                let array = sequence.call(&JsValue::undefined(), &[value], context)?
+                let sequence = ce
+                    .state
+                    .borrow()
+                    .sequence
+                    .clone()
+                    .expect("CE sequence helper missing");
+                let array = sequence
+                    .call(&JsValue::undefined(), &[value], context)?
                     .as_object()
                     .expect("CE sequence helper returned a non-object");
-                let length = array.get(js_string!("length"), context)?.to_number(context)? as usize;
+                let length = array
+                    .get(js_string!("length"), context)?
+                    .to_number(context)? as usize;
                 for index in 0..length {
                     observed.insert(to_rust_string(&array.get(index as u32, context)?, context)?);
                 }
@@ -377,8 +434,14 @@ pub(crate) fn define(this: &JsValue, args: &[JsValue], context: &mut Context) ->
     ce.state.borrow_mut().defining = false;
     let definition = Arc::new(definition?);
     let ctx = dom_ctx(context)?;
-    ce.state.borrow_mut().definitions.insert(name.clone(), Arc::clone(&definition));
-    ctx.state.borrow_mut().custom_element_definitions.insert(name.clone(), constructor.clone());
+    ce.state
+        .borrow_mut()
+        .definitions
+        .insert(name.clone(), Arc::clone(&definition));
+    ctx.state
+        .borrow_mut()
+        .custom_element_definitions
+        .insert(name.clone(), constructor.clone());
     let existing = ctx.doc.borrow_mut().define_script_custom_element(
         &name,
         LocalName::from(definition.local_name.as_str()),
@@ -393,7 +456,9 @@ pub(crate) fn define(this: &JsValue, args: &[JsValue], context: &mut Context) ->
         enqueue(&ctx, node, ElementReaction::Upgrade, context);
     }
     if let Some(waiting) = ce.state.borrow_mut().pending.remove(&name) {
-        waiting.resolve.call(&JsValue::undefined(), &[constructor.into()], context)?;
+        waiting
+            .resolve
+            .call(&JsValue::undefined(), &[constructor.into()], context)?;
     }
     finish_scope(&ctx, context);
     Ok(JsValue::undefined())
@@ -403,17 +468,32 @@ pub(crate) fn get(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
     check_receiver(this, context)?;
     let name = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
     let ctx = dom_ctx(context)?;
-    let constructor = ctx.state.borrow().custom_element_definitions.get(&name).cloned();
+    let constructor = ctx
+        .state
+        .borrow()
+        .custom_element_definitions
+        .get(&name)
+        .cloned();
     Ok(constructor.map_or(JsValue::undefined(), JsValue::from))
 }
 
-pub(crate) fn get_name(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn get_name(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     check_receiver(this, context)?;
     let Some(constructor) = args.first().and_then(JsValue::as_object) else {
-        return Err(JsNativeError::typ().with_message("Constructor required").into());
+        return Err(JsNativeError::typ()
+            .with_message("Constructor required")
+            .into());
     };
     let ctx = dom_ctx(context)?;
-    let name = ctx.state.borrow().custom_element_definitions.iter()
+    let name = ctx
+        .state
+        .borrow()
+        .custom_element_definitions
+        .iter()
         .find(|(_, value)| JsObject::equals(value, &constructor))
         .map(|(name, _)| name.clone());
     Ok(name.map_or(JsValue::null(), |name| js_str(&name)))
@@ -429,30 +509,48 @@ pub(crate) fn when_defined(
     let ce = registry(context);
     if !valid_name(&name) {
         let (promise, functions) = JsPromise::new_pending(context);
-        let error = dom_error("SyntaxError", "Invalid custom element name", context).into_opaque(context)?;
-        functions.reject.call(&JsValue::undefined(), &[error], context)?;
+        let error = dom_error("SyntaxError", "Invalid custom element name", context)
+            .into_opaque(context)?;
+        functions
+            .reject
+            .call(&JsValue::undefined(), &[error], context)?;
         return Ok(promise.into());
     }
     if let Some(waiting) = ce.state.borrow().pending.get(&name) {
         return Ok(waiting.promise.clone().into());
     }
-    let constructor = ce.state.borrow().definitions.get(&name)
+    let constructor = ce
+        .state
+        .borrow()
+        .definitions
+        .get(&name)
         .map(|definition| definition.constructor.clone());
     let (promise, functions) = JsPromise::new_pending(context);
     if let Some(constructor) = constructor {
-        functions.resolve.call(&JsValue::undefined(), &[constructor.into()], context)?;
+        functions
+            .resolve
+            .call(&JsValue::undefined(), &[constructor.into()], context)?;
         return Ok(promise.into());
     }
-    ce.state.borrow_mut().pending.insert(name, PendingDefinition {
-        promise: promise.clone(),
-        resolve: functions.resolve.into(),
-    });
+    ce.state.borrow_mut().pending.insert(
+        name,
+        PendingDefinition {
+            promise: promise.clone(),
+            resolve: functions.resolve.into(),
+        },
+    );
     Ok(promise.into())
 }
 
-pub(crate) fn upgrade(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn upgrade(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     check_receiver(this, context)?;
-    let node = args.first().and_then(node_id_of_value)
+    let node = args
+        .first()
+        .and_then(node_id_of_value)
         .ok_or_else(|| JsNativeError::typ().with_message("A DOM root is required"))?;
     let ctx = dom_ctx(context)?;
     let candidates = ctx.doc.borrow().script_custom_element_candidates(node);
@@ -470,17 +568,27 @@ fn definition_for(ctx: &DomCtx, node: NodeId, context: &Context) -> Option<Arc<D
         }
         doc.script_custom_element_name(node)?.to_owned()
     };
-    registry(context).state.borrow().definitions.get(&name).cloned()
+    registry(context)
+        .state
+        .borrow()
+        .definitions
+        .get(&name)
+        .cloned()
 }
 
 fn enqueue(ctx: &DomCtx, node: NodeId, reaction: ElementReaction, context: &mut Context) {
     let wrapper = node_wrapper(ctx, node, context);
     let ce = registry(context);
     let mut state = ce.state.borrow_mut();
-    state.elements.entry(node).or_insert_with(|| ElementQueue {
-        wrapper,
-        reactions: VecDeque::new(),
-    }).reactions.push_back(reaction);
+    state
+        .elements
+        .entry(node)
+        .or_insert_with(|| ElementQueue {
+            wrapper,
+            reactions: VecDeque::new(),
+        })
+        .reactions
+        .push_back(reaction);
     if let Some(queue) = state.stack.last_mut() {
         queue.push_back(node);
     } else {
@@ -496,7 +604,12 @@ fn enqueue_callback(
     context: &mut Context,
 ) {
     if let Some(callback) = callback {
-        enqueue(ctx, node, ElementReaction::Callback(callback.clone(), args), context);
+        enqueue(
+            ctx,
+            node,
+            ElementReaction::Callback(callback.clone(), args),
+            context,
+        );
     }
 }
 
@@ -504,7 +617,12 @@ fn collect(ctx: &DomCtx, context: &mut Context) {
     let records = ctx.doc.borrow_mut().take_script_custom_element_reactions();
     let ce = registry(context);
     for record in records {
-        let definition = ce.state.borrow().definitions.get(record.name.as_ref()).cloned();
+        let definition = ce
+            .state
+            .borrow()
+            .definitions
+            .get(record.name.as_ref())
+            .cloned();
         let Some(definition) = definition else {
             continue;
         };
@@ -514,25 +632,50 @@ fn collect(ctx: &DomCtx, context: &mut Context) {
                 enqueue_callback(ctx, record.node, &definition.connected, Vec::new(), context);
             }
             ReactionKind::Disconnected => {
-                enqueue_callback(ctx, record.node, &definition.disconnected, Vec::new(), context);
+                enqueue_callback(
+                    ctx,
+                    record.node,
+                    &definition.disconnected,
+                    Vec::new(),
+                    context,
+                );
             }
-            ReactionKind::Attribute { name, old_value, new_value } => {
+            ReactionKind::Attribute {
+                name,
+                old_value,
+                new_value,
+            } => {
                 let namespace = if name.ns.as_ref().is_empty() {
                     JsValue::null()
                 } else {
                     js_str(name.ns.as_ref())
                 };
-                enqueue_callback(ctx, record.node, &definition.attribute_changed, vec![
-                    js_str(name.local.as_ref()),
-                    old_value.as_deref().map_or(JsValue::null(), js_str),
-                    new_value.as_deref().map_or(JsValue::null(), js_str),
-                    namespace,
-                ], context);
+                enqueue_callback(
+                    ctx,
+                    record.node,
+                    &definition.attribute_changed,
+                    vec![
+                        js_str(name.local.as_ref()),
+                        old_value.as_deref().map_or(JsValue::null(), js_str),
+                        new_value.as_deref().map_or(JsValue::null(), js_str),
+                        namespace,
+                    ],
+                    context,
+                );
             }
-            ReactionKind::Adopted { old_document, new_document } => {
+            ReactionKind::Adopted {
+                old_document,
+                new_document,
+            } => {
                 let old = node_wrapper(ctx, old_document, context);
                 let new = node_wrapper(ctx, new_document, context);
-                enqueue_callback(ctx, record.node, &definition.adopted, vec![old.into(), new.into()], context);
+                enqueue_callback(
+                    ctx,
+                    record.node,
+                    &definition.adopted,
+                    vec![old.into(), new.into()],
+                    context,
+                );
             }
         }
     }
@@ -556,19 +699,41 @@ fn perform_upgrade(ctx: &DomCtx, node: NodeId, creation: bool, context: &mut Con
     let wrapper = node_wrapper(ctx, node, context);
     let (attributes, connected) = {
         let doc = ctx.doc.borrow();
-        let attributes = doc.get_node(node).and_then(|node| node.element_data())
-            .map(|element| element.attrs.iter()
-                .filter(|attribute| definition.observed.contains(attribute.name.local.as_ref()))
-                .map(|attribute| (attribute.name.clone(), attribute.value.to_string()))
-                .collect::<Vec<_>>())
+        let attributes = doc
+            .get_node(node)
+            .and_then(|node| node.element_data())
+            .map(|element| {
+                element
+                    .attrs
+                    .iter()
+                    .filter(|attribute| definition.observed.contains(attribute.name.local.as_ref()))
+                    .map(|attribute| (attribute.name.clone(), attribute.value.to_string()))
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default();
         (attributes, doc.script_node_is_connected(node))
     };
-    ctx.doc.borrow_mut().set_script_custom_element_state(node, State::Upgrading);
+    ctx.doc
+        .borrow_mut()
+        .set_script_custom_element_state(node, State::Upgrading);
     for (name, value) in attributes {
-        let namespace = if name.ns.as_ref().is_empty() { JsValue::null() } else { js_str(name.ns.as_ref()) };
-        enqueue_callback(ctx, node, &definition.attribute_changed,
-            vec![js_str(name.local.as_ref()), JsValue::null(), js_str(&value), namespace], context);
+        let namespace = if name.ns.as_ref().is_empty() {
+            JsValue::null()
+        } else {
+            js_str(name.ns.as_ref())
+        };
+        enqueue_callback(
+            ctx,
+            node,
+            &definition.attribute_changed,
+            vec![
+                js_str(name.local.as_ref()),
+                JsValue::null(),
+                js_str(&value),
+                namespace,
+            ],
+            context,
+        );
     }
     if connected {
         enqueue_callback(ctx, node, &definition.connected, Vec::new(), context);
@@ -580,16 +745,24 @@ fn perform_upgrade(ctx: &DomCtx, node: NodeId, creation: bool, context: &mut Con
         consumed: false,
     });
     let result = definition.constructor.construct(&[], None, context);
-    let construction = ce.state.borrow_mut().construction.pop().expect("construction stack missing");
+    let construction = ce
+        .state
+        .borrow_mut()
+        .construction
+        .pop()
+        .expect("construction stack missing");
     let result = result.and_then(|returned| {
         if !construction.consumed || !JsObject::equals(&returned, &wrapper) {
-            return Err(JsNativeError::typ().with_message("Custom constructor returned a different element").into());
+            return Err(JsNativeError::typ()
+                .with_message("Custom constructor returned a different element")
+                .into());
         }
         if creation {
             let doc = ctx.doc.borrow();
             let element = doc.get_node(node).and_then(|node| node.element_data());
             let invalid = doc.get_node(node).is_none_or(|node| {
-                node.parent.is_some() || !node.children.is_empty()
+                node.parent.is_some()
+                    || !node.children.is_empty()
                     || node.owner_document != Some(doc.root_node().id)
             }) || element.is_none_or(|element| {
                 element.name.ns != ns!(html)
@@ -599,15 +772,22 @@ fn perform_upgrade(ctx: &DomCtx, node: NodeId, creation: bool, context: &mut Con
                     })
             });
             if invalid {
-                return Err(JsNativeError::typ().with_message("Custom constructor changed the new element's structure").into());
+                return Err(JsNativeError::typ()
+                    .with_message("Custom constructor changed the new element's structure")
+                    .into());
             }
         }
         Ok(())
     });
     match result {
-        Ok(()) => ctx.doc.borrow_mut().set_script_custom_element_state(node, State::Custom),
+        Ok(()) => ctx
+            .doc
+            .borrow_mut()
+            .set_script_custom_element_state(node, State::Custom),
         Err(error) => {
-            ctx.doc.borrow_mut().set_script_custom_element_state(node, State::Failed);
+            ctx.doc
+                .borrow_mut()
+                .set_script_custom_element_state(node, State::Failed);
             ce.state.borrow_mut().elements.remove(&node);
             report(&error);
         }
@@ -621,7 +801,11 @@ fn report(error: &JsError) {
 fn invoke(ctx: &DomCtx, mut queue: VecDeque<NodeId>, context: &mut Context) {
     let ce = registry(context);
     while let Some(node) = queue.pop_front() {
-        let constructing = ce.state.borrow().construction.iter()
+        let constructing = ce
+            .state
+            .borrow()
+            .construction
+            .iter()
             .any(|frame| node_id_of_value(&frame.element.clone().into()) == Some(node));
         if constructing {
             continue;
@@ -629,8 +813,12 @@ fn invoke(ctx: &DomCtx, mut queue: VecDeque<NodeId>, context: &mut Context) {
         loop {
             let next = {
                 let mut state = ce.state.borrow_mut();
-                state.elements.get_mut(&node)
-                    .and_then(|queue| queue.reactions.pop_front().map(|reaction| (queue.wrapper.clone(), reaction)))
+                state.elements.get_mut(&node).and_then(|queue| {
+                    queue
+                        .reactions
+                        .pop_front()
+                        .map(|reaction| (queue.wrapper.clone(), reaction))
+                })
             };
             let Some((wrapper, reaction)) = next else {
                 ce.state.borrow_mut().elements.remove(&node);
@@ -654,7 +842,12 @@ fn invoke(ctx: &DomCtx, mut queue: VecDeque<NodeId>, context: &mut Context) {
 fn finish_scope(ctx: &DomCtx, context: &mut Context) {
     collect(ctx, context);
     let ce = registry(context);
-    let queue = ce.state.borrow_mut().stack.pop().expect("reaction scope missing");
+    let queue = ce
+        .state
+        .borrow_mut()
+        .stack
+        .pop()
+        .expect("reaction scope missing");
     invoke(ctx, queue, context);
     schedule_backup(context);
 }
@@ -689,13 +882,14 @@ fn schedule_backup(context: &mut Context) {
         }
         state.backup_scheduled = true;
     }
-    let callback = FunctionObjectBuilder::new(
-        context.realm(),
-        NativeFunction::from_fn_ptr(deliver_backup),
-    ).build();
+    let callback =
+        FunctionObjectBuilder::new(context.realm(), NativeFunction::from_fn_ptr(deliver_backup))
+            .build();
     let (promise, functions) = JsPromise::new_pending(context);
     let then = ce.state.borrow().promise_then.clone().unwrap();
-    let result = functions.resolve.call(&JsValue::undefined(), &[], context)
+    let result = functions
+        .resolve
+        .call(&JsValue::undefined(), &[], context)
         .and_then(|_| then.call(&promise.into(), &[callback.into()], context));
     if let Err(error) = result {
         ce.state.borrow_mut().backup_scheduled = false;
@@ -736,7 +930,9 @@ fn interface_construct(
     context: &mut Context,
 ) -> JsResult<JsValue> {
     let Some(target) = new_target.as_object() else {
-        return Err(JsNativeError::typ().with_message("Illegal constructor").into());
+        return Err(JsNativeError::typ()
+            .with_message("Illegal constructor")
+            .into());
     };
     let interface = registry(context)
         .state
@@ -746,7 +942,9 @@ fn interface_construct(
         .find(|definition| JsObject::equals(&definition.constructor, &target))
         .map(|definition| definition.interface.clone());
     let Some(interface) = interface else {
-        return Err(JsNativeError::typ().with_message("Illegal constructor").into());
+        return Err(JsNativeError::typ()
+            .with_message("Illegal constructor")
+            .into());
     };
     html_constructor(
         &JsValue::undefined(),
@@ -757,18 +955,28 @@ fn interface_construct(
 
 fn html_constructor(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let Some(new_target) = args.first().and_then(JsValue::as_object) else {
-        return Err(JsNativeError::typ().with_message("Illegal HTML constructor").into());
+        return Err(JsNativeError::typ()
+            .with_message("Illegal HTML constructor")
+            .into());
     };
     let interface = to_rust_string(args.get(1).unwrap_or(&JsValue::undefined()), context)?;
     let ce = registry(context);
-    let found = ce.state.borrow().definitions.iter()
+    let found = ce
+        .state
+        .borrow()
+        .definitions
+        .iter()
         .find(|(_, definition)| JsObject::equals(&definition.constructor, &new_target))
         .map(|(name, definition)| (name.clone(), Arc::clone(definition)));
     let Some((name, definition)) = found else {
-        return Err(JsNativeError::typ().with_message("Unregistered HTML constructor").into());
+        return Err(JsNativeError::typ()
+            .with_message("Unregistered HTML constructor")
+            .into());
     };
     if interface != definition.interface {
-        return Err(JsNativeError::typ().with_message("Incorrect HTML base constructor").into());
+        return Err(JsNativeError::typ()
+            .with_message("Incorrect HTML base constructor")
+            .into());
     }
     {
         let mut state = ce.state.borrow_mut();
@@ -776,22 +984,34 @@ fn html_constructor(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
             && JsObject::equals(&frame.constructor, &new_target)
         {
             if frame.consumed {
-                return Err(JsNativeError::typ().with_message("Element already constructed").into());
+                return Err(JsNativeError::typ()
+                    .with_message("Element already constructed")
+                    .into());
             }
             frame.consumed = true;
-            frame.element.set_prototype(Some(definition.prototype.clone()));
+            frame
+                .element
+                .set_prototype(Some(definition.prototype.clone()));
             return Ok(frame.element.clone().into());
         }
     }
     let ctx = dom_ctx(context)?;
     let attributes = if definition.customized {
-        vec![Attribute { name: qual_name("is"), value: name.as_str().into() }]
+        vec![Attribute {
+            name: qual_name("is"),
+            value: name.as_str().into(),
+        }]
     } else {
         Vec::new()
     };
-    let node = ctx.doc.borrow_mut().mutate()
+    let node = ctx
+        .doc
+        .borrow_mut()
+        .mutate()
         .create_element(qual_name(&definition.local_name), attributes);
-    ctx.doc.borrow_mut().set_script_custom_element_state(node, State::Custom);
+    ctx.doc
+        .borrow_mut()
+        .set_script_custom_element_state(node, State::Custom);
     let wrapper = node_wrapper(&ctx, node, context);
     wrapper.set_prototype(Some(definition.prototype.clone()));
     Ok(wrapper.into())
@@ -807,15 +1027,24 @@ fn created_element(
     let mut attributes = Vec::new();
     if let Some(options) = options.filter(|value| !value.is_null_or_undefined()) {
         let Some(options) = options.as_object() else {
-            return Err(JsNativeError::typ().with_message("Options must be a dictionary").into());
+            return Err(JsNativeError::typ()
+                .with_message("Options must be a dictionary")
+                .into());
         };
         let is = options.get(js_string!("is"), context)?;
         if !is.is_undefined() {
             let is = to_rust_string(&is, context)?;
-            attributes.push(Attribute { name: qual_name("is"), value: is.as_str().into() });
+            attributes.push(Attribute {
+                name: qual_name("is"),
+                value: is.as_str().into(),
+            });
         }
     }
-    let node = ctx.doc.borrow_mut().mutate().create_element(name, attributes);
+    let node = ctx
+        .doc
+        .borrow_mut()
+        .mutate()
+        .create_element(name, attributes);
     ctx.doc.borrow_mut().adopt_script_subtree(node, owner);
     let wrapper = node_wrapper(ctx, node, context);
     perform_upgrade(ctx, node, true, context);
@@ -826,7 +1055,8 @@ fn create_element(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
     let ctx = dom_ctx(context)?;
     let _t = crate::script_stats::Timed::new(&ctx, "dom:createElement");
     let owner = this_node_id(this)?;
-    let tag = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?.to_ascii_lowercase();
+    let tag = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?
+        .to_ascii_lowercase();
     created_element(&ctx, owner, qual_name(&tag), args.get(1), context)
 }
 
@@ -840,7 +1070,13 @@ fn create_element_ns(this: &JsValue, args: &[JsValue], context: &mut Context) ->
         to_rust_string(namespace, context)?
     };
     let tag = to_rust_string(args.get(1).unwrap_or(&JsValue::undefined()), context)?;
-    created_element(&ctx, owner, qual_name_ns(&tag, &namespace), args.get(2), context)
+    created_element(
+        &ctx,
+        owner,
+        qual_name_ns(&tag, &namespace),
+        args.get(2),
+        context,
+    )
 }
 
 fn create_text(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
@@ -878,12 +1114,22 @@ fn adopt_node(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResu
         .ok_or_else(|| JsNativeError::typ().with_message("A DOM node is required"))?;
     let forbidden = {
         let doc = ctx.doc.borrow();
-        doc.get_node(node).is_none_or(|node| matches!(node.data, NodeData::Document(_) | NodeData::ShadowRoot(_)))
+        doc.get_node(node)
+            .is_none_or(|node| matches!(node.data, NodeData::Document(_) | NodeData::ShadowRoot(_)))
     };
     if forbidden {
-        return Err(dom_error("NotSupportedError", "This node cannot be adopted", context));
+        return Err(dom_error(
+            "NotSupportedError",
+            "This node cannot be adopted",
+            context,
+        ));
     }
-    if ctx.doc.borrow().get_node(node).is_some_and(|node| node.parent.is_some()) {
+    if ctx
+        .doc
+        .borrow()
+        .get_node(node)
+        .is_some_and(|node| node.parent.is_some())
+    {
         super::remove_and_free_node(&ctx, node, context);
     }
     ctx.doc.borrow_mut().adopt_script_subtree(node, owner);
@@ -901,4 +1147,3 @@ fn import_node(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsRes
     }
     Ok(cloned)
 }
-

@@ -73,15 +73,16 @@ fn style_set_trap(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsRes
     let key = to_rust_string(key_value, context)?;
     if is_api_member(&key) {
         return object
-            .set(js_str(&key).to_property_key(context)?, value, false, context)
+            .set(
+                js_str(&key).to_property_key(context)?,
+                value,
+                false,
+                context,
+            )
             .map(JsValue::from);
     }
     let name = css_property_name(&key);
-    let value = if value.is_null() {
-        js_str("")
-    } else {
-        value
-    };
+    let value = if value.is_null() { js_str("") } else { value };
     set_property(&target, &[js_str(&name), value], context)?;
     Ok(JsValue::from(true))
 }
@@ -174,7 +175,13 @@ pub(crate) fn init_style_proto(proto: &JsObject, context: &mut Context) {
     define_method(proto, "setProperty", 2, set_property, context);
     define_method(proto, "removeProperty", 1, remove_property, context);
     define_method(proto, "getPropertyValue", 1, get_property_value, context);
-    define_method(proto, "getPropertyPriority", 1, get_property_priority, context);
+    define_method(
+        proto,
+        "getPropertyPriority",
+        1,
+        get_property_priority,
+        context,
+    );
 }
 
 fn declaration_names(this: &JsValue, context: &mut Context) -> JsResult<Vec<String>> {
@@ -277,7 +284,9 @@ fn get_property_value(
         ));
     }
     Ok(js_str(
-        &ctx.doc.borrow().platform_inline_value(node_id, &name, false),
+        &ctx.doc
+            .borrow()
+            .platform_inline_value(node_id, &name, false),
     ))
 }
 

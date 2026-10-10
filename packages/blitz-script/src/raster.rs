@@ -24,4 +24,3 @@ pub fn raster_image_for_attribute(
         element.raster_image_data().cloned()
     })
 }
-

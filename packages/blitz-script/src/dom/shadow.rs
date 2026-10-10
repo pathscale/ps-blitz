@@ -3,8 +3,7 @@
 use blitz_dom::node::ShadowRootMode;
 use boa_engine::object::{JsObject, builtins::JsArray};
 use boa_engine::{
-    Context, Finalize, JsData, JsNativeError, JsResult, JsValue, NativeFunction, Trace,
-    js_string,
+    Context, Finalize, JsData, JsNativeError, JsResult, JsValue, NativeFunction, Trace, js_string,
 };
 
 use super::{
@@ -19,14 +18,22 @@ struct ShadowProtos {
 }
 
 pub(crate) fn root_proto(context: &Context) -> JsObject {
-    context.get_data::<ShadowProtos>().expect("shadow prototypes missing").root.clone()
+    context
+        .get_data::<ShadowProtos>()
+        .expect("shadow prototypes missing")
+        .root
+        .clone()
 }
 
 pub(crate) fn init(ctx: &DomCtx, context: &mut Context) {
     let (node, element, document) = {
         let state = ctx.state.borrow();
         let protos = state.protos();
-        (protos.node.clone(), protos.element.clone(), protos.document.clone())
+        (
+            protos.node.clone(),
+            protos.element.clone(),
+            protos.document.clone(),
+        )
     };
 
     let root = JsObject::with_object_proto(context.intrinsics());
@@ -41,7 +48,13 @@ pub(crate) fn init(ctx: &DomCtx, context: &mut Context) {
         context,
     );
     define_method(&root, "querySelector", 1, element::query_selector, context);
-    define_method(&root, "querySelectorAll", 1, element::query_selector_all, context);
+    define_method(
+        &root,
+        "querySelectorAll",
+        1,
+        element::query_selector_all,
+        context,
+    );
     define_method(&root, "getElementById", 1, get_element_by_id, context);
 
     define_method(&node, "getRootNode", 0, get_root_node, context);
@@ -66,41 +79,70 @@ pub(crate) fn init(ctx: &DomCtx, context: &mut Context) {
         .expect("ShadowRoot constructor missing")
         .as_object()
         .expect("ShadowRoot constructor is not an object");
-    constructor.set(js_string!("prototype"), root.clone(), true, context)
+    constructor
+        .set(js_string!("prototype"), root.clone(), true, context)
         .expect("failed to set ShadowRoot prototype");
     define_value(&root, "constructor", constructor.into(), context);
     super::sheets::init(&document, &root, context);
 }
 
 fn illegal_constructor(_: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    Err(JsNativeError::typ().with_message("Illegal ShadowRoot constructor").into())
+    Err(JsNativeError::typ()
+        .with_message("Illegal ShadowRoot constructor")
+        .into())
 }
 
 fn attach_shadow(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let host_id = this_node_id(this)?;
-    let options = args.first().and_then(JsValue::as_object)
+    let options = args
+        .first()
+        .and_then(JsValue::as_object)
         .ok_or_else(|| JsNativeError::typ().with_message("attachShadow requires options"))?;
     let mode = to_rust_string(&options.get(js_string!("mode"), context)?, context)?;
     let mode = match mode.as_str() {
         "open" => ShadowRootMode::Open,
         "closed" => ShadowRootMode::Closed,
-        _ => return Err(JsNativeError::typ().with_message("Invalid ShadowRoot mode").into()),
+        _ => {
+            return Err(JsNativeError::typ()
+                .with_message("Invalid ShadowRoot mode")
+                .into());
+        }
     };
     {
         let doc = ctx.doc.borrow();
-        let host = doc.get_node(host_id).and_then(|node| node.element_data())
+        let host = doc
+            .get_node(host_id)
+            .and_then(|node| node.element_data())
             .ok_or_else(|| JsNativeError::typ().with_message("attachShadow requires an element"))?;
         let tag = host.name.local.as_ref();
         let allowed = host.name.ns == markup5ever::ns!(html)
-            && (tag.contains('-') || matches!(
-                tag,
-                "article" | "aside" | "blockquote" | "body" | "div" | "footer"
-                    | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "header"
-                    | "main" | "nav" | "p" | "section" | "span"
-            ));
+            && (tag.contains('-')
+                || matches!(
+                    tag,
+                    "article"
+                        | "aside"
+                        | "blockquote"
+                        | "body"
+                        | "div"
+                        | "footer"
+                        | "h1"
+                        | "h2"
+                        | "h3"
+                        | "h4"
+                        | "h5"
+                        | "h6"
+                        | "header"
+                        | "main"
+                        | "nav"
+                        | "p"
+                        | "section"
+                        | "span"
+                ));
         if !allowed || host.shadow_root.is_some() {
-            return Err(JsNativeError::typ().with_message("NotSupportedError: attachShadow").into());
+            return Err(JsNativeError::typ()
+                .with_message("NotSupportedError: attachShadow")
+                .into());
         }
     }
     let root_id = ctx.mutate_doc().mutate().attach_shadow(host_id, mode);
@@ -113,7 +155,8 @@ fn shadow_root(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult
     let root_id = {
         let doc = ctx.doc.borrow();
         doc.shadow_root_id(host_id).filter(|&id| {
-            doc.get_node(id).and_then(|node| node.shadow_root_data())
+            doc.get_node(id)
+                .and_then(|node| node.shadow_root_data())
                 .is_some_and(|root| root.mode == ShadowRootMode::Open)
         })
     };
@@ -123,7 +166,11 @@ fn shadow_root(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult
 fn host(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let id = this_node_id(this)?;
-    let host_id = ctx.doc.borrow().get_node(id).and_then(|node| node.shadow_root_data())
+    let host_id = ctx
+        .doc
+        .borrow()
+        .get_node(id)
+        .and_then(|node| node.shadow_root_data())
         .map(|root| root.host)
         .ok_or_else(|| JsNativeError::typ().with_message("ShadowRoot receiver required"))?;
     Ok(node_wrapper(&ctx, host_id, context).into())
@@ -132,10 +179,18 @@ fn host(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValu
 fn mode(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let id = this_node_id(this)?;
-    let mode = ctx.doc.borrow().get_node(id).and_then(|node| node.shadow_root_data())
+    let mode = ctx
+        .doc
+        .borrow()
+        .get_node(id)
+        .and_then(|node| node.shadow_root_data())
         .map(|root| root.mode)
         .ok_or_else(|| JsNativeError::typ().with_message("ShadowRoot receiver required"))?;
-    Ok(js_str(if mode == ShadowRootMode::Open { "open" } else { "closed" }))
+    Ok(js_str(if mode == ShadowRootMode::Open {
+        "open"
+    } else {
+        "closed"
+    }))
 }
 
 fn get_root_node(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
@@ -164,13 +219,16 @@ fn get_element_by_id(this: &JsValue, args: &[JsValue], context: &mut Context) ->
     let name = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
     let found = {
         let doc = ctx.doc.borrow();
-        let root = doc.get_node(root_id).filter(|node| node.is_shadow_root())
+        let root = doc
+            .get_node(root_id)
+            .filter(|node| node.is_shadow_root())
             .ok_or_else(|| JsNativeError::typ().with_message("ShadowRoot receiver required"))?;
         let mut stack: Vec<_> = root.children.iter().rev().copied().collect();
         let mut found = None;
         while let Some(id) = stack.pop() {
             let node = doc.get_node(id).unwrap();
-            if !name.is_empty() && node.attr(markup5ever::local_name!("id")) == Some(name.as_str()) {
+            if !name.is_empty() && node.attr(markup5ever::local_name!("id")) == Some(name.as_str())
+            {
                 found = Some(id);
                 break;
             }
@@ -184,9 +242,13 @@ fn get_element_by_id(this: &JsValue, args: &[JsValue], context: &mut Context) ->
 fn get_slot(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let id = this_node_id(this)?;
-    let value = ctx.doc.borrow().get_node(id)
+    let value = ctx
+        .doc
+        .borrow()
+        .get_node(id)
         .and_then(|node| node.attr(markup5ever::local_name!("slot")))
-        .unwrap_or("").to_owned();
+        .unwrap_or("")
+        .to_owned();
     Ok(js_str(&value))
 }
 
@@ -194,7 +256,9 @@ fn set_slot(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult
     let ctx = dom_ctx(context)?;
     let id = this_node_id(this)?;
     let value = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
-    ctx.mutate_doc().mutate().set_attribute(id, element::attr_name("slot"), &value);
+    ctx.mutate_doc()
+        .mutate()
+        .set_attribute(id, element::attr_name("slot"), &value);
     Ok(JsValue::undefined())
 }
 
@@ -204,12 +268,14 @@ fn assigned_slot(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResu
     let assigned = {
         let mut doc = ctx.doc.borrow_mut();
         doc.compute_flattened_trees();
-        doc.get_node(id).and_then(|node| node.assigned_slot).filter(|&slot_id| {
-            doc.containing_shadow_root(slot_id)
-                .and_then(|root_id| doc.get_node(root_id))
-                .and_then(|node| node.shadow_root_data())
-                .is_some_and(|root| root.mode == ShadowRootMode::Open)
-        })
+        doc.get_node(id)
+            .and_then(|node| node.assigned_slot)
+            .filter(|&slot_id| {
+                doc.containing_shadow_root(slot_id)
+                    .and_then(|root_id| doc.get_node(root_id))
+                    .and_then(|node| node.shadow_root_data())
+                    .is_some_and(|root| root.mode == ShadowRootMode::Open)
+            })
     };
     Ok(node_or_null(&ctx, assigned, context))
 }
@@ -229,9 +295,12 @@ fn assignment(
     let ids = {
         let mut doc = ctx.doc.borrow_mut();
         if !doc.get_node(id).is_some_and(|node| {
-            node.data.is_element_with_tag_name(&markup5ever::local_name!("slot"))
+            node.data
+                .is_element_with_tag_name(&markup5ever::local_name!("slot"))
         }) {
-            return Err(JsNativeError::typ().with_message("HTMLSlotElement receiver required").into());
+            return Err(JsNativeError::typ()
+                .with_message("HTMLSlotElement receiver required")
+                .into());
         }
         let mut ids = doc.slot_assigned_nodes(id, flatten);
         if elements_only {
@@ -239,8 +308,10 @@ fn assignment(
         }
         ids
     };
-    let values: Vec<JsValue> = ids.into_iter()
-        .map(|id| node_wrapper(&ctx, id, context).into()).collect();
+    let values: Vec<JsValue> = ids
+        .into_iter()
+        .map(|id| node_wrapper(&ctx, id, context).into())
+        .collect();
     Ok(JsArray::from_iter(values, context).into())
 }
 
@@ -262,4 +333,3 @@ pub(crate) fn deliver_slot_changes(ctx: &DomCtx, context: &mut Context) -> bool 
     }
     delivered
 }
-

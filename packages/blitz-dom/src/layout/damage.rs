@@ -76,11 +76,10 @@ impl BaseDocument {
                 _ => true,
             }
         };
-        self.abspos_candidates_dirty |= style_changed
-            || damage.intersects(CONSTRUCT_BOX | CONSTRUCT_FC | CONSTRUCT_DESCENDENT);
-        self.abspos_layout_dirty |= damage.intersects(
-            ONLY_RELAYOUT | CONSTRUCT_BOX | CONSTRUCT_FC | CONSTRUCT_DESCENDENT,
-        );
+        self.abspos_candidates_dirty |=
+            style_changed || damage.intersects(CONSTRUCT_BOX | CONSTRUCT_FC | CONSTRUCT_DESCENDENT);
+        self.abspos_layout_dirty |=
+            damage.intersects(ONLY_RELAYOUT | CONSTRUCT_BOX | CONSTRUCT_FC | CONSTRUCT_DESCENDENT);
         damage |= damage_from_parent;
 
         // Flush updated pseudo-element styles to their anonymous nodes so that
@@ -522,7 +521,8 @@ impl BaseDocument {
         // Skipped subtrees retain their contexts and host registrations.
         let nodes = &self.nodes;
         self.hoisted_clip_hosts.retain(|id| nodes.contains_key(*id));
-        self.hoisted_position_hosts.retain(|id| nodes.contains_key(*id));
+        self.hoisted_position_hosts
+            .retain(|id| nodes.contains_key(*id));
         self.flush_styles_to_layout_impl(node_id, None);
     }
 

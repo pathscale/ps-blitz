@@ -190,9 +190,9 @@ impl BaseDocument {
                 let candidate = &self.script_custom_elements.candidates[id];
                 candidate.state == State::Undefined
                     && candidate.local_name == local_name
-                    && self.get_node(*id).is_some_and(|node| {
-                        node.owner_document == Some(self.root_node_id)
-                    })
+                    && self
+                        .get_node(*id)
+                        .is_some_and(|node| node.owner_document == Some(self.root_node_id))
                     && self.script_node_is_connected(*id)
             })
             .map(|id| (self.script_tree_order_key(id), id))
@@ -297,11 +297,7 @@ impl BaseDocument {
     }
 
     /// Called after establishing a new parent edge.
-    pub(crate) fn attach_script_custom_element_subtree(
-        &mut self,
-        root: NodeId,
-        parent: NodeId,
-    ) {
+    pub(crate) fn attach_script_custom_element_subtree(&mut self, root: NodeId, parent: NodeId) {
         let owner = self.nodes[parent].owner_document.unwrap_or(parent);
         self.adopt_script_subtree(root, owner);
         let count = self.nodes[root].custom_element_subtree_count;
@@ -387,7 +383,12 @@ impl BaseDocument {
         }
         let old_value = self.nodes[node_id]
             .element_data()
-            .and_then(|element| element.attrs.iter().find(|attribute| attribute.name == *name))
+            .and_then(|element| {
+                element
+                    .attrs
+                    .iter()
+                    .find(|attribute| attribute.name == *name)
+            })
             .map(|attribute| attribute.value.to_string());
         if old_value.is_none() && new_value.is_none() {
             return;
@@ -402,4 +403,3 @@ impl BaseDocument {
         );
     }
 }
-

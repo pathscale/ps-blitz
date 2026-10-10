@@ -74,7 +74,13 @@ impl Clone for Attributes {
 
 impl Drop for Attributes {
     fn drop(&mut self) {
-        for handle in self.handles.get_mut().unwrap().iter().filter_map(Weak::upgrade) {
+        for handle in self
+            .handles
+            .get_mut()
+            .unwrap()
+            .iter()
+            .filter_map(Weak::upgrade)
+        {
             handle.write().unwrap().attached = false;
         }
     }
@@ -210,4 +216,3 @@ impl DerefMut for Attributes {
         &mut self.inner
     }
 }
-

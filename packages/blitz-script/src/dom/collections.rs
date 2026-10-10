@@ -7,17 +7,24 @@ use boa_engine::object::builtins::{JsArray, JsProxy};
 use boa_engine::object::{FunctionObjectBuilder, JsObject};
 use boa_engine::property::{Attribute, PropertyDescriptor, PropertyKey};
 use boa_engine::{
-    Context, Finalize, JsData, JsNativeError, JsResult, JsString, JsSymbol,
-    JsValue, NativeFunction, Trace,
+    Context, Finalize, JsData, JsNativeError, JsResult, JsString, JsSymbol, JsValue,
+    NativeFunction, Trace,
 };
 
-use super::{define_accessor, define_method, define_value, dom_ctx, js_str, node_wrapper, this_node_id};
+use super::{
+    define_accessor, define_method, define_value, dom_ctx, js_str, node_wrapper, this_node_id,
+};
 
 #[derive(Clone)]
 enum Source {
     Snapshot,
-    Children { elements: bool },
-    Tag { name: Arc<str>, namespace: Option<Arc<str>> },
+    Children {
+        elements: bool,
+    },
+    Tag {
+        name: Arc<str>,
+        namespace: Option<Arc<str>>,
+    },
     Class(Arc<[Arc<str>]>),
     Tokens,
 }
@@ -38,20 +45,32 @@ struct CollectionKey {
 }
 
 fn record(this: &JsValue, context: &mut Context) -> JsResult<JsObject> {
-    let object = this.as_object()
+    let object = this
+        .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("Invalid collection receiver"))?;
     if object.downcast_ref::<Collection>().is_some() {
         return Ok(object);
     }
-    let key = context.get_data::<CollectionKey>().expect("missing collection key").symbol.clone();
-    object.get(key, context)?.as_object()
+    let key = context
+        .get_data::<CollectionKey>()
+        .expect("missing collection key")
+        .symbol
+        .clone();
+    object
+        .get(key, context)?
+        .as_object()
         .filter(|object| object.downcast_ref::<Collection>().is_some())
-        .ok_or_else(|| JsNativeError::typ().with_message("Invalid collection receiver").into())
+        .ok_or_else(|| {
+            JsNativeError::typ()
+                .with_message("Invalid collection receiver")
+                .into()
+        })
 }
 
 fn split_tokens(value: &str) -> Vec<String> {
     let mut tokens = Vec::new();
-    for token in value.split(|character| matches!(character, '\t' | '\n' | '\u{000c}' | '\r' | ' ')) {
+    for token in value.split(|character| matches!(character, '\t' | '\n' | '\u{000c}' | '\r' | ' '))
+    {
         if !token.is_empty() && !tokens.iter().any(|existing| existing == token) {
             tokens.push(token.to_owned());
         }
@@ -62,7 +81,9 @@ fn split_tokens(value: &str) -> Vec<String> {
 fn values(this: &JsValue, context: &mut Context) -> JsResult<Vec<JsValue>> {
     let object = record(this, context)?;
     let (source, owner, items) = {
-        let data = object.downcast_ref::<Collection>().expect("validated collection");
+        let data = object
+            .downcast_ref::<Collection>()
+            .expect("validated collection");
         (data.source.clone(), data.owner.clone(), data.items.clone())
     };
     if matches!(source, Source::Snapshot) {
@@ -73,17 +94,26 @@ fn values(this: &JsValue, context: &mut Context) -> JsResult<Vec<JsValue>> {
     let ctx = dom_ctx(context)?;
     if matches!(source, Source::Tokens) {
         let doc = ctx.doc.borrow();
-        let class = doc.get_node(owner_id)
-            .and_then(|node| node.attr(blitz_dom::local_name!("class"))).unwrap_or_default();
-        return Ok(split_tokens(class).iter().map(|token| js_str(token)).collect());
+        let class = doc
+            .get_node(owner_id)
+            .and_then(|node| node.attr(blitz_dom::local_name!("class")))
+            .unwrap_or_default();
+        return Ok(split_tokens(class)
+            .iter()
+            .map(|token| js_str(token))
+            .collect());
     }
     let ids: Vec<NodeId> = {
         let doc = ctx.doc.borrow();
         let mut result = Vec::new();
-        let mut stack: Vec<_> = doc.get_node(owner_id)
-            .map(|node| node.children.iter().rev().copied().collect()).unwrap_or_default();
+        let mut stack: Vec<_> = doc
+            .get_node(owner_id)
+            .map(|node| node.children.iter().rev().copied().collect())
+            .unwrap_or_default();
         while let Some(id) = stack.pop() {
-            let Some(node) = doc.get_node(id) else { continue };
+            let Some(node) = doc.get_node(id) else {
+                continue;
+            };
             let element = node.element_data();
             let selected = match &source {
                 Source::Children { elements } => !elements || element.is_some(),
@@ -94,15 +124,22 @@ fn values(this: &JsValue, context: &mut Context) -> JsResult<Vec<JsValue>> {
                         } else {
                             element.name.local.as_ref() == name.as_ref()
                         };
-                    tag_matches && namespace.as_ref().is_none_or(|namespace| {
-                        namespace.as_ref() == "*" || element.name.ns.as_ref() == namespace.as_ref()
-                    })
+                    tag_matches
+                        && namespace.as_ref().is_none_or(|namespace| {
+                            namespace.as_ref() == "*"
+                                || element.name.ns.as_ref() == namespace.as_ref()
+                        })
                 }),
                 Source::Class(classes) => element.is_some_and(|element| {
-                    let tokens = split_tokens(element.attr(blitz_dom::local_name!("class")).unwrap_or_default());
-                    !classes.is_empty() && classes.iter().all(|class| {
-                        tokens.iter().any(|token| token == class.as_ref())
-                    })
+                    let tokens = split_tokens(
+                        element
+                            .attr(blitz_dom::local_name!("class"))
+                            .unwrap_or_default(),
+                    );
+                    !classes.is_empty()
+                        && classes
+                            .iter()
+                            .all(|class| tokens.iter().any(|token| token == class.as_ref()))
                 }),
                 Source::Tokens | Source::Snapshot => false,
             };
@@ -115,7 +152,10 @@ fn values(this: &JsValue, context: &mut Context) -> JsResult<Vec<JsValue>> {
         }
         result
     };
-    Ok(ids.into_iter().map(|id| node_wrapper(&ctx, id, context).into()).collect())
+    Ok(ids
+        .into_iter()
+        .map(|id| node_wrapper(&ctx, id, context).into())
+        .collect())
 }
 
 fn named_value(this: &JsValue, name: &str, context: &mut Context) -> JsResult<JsValue> {
@@ -127,7 +167,9 @@ fn named_value(this: &JsValue, name: &str, context: &mut Context) -> JsResult<Js
     let doc = ctx.doc.borrow();
     for item in &items {
         let id = super::node_id_of_value(item).expect("HTMLCollection contains a non-node");
-        let Some(element) = doc.get_node(id).and_then(|node| node.element_data()) else { continue };
+        let Some(element) = doc.get_node(id).and_then(|node| node.element_data()) else {
+            continue;
+        };
         if element.attr(blitz_dom::local_name!("id")) == Some(name)
             || (element.name.ns == markup5ever::ns!(html)
                 && element.attr(blitz_dom::local_name!("name")) == Some(name))
@@ -153,17 +195,27 @@ fn index(key: &PropertyKey) -> Option<u32> {
 fn get(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let target = args[0].as_object().expect("proxy target");
     let key = args[1].to_property_key(context)?;
-    let private = context.get_data::<CollectionKey>().expect("missing collection key").symbol.clone();
+    let private = context
+        .get_data::<CollectionKey>()
+        .expect("missing collection key")
+        .symbol
+        .clone();
     if key == PropertyKey::from(private) {
         return Ok(target.into());
     }
     if let Some(index) = index(&key) {
-        return Ok(values(&args[0], context)?.get(index as usize).cloned().unwrap_or_default());
+        return Ok(values(&args[0], context)?
+            .get(index as usize)
+            .cloned()
+            .unwrap_or_default());
     }
     if target.has_property(key.clone(), context)? {
         return target.get(key, context);
     }
-    let named = target.downcast_ref::<Collection>().expect("collection proxy target").named;
+    let named = target
+        .downcast_ref::<Collection>()
+        .expect("collection proxy target")
+        .named;
     if named && let PropertyKey::String(name) = key {
         let value = named_value(&args[0], &name.to_std_string_lossy(), context)?;
         if !value.is_null() {
@@ -178,7 +230,10 @@ fn supported(this: &JsValue, key: &PropertyKey, context: &mut Context) -> JsResu
         return Ok((index as usize) < values(this, context)?.len());
     }
     let object = record(this, context)?;
-    let named = object.downcast_ref::<Collection>().expect("validated collection").named;
+    let named = object
+        .downcast_ref::<Collection>()
+        .expect("validated collection")
+        .named;
     if named && let PropertyKey::String(name) = key {
         if object.has_property(key.clone(), context)? {
             return Ok(false);
@@ -202,14 +257,22 @@ fn set(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue
     if index(&key).is_some() || supported(&args[0], &key, context)? {
         return Ok(JsValue::from(false));
     }
-    Ok(JsValue::from(target.set(key, args[2].clone(), false, context)?))
+    Ok(JsValue::from(target.set(
+        key,
+        args[2].clone(),
+        false,
+        context,
+    )?))
 }
 
 fn own_keys(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let items = values(&args[0], context)?;
     let mut names: Vec<String> = (0..items.len()).map(|index| index.to_string()).collect();
     let target = args[0].as_object().expect("proxy target");
-    let named = target.downcast_ref::<Collection>().expect("collection proxy target").named;
+    let named = target
+        .downcast_ref::<Collection>()
+        .expect("collection proxy target")
+        .named;
     if named {
         let ctx = dom_ctx(context)?;
         let doc = ctx.doc.borrow();
@@ -219,8 +282,12 @@ fn own_keys(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<Js
                 for name in [
                     element.attr(blitz_dom::local_name!("id")),
                     (element.name.ns == markup5ever::ns!(html))
-                        .then(|| element.attr(blitz_dom::local_name!("name"))).flatten(),
-                ].into_iter().flatten() {
+                        .then(|| element.attr(blitz_dom::local_name!("name")))
+                        .flatten(),
+                ]
+                .into_iter()
+                .flatten()
+                {
                     if !name.is_empty() && !names.iter().any(|existing| existing == name) {
                         names.push(name.to_owned());
                     }
@@ -245,18 +312,31 @@ fn own_keys(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<Js
 fn descriptor(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let key = args[1].to_property_key(context)?;
     if !supported(&args[0], &key, context)? {
-        let reflect = context.global_object().get(boa_engine::js_string!("Reflect"), context)?
-            .as_object().expect("missing Reflect");
-        let method = reflect.get(boa_engine::js_string!("getOwnPropertyDescriptor"), context)?
-            .as_object().expect("missing Reflect.getOwnPropertyDescriptor");
+        let reflect = context
+            .global_object()
+            .get(boa_engine::js_string!("Reflect"), context)?
+            .as_object()
+            .expect("missing Reflect");
+        let method = reflect
+            .get(boa_engine::js_string!("getOwnPropertyDescriptor"), context)?
+            .as_object()
+            .expect("missing Reflect.getOwnPropertyDescriptor");
         return method.call(&reflect.into(), args, context);
     }
     let value = get(&JsValue::undefined(), args, context)?;
     let object = boa_engine::object::ObjectInitializer::new(context)
         .property(boa_engine::js_string!("value"), value, Attribute::all())
         .property(boa_engine::js_string!("writable"), false, Attribute::all())
-        .property(boa_engine::js_string!("enumerable"), index(&key).is_some(), Attribute::all())
-        .property(boa_engine::js_string!("configurable"), true, Attribute::all())
+        .property(
+            boa_engine::js_string!("enumerable"),
+            index(&key).is_some(),
+            Attribute::all(),
+        )
+        .property(
+            boa_engine::js_string!("configurable"),
+            true,
+            Attribute::all(),
+        )
         .build();
     Ok(object.into())
 }
@@ -270,15 +350,28 @@ fn make(
 ) -> JsResult<JsValue> {
     let target = JsObject::from_proto_and_data(
         Some(super::interfaces::prototype(name, context)),
-        Collection { owner, items, source, named: name == "HTMLCollection" },
+        Collection {
+            owner,
+            items,
+            source,
+            named: name == "HTMLCollection",
+        },
     );
     Ok(JsProxy::builder(target)
-        .get(get).has(has).set(set).own_keys(own_keys)
+        .get(get)
+        .has(has)
+        .set(set)
+        .own_keys(own_keys)
         .get_own_property_descriptor(descriptor)
-        .build(context)?.into())
+        .build(context)?
+        .into())
 }
 
-pub(super) fn snapshot(name: &str, items: Vec<JsValue>, context: &mut Context) -> JsResult<JsValue> {
+pub(super) fn snapshot(
+    name: &str,
+    items: Vec<JsValue>,
+    context: &mut Context,
+) -> JsResult<JsValue> {
     make(name, Source::Snapshot, None, items, context)
 }
 
@@ -289,7 +382,8 @@ fn same_object(
     source: Source,
     context: &mut Context,
 ) -> JsResult<JsValue> {
-    let owner = this.as_object()
+    let owner = this
+        .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("Invalid node receiver"))?;
     this_node_id(this)?;
     if owner.has_own_property(JsString::from(key), context)? {
@@ -301,15 +395,33 @@ fn same_object(
 }
 
 fn children(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    same_object(this, "__blitz_children", "HTMLCollection", Source::Children { elements: true }, context)
+    same_object(
+        this,
+        "__blitz_children",
+        "HTMLCollection",
+        Source::Children { elements: true },
+        context,
+    )
 }
 
 fn child_nodes(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    same_object(this, "__blitz_child_nodes", "NodeList", Source::Children { elements: false }, context)
+    same_object(
+        this,
+        "__blitz_child_nodes",
+        "NodeList",
+        Source::Children { elements: false },
+        context,
+    )
 }
 
 fn class_list(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    same_object(this, "__blitz_tokens", "DOMTokenList", Source::Tokens, context)
+    same_object(
+        this,
+        "__blitz_tokens",
+        "DOMTokenList",
+        Source::Tokens,
+        context,
+    )
 }
 
 fn length(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
@@ -317,8 +429,14 @@ fn length(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsVa
 }
 
 fn item(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let index = args.first().unwrap_or(&JsValue::undefined()).to_u32(context)?;
-    Ok(values(this, context)?.get(index as usize).cloned().unwrap_or_else(JsValue::null))
+    let index = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .to_u32(context)?;
+    Ok(values(this, context)?
+        .get(index as usize)
+        .cloned()
+        .unwrap_or_else(JsValue::null))
 }
 
 fn named_item(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
@@ -328,9 +446,13 @@ fn named_item(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResu
 
 fn token_owner(this: &JsValue, context: &mut Context) -> JsResult<JsObject> {
     let object = record(this, context)?;
-    let data = object.downcast_ref::<Collection>().expect("validated collection");
+    let data = object
+        .downcast_ref::<Collection>()
+        .expect("validated collection");
     if !matches!(data.source, Source::Tokens) {
-        return Err(JsNativeError::typ().with_message("Invalid DOMTokenList receiver").into());
+        return Err(JsNativeError::typ()
+            .with_message("Invalid DOMTokenList receiver")
+            .into());
     }
     Ok(data.owner.clone().expect("DOMTokenList without owner"))
 }
@@ -340,15 +462,21 @@ fn token_value(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult
     let ctx = dom_ctx(context)?;
     let id = this_node_id(&owner.into())?;
     let doc = ctx.doc.borrow();
-    Ok(js_str(doc.get_node(id)
-        .and_then(|node| node.attr(blitz_dom::local_name!("class"))).unwrap_or_default()))
+    Ok(js_str(
+        doc.get_node(id)
+            .and_then(|node| node.attr(blitz_dom::local_name!("class")))
+            .unwrap_or_default(),
+    ))
 }
 
 fn write_tokens(this: &JsValue, value: &str, context: &mut Context) -> JsResult<()> {
     let owner = token_owner(this, context)?;
     let id = this_node_id(&owner.into())?;
-    dom_ctx(context)?.mutate_doc().mutate()
-        .set_attribute(id, super::element::attr_name("class"), value);
+    dom_ctx(context)?.mutate_doc().mutate().set_attribute(
+        id,
+        super::element::attr_name("class"),
+        value,
+    );
     Ok(())
 }
 
@@ -361,11 +489,20 @@ fn set_token_value(this: &JsValue, args: &[JsValue], context: &mut Context) -> J
 fn token(value: &JsValue, context: &mut Context) -> JsResult<String> {
     let token = super::to_rust_string(value, context)?;
     if token.is_empty() {
-        return Err(super::interfaces::exception("SyntaxError", "Token must not be empty", context));
-    }
-    if token.chars().any(|character| matches!(character, '\t' | '\n' | '\u{000c}' | '\r' | ' ')) {
         return Err(super::interfaces::exception(
-            "InvalidCharacterError", "Token must not contain HTML whitespace", context,
+            "SyntaxError",
+            "Token must not be empty",
+            context,
+        ));
+    }
+    if token
+        .chars()
+        .any(|character| matches!(character, '\t' | '\n' | '\u{000c}' | '\r' | ' '))
+    {
+        return Err(super::interfaces::exception(
+            "InvalidCharacterError",
+            "Token must not contain HTML whitespace",
+            context,
         ));
     }
     Ok(token)
@@ -380,21 +517,32 @@ fn token_operation(
     token_owner(this, context)?;
     let required = if operation == 4 { 2 } else { args.len().min(1) };
     let mut requested = Vec::new();
-    let count = if matches!(operation, 1 | 2) { args.len() } else { required };
+    let count = if matches!(operation, 1 | 2) {
+        args.len()
+    } else {
+        required
+    };
     for index in 0..count {
-        requested.push(token(args.get(index).unwrap_or(&JsValue::undefined()), context)?);
+        requested.push(token(
+            args.get(index).unwrap_or(&JsValue::undefined()),
+            context,
+        )?);
     }
     if requested.is_empty() && !matches!(operation, 1 | 2) {
         requested.push(token(&JsValue::undefined(), context)?);
     }
     let raw = token_value(this, &[], context)?;
     let mut current = split_tokens(&super::to_rust_string(&raw, context)?);
-    let found = requested.first().is_some_and(|token| current.contains(token));
+    let found = requested
+        .first()
+        .is_some_and(|token| current.contains(token));
     let result = match operation {
         0 => return Ok(JsValue::from(found)),
         1 => {
             for token in requested {
-                if !current.contains(&token) { current.push(token); }
+                if !current.contains(&token) {
+                    current.push(token);
+                }
             }
             JsValue::undefined()
         }
@@ -405,15 +553,21 @@ fn token_operation(
         3 => {
             let wanted = args.get(1).map(JsValue::to_boolean).unwrap_or(!found);
             let value = &requested[0];
-            if wanted && !found { current.push(value.clone()); }
-            if !wanted && found { current.retain(|token| token != value); }
+            if wanted && !found {
+                current.push(value.clone());
+            }
+            if !wanted && found {
+                current.retain(|token| token != value);
+            }
             if wanted == found {
                 return Ok(JsValue::from(wanted));
             }
             JsValue::from(wanted)
         }
         4 => {
-            if !found { return Ok(JsValue::from(false)); }
+            if !found {
+                return Ok(JsValue::from(false));
+            }
             let old = &requested[0];
             let new = &requested[1];
             if old != new {
@@ -440,44 +594,73 @@ fn descendants(
     this_node_id(this)?;
     let first = super::to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
     let source = match operation {
-        0 => Source::Tag { name: first.into(), namespace: None },
+        0 => Source::Tag {
+            name: first.into(),
+            namespace: None,
+        },
         1 => {
-            let local = super::to_rust_string(args.get(1).unwrap_or(&JsValue::undefined()), context)?;
+            let local =
+                super::to_rust_string(args.get(1).unwrap_or(&JsValue::undefined()), context)?;
             let namespace = if args.first().is_none_or(JsValue::is_null_or_undefined) {
                 Arc::from("")
             } else {
                 Arc::from(first)
             };
-            Source::Tag { name: local.into(), namespace: Some(namespace) }
+            Source::Tag {
+                name: local.into(),
+                namespace: Some(namespace),
+            }
         }
         2 => Source::Class(split_tokens(&first).into_iter().map(Arc::from).collect()),
         _ => unreachable!(),
     };
-    make("HTMLCollection", source, this.as_object(), Vec::new(), context)
+    make(
+        "HTMLCollection",
+        source,
+        this.as_object(),
+        Vec::new(),
+        context,
+    )
 }
 
 fn wrap_query(proto: &JsObject, context: &mut Context) {
-    let original = proto.get(boa_engine::js_string!("querySelectorAll"), context)
-        .expect("missing querySelectorAll").as_object().expect("invalid querySelectorAll");
+    let original = proto
+        .get(boa_engine::js_string!("querySelectorAll"), context)
+        .expect("missing querySelectorAll")
+        .as_object()
+        .expect("invalid querySelectorAll");
     let function = FunctionObjectBuilder::new(
         context.realm(),
         NativeFunction::from_copy_closure_with_captures(
             |this, args, original, context| {
                 let result = original.call(this, args, context)?;
-                let array = result.as_object()
+                let array = result
+                    .as_object()
                     .ok_or_else(|| JsNativeError::typ().with_message("Invalid query result"))?;
-                let length = array.get(boa_engine::js_string!("length"), context)?.to_u32(context)?;
+                let length = array
+                    .get(boa_engine::js_string!("length"), context)?
+                    .to_u32(context)?;
                 let mut items = Vec::with_capacity(length as usize);
-                for index in 0..length { items.push(array.get(index, context)?); }
+                for index in 0..length {
+                    items.push(array.get(index, context)?);
+                }
                 snapshot("NodeList", items, context)
             },
             original,
         ),
-    ).name(boa_engine::js_string!("querySelectorAll")).length(1).build();
+    )
+    .name(boa_engine::js_string!("querySelectorAll"))
+    .length(1)
+    .build();
     define_value(proto, "querySelectorAll", function.into(), context);
 }
 
-pub(super) fn init(node: &JsObject, element: &JsObject, document: &JsObject, context: &mut Context) {
+pub(super) fn init(
+    node: &JsObject,
+    element: &JsObject,
+    document: &JsObject,
+    context: &mut Context,
+) {
     context.insert_data(CollectionKey {
         symbol: JsSymbol::new(Some(boa_engine::js_string!("DOM collection data")))
             .expect("failed to allocate collection symbol"),
@@ -485,8 +668,12 @@ pub(super) fn init(node: &JsObject, element: &JsObject, document: &JsObject, con
     for name in ["NodeList", "HTMLCollection", "DOMTokenList", "DOMRectList"] {
         let proto = JsObject::with_object_proto(context.intrinsics());
         super::interfaces::register(
-            name, None, proto.clone(), 0,
-            NativeFunction::from_fn_ptr(super::interfaces::illegal), context,
+            name,
+            None,
+            proto.clone(),
+            0,
+            NativeFunction::from_fn_ptr(super::interfaces::illegal),
+            context,
         );
         define_accessor(&proto, "length", Some(length), None, context);
         define_method(&proto, "item", 1, item, context);
@@ -496,33 +683,54 @@ pub(super) fn init(node: &JsObject, element: &JsObject, document: &JsObject, con
         if matches!(name, "NodeList" | "DOMTokenList" | "HTMLCollection") {
             let array = context.intrinsics().constructors().array().prototype();
             for method in ["keys", "values", "entries", "forEach"] {
-                if name == "HTMLCollection" && method != "values" { continue; }
-                let function = array.get(JsString::from(method), context).expect("missing array method");
+                if name == "HTMLCollection" && method != "values" {
+                    continue;
+                }
+                let function = array
+                    .get(JsString::from(method), context)
+                    .expect("missing array method");
                 define_value(&proto, method, function.clone(), context);
                 if method == "values" {
-                    proto.define_property_or_throw(
-                        JsSymbol::iterator(),
-                        PropertyDescriptor::builder().value(function)
-                            .writable(true).enumerable(false).configurable(true),
-                        context,
-                    ).expect("failed to define collection iterator");
+                    proto
+                        .define_property_or_throw(
+                            JsSymbol::iterator(),
+                            PropertyDescriptor::builder()
+                                .value(function)
+                                .writable(true)
+                                .enumerable(false)
+                                .configurable(true),
+                            context,
+                        )
+                        .expect("failed to define collection iterator");
                 }
             }
         }
     }
     let tokens = super::interfaces::prototype("DOMTokenList", context);
-    define_accessor(&tokens, "value", Some(token_value), Some(set_token_value), context);
+    define_accessor(
+        &tokens,
+        "value",
+        Some(token_value),
+        Some(set_token_value),
+        context,
+    );
     define_method(&tokens, "toString", 0, token_value, context);
     for (name, operation, length) in [
-        ("contains", 0, 1), ("add", 1, 0), ("remove", 2, 0),
-        ("toggle", 3, 1), ("replace", 4, 2),
+        ("contains", 0, 1),
+        ("add", 1, 0),
+        ("remove", 2, 0),
+        ("toggle", 3, 1),
+        ("replace", 4, 2),
     ] {
         let function = FunctionObjectBuilder::new(
             context.realm(),
             NativeFunction::from_copy_closure(move |this, args, context| {
                 token_operation(operation, this, args, context)
             }),
-        ).name(JsString::from(name)).length(length).build();
+        )
+        .name(JsString::from(name))
+        .length(length)
+        .build();
         define_value(&tokens, name, function.into(), context);
     }
     define_accessor(node, "childNodes", Some(child_nodes), None, context);
@@ -543,9 +751,11 @@ pub(super) fn init(node: &JsObject, element: &JsObject, document: &JsObject, con
                 NativeFunction::from_copy_closure(move |this, args, context| {
                     descendants(operation, this, args, context)
                 }),
-            ).name(JsString::from(name)).length(length).build();
+            )
+            .name(JsString::from(name))
+            .length(length)
+            .build();
             define_value(proto, name, function.into(), context);
         }
     }
 }
-

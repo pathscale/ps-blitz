@@ -153,11 +153,7 @@ pub trait Document: Any + 'static {
     ///
     /// Documents that execute timers must override this method. Wrappers that
     /// poll child documents must propagate the policy to their children.
-    fn poll_for_settle(
-        &mut self,
-        task_context: Option<TaskContext>,
-        run_timers: bool,
-    ) -> bool {
+    fn poll_for_settle(&mut self, task_context: Option<TaskContext>, run_timers: bool) -> bool {
         let _ = run_timers;
         self.poll(task_context)
     }
@@ -259,6 +255,10 @@ pub struct BaseDocument {
     /// Changes recorded for a script's `MutationObserver`, or `None` while no
     /// observer is registered. See [`crate::DomMutation`].
     pub(crate) mutation_log: Option<Vec<crate::DomMutation>>,
+    /// Weak registrations make pages without live ranges pay only a branch.
+    pub(crate) live_ranges: Vec<crate::range::WeakRange>,
+    /// Script Selection shares the same live range object as getRangeAt().
+    pub dom_selection: Option<crate::LiveRange>,
     /// CSS media type used to evaluate `@media` rules.
     pub(crate) media_type: MediaType,
     /// Strategy for Stylo's style traversal during `resolve`.
@@ -671,6 +671,8 @@ impl BaseDocument {
             devtool_settings: DevtoolSettings::default(),
             viewport_scroll: crate::Point::ZERO,
             mutation_log: None,
+            live_ranges: Vec::new(),
+            dom_selection: None,
             url: base_url,
             ua_stylesheets: HashMap::new(),
             nodes_to_stylesheet: BTreeMap::new(),
@@ -1197,7 +1199,9 @@ impl BaseDocument {
             .shadow_root = Some(shadow_root_id);
         self.shadow_host_nodes.insert(host_id);
         self.dirty_shadow_hosts.insert(host_id);
-        self.nodes[host_id].set_restyle_hint(style::invalidation::element::restyle_hints::RestyleHint::restyle_subtree());
+        self.nodes[host_id].set_restyle_hint(
+            style::invalidation::element::restyle_hints::RestyleHint::restyle_subtree(),
+        );
 
         // Host needs its box tree rebuilt to account for the shadow tree.
         self.nodes[host_id].insert_damage(ALL_DAMAGE);
@@ -1217,7 +1221,9 @@ impl BaseDocument {
             self.shadow_host_nodes.remove(&host_id);
             self.dirty_shadow_hosts.remove(&host_id);
             self.nodes[host_id].flattened_children = None;
-            self.nodes[host_id].set_restyle_hint(style::invalidation::element::restyle_hints::RestyleHint::restyle_subtree());
+            self.nodes[host_id].set_restyle_hint(
+                style::invalidation::element::restyle_hints::RestyleHint::restyle_subtree(),
+            );
             self.nodes[host_id].insert_damage(ALL_DAMAGE);
             self.nodes[host_id].mark_ancestors_dirty();
         }
@@ -1316,7 +1322,8 @@ impl BaseDocument {
         let tree_ptr = self.nodes.as_mut() as *mut NodeTree;
         let guard = self.guard.clone();
         let is_document = matches!(node_data, NodeData::Document(_));
-        let id = self.nodes
+        let id = self
+            .nodes
             .insert_with_key(|id| Node::new(tree_ptr, id, guard, node_data));
         if !is_document {
             self.nodes[id].owner_document = Some(self.root_node_id);
@@ -3340,7 +3347,11 @@ impl BaseDocument {
 
     /// Map the layout rectangle through the same two-dimensional transforms as paint.
     /// Layout coordinates deliberately exclude transforms; CSSOM client rectangles do not.
-    fn transformed_client_rect(&self, node_id: NodeId, rect: BoundingRect) -> BoundingRect {
+    pub(crate) fn transformed_client_rect(
+        &self,
+        node_id: NodeId,
+        rect: BoundingRect,
+    ) -> BoundingRect {
         let mut matrix = kurbo::Affine::IDENTITY;
         let mut current = self.get_node(node_id);
         let scale = self.viewport.scale_f64();
@@ -3726,6 +3737,7 @@ root={:?} root_right={root_right:.1} root_w={:.1} lines={} layout_scale={:.2} vp
         focus_node: NodeId,
         focus_offset: usize,
     ) {
+        self.dom_selection = None;
         self.text_selection =
             TextSelection::new(anchor_node, anchor_offset, focus_node, focus_offset);
 
@@ -3782,11 +3794,13 @@ root={:?} root_right={root_right:.1} root_w={:.1} lines={} layout_scale={:.2} vp
 
     /// Clear the text selection
     pub fn clear_text_selection(&mut self) {
+        self.dom_selection = None;
         self.text_selection.clear();
     }
 
     /// Update the selection focus point (used during mouse drag to extend selection).
     pub fn update_selection_focus(&mut self, focus_node: NodeId, focus_offset: usize) {
+        self.dom_selection = None;
         // For anonymous blocks, store parent+sibling_index; otherwise store node directly
         if let (Some(parent), Some(idx)) = self.anonymous_block_location(focus_node) {
             self.text_selection
@@ -3832,11 +3846,18 @@ root={:?} root_right={root_right:.1} root_w={:.1} lines={} layout_scale={:.2} vp
 
     /// Check if there is an active (non-empty) text selection
     pub fn has_text_selection(&self) -> bool {
-        self.text_selection.is_active()
+        self.dom_selection.as_ref().map_or_else(
+            || self.text_selection.is_active(),
+            |range| !range.bounds().collapsed(),
+        )
     }
 
     /// Get the selected text content, supporting selection across multiple inline roots.
     pub fn get_selected_text(&self) -> Option<String> {
+        if let Some(range) = &self.dom_selection {
+            let text = self.range_string(range.bounds());
+            return (!text.is_empty()).then_some(text);
+        }
         let ranges = self.get_text_selection_ranges();
         if ranges.is_empty() {
             return None;
@@ -3928,6 +3949,9 @@ root={:?} root_right={root_right:.1} root_w={:.1} lines={} layout_scale={:.2} vp
     /// Get all selection ranges as Vec<(node_id, start_offset, end_offset)>.
     /// Returns empty vec if no selection.
     pub fn get_text_selection_ranges(&self) -> Vec<(NodeId, usize, usize)> {
+        if let Some(range) = &self.dom_selection {
+            return self.range_layout_ranges(range.bounds());
+        }
         let lookup = |parent_id, idx| self.find_anonymous_block_by_index(parent_id, idx);
 
         let anchor_node = match self.text_selection.anchor.resolve_node_id(lookup) {

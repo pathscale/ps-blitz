@@ -217,11 +217,15 @@ fn set_cancel_bubble(this: &JsValue, args: &[JsValue], _: &mut Context) -> JsRes
 }
 
 fn default_prevented(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    Ok(JsValue::from(event_ref(this, |event| event.prevented.get())?))
+    Ok(JsValue::from(event_ref(this, |event| {
+        event.prevented.get()
+    })?))
 }
 
 fn get_return_value(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    Ok(JsValue::from(!event_ref(this, |event| event.prevented.get())?))
+    Ok(JsValue::from(!event_ref(this, |event| {
+        event.prevented.get()
+    })?))
 }
 
 fn set_return_value(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
@@ -287,7 +291,12 @@ fn add_pointer_fields(event: &JsObject, data: &BlitzPointerEvent, context: &mut 
         BlitzPointerId::Pen => (2, "pen"),
         BlitzPointerId::Finger(id) => (id.saturating_add(3), "touch"),
     };
-    define_value(event, "pointerId", JsValue::from(pointer_id as i32), context);
+    define_value(
+        event,
+        "pointerId",
+        JsValue::from(pointer_id as i32),
+        context,
+    );
     define_value(event, "pointerType", js_str(pointer_type), context);
     define_value(event, "isPrimary", JsValue::from(data.is_primary), context);
     define_value(
@@ -296,12 +305,42 @@ fn add_pointer_fields(event: &JsObject, data: &BlitzPointerEvent, context: &mut 
         JsValue::from(data.details.pressure),
         context,
     );
-    define_value(event, "tangentialPressure", JsValue::from(data.details.tangential_pressure), context);
-    define_value(event, "tiltX", JsValue::from(data.details.tilt_x as i32), context);
-    define_value(event, "tiltY", JsValue::from(data.details.tilt_y as i32), context);
-    define_value(event, "twist", JsValue::from(data.details.twist as i32), context);
-    define_value(event, "altitudeAngle", JsValue::from(data.details.altitude), context);
-    define_value(event, "azimuthAngle", JsValue::from(data.details.azimuth), context);
+    define_value(
+        event,
+        "tangentialPressure",
+        JsValue::from(data.details.tangential_pressure),
+        context,
+    );
+    define_value(
+        event,
+        "tiltX",
+        JsValue::from(data.details.tilt_x as i32),
+        context,
+    );
+    define_value(
+        event,
+        "tiltY",
+        JsValue::from(data.details.tilt_y as i32),
+        context,
+    );
+    define_value(
+        event,
+        "twist",
+        JsValue::from(data.details.twist as i32),
+        context,
+    );
+    define_value(
+        event,
+        "altitudeAngle",
+        JsValue::from(data.details.altitude),
+        context,
+    );
+    define_value(
+        event,
+        "azimuthAngle",
+        JsValue::from(data.details.azimuth),
+        context,
+    );
     define_value(
         event,
         "clientX",
@@ -348,14 +387,22 @@ fn add_pointer_fields(event: &JsObject, data: &BlitzPointerEvent, context: &mut 
         context,
     );
     let event_type = event.downcast_ref::<EventRef>().expect("Event").get("type");
-    let event_type = event_type.as_string().map(|s| s.to_std_string_lossy()).unwrap_or_default();
+    let event_type = event_type
+        .as_string()
+        .map(|s| s.to_std_string_lossy())
+        .unwrap_or_default();
     let detail = match event_type.as_str() {
         "dblclick" => 2,
         "click" | "mousedown" | "mouseup" => 1,
         _ => 0,
     };
     define_value(event, "detail", JsValue::from(detail), context);
-    define_value(event, "__which", JsValue::from(data.button as u8 + 1), context);
+    define_value(
+        event,
+        "__which",
+        JsValue::from(data.button as u8 + 1),
+        context,
+    );
     super::event_interfaces::add_movement(event, data, &event_type, context);
     add_modifiers(event, data.mods, context);
 }
@@ -430,7 +477,13 @@ pub(crate) fn create_event_for_dom_event(
         | DomEventData::TouchMove(pointer)
         | DomEventData::TouchEnd(pointer)
         | DomEventData::TouchCancel(pointer) => {
-            super::event_interfaces::add_touch_fields(&event, pointer, data.name(), target, context);
+            super::event_interfaces::add_touch_fields(
+                &event,
+                pointer,
+                data.name(),
+                target,
+                context,
+            );
             add_modifiers(&event, pointer.mods, context);
         }
 
@@ -447,15 +500,40 @@ pub(crate) fn create_event_for_dom_event(
             define_value(&event, "deltaY", JsValue::from(delta_y), context);
             define_value(&event, "deltaZ", JsValue::from(0.0), context);
             define_value(&event, "deltaMode", JsValue::from(delta_mode), context);
-            define_value(&event, "screenX", JsValue::from(wheel.coords.screen_x), context);
-            define_value(&event, "screenY", JsValue::from(wheel.coords.screen_y), context);
-            define_value(&event, "clientX", JsValue::from(wheel.coords.client_x), context);
-            define_value(&event, "clientY", JsValue::from(wheel.coords.client_y), context);
+            define_value(
+                &event,
+                "screenX",
+                JsValue::from(wheel.coords.screen_x),
+                context,
+            );
+            define_value(
+                &event,
+                "screenY",
+                JsValue::from(wheel.coords.screen_y),
+                context,
+            );
+            define_value(
+                &event,
+                "clientX",
+                JsValue::from(wheel.coords.client_x),
+                context,
+            );
+            define_value(
+                &event,
+                "clientY",
+                JsValue::from(wheel.coords.client_y),
+                context,
+            );
             define_value(&event, "pageX", JsValue::from(wheel.coords.page_x), context);
             define_value(&event, "pageY", JsValue::from(wheel.coords.page_y), context);
             define_value(&event, "offsetX", JsValue::from(wheel.element.x), context);
             define_value(&event, "offsetY", JsValue::from(wheel.element.y), context);
-            define_value(&event, "buttons", JsValue::from(wheel.buttons.bits()), context);
+            define_value(
+                &event,
+                "buttons",
+                JsValue::from(wheel.buttons.bits()),
+                context,
+            );
             add_modifiers(&event, wheel.mods, context);
         }
 

@@ -54,7 +54,14 @@ pub(crate) fn install(
     define_accessor(attr, "specified", Some(specified), None, context);
     define_accessor(attr, "nodeType", Some(node_type), None, context);
     define_accessor(attr, "isConnected", Some(disconnected), None, context);
-    for property in ["parentNode", "parentElement", "firstChild", "lastChild", "nextSibling", "previousSibling"] {
+    for property in [
+        "parentNode",
+        "parentElement",
+        "firstChild",
+        "lastChild",
+        "nextSibling",
+        "previousSibling",
+    ] {
         define_accessor(attr, property, Some(null), None, context);
     }
     define_accessor(attr, "childNodes", Some(no_children), None, context);
@@ -76,13 +83,37 @@ pub(crate) fn install(
     define_method(element, "getAttributeNames", 0, attribute_names, context);
     define_method(element, "getAttributeNode", 1, get_attribute_node, context);
     define_method(element, "setAttributeNode", 1, set_attribute_node, context);
-    define_method(element, "getAttributeNodeNS", 2, get_attribute_node_ns, context);
-    define_method(element, "setAttributeNodeNS", 1, set_attribute_node, context);
-    define_method(element, "removeAttributeNode", 1, remove_attribute_node, context);
+    define_method(
+        element,
+        "getAttributeNodeNS",
+        2,
+        get_attribute_node_ns,
+        context,
+    );
+    define_method(
+        element,
+        "setAttributeNodeNS",
+        1,
+        set_attribute_node,
+        context,
+    );
+    define_method(
+        element,
+        "removeAttributeNode",
+        1,
+        remove_attribute_node,
+        context,
+    );
     define_method(element, "toggleAttribute", 1, toggle_attribute, context);
     define_method(element, "getAttributeNS", 2, get_attribute_ns, context);
     define_method(element, "setAttributeNS", 3, set_attribute_ns, context);
-    define_method(element, "removeAttributeNS", 2, remove_attribute_ns, context);
+    define_method(
+        element,
+        "removeAttributeNS",
+        2,
+        remove_attribute_ns,
+        context,
+    );
     define_method(element, "hasAttributeNS", 2, has_attribute_ns, context);
     define_method(element, "hasAttributes", 0, has_attributes, context);
     define_method(element, "getAttribute", 1, get_attribute, context);
@@ -90,7 +121,13 @@ pub(crate) fn install(
     define_method(element, "removeAttribute", 1, remove_attribute, context);
     define_method(element, "hasAttribute", 1, has_attribute, context);
     define_method(document, "createAttribute", 1, create_attribute, context);
-    define_method(document, "createAttributeNS", 2, create_attribute_ns, context);
+    define_method(
+        document,
+        "createAttributeNS",
+        2,
+        create_attribute_ns,
+        context,
+    );
 }
 
 pub(crate) fn attr_object(value: &JsValue) -> Option<JsObject> {
@@ -100,13 +137,24 @@ pub(crate) fn attr_object(value: &JsValue) -> Option<JsObject> {
 }
 
 fn require_attr(this: &JsValue) -> JsResult<JsObject> {
-    attr_object(this).ok_or_else(|| JsNativeError::typ().with_message("receiver is not an Attr").into())
+    attr_object(this).ok_or_else(|| {
+        JsNativeError::typ()
+            .with_message("receiver is not an Attr")
+            .into()
+    })
 }
 
 fn require_element(this: &JsValue, ctx: &DomCtx) -> JsResult<NodeId> {
     let id = this_node_id(this)?;
-    if !ctx.doc.borrow().get_node(id).is_some_and(|node| node.is_element()) {
-        return Err(JsNativeError::typ().with_message("receiver is not an Element").into());
+    if !ctx
+        .doc
+        .borrow()
+        .get_node(id)
+        .is_some_and(|node| node.is_element())
+    {
+        return Err(JsNativeError::typ()
+            .with_message("receiver is not an Element")
+            .into());
     }
     Ok(id)
 }
@@ -150,7 +198,11 @@ fn check_name(name: &str, context: &mut Context) -> JsResult<()> {
     if valid_name(name) {
         Ok(())
     } else {
-        Err(dom_error("InvalidCharacterError", "Invalid attribute name", context))
+        Err(dom_error(
+            "InvalidCharacterError",
+            "Invalid attribute name",
+            context,
+        ))
     }
 }
 
@@ -171,8 +223,17 @@ fn qualified_ns(ns: &str, name: &str, context: &mut Context) -> JsResult<QualNam
                 && !local.contains(':')
                 && valid_name(prefix)
                 && valid_name(local)
-                && !prefix.contains(':') => (Some(prefix), local),
-        Some(_) => return Err(dom_error("InvalidCharacterError", "Invalid qualified name", context)),
+                && !prefix.contains(':') =>
+        {
+            (Some(prefix), local)
+        }
+        Some(_) => {
+            return Err(dom_error(
+                "InvalidCharacterError",
+                "Invalid qualified name",
+                context,
+            ));
+        }
         None => (None, name),
     };
     const XML: &str = "http://www.w3.org/XML/1998/namespace";
@@ -182,7 +243,11 @@ fn qualified_ns(ns: &str, name: &str, context: &mut Context) -> JsResult<QualNam
         || ((prefix == Some("xmlns") || name == "xmlns") && ns != XMLNS)
         || (ns == XMLNS && prefix != Some("xmlns") && name != "xmlns")
     {
-        return Err(dom_error("NamespaceError", "Qualified name and namespace disagree", context));
+        return Err(dom_error(
+            "NamespaceError",
+            "Qualified name and namespace disagree",
+            context,
+        ));
     }
     Ok(QualName::new(
         prefix.map(Into::into),
@@ -192,7 +257,11 @@ fn qualified_ns(ns: &str, name: &str, context: &mut Context) -> JsResult<QualNam
 }
 
 fn html_name(ctx: &DomCtx, id: NodeId, name: String) -> String {
-    if ctx.doc.borrow().get_node(id).and_then(|node| node.element_data())
+    if ctx
+        .doc
+        .borrow()
+        .get_node(id)
+        .and_then(|node| node.element_data())
         .is_some_and(|element| element.name.ns == markup5ever::ns!(html))
     {
         name.to_ascii_lowercase()
@@ -202,17 +271,30 @@ fn html_name(ctx: &DomCtx, id: NodeId, name: String) -> String {
 }
 
 fn names(ctx: &DomCtx, id: NodeId) -> Vec<QualName> {
-    ctx.doc.borrow().get_node(id).and_then(|node| node.element_data())
-        .map(|element| element.attrs().iter().map(|attr| attr.name.clone()).collect())
+    ctx.doc
+        .borrow()
+        .get_node(id)
+        .and_then(|node| node.element_data())
+        .map(|element| {
+            element
+                .attrs()
+                .iter()
+                .map(|attr| attr.name.clone())
+                .collect()
+        })
         .unwrap_or_default()
 }
 
 fn find_name(ctx: &DomCtx, id: NodeId, name: &str) -> Option<QualName> {
-    names(ctx, id).into_iter().find(|candidate| qualified(candidate) == name)
+    names(ctx, id)
+        .into_iter()
+        .find(|candidate| qualified(candidate) == name)
 }
 
 fn find_ns(ctx: &DomCtx, id: NodeId, ns: &str, local: &str) -> Option<QualName> {
-    names(ctx, id).into_iter().find(|name| &*name.ns == ns && &*name.local == local)
+    names(ctx, id)
+        .into_iter()
+        .find(|name| &*name.ns == ns && &*name.local == local)
 }
 
 fn document_for(ctx: &DomCtx, mut id: NodeId, context: &mut Context) -> JsObject {
@@ -240,7 +322,11 @@ fn new_attr(
     document: JsObject,
     context: &mut Context,
 ) -> JsObject {
-    let proto = context.get_data::<DomaState>().expect("DOMA state").attr_proto.clone();
+    let proto = context
+        .get_data::<DomaState>()
+        .expect("DOMA state")
+        .attr_proto
+        .clone();
     let object = JsObject::from_proto_and_data(
         Some(proto),
         AttrRef {
@@ -305,7 +391,11 @@ fn prefix(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
 
 fn namespace_uri(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
     let (name, _) = snapshot(&require_attr(this)?);
-    Ok(if name.ns.is_empty() { JsValue::null() } else { js_str(&name.ns) })
+    Ok(if name.ns.is_empty() {
+        JsValue::null()
+    } else {
+        js_str(&name.ns)
+    })
 }
 
 fn value(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
@@ -323,8 +413,13 @@ fn set_value(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResul
         let id = this_node_id(&owner.into())?;
         ctx.mutate_doc().mutate().set_attribute(id, name, &value);
     } else {
-        object.downcast_ref::<AttrRef>().expect("checked Attr")
-            .handle.write().unwrap().value = AttrAtom::from(value.as_str());
+        object
+            .downcast_ref::<AttrRef>()
+            .expect("checked Attr")
+            .handle
+            .write()
+            .unwrap()
+            .value = AttrAtom::from(value.as_str());
     }
     Ok(JsValue::undefined())
 }
@@ -335,7 +430,12 @@ fn owner_element(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsV
 
 fn owner_document(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
     let object = require_attr(this)?;
-    let document = object.downcast_ref::<AttrRef>().expect("checked Attr").document.borrow().clone();
+    let document = object
+        .downcast_ref::<AttrRef>()
+        .expect("checked Attr")
+        .document
+        .borrow()
+        .clone();
     Ok(document.into())
 }
 
@@ -366,16 +466,33 @@ fn no_children(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult
 
 fn contains(this: &JsValue, args: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
     let object = require_attr(this)?;
-    Ok(args.first().and_then(attr_object).is_some_and(|other| JsObject::equals(&object, &other)).into())
+    Ok(args
+        .first()
+        .and_then(attr_object)
+        .is_some_and(|other| JsObject::equals(&object, &other))
+        .into())
 }
 
 fn clone_attr(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let object = require_attr(this)?;
     let (name, value) = snapshot(&object);
-    let document = object.downcast_ref::<AttrRef>().expect("checked Attr").document.borrow().clone();
-    Ok(new_attr(Arc::new(RwLock::new(AttributeNode {
-        name, value, attached: false,
-    })), None, document, context).into())
+    let document = object
+        .downcast_ref::<AttrRef>()
+        .expect("checked Attr")
+        .document
+        .borrow()
+        .clone();
+    Ok(new_attr(
+        Arc::new(RwLock::new(AttributeNode {
+            name,
+            value,
+            attached: false,
+        })),
+        None,
+        document,
+        context,
+    )
+    .into())
 }
 
 fn create_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
@@ -384,68 +501,126 @@ fn create_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> 
     check_name(&name, context)?;
     let name = name.to_ascii_lowercase();
     let document = this.as_object().expect("checked document");
-    Ok(new_attr(Arc::new(RwLock::new(AttributeNode {
-        name: QualName::new(None, markup5ever::ns!(), LocalName::from(name)),
-        value: AttrAtom::from(""),
-        attached: false,
-    })), None, document, context).into())
+    Ok(new_attr(
+        Arc::new(RwLock::new(AttributeNode {
+            name: QualName::new(None, markup5ever::ns!(), LocalName::from(name)),
+            value: AttrAtom::from(""),
+            attached: false,
+        })),
+        None,
+        document,
+        context,
+    )
+    .into())
 }
 
-fn create_attribute_ns(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn create_attribute_ns(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     this_node_id(this)?;
     let ns = namespace_arg(args.first().unwrap_or(&JsValue::undefined()), context)?;
     let name = to_rust_string(args.get(1).unwrap_or(&JsValue::undefined()), context)?;
     let name = qualified_ns(&ns, &name, context)?;
-    Ok(new_attr(Arc::new(RwLock::new(AttributeNode {
-        name, value: AttrAtom::from(""), attached: false,
-    })), None, this.as_object().expect("checked document"), context).into())
+    Ok(new_attr(
+        Arc::new(RwLock::new(AttributeNode {
+            name,
+            value: AttrAtom::from(""),
+            attached: false,
+        })),
+        None,
+        this.as_object().expect("checked document"),
+        context,
+    )
+    .into())
 }
 
-fn get_attribute_node(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn get_attribute_node(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let id = require_element(this, &ctx)?;
     let input = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
     let input = html_name(&ctx, id, input);
-    Ok(find_name(&ctx, id, &input).map_or_else(JsValue::null, |name| wrap(&ctx, id, &name, context)))
+    Ok(find_name(&ctx, id, &input)
+        .map_or_else(JsValue::null, |name| wrap(&ctx, id, &name, context)))
 }
 
-fn get_attribute_node_ns(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn get_attribute_node_ns(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let id = require_element(this, &ctx)?;
     let ns = namespace_arg(args.first().unwrap_or(&JsValue::undefined()), context)?;
     let local = to_rust_string(args.get(1).unwrap_or(&JsValue::undefined()), context)?;
-    Ok(find_ns(&ctx, id, &ns, &local).map_or_else(JsValue::null, |name| wrap(&ctx, id, &name, context)))
+    Ok(find_ns(&ctx, id, &ns, &local)
+        .map_or_else(JsValue::null, |name| wrap(&ctx, id, &name, context)))
 }
 
-fn set_attribute_node(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn set_attribute_node(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let id = require_element(this, &ctx)?;
-    let supplied = args.first().and_then(attr_object)
+    let supplied = args
+        .first()
+        .and_then(attr_object)
         .ok_or_else(|| JsNativeError::typ().with_message("argument is not an Attr"))?;
     if let Some(current_owner) = owner(&supplied) {
         if this_node_id(&current_owner.into())? != id {
-            return Err(dom_error("InUseAttributeError", "Attr belongs to another element", context));
+            return Err(dom_error(
+                "InUseAttributeError",
+                "Attr belongs to another element",
+                context,
+            ));
         }
     }
     let (name, value) = snapshot(&supplied);
     let old_name = find_ns(&ctx, id, &name.ns, &name.local);
-    let old = old_name.as_ref().map_or_else(JsValue::null, |name| wrap(&ctx, id, name, context));
-    if old.as_object().is_some_and(|object| JsObject::equals(&object, &supplied)) {
+    let old = old_name
+        .as_ref()
+        .map_or_else(JsValue::null, |name| wrap(&ctx, id, name, context));
+    if old
+        .as_object()
+        .is_some_and(|object| JsObject::equals(&object, &supplied))
+    {
         return Ok(old);
     }
     if let Some(old_object) = attr_object(&old) {
-        old_object.downcast_ref::<AttrRef>().expect("checked Attr").owner.borrow_mut().take();
+        old_object
+            .downcast_ref::<AttrRef>()
+            .expect("checked Attr")
+            .owner
+            .borrow_mut()
+            .take();
     }
-    let handle = supplied.downcast_ref::<AttrRef>().expect("checked Attr").handle.clone();
+    let handle = supplied
+        .downcast_ref::<AttrRef>()
+        .expect("checked Attr")
+        .handle
+        .clone();
     {
         let mut doc = ctx.mutate_doc();
         if let Some(old_name) = &old_name {
-            doc.get_node(id).and_then(|node| node.element_data())
-                .expect("checked element").attrs.detach_attribute_node(old_name);
+            doc.get_node(id)
+                .and_then(|node| node.element_data())
+                .expect("checked element")
+                .attrs
+                .detach_attribute_node(old_name);
         }
         doc.mutate().set_attribute(id, name, &value);
-        doc.get_node(id).and_then(|node| node.element_data())
-            .expect("checked element").attrs.bind_attribute_node(&handle);
+        doc.get_node(id)
+            .and_then(|node| node.element_data())
+            .expect("checked element")
+            .attrs
+            .bind_attribute_node(&handle);
     }
     let document = document_for(&ctx, id, context);
     let data = supplied.downcast_ref::<AttrRef>().expect("checked Attr");
@@ -457,19 +632,34 @@ fn set_attribute_node(this: &JsValue, args: &[JsValue], context: &mut Context) -
 fn remove_named(ctx: &DomCtx, id: NodeId, name: QualName, context: &mut Context) -> JsValue {
     let old = wrap(ctx, id, &name, context);
     if let Some(object) = attr_object(&old) {
-        object.downcast_ref::<AttrRef>().expect("checked Attr").owner.borrow_mut().take();
+        object
+            .downcast_ref::<AttrRef>()
+            .expect("checked Attr")
+            .owner
+            .borrow_mut()
+            .take();
     }
     ctx.mutate_doc().mutate().clear_attribute(id, name);
     old
 }
 
-fn remove_attribute_node(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn remove_attribute_node(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let id = require_element(this, &ctx)?;
-    let object = args.first().and_then(attr_object)
+    let object = args
+        .first()
+        .and_then(attr_object)
         .ok_or_else(|| JsNativeError::typ().with_message("argument is not an Attr"))?;
     if owner(&object).and_then(|owner| this_node_id(&owner.into()).ok()) != Some(id) {
-        return Err(dom_error("NotFoundError", "Attr is not owned by this element", context));
+        return Err(dom_error(
+            "NotFoundError",
+            "Attr is not owned by this element",
+            context,
+        ));
     }
     Ok(remove_named(&ctx, id, snapshot(&object).0, context))
 }
@@ -507,7 +697,9 @@ fn remove_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> 
 }
 
 fn has_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    Ok(JsValue::from(!get_attribute_node(this, args, context)?.is_null()))
+    Ok(JsValue::from(
+        !get_attribute_node(this, args, context)?.is_null(),
+    ))
 }
 
 fn toggle_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
@@ -518,11 +710,15 @@ fn toggle_attribute(this: &JsValue, args: &[JsValue], context: &mut Context) -> 
     let input = html_name(&ctx, id, input);
     let existing = find_name(&ctx, id, &input);
     let present = existing.is_some();
-    let desired = args.get(1).filter(|value| !value.is_undefined())
+    let desired = args
+        .get(1)
+        .filter(|value| !value.is_undefined())
         .map_or(!present, JsValue::to_boolean);
     if desired && !present {
         ctx.mutate_doc().mutate().set_attribute(
-            id, QualName::new(None, markup5ever::ns!(), LocalName::from(input)), "",
+            id,
+            QualName::new(None, markup5ever::ns!(), LocalName::from(input)),
+            "",
         );
     } else if !desired {
         if let Some(name) = existing {
@@ -548,7 +744,11 @@ fn set_attribute_ns(this: &JsValue, args: &[JsValue], context: &mut Context) -> 
     Ok(JsValue::undefined())
 }
 
-fn remove_attribute_ns(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn remove_attribute_ns(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let id = require_element(this, &ctx)?;
     let ns = namespace_arg(args.first().unwrap_or(&JsValue::undefined()), context)?;
@@ -560,22 +760,32 @@ fn remove_attribute_ns(this: &JsValue, args: &[JsValue], context: &mut Context) 
 }
 
 fn has_attribute_ns(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    Ok(JsValue::from(!get_attribute_node_ns(this, args, context)?.is_null()))
+    Ok(JsValue::from(
+        !get_attribute_node_ns(this, args, context)?.is_null(),
+    ))
 }
 
 fn has_attributes(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
-    Ok(JsValue::from(!names(&ctx, require_element(this, &ctx)?).is_empty()))
+    Ok(JsValue::from(
+        !names(&ctx, require_element(this, &ctx)?).is_empty(),
+    ))
 }
 
 fn attribute_names(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let id = require_element(this, &ctx)?;
-    Ok(JsArray::from_iter(names(&ctx, id).iter().map(|name| js_str(&qualified(name))), context).into())
+    Ok(JsArray::from_iter(
+        names(&ctx, id).iter().map(|name| js_str(&qualified(name))),
+        context,
+    )
+    .into())
 }
 
 fn map_owner(this: &JsValue, context: &mut Context) -> JsResult<JsValue> {
-    let object = this.as_object().ok_or_else(|| JsNativeError::typ().with_message("invalid NamedNodeMap"))?;
+    let object = this
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("invalid NamedNodeMap"))?;
     let owner = object.get(JsString::from(MAP_OWNER), context)?;
     this_node_id(&owner)?;
     Ok(owner)
@@ -592,7 +802,9 @@ fn map_item(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult
     let ctx = dom_ctx(context)?;
     let id = this_node_id(&owner)?;
     let index = index_arg(args, context)?;
-    Ok(names(&ctx, id).get(index).map_or_else(JsValue::null, |name| wrap(&ctx, id, name, context)))
+    Ok(names(&ctx, id)
+        .get(index)
+        .map_or_else(JsValue::null, |name| wrap(&ctx, id, name, context)))
 }
 
 fn map_get(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
@@ -611,7 +823,11 @@ fn map_remove(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResu
     let owner = map_owner(this, context)?;
     let old = get_attribute_node(&owner, args, context)?;
     if old.is_null() {
-        return Err(dom_error("NotFoundError", "No attribute with this name", context));
+        return Err(dom_error(
+            "NotFoundError",
+            "No attribute with this name",
+            context,
+        ));
     }
     remove_attribute_node(&owner, &[old], context)
 }
@@ -620,15 +836,24 @@ fn map_remove_ns(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
     let owner = map_owner(this, context)?;
     let old = get_attribute_node_ns(&owner, args, context)?;
     if old.is_null() {
-        return Err(dom_error("NotFoundError", "No attribute with this namespace and name", context));
+        return Err(dom_error(
+            "NotFoundError",
+            "No attribute with this namespace and name",
+            context,
+        ));
     }
     remove_attribute_node(&owner, &[old], context)
 }
 
 fn proxy_target(args: &[JsValue]) -> JsResult<JsObject> {
-    args.first().and_then(JsValue::as_object)
+    args.first()
+        .and_then(JsValue::as_object)
         .filter(|object| object.downcast_ref::<MapRef>().is_some())
-        .ok_or_else(|| JsNativeError::typ().with_message("invalid NamedNodeMap target").into())
+        .ok_or_else(|| {
+            JsNativeError::typ()
+                .with_message("invalid NamedNodeMap target")
+                .into()
+        })
 }
 
 fn key_string(key: &PropertyKey) -> Option<String> {
@@ -639,9 +864,19 @@ fn key_string(key: &PropertyKey) -> Option<String> {
     }
 }
 
-fn supported(target: &JsObject, key: &PropertyKey, context: &mut Context) -> JsResult<Option<QualName>> {
-    let Some(key) = key_string(key) else { return Ok(None); };
-    let owner = target.downcast_ref::<MapRef>().expect("checked target").owner.clone();
+fn supported(
+    target: &JsObject,
+    key: &PropertyKey,
+    context: &mut Context,
+) -> JsResult<Option<QualName>> {
+    let Some(key) = key_string(key) else {
+        return Ok(None);
+    };
+    let owner = target
+        .downcast_ref::<MapRef>()
+        .expect("checked target")
+        .owner
+        .clone();
     let ctx = dom_ctx(context)?;
     let id = this_node_id(&owner.into())?;
     let attrs = names(&ctx, id);
@@ -658,9 +893,16 @@ fn supported(target: &JsObject, key: &PropertyKey, context: &mut Context) -> JsR
 
 fn proxy_get(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let target = proxy_target(args)?;
-    let key = args.get(1).unwrap_or(&JsValue::undefined()).to_property_key(context)?;
+    let key = args
+        .get(1)
+        .unwrap_or(&JsValue::undefined())
+        .to_property_key(context)?;
     if let Some(name) = supported(&target, &key, context)? {
-        let owner = target.downcast_ref::<MapRef>().expect("checked target").owner.clone();
+        let owner = target
+            .downcast_ref::<MapRef>()
+            .expect("checked target")
+            .owner
+            .clone();
         let ctx = dom_ctx(context)?;
         return Ok(wrap(&ctx, this_node_id(&owner.into())?, &name, context));
     }
@@ -669,13 +911,20 @@ fn proxy_get(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<J
 
 fn proxy_has(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let target = proxy_target(args)?;
-    let key = args.get(1).unwrap_or(&JsValue::undefined()).to_property_key(context)?;
+    let key = args
+        .get(1)
+        .unwrap_or(&JsValue::undefined())
+        .to_property_key(context)?;
     Ok((supported(&target, &key, context)?.is_some() || target.has_property(key, context)?).into())
 }
 
 fn proxy_keys(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let target = proxy_target(args)?;
-    let owner = target.downcast_ref::<MapRef>().expect("checked target").owner.clone();
+    let owner = target
+        .downcast_ref::<MapRef>()
+        .expect("checked target")
+        .owner
+        .clone();
     let ctx = dom_ctx(context)?;
     let attrs = names(&ctx, this_node_id(&owner.into())?);
     let mut keys: Vec<String> = (0..attrs.len()).map(|index| index.to_string()).collect();
@@ -690,22 +939,31 @@ fn proxy_keys(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<
 
 fn proxy_descriptor(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let target = proxy_target(args)?;
-    let key = args.get(1).unwrap_or(&JsValue::undefined()).to_property_key(context)?;
+    let key = args
+        .get(1)
+        .unwrap_or(&JsValue::undefined())
+        .to_property_key(context)?;
     let Some(name) = supported(&target, &key, context)? else {
         return Ok(JsValue::undefined());
     };
-    let owner = target.downcast_ref::<MapRef>().expect("checked target").owner.clone();
+    let owner = target
+        .downcast_ref::<MapRef>()
+        .expect("checked target")
+        .owner
+        .clone();
     let ctx = dom_ctx(context)?;
     let value = wrap(&ctx, this_node_id(&owner.into())?, &name, context);
     let enumerable = key_string(&key).is_some_and(|key| {
-        key.parse::<usize>().is_ok_and(|index| index.to_string() == key)
+        key.parse::<usize>()
+            .is_ok_and(|index| index.to_string() == key)
     });
     Ok(ObjectInitializer::new(context)
         .property(js_string!("value"), value, Attribute::all())
         .property(js_string!("writable"), false, Attribute::all())
         .property(js_string!("enumerable"), enumerable, Attribute::all())
         .property(js_string!("configurable"), true, Attribute::all())
-        .build().into())
+        .build()
+        .into())
 }
 
 fn attributes(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
@@ -716,16 +974,25 @@ fn attributes(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<
     if cached.is_object() {
         return Ok(cached);
     }
-    let proto = context.get_data::<DomaState>().expect("DOMA state").map_proto.clone();
-    let target = JsObject::from_proto_and_data(Some(proto), MapRef { owner: owner.clone() });
+    let proto = context
+        .get_data::<DomaState>()
+        .expect("DOMA state")
+        .map_proto
+        .clone();
+    let target = JsObject::from_proto_and_data(
+        Some(proto),
+        MapRef {
+            owner: owner.clone(),
+        },
+    );
     define_value(&target, MAP_OWNER, owner.clone().into(), context);
     let map: JsObject = JsProxyBuilder::new(target)
         .get(proxy_get)
         .has(proxy_has)
         .own_keys(proxy_keys)
         .get_own_property_descriptor(proxy_descriptor)
-        .build(context)?.into();
+        .build(context)?
+        .into();
     define_value(&owner, MAP_CACHE, map.clone().into(), context);
     Ok(map.into())
 }
-

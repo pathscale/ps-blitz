@@ -6,13 +6,11 @@ use blitz_traits::node_id::NodeId;
 use markup5ever::local_name;
 use style::author_styles::AuthorStyles;
 use style::invalidation::element::restyle_hints::RestyleHint;
-use style::stylesheets::{
-    AllowImportRules, DocumentStyleSheet, Origin, Stylesheet,
-};
+use style::stylesheets::{AllowImportRules, DocumentStyleSheet, Origin, Stylesheet};
 
+use crate::BaseDocument;
 use crate::layout::damage::ALL_DAMAGE;
 use crate::node::{ShadowRootMode, SpecialElementData};
-use crate::BaseDocument;
 
 impl BaseDocument {
     pub fn has_shadow_roots(&self) -> bool {
@@ -113,7 +111,11 @@ impl BaseDocument {
         let Some(root_id) = self.shadow_root_id(host_id) else {
             return;
         };
-        let old_slots = self.nodes[root_id].shadow_root_data().unwrap().slots.clone();
+        let old_slots = self.nodes[root_id]
+            .shadow_root_data()
+            .unwrap()
+            .slots
+            .clone();
         let old_slottables = self.nodes[root_id]
             .shadow_root_data()
             .unwrap()
@@ -179,7 +181,10 @@ impl BaseDocument {
         for &id in &old_slots {
             if !assignments.contains_key(&id) {
                 if let Some(node) = self.nodes.get_mut(id) {
-                    let changed = node.assigned_nodes.as_ref().is_some_and(|nodes| !nodes.is_empty());
+                    let changed = node
+                        .assigned_nodes
+                        .as_ref()
+                        .is_some_and(|nodes| !nodes.is_empty());
                     node.assigned_nodes = None;
                     node.flattened_children = None;
                     if changed {
@@ -254,7 +259,11 @@ impl BaseDocument {
     }
 
     pub(crate) fn invalidate_shadow_styles(&mut self, root_id: NodeId) {
-        let Some(root) = self.nodes.get_mut(root_id).and_then(|node| node.shadow_root_data_mut()) else {
+        let Some(root) = self
+            .nodes
+            .get_mut(root_id)
+            .and_then(|node| node.shadow_root_data_mut())
+        else {
             return;
         };
         root.cascade_dirty = true;
@@ -291,7 +300,11 @@ impl BaseDocument {
             let Some(root_id) = self.shadow_root_id(host_id) else {
                 continue;
             };
-            if !self.nodes[root_id].shadow_root_data().unwrap().cascade_dirty {
+            if !self.nodes[root_id]
+                .shadow_root_data()
+                .unwrap()
+                .cascade_dirty
+            {
                 continue;
             }
 
@@ -355,7 +368,10 @@ impl BaseDocument {
     }
 
     pub fn set_adopted_stylesheets(&mut self, root_id: NodeId, sheets: Vec<DocumentStyleSheet>) {
-        let previous = self.adopted_stylesheets.insert(root_id, sheets.clone()).unwrap_or_default();
+        let previous = self
+            .adopted_stylesheets
+            .insert(root_id, sheets.clone())
+            .unwrap_or_default();
         if root_id == self.root_node_id {
             let guard = self.guard.read();
             let mut removed = Vec::new();
@@ -403,7 +419,8 @@ impl BaseDocument {
             .collect();
         for owner_id in owners {
             if owner_id == self.root_node_id {
-                self.stylist.force_stylesheet_origins_dirty(style::stylesheets::OriginSet::all());
+                self.stylist
+                    .force_stylesheet_origins_dirty(style::stylesheets::OriginSet::all());
                 if let Some(root) = self.try_root_element().map(|node| node.id) {
                     self.nodes[root].set_restyle_hint(RestyleHint::restyle_subtree());
                 }
@@ -468,4 +485,3 @@ impl BaseDocument {
             .collect()
     }
 }
-

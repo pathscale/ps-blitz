@@ -225,14 +225,19 @@ impl<'a> TShadowRoot for BlitzNode<'a> {
     }
 
     fn host(&self) -> <Self::ConcreteNode as TNode>::ConcreteElement {
-        self.with(self.shadow_root_data().expect("TShadowRoot requires a shadow root").host)
+        self.with(
+            self.shadow_root_data()
+                .expect("TShadowRoot requires a shadow root")
+                .host,
+        )
     }
 
     fn style_data<'b>(&self) -> Option<&'b style::stylist::CascadeData>
     where
         Self: 'b,
     {
-        self.shadow_root_data().and_then(|root| root.cascade_data.as_deref())
+        self.shadow_root_data()
+            .and_then(|root| root.cascade_data.as_deref())
     }
 }
 
@@ -348,7 +353,8 @@ impl selectors::Element for BlitzNode<'_> {
     }
 
     fn parent_node_is_shadow_root(&self) -> bool {
-        self.parent_node().is_some_and(|parent| parent.is_shadow_root())
+        self.parent_node()
+            .is_some_and(|parent| parent.is_shadow_root())
     }
 
     fn containing_shadow_host(&self) -> Option<Self> {
@@ -535,8 +541,7 @@ impl selectors::Element for BlitzNode<'_> {
 
     fn is_html_slot_element(&self) -> bool {
         self.element_data().is_some_and(|element| {
-            element.name.ns == markup5ever::ns!(html)
-                && element.name.local == local_name!("slot")
+            element.name.ns == markup5ever::ns!(html) && element.name.local == local_name!("slot")
         })
     }
 
@@ -601,7 +606,11 @@ impl selectors::Element for BlitzNode<'_> {
 
     fn is_part(&self, name: &<Self::Impl as selectors::SelectorImpl>::Identifier) -> bool {
         self.attr(markup5ever::LocalName::from("part"))
-            .is_some_and(|parts| parts.split_ascii_whitespace().any(|part| part == name.0.as_ref()))
+            .is_some_and(|parts| {
+                parts
+                    .split_ascii_whitespace()
+                    .any(|part| part == name.0.as_ref())
+            })
     }
 
     fn is_empty(&self) -> bool {
@@ -609,7 +618,8 @@ impl selectors::Element for BlitzNode<'_> {
     }
 
     fn is_root(&self) -> bool {
-        self.parent_node().is_some_and(|parent| parent.as_document().is_some())
+        self.parent_node()
+            .is_some_and(|parent| parent.as_document().is_some())
     }
 
     fn has_custom_state(
@@ -682,7 +692,8 @@ impl<'a> TElement for BlitzNode<'a> {
     }
 
     fn exports_any_part(&self) -> bool {
-        self.attr(markup5ever::LocalName::from("exportparts")).is_some()
+        self.attr(markup5ever::LocalName::from("exportparts"))
+            .is_some()
     }
 
     fn each_part<F>(&self, mut callback: F)

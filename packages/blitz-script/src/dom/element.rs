@@ -1330,7 +1330,11 @@ fn get_template_content(this: &JsValue, _: &[JsValue], context: &mut Context) ->
     Ok(fragment.into())
 }
 
-pub(crate) fn get_inner_html(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn get_inner_html(
+    this: &JsValue,
+    _: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
     let doc = ctx.doc.borrow();
@@ -1341,7 +1345,11 @@ pub(crate) fn get_inner_html(this: &JsValue, _: &[JsValue], context: &mut Contex
     Ok(js_str(&html))
 }
 
-pub(crate) fn set_inner_html(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn set_inner_html(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
     let html = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
@@ -1702,7 +1710,11 @@ pub(crate) fn invalid_selector(selector: &str) -> boa_engine::JsError {
 // Selector APIs match within the receiver's own subtree, so they work on a
 // detached tree (built with innerHTML before insertion) exactly as on a
 // connected one, and cost the subtree rather than the whole document.
-pub(crate) fn query_selector(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn query_selector(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
     let selector = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;

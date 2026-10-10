@@ -17,8 +17,7 @@ use boa_gc::GcRefCell;
 
 use super::{dom_error, interface};
 use crate::dom::{
-    define_accessor, define_method, dom_ctx, node_id_of_value, node_wrapper,
-    this_node_id,
+    define_accessor, define_method, dom_ctx, node_id_of_value, node_wrapper, this_node_id,
 };
 use crate::state::DomCtx;
 
@@ -70,7 +69,11 @@ pub(crate) fn install(document: &JsObject, context: &mut Context) {
         define_method(proto, "previousNode", 0, previous_node, context);
     }
     define_accessor(
-        &walker, "currentNode", Some(current_node), Some(set_current_node), context,
+        &walker,
+        "currentNode",
+        Some(current_node),
+        Some(set_current_node),
+        context,
     );
     define_method(&walker, "parentNode", 0, parent_node, context);
     define_method(&walker, "firstChild", 0, first_child, context);
@@ -78,9 +81,19 @@ pub(crate) fn install(document: &JsObject, context: &mut Context) {
     define_method(&walker, "previousSibling", 0, previous_sibling, context);
     define_method(&walker, "nextSibling", 0, next_sibling, context);
 
-    define_accessor(&iterator, "referenceNode", Some(current_node), None, context);
     define_accessor(
-        &iterator, "pointerBeforeReferenceNode", Some(pointer_before), None, context,
+        &iterator,
+        "referenceNode",
+        Some(current_node),
+        None,
+        context,
+    );
+    define_accessor(
+        &iterator,
+        "pointerBeforeReferenceNode",
+        Some(pointer_before),
+        None,
+        context,
     );
     define_method(&iterator, "detach", 0, detach, context);
 
@@ -141,7 +154,9 @@ fn cursor(this: &JsValue) -> JsResult<JsObject> {
         .as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("Invalid traversal receiver"))?;
     if object.downcast_ref::<Cursor>().is_none() {
-        return Err(JsNativeError::typ().with_message("Invalid traversal receiver").into());
+        return Err(JsNativeError::typ()
+            .with_message("Invalid traversal receiver")
+            .into());
     }
     Ok(object)
 }
@@ -174,7 +189,9 @@ fn create(
     let filter = match args.get(2) {
         Some(value) if !value.is_null_or_undefined() => {
             if value.as_object().is_none() {
-                return Err(JsNativeError::typ().with_message("Filter must be an object").into());
+                return Err(JsNativeError::typ()
+                    .with_message("Filter must be an object")
+                    .into());
             }
             value.clone()
         }
@@ -186,13 +203,20 @@ fn create(
         let state = context
             .get_data::<TraversalState>()
             .expect("traversal not initialised");
-        if iterator { state.iterator.clone() } else { state.walker.clone() }
+        if iterator {
+            state.iterator.clone()
+        } else {
+            state.walker.clone()
+        }
     };
     let object = JsObject::from_proto_and_data(
         Some(proto),
         Cursor {
             root: root.clone(),
-            position: GcRefCell::new(Position { node: root, before: true }),
+            position: GcRefCell::new(Position {
+                node: root,
+                before: true,
+            }),
             pending: GcRefCell::new(None),
             filter,
             what_to_show,
@@ -250,7 +274,9 @@ fn set_current_node(this: &JsValue, args: &[JsValue], _: &mut Context) -> JsResu
         .ok_or_else(|| JsNativeError::typ().with_message("currentNode must be a Node"))?;
     let data = object.downcast_ref::<Cursor>().expect("checked cursor");
     if data.iterator {
-        return Err(JsNativeError::typ().with_message("Expected a TreeWalker").into());
+        return Err(JsNativeError::typ()
+            .with_message("Expected a TreeWalker")
+            .into());
     }
     data.position.borrow_mut().node = node;
     Ok(JsValue::undefined())
@@ -274,14 +300,23 @@ fn parent(ctx: &DomCtx, node: NodeId) -> Option<NodeId> {
 fn child(ctx: &DomCtx, node: NodeId, forward: bool) -> Option<NodeId> {
     let doc = ctx.doc.borrow();
     let node = doc.get_node(node)?;
-    let index = if forward { 0 } else { node.children.len().checked_sub(1)? };
+    let index = if forward {
+        0
+    } else {
+        node.children.len().checked_sub(1)?
+    };
     node.dom_child_at(index)
 }
 
 fn sibling(ctx: &DomCtx, node: NodeId, forward: bool) -> Option<NodeId> {
     let doc = ctx.doc.borrow();
     let node = doc.get_node(node)?;
-    if forward { node.forward(1) } else { node.backward(1) }.map(|node| node.id)
+    if forward {
+        node.forward(1)
+    } else {
+        node.backward(1)
+    }
+    .map(|node| node.id)
 }
 
 fn following(ctx: &DomCtx, mut node: NodeId, root: NodeId) -> Option<NodeId> {
@@ -317,23 +352,24 @@ fn inclusive_ancestor(ctx: &DomCtx, ancestor: NodeId, mut node: NodeId) -> bool 
         if node == ancestor {
             return true;
         }
-        let Some(next) = parent(ctx, node) else { return false; };
+        let Some(next) = parent(ctx, node) else {
+            return false;
+        };
         node = next;
     }
 }
 
-fn accept(
-    object: &JsObject,
-    node: NodeId,
-    ctx: &DomCtx,
-    context: &mut Context,
-) -> JsResult<u16> {
+fn accept(object: &JsObject, node: NodeId, ctx: &DomCtx, context: &mut Context) -> JsResult<u16> {
     let (active, mask, filter) = {
         let data = object.downcast_ref::<Cursor>().expect("checked cursor");
         (data.active.get(), data.what_to_show, data.filter.clone())
     };
     if active {
-        return Err(dom_error("InvalidStateError", "Recursive filter invocation", context));
+        return Err(dom_error(
+            "InvalidStateError",
+            "Recursive filter invocation",
+            context,
+        ));
     }
     let bit = {
         let doc = ctx.doc.borrow();
@@ -349,8 +385,14 @@ fn accept(
     if mask & bit == 0 {
         return Ok(SKIP);
     }
-    let Some(filter) = filter.as_object() else { return Ok(ACCEPT); };
-    object.downcast_ref::<Cursor>().expect("checked cursor").active.set(true);
+    let Some(filter) = filter.as_object() else {
+        return Ok(ACCEPT);
+    };
+    object
+        .downcast_ref::<Cursor>()
+        .expect("checked cursor")
+        .active
+        .set(true);
     // All Boa and document borrows are released before user code is called.
     let result = (|| {
         let wrapper: JsValue = node_wrapper(ctx, node, context).into();
@@ -367,16 +409,15 @@ fn accept(
         // NodeFilter returns an unsigned short.
         Ok(value.to_u32(context)? as u16)
     })();
-    object.downcast_ref::<Cursor>().expect("checked cursor").active.set(false);
+    object
+        .downcast_ref::<Cursor>()
+        .expect("checked cursor")
+        .active
+        .set(false);
     result
 }
 
-fn commit(
-    object: &JsObject,
-    node: NodeId,
-    ctx: &DomCtx,
-    context: &mut Context,
-) -> JsValue {
+fn commit(object: &JsObject, node: NodeId, ctx: &DomCtx, context: &mut Context) -> JsValue {
     let wrapper = node_wrapper(ctx, node, context);
     object
         .downcast_ref::<Cursor>()
@@ -387,11 +428,7 @@ fn commit(
     wrapper.into()
 }
 
-fn walker_next(
-    object: &JsObject,
-    ctx: &DomCtx,
-    context: &mut Context,
-) -> JsResult<JsValue> {
+fn walker_next(object: &JsObject, ctx: &DomCtx, context: &mut Context) -> JsResult<JsValue> {
     let (root, position, _) = snapshot(object);
     let mut candidate = next(ctx, id(&position.node), root);
     while let Some(node) = candidate {
@@ -404,11 +441,7 @@ fn walker_next(
     Ok(JsValue::null())
 }
 
-fn walker_previous(
-    object: &JsObject,
-    ctx: &DomCtx,
-    context: &mut Context,
-) -> JsResult<JsValue> {
+fn walker_previous(object: &JsObject, ctx: &DomCtx, context: &mut Context) -> JsResult<JsValue> {
     let (root, position, _) = snapshot(object);
     let mut node = id(&position.node);
     while node != root {
@@ -416,7 +449,9 @@ fn walker_previous(
             node = previous;
             let mut result = accept(object, node, ctx, context)?;
             while result != REJECT {
-                let Some(last) = child(ctx, node, false) else { break; };
+                let Some(last) = child(ctx, node, false) else {
+                    break;
+                };
                 node = last;
                 result = accept(object, node, ctx, context)?;
             }
@@ -424,7 +459,9 @@ fn walker_previous(
                 return Ok(commit(object, node, ctx, context));
             }
         } else {
-            let Some(up) = parent(ctx, node) else { break; };
+            let Some(up) = parent(ctx, node) else {
+                break;
+            };
             node = up;
             if accept(object, node, ctx, context)? == ACCEPT {
                 return Ok(commit(object, node, ctx, context));
@@ -460,7 +497,9 @@ fn parent_node(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult
     let (root, position, _) = snapshot(&object);
     let mut node = id(&position.node);
     while node != root {
-        let Some(up) = parent(&ctx, node) else { break; };
+        let Some(up) = parent(&ctx, node) else {
+            break;
+        };
         node = up;
         if accept(&object, node, &ctx, context)? == ACCEPT {
             return Ok(commit(&object, node, &ctx, context));
@@ -469,11 +508,7 @@ fn parent_node(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult
     Ok(JsValue::null())
 }
 
-fn walker_child(
-    this: &JsValue,
-    forward: bool,
-    context: &mut Context,
-) -> JsResult<JsValue> {
+fn walker_child(this: &JsValue, forward: bool, context: &mut Context) -> JsResult<JsValue> {
     let object = cursor(this)?;
     let ctx = dom_ctx(context)?;
     let (root, position, _) = snapshot(&object);
@@ -497,7 +532,9 @@ fn walker_child(
                 node = next;
                 break;
             }
-            let Some(up) = parent(&ctx, node) else { return Ok(JsValue::null()); };
+            let Some(up) = parent(&ctx, node) else {
+                return Ok(JsValue::null());
+            };
             if up == current || up == root {
                 return Ok(JsValue::null());
             }
@@ -514,11 +551,7 @@ fn last_child(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<
     walker_child(this, false, context)
 }
 
-fn walker_sibling(
-    this: &JsValue,
-    forward: bool,
-    context: &mut Context,
-) -> JsResult<JsValue> {
+fn walker_sibling(this: &JsValue, forward: bool, context: &mut Context) -> JsResult<JsValue> {
     let object = cursor(this)?;
     let ctx = dom_ctx(context)?;
     let (root, position, _) = snapshot(&object);
@@ -537,11 +570,15 @@ fn walker_sibling(
                 if result == REJECT {
                     break;
                 }
-                let Some(down) = child(&ctx, node, forward) else { break; };
+                let Some(down) = child(&ctx, node, forward) else {
+                    break;
+                };
                 node = down;
             }
         } else {
-            let Some(up) = parent(&ctx, node) else { return Ok(JsValue::null()); };
+            let Some(up) = parent(&ctx, node) else {
+                return Ok(JsValue::null());
+            };
             node = up;
             if node == root || accept(&object, node, &ctx, context)? == ACCEPT {
                 return Ok(JsValue::null());
@@ -565,8 +602,17 @@ fn iterator_move(
     context: &mut Context,
 ) -> JsResult<JsValue> {
     let (root, position, _) = snapshot(object);
-    if object.downcast_ref::<Cursor>().expect("checked cursor").active.get() {
-        return Err(dom_error("InvalidStateError", "Recursive filter invocation", context));
+    if object
+        .downcast_ref::<Cursor>()
+        .expect("checked cursor")
+        .active
+        .get()
+    {
+        return Err(dom_error(
+            "InvalidStateError",
+            "Recursive filter invocation",
+            context,
+        ));
     }
     *object
         .downcast_ref::<Cursor>()
@@ -591,7 +637,9 @@ fn iterator_move(
                 } else {
                     previous(ctx, node, root)
                 };
-                let Some(following) = following else { return Ok(JsValue::null()); };
+                let Some(following) = following else {
+                    return Ok(JsValue::null());
+                };
                 node = following;
                 candidate.node = node_wrapper(ctx, node, context);
                 candidate.before = !forward;
@@ -657,7 +705,9 @@ fn adjusted(
 /// TreeWalker positions deliberately remain on their original nodes.
 pub(crate) fn pre_remove(ctx: &DomCtx, removed: NodeId, context: &mut Context) {
     let iterators = {
-        let Some(state) = context.get_data::<TraversalState>() else { return; };
+        let Some(state) = context.get_data::<TraversalState>() else {
+            return;
+        };
         let mut live = Vec::new();
         state.iterators.borrow_mut().retain(|entry| {
             if let Some(object) = entry.upgrade() {
@@ -678,9 +728,9 @@ pub(crate) fn pre_remove(ctx: &DomCtx, removed: NodeId, context: &mut Context) {
             .borrow()
             .clone();
         let position_change = adjusted(ctx, root, removed, &position);
-        let pending_change = pending.as_ref().and_then(|position| {
-            adjusted(ctx, root, removed, position)
-        });
+        let pending_change = pending
+            .as_ref()
+            .and_then(|position| adjusted(ctx, root, removed, position));
         if let Some((node, before)) = position_change {
             let node = node_wrapper(ctx, node, context);
             *object
@@ -699,4 +749,3 @@ pub(crate) fn pre_remove(ctx: &DomCtx, removed: NodeId, context: &mut Context) {
         }
     }
 }
-

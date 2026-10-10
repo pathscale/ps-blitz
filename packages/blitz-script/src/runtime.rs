@@ -1092,10 +1092,8 @@ impl ScriptRuntime {
             }
             let mutations_delivered = self.deliver_mutations();
             #[cfg(feature = "shadow-dom")]
-            let slots_delivered = crate::dom::shadow::deliver_slot_changes(
-                &self.ctx,
-                &mut self.context,
-            );
+            let slots_delivered =
+                crate::dom::shadow::deliver_slot_changes(&self.ctx, &mut self.context);
             #[cfg(not(feature = "shadow-dom"))]
             let slots_delivered = false;
             if !mutations_delivered && !slots_delivered {
@@ -1108,9 +1106,7 @@ impl ScriptRuntime {
                 break;
             }
         }
-        delivered
-            || self.jobs_remain()
-            || self.job_executor.executed_job_count() != before
+        delivered || self.jobs_remain() || self.job_executor.executed_job_count() != before
     }
 
     /// Hand recorded DOM changes to the prelude's `MutationObserver`. Returns
@@ -1389,14 +1385,19 @@ impl ScriptRuntime {
                 || name.starts_with("mouse")
                 || name.starts_with("touch")
                 || name.starts_with("key")
-                || matches!(name, "click" | "dblclick" | "contextmenu" | "wheel"
-                    | "input" | "focus" | "blur" | "focusin" | "focusout");
-            crate::dom::define_value(
-                &event_obj,
-                "composed",
-                JsValue::from(composed),
-                context,
-            );
+                || matches!(
+                    name,
+                    "click"
+                        | "dblclick"
+                        | "contextmenu"
+                        | "wheel"
+                        | "input"
+                        | "focus"
+                        | "blur"
+                        | "focusin"
+                        | "focusout"
+                );
+            crate::dom::define_value(&event_obj, "composed", JsValue::from(composed), context);
             match crate::dom::shadow_event::dispatch(&ctx, target_id, &event_obj, context) {
                 Ok(result) => {
                     if result.prevented {
@@ -2162,7 +2163,9 @@ fn window_dispatch_history_event(
     args: &[JsValue],
     context: &mut Context,
 ) -> JsResult<JsValue> {
-    let event = args.first().and_then(JsValue::as_object)
+    let event = args
+        .first()
+        .and_then(JsValue::as_object)
         .filter(|event| event.downcast_ref::<EventRef>().is_some())
         .ok_or_else(|| JsNativeError::typ().with_message("History dispatch requires an Event"))?;
     crate::dom::define_value(&event, "isTrusted", JsValue::from(true), context);
