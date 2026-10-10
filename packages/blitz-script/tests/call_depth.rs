@@ -8,18 +8,14 @@
 //! graph's owner chain, so depth grows with how deeply the page is nested.
 //!
 //! Measured on support.cafe, driven headlessly: the home page renders, and
-//! following the link to `/login` throws
+//! following the link to `/login` throws part-way through the render, leaving
+//! a fragment of a page. Nothing in the route recurses; it is simply deeper
+//! than 512 frames.
 //!
-//!   RuntimeLimitError: reached the maximum number of recursive calls
-//!
-//! part-way through the render, leaving a fragment of a page. Nothing in the
-//! route recurses; it is simply deeper than 512 frames.
-//!
-//! The error is also not catchable. It unwinds the whole execution rather than
-//! arriving as a JavaScript exception, so a page's own error boundary cannot
-//! report it and the only trace is a line in the host's log. That is why the
-//! depth is measured here in two steps: the recursion runs in one evaluation
-//! and the deepest frame it reached is read back in another.
+//! The frame budget is now 16384, and crossing it throws a catchable
+//! `RangeError` (`Maximum call stack size exceeded`). The depth is still
+//! measured in two steps: the recursion runs in one evaluation and the deepest
+//! frame it reached is read back in another, because that evaluation throws.
 
 use blitz_script::ScriptDocument;
 
@@ -45,18 +41,15 @@ fn reachable_depth() -> u64 {
 /// The number this exists for.
 ///
 /// A lower bound rather than an equality, so the test says what a page needs
-/// rather than restating the constant beside it. 4000 is comfortably past what
-/// the fleet's deepest route was measured to want and comfortably under the
-/// 8192 configured, which leaves room to tune either limit without rewriting
-/// the test.
+/// rather than restating the constant beside it. 9000 is what a page fixture
+/// must survive, and it sits under the 16384 frame budget.
 #[test]
 fn a_page_can_nest_calls_as_deeply_as_a_framework_needs() {
     let depth = reachable_depth();
     assert!(
-        depth > 4000,
+        depth > 9_000,
         "a page ran out of call frames at {depth}; Boa's default is 512 and a \
-         real application's render is deeper than that, so a route simply \
-         stops mid-render with an error its own code cannot catch"
+         9000-deep call has to succeed"
     );
 }
 
@@ -64,9 +57,9 @@ fn a_page_can_nest_calls_as_deeply_as_a_framework_needs() {
 ///
 /// The point of raising the ceiling is not to remove it. Runaway recursion has
 /// to stop with an error rather than by exhausting the machine, and the value
-/// stack has to be large enough that the call limit is what stops it: with only
-/// the call limit raised, the stack ran out first at 1462 frames and reported
-/// "reached the maximum stack size", which names the wrong thing.
+/// stack has to be large enough that the call limit is what stops a plain
+/// function: with only the call limit raised, the stack ran out first at 1462
+/// frames.
 #[test]
 fn runaway_recursion_still_stops() {
     let depth = reachable_depth();
@@ -75,3 +68,4 @@ fn runaway_recursion_still_stops() {
         "recursion reached {depth} frames, so nothing is bounding it any more"
     );
 }
+

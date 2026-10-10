@@ -211,31 +211,33 @@ impl ScriptRuntime {
          * grows with how deeply the page is nested rather than with anything
          * the author would recognise as recursion.
          *
-         * Measured on support.cafe, driven headlessly: the home page renders,
-         * and following the link to `/login` throws
+         * Two budgets, because they are not the same resource. The recursion
+         * limit counts JavaScript frames. V8 allows roughly 10_000 to 12_000
+         * frames of ordinary code; 16384 covers that and a 9_000-deep call.
+         * Crossing it throws a catchable RangeError ("Maximum call stack size
+         * exceeded"), which is what `try/catch` plus `instanceof RangeError`
+         * stack probes look for. The old engine error was not catchable, so
+         * the probe became an uncaught failure and the page stopped.
          *
-         *   RuntimeLimitError: reached the maximum number of recursive calls
+         * Native re-entry is separate. `JsObject::call` nests `Context::run`
+         * on this thread's Rust stack (a getter, a listener, a promise
+         * reaction). Counting that as a JavaScript frame made every accessor
+         * cost two frames, so a page Chrome runs crossed 8192 here. The host
+         * cap is 4096, the depth the old combined budget already allowed,
+         * which fits the GUI thread and a worker's 2 MB stack. The headless
+         * page thread reserves 256 MB for the same nesting.
          *
-         * mid-render, leaving a partial tree. Nothing in the page is
-         * recursive; the route is simply deeper than 512 frames. The failure
-         * is also silent to a person: the click is dispatched, the old page
-         * goes, and what arrives is a fragment.
-         *
-         * Both limits move, because raising one alone does nothing. The
-         * recursion count is not what a deep render runs out of first: the VM's
-         * value stack is, at roughly seven slots a frame, so the default 10240
-         * slots stop a page at about 1460 frames however high the call limit
-         * is. Measured by recursing from a page and reporting the deepest frame
-         * reached: 511 with the defaults, 1462 with only the call limit raised.
-         *
-         * The pair below reaches about 8000 frames, which is the range browsers
-         * are in, and costs 1.6 MB of value stack. They are still limits: a page
-         * that really does recurse without a base case is stopped, with the same
-         * error, before it can exhaust the machine.
+         * The value stack is the third number. A plain recursive function
+         * uses about 7 slots a frame: the default 10240 slots stop a page
+         * near frame 1460, and raising only the call limit used to run out
+         * of slots at 1462. 32 slots of room per frame (16384 * 32) lets a
+         * function with locals reach the frame limit first. Past either
+         * limit the same RangeError is thrown.
          */
         let limits = context.runtime_limits_mut();
-        limits.set_recursion_limit(8192);
-        limits.set_stack_size_limit(1024 * 100);
+        limits.set_recursion_limit(16384);
+        limits.set_host_recursion_limit(4096);
+        limits.set_stack_size_limit(16384 * 32);
 
         let ctx = DomCtx::new(doc);
         context.insert_data(ctx.clone());
