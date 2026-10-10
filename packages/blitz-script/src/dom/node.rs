@@ -846,7 +846,7 @@ pub(super) fn clone_node(
 
 // === Event listeners ===
 
-fn add_event_listener(
+pub(crate) fn add_event_listener(
     this: &JsValue,
     args: &[JsValue],
     context: &mut Context,
@@ -915,7 +915,7 @@ fn add_event_listener(
     Ok(JsValue::undefined())
 }
 
-fn remove_event_listener(
+pub(crate) fn remove_event_listener(
     this: &JsValue,
     args: &[JsValue],
     context: &mut Context,
@@ -958,7 +958,7 @@ fn remove_event_listener(
 }
 
 #[cfg(feature = "shadow-dom")]
-fn dispatch_event(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn dispatch_event(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let target_id = this_node_id(this)?;
     let event = args.first().and_then(JsValue::as_object)
@@ -968,7 +968,7 @@ fn dispatch_event(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
 }
 
 #[cfg(not(feature = "shadow-dom"))]
-fn dispatch_event(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn dispatch_event(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let target_id = this_node_id(this)?;
     let event = args
