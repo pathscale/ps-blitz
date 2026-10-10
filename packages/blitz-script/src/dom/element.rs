@@ -79,7 +79,7 @@ pub(crate) fn init_element_proto(proto: &JsObject, context: &mut Context) {
         Some(set_autofocus),
         context,
     );
-    define_accessor(proto, "style", Some(get_style), None, context);
+    define_accessor(proto, "style", Some(get_style), Some(set_style), context);
     define_accessor(proto, "dataset", Some(get_dataset), None, context);
     define_accessor(proto, "classList", Some(get_class_list), None, context);
     define_accessor(
@@ -1310,6 +1310,20 @@ fn get_style(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<J
     let node_id = this_node_id(this)?;
     let proto = ctx.state.borrow().protos().style.clone();
     super::style::make_style_object(proto, node_id, context)
+}
+
+fn set_style(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    // [PutForwards=cssText] assigns through the declaration's setter.
+    let declaration = get_style(this, &[], context)?
+        .as_object()
+        .expect("inline style declaration is an object");
+    declaration.set(
+        js_string!("cssText"),
+        args.first().cloned().unwrap_or_else(JsValue::undefined),
+        true,
+        context,
+    )?;
+    Ok(JsValue::undefined())
 }
 
 // === innerHTML / outerHTML ===
