@@ -1082,7 +1082,15 @@ impl ScriptRuntime {
             {
                 report_js_error(&self.diagnostics, description, &error);
             }
-            if !self.deliver_mutations() {
+            let mutations_delivered = self.deliver_mutations();
+            #[cfg(feature = "shadow-dom")]
+            let slots_delivered = crate::dom::shadow::deliver_slot_changes(
+                &self.ctx,
+                &mut self.context,
+            );
+            #[cfg(not(feature = "shadow-dom"))]
+            let slots_delivered = false;
+            if !mutations_delivered && !slots_delivered {
                 return delivered
                     || self.jobs_remain()
                     || self.job_executor.executed_job_count() != before;
@@ -1361,6 +1369,45 @@ impl ScriptRuntime {
         let ctx = self.ctx.clone();
         let context = &mut self.context;
         let on_name = JsString::from(format!("on{name}"));
+
+        #[cfg(feature = "shadow-dom")]
+        if ctx.doc.borrow().has_shadow_roots() {
+            let Some(&target_id) = chain.first() else {
+                return false;
+            };
+            let target: JsValue = node_wrapper(&ctx, target_id, context).into();
+            let event_obj = make_event(&ctx, &target, context);
+            let composed = name.starts_with("pointer")
+                || name.starts_with("mouse")
+                || name.starts_with("touch")
+                || name.starts_with("key")
+                || matches!(name, "click" | "dblclick" | "contextmenu" | "wheel"
+                    | "input" | "focus" | "blur" | "focusin" | "focusout");
+            crate::dom::define_value(
+                &event_obj,
+                "composed",
+                JsValue::from(composed),
+                context,
+            );
+            match crate::dom::shadow_event::dispatch(&ctx, target_id, &event_obj, context) {
+                Ok(result) => {
+                    if result.prevented {
+                        event_state.prevent_default();
+                    }
+                    if result.stopped {
+                        event_state.stop_propagation();
+                    }
+                    if result.called {
+                        event_state.request_redraw();
+                    }
+                    return result.called;
+                }
+                Err(error) => {
+                    report_js_error(&self.diagnostics, name, &error);
+                    return false;
+                }
+            }
+        }
 
         // Fast path: bail if no listener of this type could possibly be registered
         let may_have_listeners = {

@@ -221,6 +221,29 @@ impl BaseDocument {
         self.nodes[node_id].children = children;
     }
 
+    /// Connection and removal visit shadow descendants as well as DOM
+    /// descendants. Selector and serialization walks remain DOM walks.
+    pub fn iter_shadow_including_subtree_mut(
+        &mut self,
+        node_id: NodeId,
+        mut cb: impl FnMut(NodeId, &mut BaseDocument),
+    ) {
+        let mut stack = vec![node_id];
+        while let Some(id) = stack.pop() {
+            let Some(node) = self.get_node(id) else {
+                continue;
+            };
+            #[cfg_attr(not(feature = "shadow-dom"), allow(unused_mut))]
+            let mut children = node.children.to_vec();
+            #[cfg(feature = "shadow-dom")]
+            if let Some(root_id) = node.shadow_root_id() {
+                children.push(root_id);
+            }
+            cb(id, self);
+            stack.extend(children.into_iter().rev());
+        }
+    }
+
     pub fn iter_subtree_mut(
         &mut self,
         node_id: NodeId,

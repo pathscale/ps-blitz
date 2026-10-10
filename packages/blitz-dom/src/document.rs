@@ -470,6 +470,14 @@ pub struct BaseDocument {
     /// Nodes that are shadow hosts (have an attached shadow root)
     #[cfg(feature = "shadow-dom")]
     pub(crate) shadow_host_nodes: HashSet<NodeId>,
+    #[cfg(feature = "shadow-dom")]
+    pub(crate) dirty_shadow_hosts: HashSet<NodeId>,
+    #[cfg(feature = "shadow-dom")]
+    pub(crate) pending_slot_changes: Vec<NodeId>,
+    #[cfg(feature = "shadow-dom")]
+    pub(crate) signaled_slots: HashSet<NodeId>,
+    #[cfg(feature = "shadow-dom")]
+    pub(crate) adopted_stylesheets: HashMap<NodeId, Vec<DocumentStyleSheet>>,
     /// Nodes that have an attached custom element controller
     #[cfg(feature = "shadow-dom")]
     pub(crate) custom_element_nodes: HashSet<NodeId>,
@@ -691,6 +699,14 @@ impl BaseDocument {
             custom_element_registry: crate::node::CustomElementRegistry::new(),
             #[cfg(feature = "shadow-dom")]
             shadow_host_nodes: HashSet::new(),
+            #[cfg(feature = "shadow-dom")]
+            dirty_shadow_hosts: HashSet::new(),
+            #[cfg(feature = "shadow-dom")]
+            pending_slot_changes: Vec::new(),
+            #[cfg(feature = "shadow-dom")]
+            signaled_slots: HashSet::new(),
+            #[cfg(feature = "shadow-dom")]
+            adopted_stylesheets: HashMap::new(),
             #[cfg(feature = "shadow-dom")]
             custom_element_nodes: HashSet::new(),
 
@@ -1175,6 +1191,8 @@ impl BaseDocument {
             .expect("Shadow host must be an element")
             .shadow_root = Some(shadow_root_id);
         self.shadow_host_nodes.insert(host_id);
+        self.dirty_shadow_hosts.insert(host_id);
+        self.nodes[host_id].set_restyle_hint(style::invalidation::element::restyle_hints::RestyleHint::restyle_subtree());
 
         // Host needs its box tree rebuilt to account for the shadow tree.
         self.nodes[host_id].insert_damage(ALL_DAMAGE);
@@ -1192,6 +1210,9 @@ impl BaseDocument {
         if let Some(shadow_root_id) = shadow_root_id {
             self.drop_node_ignoring_parent(shadow_root_id);
             self.shadow_host_nodes.remove(&host_id);
+            self.dirty_shadow_hosts.remove(&host_id);
+            self.nodes[host_id].flattened_children = None;
+            self.nodes[host_id].set_restyle_hint(style::invalidation::element::restyle_hints::RestyleHint::restyle_subtree());
             self.nodes[host_id].insert_damage(ALL_DAMAGE);
             self.nodes[host_id].mark_ancestors_dirty();
         }
@@ -1431,8 +1452,9 @@ impl BaseDocument {
             #[cfg(feature = "shadow-dom")]
             if let Some(shadow_root_id) = node.shadow_root_id() {
                 self.shadow_host_nodes.remove(&node_id);
+                self.dirty_shadow_hosts.remove(&node_id);
                 self.custom_element_nodes.remove(&node_id);
-                self.drop_node_ignoring_parent(shadow_root_id);
+                self.drop_node_ignoring_parent_with(shadow_root_id, on_drop);
             }
         }
         node
@@ -1672,6 +1694,12 @@ impl BaseDocument {
 
     pub fn add_stylesheet_for_node(&mut self, stylesheet: DocumentStyleSheet, node_id: NodeId) {
         self.platform_initial_sheet_media(&stylesheet, node_id);
+        #[cfg(feature = "shadow-dom")]
+        if let Some(root_id) = self.containing_shadow_root(node_id) {
+            self.install_shadow_stylesheet(root_id, node_id, stylesheet);
+            return;
+        }
+
         let old = self.nodes_to_stylesheet.insert(node_id, stylesheet.clone());
 
         if let Some(old) = old {
@@ -2654,6 +2682,12 @@ impl BaseDocument {
             self.stylist.set_device(device, &guards)
         };
         self.stylist.force_stylesheet_origins_dirty(origins);
+        #[cfg(feature = "shadow-dom")]
+        for host_id in self.shadow_host_node_ids() {
+            if let Some(root_id) = self.shadow_root_id(host_id) {
+                self.invalidate_shadow_styles(root_id);
+            }
+        }
     }
 
     pub fn stylist_device(&mut self) -> &Device {

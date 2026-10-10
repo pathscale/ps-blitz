@@ -368,6 +368,10 @@ impl DocumentMutator<'_> {
     }
 
     pub fn set_attribute(&mut self, node_id: NodeId, name: QualName, value: &str) {
+        #[cfg(feature = "shadow-dom")]
+        if name.local == local_name!("slot") || name.local == local_name!("name") {
+            self.doc.note_shadow_tree_change(node_id);
+        }
         let node_is_in_document = self.doc.nodes[node_id].flags.is_in_document();
         if node_is_in_document && self.doc.is_recording_mutations() {
             // Recorded even when the value does not change: a browser reports
@@ -618,6 +622,10 @@ impl DocumentMutator<'_> {
     }
 
     pub fn clear_attribute(&mut self, node_id: NodeId, name: QualName) {
+        #[cfg(feature = "shadow-dom")]
+        if name.local == local_name!("slot") || name.local == local_name!("name") {
+            self.doc.note_shadow_tree_change(node_id);
+        }
         let node_is_in_document = self.doc.nodes[node_id].flags.is_in_document();
         if node_is_in_document && self.doc.is_recording_mutations() {
             // Removing an attribute that is not there changes nothing, and a
@@ -1407,6 +1415,22 @@ impl<'doc> DocumentMutator<'doc> {
             .and_then(|element| element.template_contents)
             .unwrap_or(node_id);
         self.remove_and_drop_all_children(target);
+        #[cfg(feature = "shadow-dom")]
+        if let Some(host_id) = self.doc.nodes[node_id].shadow_root_data().map(|root| root.host) {
+            // html5ever's fragment context must be an element. Parsing into a
+            // detached host-shaped element also keeps scripts inert.
+            let name = self.doc.nodes[host_id].element_data().unwrap().name.clone();
+            let context_id = self.create_element(name, Vec::new());
+            self.doc
+                .html_parser_provider
+                .clone()
+                .parse_inner_html(self, context_id, html);
+            let children = self.child_ids(context_id);
+            self.append_children(node_id, &children);
+            self.remove_and_drop_node(context_id);
+            self.doc.note_shadow_tree_change(node_id);
+            return;
+        }
         self.doc
             .html_parser_provider
             .clone()
@@ -1440,7 +1464,7 @@ impl<'doc> DocumentMutator<'doc> {
     }
 
     fn process_added_subtree(&mut self, node_id: NodeId) {
-        self.doc.iter_subtree_mut(node_id, |node_id, doc| {
+        self.doc.iter_shadow_including_subtree_mut(node_id, |node_id, doc| {
             let node = &mut doc.nodes[node_id];
             node.flags.set(NodeFlags::IS_IN_DOCUMENT, true);
             node.insert_damage(ALL_DAMAGE);
@@ -1513,7 +1537,7 @@ impl<'doc> DocumentMutator<'doc> {
     }
 
     fn process_removed_subtree(&mut self, node_id: NodeId) {
-        self.doc.iter_subtree_mut(node_id, |node_id, doc| {
+        self.doc.iter_shadow_including_subtree_mut(node_id, |node_id, doc| {
             doc.nodes[node_id]
                 .flags
                 .set(NodeFlags::IS_IN_DOCUMENT, false);
@@ -1614,6 +1638,9 @@ impl<'doc> DocumentMutator<'doc> {
             return;
         };
 
+        #[cfg(feature = "shadow-dom")]
+        self.doc.note_shadow_tree_change(node_id);
+
         let Some(element) = self.doc.nodes[node_id].data.downcast_element() else {
             return;
         };
@@ -1678,21 +1705,28 @@ impl<'doc> DocumentMutator<'doc> {
     }
 
     fn unload_stylesheet(&mut self, node_id: NodeId) {
+        #[cfg(feature = "shadow-dom")]
+        let shadow_root = self.doc.containing_shadow_root(node_id);
         let node = &mut self.doc.nodes[node_id];
         let Some(element) = node.element_data_mut() else {
-            unreachable!();
+            return;
         };
         let SpecialElementData::Stylesheet(stylesheet) = element.special_data.take() else {
-            unreachable!();
+            return;
         };
+
+        self.doc.nodes_to_stylesheet.remove(&node_id);
+        #[cfg(feature = "shadow-dom")]
+        if let Some(root_id) = shadow_root {
+            self.doc.invalidate_shadow_styles(root_id);
+            return;
+        }
 
         let guard = self.doc.guard.read();
         self.doc.stylist.remove_stylesheet(stylesheet, &guard);
         self.doc
             .stylist
             .force_stylesheet_origins_dirty(OriginSet::all());
-
-        self.doc.nodes_to_stylesheet.remove(&node_id);
     }
 
     fn load_image(&mut self, target_id: NodeId) {

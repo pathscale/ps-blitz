@@ -61,6 +61,9 @@ impl crate::document::BaseDocument {
     pub fn resolve_stylist(&mut self, now: f64) {
         style::thread_state::enter(ThreadState::LAYOUT);
 
+        #[cfg(feature = "shadow-dom")]
+        self.flush_shadow_styles();
+
         let guard = &self.guard;
         let guards = StylesheetGuards {
             author: &guard.read(),
@@ -222,14 +225,14 @@ impl<'a> TShadowRoot for BlitzNode<'a> {
     }
 
     fn host(&self) -> <Self::ConcreteNode as TNode>::ConcreteElement {
-        todo!("Shadow roots not implemented")
+        self.with(self.shadow_root_data().expect("TShadowRoot requires a shadow root").host)
     }
 
     fn style_data<'b>(&self) -> Option<&'b style::stylist::CascadeData>
     where
         Self: 'b,
     {
-        todo!("Shadow roots not implemented")
+        self.shadow_root_data().and_then(|root| root.cascade_data.as_deref())
     }
 }
 
@@ -282,7 +285,7 @@ impl<'a> TNode for BlitzNode<'a> {
         // parent to the shadow host (the shadow root itself is transparent).
         #[cfg(feature = "shadow-dom")]
         {
-            if let Some(slot_id) = self.element_data().and_then(|el| el.assigned_slot) {
+            if let Some(slot_id) = self.assigned_slot {
                 return Some(self.with(slot_id));
             }
             let parent = self.parent_node()?;
@@ -318,8 +321,7 @@ impl<'a> TNode for BlitzNode<'a> {
     }
 
     fn as_shadow_root(&self) -> Option<Self::ConcreteShadowRoot> {
-        // TODO: implement shadow DOM
-        None
+        self.is_shadow_root().then_some(*self)
     }
 }
 
@@ -340,14 +342,23 @@ impl selectors::Element for BlitzNode<'_> {
     }
 
     fn parent_element(&self) -> Option<Self> {
-        TElement::traversal_parent(self)
+        // Selector relationships follow the DOM tree. Inheritance and style
+        // traversal use traversal_parent instead.
+        self.parent_node().and_then(|parent| parent.as_element())
     }
 
     fn parent_node_is_shadow_root(&self) -> bool {
-        false
+        self.parent_node().is_some_and(|parent| parent.is_shadow_root())
     }
 
     fn containing_shadow_host(&self) -> Option<Self> {
+        let mut node = *self;
+        while let Some(parent) = node.parent_node() {
+            if let Some(root) = parent.shadow_root_data() {
+                return Some(self.with(root.host));
+            }
+            node = parent;
+        }
         None
     }
 
@@ -523,7 +534,21 @@ impl selectors::Element for BlitzNode<'_> {
     }
 
     fn is_html_slot_element(&self) -> bool {
-        false
+        self.element_data().is_some_and(|element| {
+            element.name.ns == markup5ever::ns!(html)
+                && element.name.local == local_name!("slot")
+        })
+    }
+
+    fn assigned_slot(&self) -> Option<Self> {
+        #[cfg(feature = "shadow-dom")]
+        {
+            self.assigned_slot.map(|id| self.with(id))
+        }
+        #[cfg(not(feature = "shadow-dom"))]
+        {
+            None
+        }
     }
 
     fn has_id(
@@ -558,13 +583,25 @@ impl selectors::Element for BlitzNode<'_> {
 
     fn imported_part(
         &self,
-        _name: &<Self::Impl as selectors::SelectorImpl>::Identifier,
+        name: &<Self::Impl as selectors::SelectorImpl>::Identifier,
     ) -> Option<<Self::Impl as selectors::SelectorImpl>::Identifier> {
-        None
+        self.attr(markup5ever::LocalName::from("exportparts"))?
+            .split(',')
+            .find_map(|mapping| {
+                let mut names = mapping.trim().split(':');
+                let inner = names.next()?.trim();
+                let outer = names.next().map(str::trim).unwrap_or(inner);
+                if names.next().is_none() && outer == name.0.as_ref() {
+                    Some(GenericAtomIdent(Atom::from(inner)))
+                } else {
+                    None
+                }
+            })
     }
 
-    fn is_part(&self, _name: &<Self::Impl as selectors::SelectorImpl>::Identifier) -> bool {
-        false
+    fn is_part(&self, name: &<Self::Impl as selectors::SelectorImpl>::Identifier) -> bool {
+        self.attr(markup5ever::LocalName::from("part"))
+            .is_some_and(|parts| parts.split_ascii_whitespace().any(|part| part == name.0.as_ref()))
     }
 
     fn is_empty(&self) -> bool {
@@ -572,9 +609,7 @@ impl selectors::Element for BlitzNode<'_> {
     }
 
     fn is_root(&self) -> bool {
-        self.parent_node()
-            .and_then(|parent| parent.parent_node())
-            .is_none()
+        self.parent_node().is_some_and(|parent| parent.as_document().is_some())
     }
 
     fn has_custom_state(
@@ -603,11 +638,9 @@ impl<'a> TElement for BlitzNode<'a> {
         _opaque_host: OpaqueElement,
         _sheet_index: usize,
     ) -> Option<ImplicitScopeRoot> {
-        // We cannot currently implement this as we are using the NodeId as the OpaqueElement,
-        // and need a reference to the Slab to convert it back into an Element
-        //
-        // Luckily it is only needed for shadow dom.
-        todo!();
+        // DocumentStyleSheet has no implicit scope root. Authored @scope
+        // rules carry their own scope selectors.
+        None
     }
 
     fn traversal_children(&self) -> style::dom::LayoutIterator<Self::TraversalChildrenIterator> {
@@ -645,11 +678,40 @@ impl<'a> TElement for BlitzNode<'a> {
     }
 
     fn has_part_attr(&self) -> bool {
-        false
+        self.attr(markup5ever::LocalName::from("part")).is_some()
     }
 
     fn exports_any_part(&self) -> bool {
-        false
+        self.attr(markup5ever::LocalName::from("exportparts")).is_some()
+    }
+
+    fn each_part<F>(&self, mut callback: F)
+    where
+        F: FnMut(&AtomIdent),
+    {
+        if let Some(parts) = self.attr(markup5ever::LocalName::from("part")) {
+            for part in parts.split_ascii_whitespace() {
+                callback(&GenericAtomIdent(Atom::from(part)));
+            }
+        }
+    }
+
+    fn each_exported_part<F>(&self, name: &AtomIdent, mut callback: F)
+    where
+        F: FnMut(&AtomIdent),
+    {
+        if let Some(parts) = self.attr(markup5ever::LocalName::from("exportparts")) {
+            for mapping in parts.split(',') {
+                let mut names = mapping.trim().split(':');
+                let Some(inner) = names.next().map(str::trim) else {
+                    continue;
+                };
+                let outer = names.next().map(str::trim).unwrap_or(inner);
+                if names.next().is_none() && inner == name.0.as_ref() && !outer.is_empty() {
+                    callback(&GenericAtomIdent(Atom::from(outer)));
+                }
+            }
+        }
     }
 
     fn id(&self) -> Option<&style::Atom> {
@@ -706,12 +768,12 @@ impl<'a> TElement for BlitzNode<'a> {
         Node::unset_dirty_descendants(self);
     }
 
-    fn store_children_to_process(&self, _n: isize) {
-        unimplemented!()
+    fn store_children_to_process(&self, n: isize) {
+        self.children_to_process.store(n, Ordering::Relaxed);
     }
 
     fn did_process_child(&self) -> isize {
-        unimplemented!()
+        self.children_to_process.fetch_sub(1, Ordering::AcqRel) - 1
     }
 
     unsafe fn ensure_data(&self) -> ElementDataMut<'_> {
@@ -811,10 +873,17 @@ impl<'a> TElement for BlitzNode<'a> {
     }
 
     fn shadow_root(&self) -> Option<<Self::ConcreteNode as TNode>::ConcreteShadowRoot> {
-        None
+        self.shadow_root_id().map(|id| self.with(id))
     }
 
     fn containing_shadow(&self) -> Option<<Self::ConcreteNode as TNode>::ConcreteShadowRoot> {
+        let mut node = *self;
+        while let Some(parent) = node.parent_node() {
+            if parent.is_shadow_root() {
+                return Some(parent);
+            }
+            node = parent;
+        }
         None
     }
 
@@ -1190,7 +1259,6 @@ impl<'a> TElement for BlitzNode<'a> {
     where
         F: FnMut(&AtomIdent),
     {
-        todo!()
     }
 
     fn has_selector_flags(&self, flags: ElementSelectorFlags) -> bool {
