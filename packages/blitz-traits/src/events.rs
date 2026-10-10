@@ -784,7 +784,15 @@ pub struct BlitzInputEvent {
 }
 
 #[derive(Clone, Debug)]
-pub struct BlitzFocusEvent;
+pub struct BlitzFocusEvent {
+    pub related_target: Option<NodeId>,
+}
+
+// Preserve the former unit-value spelling for callers with no related target.
+#[allow(non_upper_case_globals)]
+pub const BlitzFocusEvent: BlitzFocusEvent = BlitzFocusEvent {
+    related_target: None,
+};
 
 /// A form submission, before it happens.
 ///

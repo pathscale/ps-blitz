@@ -11,6 +11,7 @@ pub(crate) mod document;
 pub(crate) mod doma;
 pub(crate) mod element;
 pub(crate) mod event;
+pub(crate) mod event_interfaces;
 pub(crate) mod node;
 pub(crate) mod style;
 pub(crate) mod interfaces;
@@ -370,6 +371,9 @@ pub(crate) fn define_accessor(
 
 /// Define a plain data property
 pub(crate) fn define_value(obj: &JsObject, name: &str, value: JsValue, context: &mut Context) {
+    if event::set_event_field(obj, name, &value) {
+        return;
+    }
     obj.define_property_or_throw(
         PropertyKey::from(JsString::from(name)),
         PropertyDescriptor::builder()
@@ -549,7 +553,6 @@ pub(crate) fn init_protos(ctx: &DomCtx, context: &mut Context) {
         style: style_proto,
     });
     event::register_event_constructor(&event_proto, context);
-    event::register_custom_event_constructor(&event_proto, context);
     document::register_text_constructor(&character_data_proto, context);
     interfaces::init(context);
     doma::install(ctx, context);
