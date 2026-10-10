@@ -292,6 +292,7 @@ impl<Rend: WindowRenderer> View<Rend> {
         let mut inner = doc.inner_mut();
         inner.set_viewport(viewport);
         inner.set_shell_provider(Arc::new(shell_provider));
+        inner.set_window_focused(winit_window.has_focus());
 
         // If the document title is set prior to the window being created then it will
         // have been sent to a dummy ShellProvider and won't get picked up.
@@ -341,6 +342,7 @@ impl<Rend: WindowRenderer> View<Rend> {
         let scroll = inner.viewport_scroll();
         let viewport = inner.viewport().clone();
         let shell_provider = inner.shell_provider.clone();
+        let focused = inner.window_focused();
         drop(inner);
 
         self.doc = new_doc;
@@ -348,6 +350,7 @@ impl<Rend: WindowRenderer> View<Rend> {
         let mut inner = self.doc.inner_mut();
         inner.set_viewport(viewport);
         inner.set_shell_provider(shell_provider);
+        inner.set_window_focused(focused);
         drop(inner);
 
         self.poll();
@@ -1069,7 +1072,10 @@ impl<Rend: WindowRenderer> View<Rend> {
                 // synthetic scroll restored it.
                 self.request_redraw();
             }
-            WindowEvent::Focused(_) => {}
+            WindowEvent::Focused(focused) => {
+                self.doc.inner_mut().set_window_focused(focused);
+                self.request_redraw();
+            }
             WindowEvent::TouchpadPressure { .. } => {}
             WindowEvent::PinchGesture { .. } => {},
             WindowEvent::PanGesture { .. } => {},

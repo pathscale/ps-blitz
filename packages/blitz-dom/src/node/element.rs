@@ -177,6 +177,8 @@ pub struct DocumentData {
     /// Ownership index for detached documents. The live document retains its
     /// existing ID map. Lookup verifies ancestry and current tree order.
     pub ids: std::collections::HashMap<String, Vec<NodeId>>,
+    /// 0 is standards, 1 is limited quirks, and 2 is quirks.
+    pub quirks_mode: u8,
     pub stylo_element_data: StyloData,
     /// Selector flags deposited here by `apply_selector_flags` when a
     /// `for_parent()` flag is applied while matching the root `<html>` element,
@@ -231,6 +233,7 @@ impl std::fmt::Debug for DocumentData {
         f.debug_struct("DocumentData")
             .field("content_type", &self.content_type)
             .field("ids", &self.ids)
+            .field("quirks_mode", &self.quirks_mode)
             .field("stylo_element_data", &self.stylo_element_data)
             .field("guard", &self.guard)
             .field("dirty_descendants", &self.dirty_descendants)
@@ -273,6 +276,7 @@ impl DocumentData {
         Self {
             content_type: "text/html",
             ids: Default::default(),
+            quirks_mode: 0,
             stylo_element_data: Default::default(),
             selector_flags: Cell::new(ElementSelectorFlags::empty()),
             guard: None,
@@ -306,6 +310,7 @@ impl Clone for DocumentData {
         // meaningfully cloneable), matching `ElementData`'s clone semantics.
         Self {
             content_type: self.content_type,
+            quirks_mode: self.quirks_mode,
             guard: self.guard.clone(),
             ..Self::new()
         }

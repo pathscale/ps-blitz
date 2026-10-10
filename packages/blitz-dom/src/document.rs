@@ -498,6 +498,12 @@ pub struct BaseDocument {
     // keyed by request id
     pub(crate) pending_critical_resources: HashSet<usize>,
 
+    pub(crate) web_fonts: Vec<Arc<crate::net::web_fonts::WebFont>>,
+    pub(crate) font_epoch: usize,
+    document_referrer: String,
+    document_content_type: String,
+    document_window_focused: bool,
+
     // Service providers
     /// Network provider. Can be used to fetch assets.
     pub net_provider: Arc<dyn NetProvider>,
@@ -721,6 +727,11 @@ impl BaseDocument {
             image_cache: HashMap::new(),
             pending_images: HashMap::new(),
             pending_critical_resources: HashSet::new(),
+            web_fonts: Vec::new(),
+            font_epoch: 0,
+            document_referrer: String::new(),
+            document_content_type: String::from("text/html"),
+            document_window_focused: false,
             controls_to_form: HashMap::new(),
             net_provider,
             navigation_provider,
@@ -1046,7 +1057,80 @@ impl BaseDocument {
         self.sub_document_nodes.iter().copied().collect()
     }
 
-    pub fn set_sub_document(&mut self, node_id: NodeId, sub_document: Box<dyn Document>) {
+    /// Install the effective navigation referrer and response MIME type.
+    pub fn set_navigation_metadata(&mut self, request: &Request, content_type: Option<&str>) {
+        self.document_referrer = request
+            .headers
+            .get(blitz_traits::net::http::header::REFERER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| Url::parse(value).ok())
+            .map(|mut url| {
+                let _ = url.set_username("");
+                let _ = url.set_password(None);
+                url.set_fragment(None);
+                url.to_string()
+            })
+            .unwrap_or_default();
+        self.document_content_type = content_type
+            .and_then(|value| value.split(';').next())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("text/html")
+            .to_ascii_lowercase();
+    }
+
+    pub fn referrer(&self) -> &str {
+        &self.document_referrer
+    }
+
+    pub fn content_type(&self) -> &str {
+        &self.document_content_type
+    }
+
+    pub fn window_focused(&self) -> bool {
+        self.document_window_focused
+    }
+
+    /// Hosts must deliver focus changes on the document's owning thread.
+    pub fn set_window_focused(&mut self, focused: bool) {
+        self.document_window_focused = focused;
+        for id in self.sub_document_node_ids() {
+            if let Some(child) = self
+                .get_node_mut(id)
+                .and_then(|node| node.element_data_mut())
+                .and_then(|element| element.sub_doc_data_mut())
+            {
+                child.inner_mut().set_window_focused(focused);
+            }
+        }
+    }
+
+    /// 0 is standards, 1 is limited quirks, and 2 is quirks.
+    pub fn set_document_quirks_mode(&mut self, mode: u8) {
+        if let NodeData::Document(data) = &mut self.root_node_mut().data {
+            data.quirks_mode = mode;
+        }
+    }
+
+    pub fn compat_mode(&self) -> &'static str {
+        if matches!(&self.root_node().data, NodeData::Document(data) if data.quirks_mode == 2) {
+            "BackCompat"
+        } else {
+            "CSS1Compat"
+        }
+    }
+
+    pub fn begin_document_stream(&mut self) {
+        self.reset_web_fonts();
+        self.pending_critical_resources.clear();
+        self.pending_images.clear();
+        self.set_document_quirks_mode(0);
+    }
+
+    pub fn set_sub_document(&mut self, node_id: NodeId, mut sub_document: Box<dyn Document>) {
+        sub_document
+            .inner_mut()
+            .set_window_focused(self.document_window_focused);
         self.nodes[node_id]
             .element_data_mut()
             .unwrap()
@@ -1829,6 +1913,8 @@ impl BaseDocument {
             &self.shell_provider,
             &self.guard.read(),
             self.abort_signal.as_ref(),
+            &mut self.web_fonts,
+            self.font_epoch,
         );
 
         // Store data on element
@@ -1916,6 +2002,28 @@ impl BaseDocument {
             }
         };
 
+        let (resource, font_ticket) = match resource {
+            Resource::TrackedFont(bytes, overrides, ticket) => {
+                if ticket.css && ticket.epoch != self.font_epoch {
+                    ticket.finish(false);
+                    return;
+                }
+                (Resource::Font(bytes, overrides), Some(ticket))
+            }
+            resource => (resource, None),
+        };
+        if matches!(&resource, Resource::Css(_) | Resource::Font(_, _))
+            && res.node_id.is_some_and(|id| {
+                self.get_node(id)
+                    .is_none_or(|node| !node.flags.is_in_document())
+            })
+        {
+            if let Some(ticket) = font_ticket {
+                ticket.finish(false);
+            }
+            return;
+        }
+
         match resource {
             Resource::Css(css) => {
                 let node_id = res.node_id.unwrap();
@@ -1948,6 +2056,8 @@ impl BaseDocument {
                     &self.shell_provider,
                     &self.guard.read(),
                     self.abort_signal.as_ref(),
+                    &mut self.web_fonts,
+                    self.font_epoch,
                 );
             }
             Resource::Image(_kind, width, height, image_data) => {
@@ -1995,9 +2105,10 @@ impl BaseDocument {
 
                 // TODO: Investigate eliminating double-box
                 let mut global_font_ctx = self.font_ctx.lock().unwrap();
-                global_font_ctx
+                let registered = global_font_ctx
                     .collection
                     .register_fonts(font.clone(), Some(info_override));
+                let registered = !registered.is_empty();
 
                 #[cfg(feature = "parallel-construct")]
                 {
@@ -2015,7 +2126,11 @@ impl BaseDocument {
 
                 // TODO: see if we can only invalidate if resolved fonts may have changed
                 self.invalidate_inline_contexts();
+                if let Some(ticket) = font_ticket {
+                    ticket.finish(registered);
+                }
             }
+            Resource::TrackedFont(..) => unreachable!("tracked font was normalized"),
             Resource::None => {
                 // Do nothing
             }

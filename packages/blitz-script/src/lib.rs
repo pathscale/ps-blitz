@@ -41,11 +41,13 @@
 #[cfg(feature = "debug-control")]
 mod debug_control;
 mod document;
+mod docwrite;
 mod dom;
 pub mod dom_exception;
 mod domc;
 mod event_handler;
 mod fetch;
+mod fonts;
 mod job_budget;
 pub mod media;
 mod module;
