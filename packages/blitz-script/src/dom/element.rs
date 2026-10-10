@@ -177,6 +177,13 @@ pub(crate) fn init_element_proto(proto: &JsObject, context: &mut Context) {
         super::doma::tree::insert_adjacent_text,
         context,
     );
+    define_method(
+        proto,
+        "insertAdjacentHTML",
+        2,
+        super::doma::tree::insert_adjacent_html,
+        context,
+    );
     define_method(proto, "closest", 1, closest, context);
     define_method(proto, "setPointerCapture", 1, set_pointer_capture, context);
     define_method(

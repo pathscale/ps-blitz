@@ -1063,6 +1063,94 @@ pub(crate) fn insert_adjacent_text(
     adjacent(this, args, true, context)
 }
 
+/// `Element.insertAdjacentHTML(position, html)`: parse `html` as a fragment in
+/// the context the standard names (the parent for `beforebegin`/`afterend`,
+/// the element itself otherwise) and insert the resulting nodes there.
+pub(crate) fn insert_adjacent_html(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let id = this_node_id(this)?;
+    let position = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?
+        .to_ascii_lowercase();
+    let html = to_rust_string(args.get(1).unwrap_or(&JsValue::undefined()), context)?;
+    let outside = match position.as_str() {
+        "beforebegin" | "afterend" => true,
+        "afterbegin" | "beforeend" => false,
+        _ => {
+            return Err(dom_error(
+                "SyntaxError",
+                "Invalid insertion position",
+                context,
+            ));
+        }
+    };
+    let parent_of_this = ctx.doc.borrow().get_node(id).and_then(|node| node.parent);
+    let (parent, reference) = if outside {
+        let Some(parent) = parent_of_this else {
+            return Err(dom_error(
+                "NoModificationAllowedError",
+                "The element has no parent",
+                context,
+            ));
+        };
+        if ctx
+            .doc
+            .borrow()
+            .get_node(parent)
+            .is_some_and(|node| matches!(node.data, NodeData::Document(_)))
+        {
+            return Err(dom_error(
+                "NoModificationAllowedError",
+                "Cannot insert next to the document element",
+                context,
+            ));
+        }
+        let reference = if position == "beforebegin" {
+            Some(id)
+        } else {
+            let children = child_ids(&ctx, parent);
+            children
+                .iter()
+                .position(|child| *child == id)
+                .and_then(|position| children.get(position + 1).copied())
+        };
+        (parent, reference)
+    } else if position == "afterbegin" {
+        (id, child_ids(&ctx, id).first().copied())
+    } else {
+        (id, None)
+    };
+    let context_name: QualName = {
+        let doc = ctx.doc.borrow();
+        doc.get_node(parent)
+            .and_then(|node| node.element_data())
+            .map(|element| element.name.clone())
+            .unwrap_or_else(|| crate::dom::qual_name("body"))
+    };
+    let staging = {
+        let mut doc = ctx.doc.borrow_mut();
+        let mut mutr = doc.mutate();
+        let staging = mutr.create_element(context_name, Vec::new());
+        mutr.set_inner_html(staging, &html);
+        staging
+    };
+    let target = ctx
+        .doc
+        .borrow()
+        .get_node(staging)
+        .and_then(|node| node.element_data())
+        .and_then(|element| element.template_contents)
+        .unwrap_or(staging);
+    let nodes = child_ids(&ctx, target);
+    let result = insert(&ctx, parent, &nodes, reference, &[], context);
+    ctx.doc.borrow_mut().mutate().remove_and_drop_node(staging);
+    result?;
+    Ok(JsValue::undefined())
+}
+
 pub(crate) fn set_outer_html(
     this: &JsValue,
     args: &[JsValue],
