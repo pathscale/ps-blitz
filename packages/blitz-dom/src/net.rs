@@ -37,6 +37,34 @@ pub(crate) fn stamped_request(url: Url, signal: Option<&AbortSignal>) -> Request
     req
 }
 
+/// Add the `Referer` a browser sends for a subresource under the default
+/// `strict-origin-when-cross-origin` policy: the full URL (minus fragment and
+/// credentials) to the same origin, only the origin across origins, nothing
+/// on an HTTPS to HTTP downgrade or from a non-HTTP document. CDNs commonly
+/// refuse image requests without one.
+pub(crate) fn with_referrer(mut req: Request, document: &Url) -> Request {
+    if !matches!(document.scheme(), "http" | "https") {
+        return req;
+    }
+    if document.scheme() == "https" && req.url.scheme() == "http" {
+        return req;
+    }
+    let referrer = if document.origin() == req.url.origin() {
+        let mut full = document.clone();
+        full.set_fragment(None);
+        let _ = full.set_username("");
+        let _ = full.set_password(None);
+        full.to_string()
+    } else {
+        format!("{}/", document.origin().ascii_serialization())
+    };
+    if let Ok(value) = blitz_traits::net::http::HeaderValue::from_str(&referrer) {
+        req.headers
+            .insert(blitz_traits::net::http::header::REFERER, value);
+    }
+    req
+}
+
 /// Carries `@font-face` descriptors from CSS parsing through to font
 /// registration so `parley::Collection::register_fonts` can alias the bytes
 /// under the `font-family` declared in CSS rather than whatever family name

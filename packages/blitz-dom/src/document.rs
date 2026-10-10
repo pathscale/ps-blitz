@@ -818,7 +818,10 @@ impl BaseDocument {
     /// Wrapper around [`crate::net::stamped_request`]. Use the free function
     /// when `&self` would conflict with a held `&mut` borrow on a field.
     pub(crate) fn build_request(&self, url: url::Url) -> Request {
-        crate::net::stamped_request(url, self.abort_signal.as_ref())
+        crate::net::with_referrer(
+            crate::net::stamped_request(url, self.abort_signal.as_ref()),
+            self.url(),
+        )
     }
 
     pub fn favicon_url(&self) -> Option<String> {
