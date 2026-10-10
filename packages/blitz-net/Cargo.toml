@@ -50,9 +50,11 @@ tracing = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 nagoya = { version = "^0.1.13", features = ["reactor"] }
-nago-rustls = { version = "^0.1.1", default-features = false }
-rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "std", "tls12"] }
-rustls-platform-verifier = "^0.6.2"
+nago-rustls = { version = "^0.1.2", default-features = false }
+rustls = { version = "^0.23.27", default-features = false, features = ["std", "tls12"] }
+ps-rustls-rustcrypto = { version = "^0.1.0", default-features = false, features = ["std", "tls12", "zeroize"] }
+# Export native trust anchors; cryptographic verification stays in RustCrypto.
+rustls-native-certs = "^0.8.4"
 # Required for durable metadata, house body identifiers and RFC HTTP dates.
 worktable = { version = "^1.10.0-beta2", default-features = false, features = ["std", "wti-std-search"], optional = true }
 psc-nanoid = { version = "^3.2", optional = true }
