@@ -558,8 +558,62 @@ impl BaseDocument {
         }
     }
 
+    /// Restore authored fixed-node slots before reconstructing the box tree.
+    ///
+    /// Hoisting removes these children from their original parents and appends
+    /// them to the root. Rebuilding the root while retaining an original
+    /// parent's cache would otherwise discard the only remaining tree edge.
+    /// The next hoisting walk could not find the node, even though its DOM,
+    /// styles and previously computed geometry were still present.
+    fn restore_fixed_children_for_construction(&mut self) {
+        if self.hoisted_fixed_parents.is_empty() {
+            return;
+        }
+
+        let root_id = self.root_element().id;
+        let mut restored: Vec<_> = self
+            .hoisted_fixed_parents
+            .iter()
+            .filter_map(|(&node_id, &parent_id)| {
+                let node = self.nodes.get(node_id)?;
+                if !node.flags.is_in_document()
+                    || node.layout_parent.get() != Some(root_id)
+                    || !self.nodes.contains_key(parent_id)
+                {
+                    return None;
+                }
+                let index = self.hoisted_fixed_indices.get(&node_id).copied()?;
+                Some((node_id, parent_id, index))
+            })
+            .collect();
+        restored.sort_by_key(|entry| entry.2);
+
+        // Remove obsolete root edges as well as the live edges restored below.
+        if let Some(children) = self.nodes[root_id].layout_children.get_mut().as_mut() {
+            children.retain(|id| !self.hoisted_fixed_parents.contains_key(id));
+        }
+        self.hoisted_fixed_parents.clear();
+        self.hoisted_fixed_indices.clear();
+
+        for (node_id, parent_id, index) in restored {
+            if let Some(children) = self.nodes[parent_id].layout_children.get_mut().as_mut() {
+                children.retain(|id| *id != node_id);
+                children.insert(index.min(children.len()), node_id);
+            }
+            // A missing parent cache must be reconstructed from current DOM,
+            // rather than replaced with a partial list of old fixed children.
+            self.nodes[node_id].layout_parent.set(Some(parent_id));
+        }
+
+        // This changes only the representation used during construction.
+        // Hoisting runs again before style flushing and layout, so an unchanged
+        // tree retains its layout caches. The hypothetical-position pass has a
+        // separate restore/finish pair that invalidates its layout inputs.
+    }
+
     /// Ensure that the layout_children field is populated for all nodes
     pub fn resolve_layout_children(&mut self) {
+        self.restore_fixed_children_for_construction();
         resolve_layout_children_recursive(self, self.root_node().id);
 
         fn resolve_layout_children_recursive(doc: &mut BaseDocument, node_id: NodeId) {
