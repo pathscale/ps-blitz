@@ -9,6 +9,7 @@ use std::task::{Context as TaskContext, Waker};
 use blitz_dom::{
     BaseDocument, DEFAULT_CSS, DocGuard, DocGuardMut, Document, DocumentConfig, EventDriver, NodeId,
 };
+use blitz_html::stream::StreamingParser;
 use blitz_html::{DocumentHtmlParser, HtmlProvider};
 use blitz_traits::events::{BlitzPointerEvent, DomEvent, UiEvent};
 use url::Url;
@@ -86,11 +87,14 @@ pub struct ScriptDocument {
 }
 
 impl ScriptDocument {
-    /// Parse HTML into a [`ScriptDocument`].
+    /// Parse HTML up to its first script boundary into a [`ScriptDocument`].
     ///
-    /// Note: this does *not* execute any scripts yet. Call
-    /// [`execute_scripts`](Self::execute_scripts) to do so (or rely on the
-    /// first `poll` doing it automatically).
+    /// Embedders install their shims on this live DOM before scripts execute.
+    /// [`execute_scripts`](Self::execute_scripts), or the first `poll`, resumes
+    /// the same parser without replacing any nodes.
+    ///
+    /// HTML without a script boundary is parsed completely before returning.
+    /// XHTML keeps its non-streaming XML parser. No scripts execute here.
     pub fn from_html(html: &str, mut config: DocumentConfig) -> Self {
         if let Some(ss) = &mut config.ua_stylesheets {
             if !ss.iter().any(|s| s == DEFAULT_CSS) {
@@ -108,15 +112,29 @@ impl ScriptDocument {
             .as_deref()
             .and_then(|url| Url::parse(url).ok());
 
+        let is_xml = DocumentHtmlParser::is_xhtml_document(html);
         let mut doc = BaseDocument::new(config);
-        let mut mutr = doc.mutate();
-        DocumentHtmlParser::parse_into_mutator(&mut mutr, html);
-        drop(mutr);
+        if is_xml {
+            let mut mutr = doc.mutate();
+            DocumentHtmlParser::parse_into_mutator(&mut mutr, html);
+            drop(mutr);
+        }
 
         let inner = Rc::new(RefCell::new(doc));
+        let parser = if is_xml {
+            None
+        } else {
+            let mut parser = StreamingParser::new(Rc::clone(&inner), html);
+            if parser.next_script().is_some() {
+                Some(parser)
+            } else {
+                parser.finish();
+                None
+            }
+        };
         let fetcher: SharedFetcher = Rc::new(RefCell::new(Rc::new(DefaultScriptFetcher)));
         let runtime = ScriptRuntime::new(Rc::clone(&inner), base_url.as_ref(), Rc::clone(&fetcher));
-        crate::docwrite::prepare(&runtime.context, html, Rc::clone(&fetcher));
+        crate::docwrite::prepare(&runtime.context, html, Rc::clone(&fetcher), parser);
 
         Self {
             inner,
@@ -239,6 +257,16 @@ impl ScriptDocument {
     /// [`execute_scripts`](Self::execute_scripts), and then serve them from memory
     /// via a custom fetcher (see [`with_fetcher`](Self::with_fetcher)).
     pub fn external_script_urls(&self) -> Vec<Url> {
+        if let Some(original) = crate::docwrite::original(&self.runtime.context) {
+            // The navigation DOM stops at its first boundary. Discover later
+            // source scripts without creating native nodes or loading resources.
+            return blitz_html::scan_script_tags(&original)
+                .into_iter()
+                .filter(|script| script.is_javascript())
+                .filter_map(|script| script.src)
+                .filter_map(|src| self.resolve_script_url(src.as_ref()))
+                .collect();
+        }
         self.collect_scripts()
             .iter()
             // An import map is inline-only per the HTML spec, so a `src` on one

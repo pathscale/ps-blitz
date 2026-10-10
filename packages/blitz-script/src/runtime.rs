@@ -688,6 +688,7 @@ impl ScriptRuntime {
                 const entries = [{ state: null, url: globalThis.location.href }];
                 let index = 0;
                 const dispatchHistoryEvent = globalThis.__blitzDispatchHistoryEvent;
+                let applyingUrl = false;
                 const resolveHistoryUrl = function (url) {
                     if (url === undefined || url === null) return globalThis.location.href;
                     let resolved;
@@ -737,8 +738,13 @@ impl ScriptRuntime {
                     globalThis.location.pathname = pathname || "/";
                     globalThis.location.search = search;
                     globalThis.location.hash = hash;
-                    globalThis.location.href = globalThis.location.protocol + "//" +
-                        globalThis.location.host + globalThis.location.pathname + search + hash;
+                    applyingUrl = true;
+                    try {
+                        globalThis.location.href = globalThis.location.protocol + "//" +
+                            globalThis.location.host + globalThis.location.pathname + search + hash;
+                    } finally {
+                        applyingUrl = false;
+                    }
                 };
                 const history = {
                     scrollRestoration: "auto",
@@ -788,6 +794,40 @@ impl ScriptRuntime {
                 Object.defineProperty(globalThis, "history", {
                     value: history,
                     writable: false,
+                    enumerable: true,
+                    configurable: true,
+                });
+                // `location.href = url` navigates. A plain data property only
+                // stored the string, so pages that redirect by assignment never
+                // left. A change of fragment alone stays in this document, as a
+                // history entry with a hashchange; applyUrl keeps the value in sync.
+                let currentHref = globalThis.location.href;
+                Object.defineProperty(globalThis.location, "href", {
+                    get() { return currentHref; },
+                    set(value) {
+                        if (applyingUrl) {
+                            currentHref = String(value);
+                            return;
+                        }
+                        const target = new URL(String(value), currentHref);
+                        const current = new URL(currentHref);
+                        const withoutHash = function (href) {
+                            const hashAt = href.indexOf("#");
+                            return hashAt < 0 ? href : href.slice(0, hashAt);
+                        };
+                        if (target.hash && withoutHash(target.href) === withoutHash(current.href)) {
+                            const oldURL = currentHref;
+                            history.pushState(null, "", target.href);
+                            if (current.hash !== target.hash) {
+                                dispatchHistoryEvent(new HashChangeEvent("hashchange", {
+                                    oldURL: oldURL,
+                                    newURL: currentHref,
+                                }));
+                            }
+                            return;
+                        }
+                        globalThis.location.assign(target.href);
+                    },
                     enumerable: true,
                     configurable: true,
                 });
