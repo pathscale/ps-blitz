@@ -210,14 +210,18 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             }
         };
 
-        if let Some(bg_color) = background_color {
-            let bg_color = bg_color.as_srgb_color();
-            let rect = Rect::from_origin_size(
-                (self.initial_x, self.initial_y),
-                (bg_width as f64, bg_height as f64),
-            );
-            scene.fill(Fill::NonZero, Affine::IDENTITY, bg_color, None, &rect);
-        }
+        // A transparent html and body paint nothing over the cleared buffer.
+        // That buffer is black, so black text has no ink. The initial canvas
+        // is white when neither background is opaque.
+        let bg_color = background_color
+            .map(|color| color.as_srgb_color())
+            .filter(|color| color.components[3] != 0.0)
+            .unwrap_or_else(|| Color::new([1.0, 1.0, 1.0, 1.0]));
+        let rect = Rect::from_origin_size(
+            (self.initial_x, self.initial_y),
+            (bg_width as f64, bg_height as f64),
+        );
+        scene.fill(Fill::NonZero, Affine::IDENTITY, bg_color, None, &rect);
 
         // The root clip rectangle is the viewport (in screen coordinates, with the
         // initial offset already subtracted). Elements outside of this are culled, and

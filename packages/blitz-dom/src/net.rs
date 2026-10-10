@@ -6,7 +6,11 @@ use selectors::context::QuirksMode;
 use std::sync::atomic::Ordering as Ao;
 use std::{
     io::Cursor,
-    sync::{Arc, atomic::AtomicUsize, mpsc::Sender},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize},
+        mpsc::Sender,
+    },
 };
 use style::{
     font_face::{FontFaceSourceFormat, FontFaceSourceFormatKeyword, FontStyleRange, Source},
@@ -113,6 +117,10 @@ pub(crate) struct ResourceHandler<T: Send + Sync + 'static> {
     node_id: Option<NodeId>,
     tx: Sender<DocumentEvent>,
     shell_provider: Arc<dyn ShellProvider>,
+    /// Set once `respond` has delivered a result. A fetch that never calls
+    /// `bytes` drops the handler; without this the critical-resource id stays
+    /// registered and painting never starts.
+    settled: AtomicBool,
     data: T,
 }
 
@@ -131,6 +139,7 @@ impl<T: Send + Sync + 'static> ResourceHandler<T> {
             node_id,
             tx,
             shell_provider,
+            settled: AtomicBool::new(false),
             data,
         }
     }
@@ -153,6 +162,7 @@ impl<T: Send + Sync + 'static> ResourceHandler<T> {
     }
 
     fn respond(&self, resolved_url: String, result: Result<Resource, String>) {
+        self.settled.store(true, Ao::Release);
         let response = ResourceLoadResponse {
             request_id: self.request_id,
             node_id: self.node_id,
@@ -160,6 +170,23 @@ impl<T: Send + Sync + 'static> ResourceHandler<T> {
             result,
         };
         let _ = self.tx.send(DocumentEvent::ResourceLoad(response));
+        self.shell_provider.request_redraw();
+    }
+}
+
+impl<T: Send + Sync + 'static> Drop for ResourceHandler<T> {
+    fn drop(&mut self) {
+        if self.settled.load(Ao::Acquire) {
+            return;
+        }
+        let _ = self
+            .tx
+            .send(DocumentEvent::ResourceLoad(ResourceLoadResponse {
+                request_id: self.request_id,
+                node_id: self.node_id,
+                resolved_url: None,
+                result: Err(String::from("resource fetch failed")),
+            }));
         self.shell_provider.request_redraw();
     }
 }
