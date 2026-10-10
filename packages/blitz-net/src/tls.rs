@@ -1,4 +1,4 @@
-//! Platform trust and nagoya socket transport.
+//! Native trust anchors and nagoya socket transport.
 //!
 //! DNS always runs on a nagoya worker, including when the fetch future is
 //! polled directly by a caller or a local reactor.
@@ -7,11 +7,10 @@ use super::{Error, pool::Origin};
 use bytes::BytesMut;
 use nago_rustls::{
     TlsSession,
-    rustls::{self, ClientConfig, ClientConnection, crypto::CryptoProvider},
+    rustls::{ClientConfig, ClientConnection, RootCertStore},
     rustls_pki_types::ServerName,
 };
 use nagoya::{net::TcpStream, reactor::Handle};
-use rustls_platform_verifier::BuilderVerifierExt;
 use std::sync::{Arc, OnceLock};
 
 const READ_CHUNK: usize = 16 * 1024;
@@ -25,19 +24,27 @@ pub(super) fn default_config() -> Result<Arc<ClientConfig>, Error> {
 }
 
 fn build_config() -> Result<Arc<ClientConfig>, String> {
-    if CryptoProvider::get_default().is_none() {
-        // A racing embedder may install its provider first. Never replace it,
-        // and never ask rustls to infer one from the unified crate features.
-        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    let native = rustls_native_certs::load_native_certs();
+    let mut roots = RootCertStore::empty();
+    let (accepted, rejected) = roots.add_parsable_certificates(native.certs);
+    if accepted == 0 {
+        return Err(format!(
+            "no usable native TLS trust anchors: {} loading errors, {rejected} rejected certificates",
+            native.errors.len(),
+        ));
     }
-    let provider = CryptoProvider::get_default()
-        .cloned()
-        .ok_or_else(|| "no process crypto provider".to_owned())?;
+    if !native.errors.is_empty() || rejected != 0 {
+        eprintln!(
+            "TLS trust store: {} loading errors, {rejected} rejected certificates",
+            native.errors.len(),
+        );
+    }
+    // Explicit even when an embedder installed another process default.
+    let provider = Arc::new(ps_rustls_rustcrypto::provider());
     let mut config = ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .map_err(|error| error.to_string())?
-        .with_platform_verifier()
-        .map_err(|error| error.to_string())?
+        .with_root_certificates(roots)
         .with_no_client_auth();
     config.alpn_protocols = vec![b"http/1.1".to_vec()];
     Ok(Arc::new(config))
@@ -128,3 +135,4 @@ impl Transport {
         }
     }
 }
+
