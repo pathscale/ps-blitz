@@ -164,6 +164,14 @@ pub(crate) fn was_executed(context: &Context, id: NodeId) -> bool {
     state(context).executed.borrow().contains(&id)
 }
 
+fn is_current_parser(context: &Context, parser: &Rc<RefCell<StreamingParser>>) -> bool {
+    state(context)
+        .parser
+        .borrow()
+        .as_ref()
+        .is_some_and(|current| Rc::ptr_eq(current, parser))
+}
+
 /// Advance navigation input to its next script boundary.
 pub(crate) fn advance(context: &mut Context) -> bool {
     if state(context).script_created.get() {
@@ -173,11 +181,13 @@ pub(crate) fn advance(context: &mut Context) -> bool {
     let Some(parser) = parser else {
         return false;
     };
-    let script = parser.borrow_mut().next_script();
-    if script.is_none() {
-        parser.borrow_mut().finish();
-        state(context).parser.borrow_mut().take();
-    }
+    crate::dom::custom_elements::parser_scope(context, |context| {
+        let script = parser.borrow_mut().next_script();
+        if script.is_none() {
+            parser.borrow_mut().finish();
+            state(context).parser.borrow_mut().take();
+        }
+    });
     true
 }
 
@@ -234,17 +244,19 @@ fn write_input(
         .expect("input stream missing");
     let input = StreamInput::new(&text);
     loop {
-        let next = parser.borrow_mut().feed_written(&input);
+        let next = crate::dom::custom_elements::parser_scope(context, |_| {
+            parser.borrow_mut().feed_written(&input)
+        });
+        // Reactions can open, close, or replace the input stream before the
+        // script returned by the old parser gets a chance to execute.
+        if !is_current_parser(context, &parser) {
+            break;
+        }
         let Some(script) = next else {
             break;
         };
         execute_written(script, context)?;
-        let same_parser = state(context)
-            .parser
-            .borrow()
-            .as_ref()
-            .is_some_and(|current| Rc::ptr_eq(current, &parser));
-        if !same_parser {
+        if !is_current_parser(context, &parser) {
             break;
         }
     }
@@ -265,10 +277,12 @@ fn close(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsVal
     let ctx = main_document(this, context)?;
     if state(context).script_created.get() {
         let parser = state(context).parser.borrow_mut().take();
-        if let Some(parser) = parser {
-            parser.borrow_mut().finish();
-        }
         state(context).script_created.set(false);
+        if let Some(parser) = parser {
+            crate::dom::custom_elements::parser_scope(context, |_| {
+                parser.borrow_mut().finish();
+            });
+        }
         ctx.mark_layout_dirty();
         ctx.doc.borrow().shell_provider.request_redraw();
     }
