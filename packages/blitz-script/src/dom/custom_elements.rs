@@ -817,7 +817,7 @@ fn invoke(ctx: &DomCtx, mut queue: VecDeque<NodeId>, context: &mut Context) {
             match reaction {
                 ElementReaction::Upgrade => perform_upgrade(ctx, node, false, context),
                 ElementReaction::Callback(callback, args) => {
-                    if ctx.doc.borrow().script_custom_element_state(node) != State::Failed
+                    if ctx.doc.borrow().script_custom_element_state(node) == State::Custom
                         && let Err(error) = callback.call(&wrapper.into(), &args, context)
                     {
                         report(&error);
@@ -840,6 +840,24 @@ fn finish_scope(ctx: &DomCtx, context: &mut Context) {
         .expect("reaction scope missing");
     invoke(ctx, queue, context);
     schedule_backup(context);
+}
+
+/// Deliver reactions recorded by a parser step before its next script runs.
+/// The parser and DOM borrows must be released when `parse` returns, since
+/// constructors and callbacks can reenter document input methods.
+pub(crate) fn parser_scope<R>(context: &mut Context, parse: impl FnOnce(&mut Context) -> R) -> R {
+    let Some(ce) = registry_context(context) else {
+        return parse(context);
+    };
+    if ce.state.borrow().definitions.is_empty() {
+        return parse(context);
+    }
+    let ctx = dom_ctx(context).expect("parser reaction scope needs a DOM context");
+    collect(&ctx, context);
+    ce.state.borrow_mut().stack.push(VecDeque::new());
+    let result = parse(context);
+    finish_scope(&ctx, context);
+    result
 }
 
 /// Native binding boundary. There is no subtree walk here.
