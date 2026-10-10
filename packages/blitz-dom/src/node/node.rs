@@ -671,26 +671,20 @@ impl Node {
     /// This propagates the dirty flag up the tree so that the style traversal
     /// knows to visit the subtree containing this node.
     pub fn mark_ancestors_dirty(&self) {
-        #[cfg(feature = "shadow-dom")]
-        let mut current_id = self.assigned_slot.or(self.parent);
-        #[cfg(not(feature = "shadow-dom"))]
-        let mut current_id = self.parent;
+        // Mutating a shadow root must dirty its host even though the root
+        // itself is omitted from the flattened tree.
+        let mut current = self
+            .shadow_root_data()
+            .map(|root| self.with(root.host))
+            .or_else(|| self.flattened_parent());
 
-        while let Some(parent_id) = current_id {
-            let parent = &self.tree()[parent_id];
+        while let Some(parent) = current {
             if let Some(flag) = parent.dirty_descendants_flag() {
                 if flag.swap(true, Ordering::Relaxed) {
                     break;
                 }
             }
-            #[cfg(feature = "shadow-dom")]
-            {
-                current_id = parent.assigned_slot.or(parent.parent);
-            }
-            #[cfg(not(feature = "shadow-dom"))]
-            {
-                current_id = parent.parent;
-            }
+            current = parent.flattened_parent();
         }
     }
 
@@ -1198,6 +1192,41 @@ impl Node {
     /// returns the node id of its shadow root.
     pub fn shadow_root_id(&self) -> Option<NodeId> {
         self.element_data().and_then(|el| el.shadow_root)
+    }
+
+    /// The parent corresponding to `layout_dom_children`.
+    ///
+    /// Shadow roots are transparent, assigned nodes inherit through their
+    /// slot, and undistributed light children and suppressed fallback children
+    /// have no edge into the flattened tree.
+    #[inline]
+    pub(crate) fn flattened_parent(&self) -> Option<&Node> {
+        #[cfg(feature = "shadow-dom")]
+        {
+            if self.is_shadow_root() {
+                return None;
+            }
+            if let Some(slot_id) = self.assigned_slot {
+                return Some(self.with(slot_id));
+            }
+            let parent = self.with(self.parent?);
+            if let Some(root) = parent.shadow_root_data() {
+                return Some(self.with(root.host));
+            }
+            if parent.shadow_root_id().is_some()
+                || parent
+                    .assigned_nodes
+                    .as_ref()
+                    .is_some_and(|nodes| !nodes.is_empty())
+            {
+                return None;
+            }
+            Some(parent)
+        }
+        #[cfg(not(feature = "shadow-dom"))]
+        {
+            self.parent.map(|id| self.with(id))
+        }
     }
 
     /// The children to use for layout and painting. For shadow hosts and
