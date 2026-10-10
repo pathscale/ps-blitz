@@ -130,6 +130,7 @@ pub(crate) fn unroot_detached_listener_subtree(
     node_id: NodeId,
     context: &mut Context,
 ) {
+    super::doma::traversal::pre_remove(ctx, node_id, context);
     let ids = {
         let doc = ctx.doc.borrow();
         let mut ids = Vec::new();

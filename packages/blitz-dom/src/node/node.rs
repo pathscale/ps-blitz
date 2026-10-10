@@ -99,6 +99,12 @@ pub struct Node {
     pub id: NodeId,
     /// Our parent's ID
     pub parent: Option<NodeId>,
+    /// A validated hint into the parent's DOM child list.
+    ///
+    /// Adjacent traversal seeds the next node's hint, avoiding repeated linear
+    /// searches while walking an unchanged sibling list. Mutations need not
+    /// maintain this field: readers always validate it against the child list.
+    child_index_hint: Cell<usize>,
     // What are our children?
     pub children: ThinVec<NodeId>,
     /// Our parent in the layout hierachy: a separate list that includes anonymous collections of inline elements
@@ -366,6 +372,7 @@ impl Node {
 
             id,
             parent: None,
+            child_index_hint: Cell::new(0),
             children: ThinVec::new(),
             layout_parent: Cell::new(None),
             layout_children: RefCell::new(None),
@@ -1126,31 +1133,38 @@ impl Node {
 
     // Get the index of the current node in the parents child list
     pub fn child_index(&self) -> Option<usize> {
-        self.tree()[self.parent?]
-            .children
-            .iter()
-            .position(|id| *id == self.id)
+        let children = &self.tree()[self.parent?].children;
+        let hint = self.child_index_hint.get();
+        if children.get(hint) == Some(&self.id) {
+            return Some(hint);
+        }
+        let index = children.iter().position(|id| *id == self.id)?;
+        self.child_index_hint.set(index);
+        Some(index)
+    }
+
+    /// Read a DOM child and seed its sibling traversal hint.
+    pub fn dom_child_at(&self, index: usize) -> Option<NodeId> {
+        let id = *self.children.get(index)?;
+        self.with(id).child_index_hint.set(index);
+        Some(id)
     }
 
     // Get the nth node in the parents child list
     pub fn forward(&self, n: usize) -> Option<&Node> {
-        let child_idx = self.child_index().unwrap_or(0);
-        self.tree()[self.parent?]
-            .children
-            .get(child_idx + n)
-            .map(|id| self.with(*id))
+        let index = self.child_index()?.checked_add(n)?;
+        let id = *self.tree()[self.parent?].children.get(index)?;
+        let node = self.with(id);
+        node.child_index_hint.set(index);
+        Some(node)
     }
 
     pub fn backward(&self, n: usize) -> Option<&Node> {
-        let child_idx = self.child_index().unwrap_or(0);
-        if child_idx < n {
-            return None;
-        }
-
-        self.tree()[self.parent?]
-            .children
-            .get(child_idx - n)
-            .map(|id| self.with(*id))
+        let index = self.child_index()?.checked_sub(n)?;
+        let id = *self.tree()[self.parent?].children.get(index)?;
+        let node = self.with(id);
+        node.child_index_hint.set(index);
+        Some(node)
     }
 
     pub fn is_element(&self) -> bool {
