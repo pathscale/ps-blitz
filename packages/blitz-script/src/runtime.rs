@@ -1602,9 +1602,8 @@ impl ScriptRuntime {
             }
 
             let wrapper = node_wrapper(&ctx, node_id, context);
-            any_called |= crate::dom::inline_handlers::invoke(
-                &ctx, &wrapper, &event_obj, name, context,
-            );
+            any_called |=
+                crate::dom::inline_handlers::invoke(&ctx, &wrapper, &event_obj, name, context);
             if event_ref(&event_obj, &|event| event.stopped_immediate.get()) {
                 break 'chain;
             }
@@ -1637,8 +1636,7 @@ impl ScriptRuntime {
                         .callback
                         .call(&global, &[event_obj.clone().into()], context)
                 {
-                    let what =
-                        listener_error_context(name, "window", &listener.callback, context);
+                    let what = listener_error_context(name, "window", &listener.callback, context);
                     report_js_error(&self.diagnostics, &what, &error);
                 }
                 if event_ref(&event_obj, &|event| event.stopped_immediate.get()) {
@@ -1646,9 +1644,8 @@ impl ScriptRuntime {
                 }
             }
             if !event_ref(&event_obj, &|event| event.stopped_immediate.get()) {
-                any_called |= crate::dom::inline_handlers::invoke(
-                    &ctx, &window, &event_obj, name, context,
-                );
+                any_called |=
+                    crate::dom::inline_handlers::invoke(&ctx, &window, &event_obj, name, context);
             }
         }
 
@@ -1745,9 +1742,8 @@ impl ScriptRuntime {
             .is_some_and(|event| event.stopped_immediate.get())
         {
             let window = context.global_object().clone();
-            any_called |= crate::dom::inline_handlers::invoke(
-                &ctx, &window, &event_obj, name, context,
-            );
+            any_called |=
+                crate::dom::inline_handlers::invoke(&ctx, &window, &event_obj, name, context);
         }
         crate::dom::define_value(&event_obj, "currentTarget", JsValue::null(), context);
 
@@ -2084,6 +2080,11 @@ fn build_location(base_url: Option<&Url>, context: &mut Context) -> JsValue {
             js_string!("reload"),
             0,
         )
+        .function(
+            NativeFunction::from_fn_ptr(location_to_string),
+            js_string!("toString"),
+            0,
+        )
         .build()
         .into()
 }
@@ -2110,6 +2111,17 @@ fn location_reload(_: &JsValue, _: &[JsValue], context: &mut Context) -> JsResul
     let current = doc.current_url();
     doc.navigate_to_url(&current);
     Ok(JsValue::undefined())
+}
+
+/// `Location`'s stringifier. `String(location)` and `new URL(input, location)`
+/// convert the object with ToString, and the result is the current href.
+/// The default object stringifier returns "[object Object]", which the URL
+/// parser rejects as a relative base.
+fn location_to_string(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    match this.as_object() {
+        Some(object) => object.get(js_string!("href"), context),
+        None => Ok(js_string!("").into()),
+    }
 }
 
 fn window_inner_width(_: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
