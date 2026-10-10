@@ -280,6 +280,11 @@ pub struct BaseDocument {
     /// There is no way to create the tree - publicly or privately - that would invalidate that invariant.
     pub(crate) nodes: Box<NodeTree>,
 
+    /// Batch cache invalidation across recursive subtree teardown.
+    node_drop_depth: usize,
+    dropped_node_ids: HashSet<NodeId>,
+    dropped_node_parents: HashSet<NodeId>,
+
     /// The id of the root node (a Document node)
     pub(crate) root_node_id: NodeId,
 
@@ -648,6 +653,9 @@ impl BaseDocument {
         let (tx, rx) = channel();
 
         let mut doc = Self {
+            node_drop_depth: 0,
+            dropped_node_ids: HashSet::new(),
+            dropped_node_parents: HashSet::new(),
             hoisted_fixed_parents: HashMap::new(),
             hoisted_fixed_indices: HashMap::new(),
             abspos_placements: Vec::new(),
@@ -1497,9 +1505,287 @@ impl BaseDocument {
             .map(|(_, node_id)| node_id)
     }
 
-    /// Remove a node from the node tree, clearing any interaction state
-    /// (hover/active/focus/mousedown/selection/drag/scrollbar) that references
-    /// it so that stale NodeIds are never dereferenced after the slot is freed.
+    /// Remove detached or freed ids from every persistent rendering cache.
+    ///
+    /// DOM ancestry alone cannot find the owners: fixed boxes can belong to
+    /// the root's layout list and another ancestor's stacking context, while
+    /// inline boxes and table cells have additional flattened representations.
+    /// Invalidate those owners before this mutation returns. Hidden subtrees
+    /// retain caches, so leaving cleanup until resolve is insufficient.
+    pub(crate) fn invalidate_node_references(
+        &mut self,
+        removed: &HashSet<NodeId>,
+        mut parents: HashSet<NodeId>,
+    ) {
+        if removed.is_empty() {
+            return;
+        }
+
+        fn layout_references_removed(
+            layout: &parley::Layout<TextBrush>,
+            removed: &HashSet<NodeId>,
+        ) -> bool {
+            layout
+                .inline_boxes()
+                .iter()
+                .any(|ibox| removed.contains(&NodeId::from_u64(ibox.id)))
+                || layout.styles().iter().any(|style| {
+                    removed.contains(&style.brush.id)
+                        || style
+                            .brush
+                            .text_node
+                            .is_some_and(|id| removed.contains(&id))
+                })
+        }
+
+        // An anonymous origin can disappear while its hoisted fixed box
+        // survives. Reconstruct the root edge too, so construction can give
+        // that box a current authored origin.
+        for (&id, &origin) in &self.hoisted_fixed_parents {
+            if removed.contains(&id) || removed.contains(&origin) {
+                if let Some(node) = self.nodes.get(id) {
+                    parents.extend(node.layout_parent.get());
+                }
+            }
+        }
+
+        self.fixed_nodes.retain(|id| !removed.contains(id));
+        self.sticky_nodes.retain(|id| !removed.contains(id));
+        self.sticky_offsets.retain(|id, _| !removed.contains(id));
+        self.hoisted_fixed_parents
+            .retain(|id, origin| !removed.contains(id) && !removed.contains(origin));
+        let fixed_parents = &self.hoisted_fixed_parents;
+        self.hoisted_fixed_indices
+            .retain(|id, _| fixed_parents.contains_key(id));
+        self.hoisted_clip_hosts.retain(|id| !removed.contains(id));
+        self.hoisted_position_hosts
+            .retain(|id| !removed.contains(id));
+
+        // These snapshots contain both box ids and containing-block/parent
+        // ids. Discard the complete snapshots rather than retaining inputs
+        // computed against a box tree that has just changed.
+        self.abspos_placements.clear();
+        self.abspos_candidates.clear();
+        self.abspos_candidate_ids.clear();
+        self.abspos_inputs.clear();
+        self.abspos_written.clear();
+        self.abspos_candidates_dirty = true;
+        self.abspos_layout_dirty = true;
+
+        let mut dirty = HashSet::new();
+        for (id, node) in self.nodes.iter_mut() {
+            // Detached nodes still owned by script keep their internal box
+            // tree, but must lose any edge back into the live layout tree.
+            if removed.contains(&id) {
+                if node
+                    .layout_parent
+                    .get()
+                    .is_some_and(|parent| !removed.contains(&parent))
+                {
+                    node.layout_parent.set(None);
+                }
+                continue;
+            }
+
+            let mut reconstruct = parents.contains(&id);
+            reconstruct |= node
+                .layout_children
+                .get_mut()
+                .as_ref()
+                .is_some_and(|children| children.iter().any(|id| removed.contains(id)));
+            let mut repaint = node
+                .paint_children
+                .get_mut()
+                .as_ref()
+                .is_some_and(|children| children.iter().any(|id| removed.contains(id)));
+
+            let old_anonymous_count = node.anonymous_blocks.len();
+            node.anonymous_blocks.retain(|id| !removed.contains(id));
+            reconstruct |= old_anonymous_count != node.anonymous_blocks.len();
+            if node.is_anonymous() {
+                let old_child_count = node.children.len();
+                node.children.retain(|id| !removed.contains(id));
+                reconstruct |= old_child_count != node.children.len();
+            }
+            if node
+                .layout_parent
+                .get()
+                .is_some_and(|parent| removed.contains(&parent))
+            {
+                node.layout_parent.set(None);
+                reconstruct = true;
+            }
+
+            if let Some(context) = node.stacking_context.as_mut() {
+                let old_count = context.children.len();
+                context.children.retain(|child| {
+                    !removed.contains(&child.node_id)
+                        && !child
+                            .clip_ancestors
+                            .iter()
+                            .any(|id| removed.contains(id))
+                });
+                if old_count != context.children.len() {
+                    // Filtering changes the split between negative and
+                    // non-negative children as well as the content bounds.
+                    context.sort();
+                    context.content_area = taffy::Rect::ZERO;
+                    repaint = true;
+                }
+            }
+
+            #[cfg(feature = "shadow-dom")]
+            {
+                for children in [
+                    node.flattened_children.as_mut(),
+                    node.assigned_nodes.as_mut(),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    let old_count = children.len();
+                    children.retain(|id| !removed.contains(id));
+                    reconstruct |= old_count != children.len();
+                }
+                if node.assigned_slot.is_some_and(|id| removed.contains(&id)) {
+                    node.assigned_slot = None;
+                    reconstruct = true;
+                }
+                if let Some(root) = node.shadow_root_data_mut() {
+                    let old_count = root.slots.len() + root.slottables.len();
+                    root.slots.retain(|id| !removed.contains(id));
+                    root.slottables.retain(|id| !removed.contains(id));
+                    root.stylesheet_nodes.retain(|id| !removed.contains(id));
+                    reconstruct |= old_count != root.slots.len() + root.slottables.len();
+                }
+            }
+
+            let mut table_removed = false;
+            if let Some(element) = node.data.downcast_element_mut() {
+                for pseudo in [&mut element.before, &mut element.after] {
+                    if pseudo.is_some_and(|id| removed.contains(&id)) {
+                        *pseudo = None;
+                        reconstruct = true;
+                    }
+                }
+                if element
+                    .inline_layout_data
+                    .as_ref()
+                    .is_some_and(|inline| layout_references_removed(&inline.layout, removed))
+                {
+                    element.inline_layout_data = None;
+                    reconstruct = true;
+                }
+                if element.list_item_data.as_ref().is_some_and(|item| {
+                    match &item.position {
+                        crate::node::ListItemLayoutPosition::Outside(layout) => {
+                            layout_references_removed(layout, removed)
+                        }
+                        crate::node::ListItemLayoutPosition::Inside => false,
+                    }
+                }) {
+                    element.list_item_data = None;
+                    reconstruct = true;
+                }
+                if let SpecialElementData::TableRoot(context) = &element.special_data {
+                    table_removed = context.references_removed_nodes(removed);
+                }
+                if table_removed {
+                    element.special_data = SpecialElementData::None;
+                    reconstruct = true;
+                }
+                #[cfg(feature = "shadow-dom")]
+                if element.assigned_slot.is_some_and(|id| removed.contains(&id)) {
+                    element.assigned_slot = None;
+                    reconstruct = true;
+                }
+            }
+            if table_removed {
+                node.flags.remove(NodeFlags::IS_TABLE_ROOT);
+            }
+
+            if reconstruct || repaint {
+                node.layout_children.get_mut().take();
+                node.paint_children.get_mut().take();
+                if let Some(element) = node.data.downcast_element_mut() {
+                    element.inline_layout_data = None;
+                }
+                dirty.insert(id);
+            }
+        }
+
+        // Clear ancestor layout caches immediately, including ancestors that
+        // the next incremental traversal would otherwise skip. Follow both
+        // trees and tolerate parents already freed by a root-first drop.
+        let mut stack: Vec<NodeId> = dirty.iter().copied().collect();
+        let mut visited = HashSet::new();
+        while let Some(id) = stack.pop() {
+            if !visited.insert(id) || removed.contains(&id) {
+                continue;
+            }
+            let Some(node) = self.nodes.get_mut(id) else {
+                continue;
+            };
+            stack.extend(node.parent);
+            stack.extend(node.layout_parent.get());
+            #[cfg(feature = "shadow-dom")]
+            {
+                stack.extend(node.assigned_slot);
+                if let Some(root) = node.shadow_root_data() {
+                    stack.push(root.host);
+                }
+            }
+            node.set_dirty_descendants();
+            if node.stylo_element_data_opt().is_some() {
+                node.insert_damage(if dirty.contains(&id) {
+                    ALL_DAMAGE
+                } else {
+                    crate::layout::damage::ONLY_RELAYOUT
+                        | style::selector_parser::RestyleDamage::REPAINT
+                });
+                node.cache_mut().clear();
+            }
+            if let Some(inline) = node
+                .data
+                .downcast_element_mut()
+                .and_then(|element| element.inline_layout_data.as_mut())
+            {
+                inline.content_widths = None;
+            }
+        }
+
+        #[cfg(feature = "shadow-dom")]
+        {
+            let nodes = &self.nodes;
+            self.shadow_host_nodes.retain(|id| nodes.contains_key(*id));
+            self.dirty_shadow_hosts.retain(|id| nodes.contains_key(*id));
+            self.pending_slot_changes.retain(|id| nodes.contains_key(*id));
+            self.signaled_slots.retain(|id| nodes.contains_key(*id));
+            self.dirty_shadow_hosts
+                .extend(self.shadow_host_nodes.iter().copied());
+        }
+
+        self.controls_to_form
+            .retain(|control, form| !removed.contains(control) && !removed.contains(form));
+        if !dirty.is_empty() {
+            self.shell_provider.request_redraw();
+        }
+
+        // PaintDamage deliberately keeps old rectangles until resolve so
+        // pixels formerly occupied by removed boxes are included in damage.
+    }
+
+    fn purge_dropped_node_references(&mut self) {
+        if self.node_drop_depth != 0 || self.dropped_node_ids.is_empty() {
+            return;
+        }
+        let removed = std::mem::take(&mut self.dropped_node_ids);
+        let parents = std::mem::take(&mut self.dropped_node_parents);
+        self.invalidate_node_references(&removed, parents);
+    }
+
+    /// Remove a node from the node tree, clearing interaction state and
+    /// invalidating rendering references before the surrounding drop returns.
     pub(crate) fn remove_node_from_tree(&mut self, node_id: NodeId) -> Option<Node> {
         self.clear_interaction_state_for_removed_node(node_id);
         let indexed = self.get_node(node_id).and_then(|node| {
@@ -1512,7 +1798,14 @@ impl BaseDocument {
             self.remove_from_document_id_map(document_id, &id, node_id);
         }
         self.forget_script_custom_element(node_id);
-        self.nodes.remove(node_id)
+        let node = self.nodes.remove(node_id);
+        if let Some(node) = &node {
+            self.dropped_node_ids.insert(node_id);
+            self.dropped_node_parents
+                .extend([node.parent, node.layout_parent.get()].into_iter().flatten());
+            self.purge_dropped_node_references();
+        }
+        node
     }
 
     /// The nearest element ancestor of `node_id` that is still in the
@@ -1563,6 +1856,9 @@ impl BaseDocument {
         if self.hover_hit_node_id == Some(node_id) {
             self.hover_hit_node_id = None;
         }
+        if self.semantic_hover_node_id == Some(node_id) {
+            self.semantic_hover_node_id = None;
+        }
         if self.active_node_id == Some(node_id) {
             self.active_node_id = self.nearest_surviving_element_ancestor(node_id);
         }
@@ -1593,6 +1889,12 @@ impl BaseDocument {
         if drag_references_node {
             self.drag_mode = DragMode::None;
         }
+        if matches!(
+            &self.scroll_animation,
+            ScrollAnimationState::Fling(state) if state.target == node_id
+        ) {
+            self.scroll_animation = ScrollAnimationState::None;
+        }
         self.scrollbar_activity.remove(&node_id);
 
         // The form-owner map is keyed by control id and was never pruned, so a
@@ -1613,6 +1915,7 @@ impl BaseDocument {
         node_id: NodeId,
         on_drop: &mut dyn FnMut(NodeId),
     ) -> Option<Node> {
+        self.node_drop_depth += 1;
         let mut node = self.remove_node_from_tree(node_id);
         if let Some(node) = &mut node {
             on_drop(node_id);
@@ -1649,6 +1952,8 @@ impl BaseDocument {
                 self.drop_node_ignoring_parent_with(shadow_root_id, on_drop);
             }
         }
+        self.node_drop_depth -= 1;
+        self.purge_dropped_node_references();
         node
     }
 
@@ -1662,12 +1967,15 @@ impl BaseDocument {
         }
 
         // Free any anonymous blocks that this block owns before removing it.
+        self.node_drop_depth += 1;
         let nested = std::mem::take(&mut self.nodes[anon_id].anonymous_blocks);
         for nested_id in nested {
             self.deallocate_anonymous_block(nested_id);
         }
 
         self.remove_node_from_tree(anon_id);
+        self.node_drop_depth -= 1;
+        self.purge_dropped_node_references();
     }
 
     pub fn create_text_node(&mut self, text: &str) -> NodeId {
@@ -1754,6 +2062,7 @@ impl BaseDocument {
             node
         }
 
+        self.node_drop_depth += 1;
         let node = remove_pe_ignoring_parent(self, node_id);
 
         // Update child_idx values
@@ -1762,6 +2071,8 @@ impl BaseDocument {
             parent.children.retain(|id| *id != node_id);
         }
 
+        self.node_drop_depth -= 1;
+        self.purge_dropped_node_references();
         node
     }
 

@@ -295,6 +295,8 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         // A cached paint or hoisted child list can name a node that the
         // detached-node sweep has since freed; a freed node paints nothing.
         let Some(node) = self.dom.as_ref().tree().get(node_id) else {
+            #[cfg(feature = "tracing")]
+            tracing::warn!(%node_id, "Skipping stale paint child in render_element");
             return;
         };
 
@@ -681,6 +683,8 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         clip_rect: Rect,
     ) {
         let Some(node) = self.dom.as_ref().tree().get(node_id) else {
+            #[cfg(feature = "tracing")]
+            tracing::warn!(%node_id, "Skipping stale paint child in render_node");
             return;
         };
 

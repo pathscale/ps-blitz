@@ -1689,8 +1689,13 @@ impl<'doc> DocumentMutator<'doc> {
     }
 
     fn process_removed_subtree(&mut self, node_id: NodeId) {
+        let mut removed = HashSet::new();
+        let mut parents = HashSet::new();
         self.doc
             .iter_shadow_including_subtree_mut(node_id, |node_id, doc| {
+                removed.insert(node_id);
+                let node = &doc.nodes[node_id];
+                parents.extend([node.parent, node.layout_parent.get()].into_iter().flatten());
                 doc.nodes[node_id]
                     .flags
                     .set(NodeFlags::IS_IN_DOCUMENT, false);
@@ -1782,6 +1787,18 @@ impl<'doc> DocumentMutator<'doc> {
                     SpecialElementData::None => {}
                 }
             });
+
+        // Detachment must remove published paint edges even while script
+        // still owns wrappers. The later drop also invalidates references to
+        // pseudo-elements, anonymous blocks and template contents it frees.
+        self.doc.invalidate_node_references(&removed, parents);
+        #[cfg(feature = "autofocus")]
+        if self
+            .node_to_autofocus
+            .is_some_and(|id| removed.contains(&id))
+        {
+            self.node_to_autofocus = None;
+        }
 
         self.flush_eager_ops();
     }
