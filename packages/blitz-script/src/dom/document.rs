@@ -364,7 +364,11 @@ fn query_selector(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
     let ctx = dom_ctx(context)?;
     let _ = this_node_id(this)?;
     let selector = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
-    let node_id = ctx.doc.borrow().query_selector(&selector).ok().flatten();
+    let node_id = ctx
+        .doc
+        .borrow()
+        .query_selector(&selector)
+        .map_err(|_| super::element::invalid_selector(&selector))?;
     Ok(node_or_null(&ctx, node_id, context))
 }
 
@@ -381,7 +385,7 @@ fn query_selector_all(
         .borrow()
         .query_selector_all(&selector)
         .map(|matches| matches.into_iter().collect())
-        .unwrap_or_default();
+        .map_err(|_| super::element::invalid_selector(&selector))?;
     let wrappers: Vec<JsValue> = matches
         .into_iter()
         .map(|match_id| node_wrapper(&ctx, match_id, context).into())
