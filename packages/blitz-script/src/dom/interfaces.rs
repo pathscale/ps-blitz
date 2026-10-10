@@ -422,6 +422,24 @@ pub(super) fn init(context: &mut Context) {
             context,
         );
     }
+    // Window: the global object's interface. Its own properties (location,
+    // addEventListener, ...) stay where they are; the chain under it becomes
+    // Window.prototype > EventTarget.prototype > Object.prototype, so
+    // `window instanceof Window` and `Window.prototype` patching work.
+    let window_proto = JsObject::with_object_proto(context.intrinsics());
+    register("Window", Some("EventTarget"), window_proto.clone(), 0, NativeFunction::from_fn_ptr(illegal), context);
+    let global = context.global_object();
+    global.set_prototype(Some(window_proto));
+    // Node types the HTML tree never creates, but whose interfaces scripts
+    // patch or test with instanceof (ShadyDOM walks every one of them).
+    for (name, parent) in [
+        ("CDATASection", "Text"),
+        ("ProcessingInstruction", "CharacterData"),
+        ("DocumentType", "Node"),
+    ] {
+        let proto = JsObject::with_object_proto(context.intrinsics());
+        register(name, Some(parent), proto, 0, NativeFunction::from_fn_ptr(illegal), context);
+    }
     for (name, value) in [
         ("ELEMENT_NODE", 1), ("ATTRIBUTE_NODE", 2), ("TEXT_NODE", 3),
         ("CDATA_SECTION_NODE", 4), ("PROCESSING_INSTRUCTION_NODE", 7),
