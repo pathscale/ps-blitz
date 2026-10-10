@@ -184,6 +184,32 @@ impl LayoutChildren {
 }
 
 #[cfg(feature = "svg")]
+#[cfg_attr(not(feature = "shadow-dom"), allow(unused_variables))]
+fn find_inline_svg_reference(
+    doc: &BaseDocument,
+    svg_node_id: NodeId,
+    fragment: &str,
+) -> Option<NodeId> {
+    #[cfg(feature = "shadow-dom")]
+    if let Some(root_id) = doc.containing_shadow_root(svg_node_id) {
+        // The document ID index deliberately excludes shadow descendants.
+        // Resolve within this root's DOM tree, without entering nested roots
+        // or falling back to an identically named document-level definition.
+        let mut stack: Vec<_> = doc.nodes[root_id].children.iter().rev().copied().collect();
+        while let Some(node_id) = stack.pop() {
+            let node = &doc.nodes[node_id];
+            if node.attr(local_name!("id")) == Some(fragment) {
+                return Some(node_id);
+            }
+            stack.extend(node.children.iter().rev().copied());
+        }
+        return None;
+    }
+
+    doc.get_element_by_id(fragment)
+}
+
+#[cfg(feature = "svg")]
 fn enqueue_local_svg_references(
     doc: &BaseDocument,
     root_node_id: NodeId,
@@ -193,9 +219,19 @@ fn enqueue_local_svg_references(
     while let Some(node_id) = stack.pop() {
         let node = &doc.nodes[node_id];
         if let Some(element) = node.data.downcast_element()
+            && element.name.ns == ns!(svg)
             && element.name.local == local_name!("use")
             && let Some(fragment) = element
                 .attr(local_name!("href"))
+                .or_else(|| {
+                    element
+                        .attrs()
+                        .iter()
+                        .find(|attr| {
+                            attr.name.ns == ns!(xlink) && attr.name.local == local_name!("href")
+                        })
+                        .map(|attr| attr.value.as_ref())
+                })
                 .and_then(|href| href.strip_prefix('#'))
             && !fragment.is_empty()
         {
@@ -225,19 +261,24 @@ fn is_in_subtree(doc: &BaseDocument, node_id: NodeId, root_node_id: NodeId) -> b
 /// `<use href="#icon">`. Importing those nodes into a generated `<defs>` makes
 /// the source self-contained while leaving the live DOM untouched.
 #[cfg(feature = "svg")]
-fn serialize_inline_svg(doc: &BaseDocument, svg_node_id: NodeId) -> String {
+fn serialize_inline_svg(
+    doc: &BaseDocument,
+    svg_node_id: NodeId,
+) -> (String, std::collections::HashMap<NodeId, String>) {
     // `outer_html` lowercases attribute names, which is right for HTML and
     // wrong here: SVG attributes are case sensitive, so `viewBox` serialised as
     // `viewbox` is ignored and usvg falls back to the bounding box of the path
     // geometry. The intrinsic aspect ratio is then wrong, and `width: auto`
     // resolves against it.
-    let mut outer_html =
-        crate::util::restore_svg_attribute_case(&doc.nodes[svg_node_id].outer_html());
+    let svg_ids = super::svg_geometry::serialization_ids(doc, svg_node_id);
+    let mut outer_html = String::new();
+    doc.nodes[svg_node_id].write_outer_html_with_svg_ids(&mut outer_html, &svg_ids);
+    outer_html = crate::util::restore_svg_attribute_case(&outer_html);
     // Checked within the root's open tag rather than across the whole string:
     // a descendant carrying an xmlns would otherwise suppress the one usvg
     // needs on the root, and usvg refuses to parse without it.
     if let Some(root_open_end) = outer_html.find('>')
-        && !outer_html[..root_open_end].contains("xmlns")
+        && !outer_html[..root_open_end].contains(" xmlns=\"")
     {
         outer_html.insert_str("<svg".len(), " xmlns=\"http://www.w3.org/2000/svg\"");
     }
@@ -246,6 +287,33 @@ fn serialize_inline_svg(doc: &BaseDocument, svg_node_id: NodeId) -> String {
         .primary_styles()
         .map(|style| crate::util::absolute_color_to_svg_css(&style.clone_color()))
         .unwrap_or_else(|| "black".to_owned());
+
+    // usvg only sees the markup, so fill and stroke that the root inherits from
+    // CSS (an icon host's `fill: currentColor`, say) would be lost and paint
+    // black. Write the root's computed values as presentation attributes so
+    // its descendants inherit them; the root's own attributes still win.
+    if let Some(style) = doc.nodes[svg_node_id].primary_styles()
+        && let Some(root_open_end) = outer_html.find('>')
+    {
+        let color = style.clone_color();
+        let paint = |paint: &style::values::computed::SVGPaint| match &paint.kind {
+            style::values::generics::svg::SVGPaintKind::None => Some("none".to_owned()),
+            style::values::generics::svg::SVGPaintKind::Color(value) => Some(
+                crate::util::absolute_color_to_svg_css(&value.resolve_to_absolute(&color)),
+            ),
+            _ => None,
+        };
+        let svg = style.get_inherited_svg();
+        let mut inherited = String::new();
+        for (name, value) in [("fill", paint(&svg.fill)), ("stroke", paint(&svg.stroke))] {
+            if let Some(value) = value
+                && !outer_html[..root_open_end].contains(&format!(" {name}=\""))
+            {
+                inherited.push_str(&format!(" {name}=\"{value}\""));
+            }
+        }
+        outer_html.insert_str("<svg".len(), &inherited);
+    }
     let mut pending = VecDeque::new();
     let mut imported = HashSet::new();
     let mut definitions = String::new();
@@ -255,7 +323,7 @@ fn serialize_inline_svg(doc: &BaseDocument, svg_node_id: NodeId) -> String {
         if !imported.insert(fragment.clone()) {
             continue;
         }
-        let Some(reference_node_id) = doc.get_element_by_id(&fragment) else {
+        let Some(reference_node_id) = find_inline_svg_reference(doc, svg_node_id, &fragment) else {
             continue;
         };
         // Already inside the SVG being serialised, so usvg can resolve it and
@@ -276,7 +344,19 @@ fn serialize_inline_svg(doc: &BaseDocument, svg_node_id: NodeId) -> String {
         outer_html.insert_str(root_open_end + 1, &defs);
     }
 
-    outer_html
+    // An imported definition can introduce xlink attributes even when the
+    // visible SVG did not contain any. Bind the prefix after importing it.
+    if let Some(root_open_end) = outer_html.find('>')
+        && outer_html.contains(" xlink:")
+        && !outer_html[..root_open_end].contains(" xmlns:xlink=\"")
+    {
+        outer_html.insert_str(
+            "<svg".len(),
+            " xmlns:xlink=\"http://www.w3.org/1999/xlink\"",
+        );
+    }
+
+    (outer_html, svg_ids)
 }
 
 #[cfg(feature = "svg")]
@@ -289,7 +369,8 @@ impl BaseDocument {
     pub fn debug_inline_svg_source(&self, svg_node_id: NodeId) -> Option<String> {
         let node = self.get_node(svg_node_id)?;
         let element = node.element_data()?;
-        (element.name.local == local_name!("svg")).then(|| serialize_inline_svg(self, svg_node_id))
+        (element.name.local == local_name!("svg"))
+            .then(|| serialize_inline_svg(self, svg_node_id).0)
     }
 }
 
@@ -515,23 +596,33 @@ pub(crate) fn collect_layout_children(
             // through `<use href="#id">` from elsewhere in the document travel
             // with it. usvg only sees this string, so a reference it cannot
             // resolve is simply not drawn.
-            let outer_html = serialize_inline_svg(doc, container_node_id);
-
-            // Remove contruction damage from subtree
-            doc.iter_subtree_mut(container_node_id, |id: NodeId, doc: &mut BaseDocument| {
-                doc.nodes[id].remove_damage(CONSTRUCT_BOX | CONSTRUCT_DESCENDENT | CONSTRUCT_FC);
-            });
+            let (outer_html, svg_ids) = serialize_inline_svg(doc, container_node_id);
 
             match crate::util::parse_svg_image(outer_html.as_bytes()) {
                 Ok(svg) => {
-                    doc.get_node_mut(container_node_id)
+                    let geometry = Arc::new(super::svg_geometry::SvgGeometry::build(
+                        doc,
+                        container_node_id,
+                        &svg.tree,
+                        &svg_ids,
+                    ));
+                    let element = doc
+                        .get_node_mut(container_node_id)
                         .unwrap()
                         .element_data_mut()
-                        .unwrap()
-                        .special_data =
+                        .unwrap();
+                    element.svg_geometry = Some(geometry);
+                    element.special_data =
                         SpecialElementData::Image(Box::new(crate::node::ImageData::Svg(svg)));
                 }
                 Err(err) => {
+                    let element = doc
+                        .get_node_mut(container_node_id)
+                        .unwrap()
+                        .element_data_mut()
+                        .unwrap();
+                    element.svg_geometry = None;
+                    element.special_data = SpecialElementData::None;
                     #[cfg(feature = "tracing")]
                     tracing::warn!(
                         node_id = ?container_node_id,
@@ -543,6 +634,17 @@ pub(crate) fn collect_layout_children(
                     let _ = err;
                 }
             };
+
+            // Descendants are consumed by the image parser, rather than by
+            // taffy. Retain their style source and clear consumed damage so
+            // later style changes rebuild this cache once.
+            doc.iter_subtree_mut(container_node_id, |id: NodeId, doc: &mut BaseDocument| {
+                let style = doc.nodes[id].primary_styles().map(|style| (*style).clone());
+                if let Some(element) = doc.nodes[id].element_data_mut() {
+                    element.style_source = style;
+                }
+                doc.nodes[id].remove_damage(ALL_DAMAGE);
+            });
             return;
         }
 

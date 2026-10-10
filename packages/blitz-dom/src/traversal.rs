@@ -189,6 +189,28 @@ impl BaseDocument {
         TreeTraverser::new(self).for_each(|node_id| visit(node_id, &self.nodes[node_id]));
     }
 
+    /// Visit rendered DOM nodes in flattened preorder. The parent is the
+    /// flattened parent, so root children attach to their host and assigned
+    /// nodes attach to their slot. Call after a rendering checkpoint.
+    pub fn visit_flattened<F>(&self, mut visit: F)
+    where
+        F: FnMut(NodeId, Option<NodeId>, &Node),
+    {
+        let mut stack = vec![(self.root_node_id, None)];
+        while let Some((id, parent)) = stack.pop() {
+            let Some(node) = self.get_node(id) else {
+                continue;
+            };
+            visit(id, parent, node);
+            stack.extend(
+                node.layout_dom_children()
+                    .iter()
+                    .rev()
+                    .map(|&child| (child, Some(id))),
+            );
+        }
+    }
+
     /// If the node is non-anonymous then returns the node's id
     /// Else find's the first non-anonymous ancester of the node
     pub fn non_anon_ancestor_if_anon(&self, mut node_id: NodeId) -> NodeId {
@@ -219,6 +241,29 @@ impl BaseDocument {
             cb(child_id, self);
         }
         self.nodes[node_id].children = children;
+    }
+
+    /// Connection and removal visit shadow descendants as well as DOM
+    /// descendants. Selector and serialization walks remain DOM walks.
+    pub fn iter_shadow_including_subtree_mut(
+        &mut self,
+        node_id: NodeId,
+        mut cb: impl FnMut(NodeId, &mut BaseDocument),
+    ) {
+        let mut stack = vec![node_id];
+        while let Some(id) = stack.pop() {
+            let Some(node) = self.get_node(id) else {
+                continue;
+            };
+            #[cfg_attr(not(feature = "shadow-dom"), allow(unused_mut))]
+            let mut children = node.children.to_vec();
+            #[cfg(feature = "shadow-dom")]
+            if let Some(root_id) = node.shadow_root_id() {
+                children.push(root_id);
+            }
+            cb(id, self);
+            stack.extend(children.into_iter().rev());
+        }
     }
 
     pub fn iter_subtree_mut(

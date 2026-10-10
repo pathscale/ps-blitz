@@ -4,7 +4,6 @@ use blitz_dom::NodeId;
 use blitz_dom::local_name;
 use boa_engine::object::builtins::JsArray;
 use boa_engine::object::{JsObject, ObjectInitializer};
-use boa_engine::property::Attribute;
 use boa_engine::value::JsValue;
 use boa_engine::{Context, JsResult, JsString, NativeFunction, js_string};
 
@@ -28,12 +27,27 @@ pub(crate) fn init_document_proto(proto: &JsObject, context: &mut Context) {
     define_accessor(proto, "implementation", Some(implementation), None, context);
     define_accessor(proto, "title", Some(title), None, context);
     define_accessor(proto, "defaultView", Some(default_view), None, context);
+    define_accessor(
+        proto,
+        "location",
+        Some(get_location),
+        Some(set_location),
+        context,
+    );
+    define_accessor(proto, "domain", Some(get_domain), Some(set_domain), context);
 
     define_method(proto, "createElement", 1, create_element, context);
     define_method(proto, "createElementNS", 2, create_element_ns, context);
     define_method(proto, "createTextNode", 1, create_text_node, context);
     define_method(proto, "importNode", 2, import_node, context);
-    define_method(proto, "getSelection", 0, get_selection, context);
+    define_method(proto, "createRange", 0, super::range::create_range, context);
+    define_method(
+        proto,
+        "getSelection",
+        0,
+        super::range::document_selection,
+        context,
+    );
     define_method(proto, "createComment", 1, create_comment, context);
     define_method(
         proto,
@@ -117,27 +131,122 @@ fn document_element(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsR
 fn body(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let this_id = this_node_id(this)?;
-    let body_id = find_tag_within(&ctx, this_id, local_name!("body"));
+    let body_id = if ctx
+        .doc
+        .borrow()
+        .get_node(this_id)
+        .is_some_and(|node| node.is_html_document())
+    {
+        find_tag_within(&ctx, this_id, local_name!("body"))
+    } else {
+        None
+    };
     Ok(node_or_null(&ctx, body_id, context))
 }
 
 fn head(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let this_id = this_node_id(this)?;
-    let head_id = find_tag_within(&ctx, this_id, local_name!("head"));
+    let head_id = if ctx
+        .doc
+        .borrow()
+        .get_node(this_id)
+        .is_some_and(|node| node.is_html_document())
+    {
+        find_tag_within(&ctx, this_id, local_name!("head"))
+    } else {
+        None
+    };
     Ok(node_or_null(&ctx, head_id, context))
 }
 
 fn active_element(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
-    let _ = this_node_id(this)?;
-    let focus_id = ctx.doc.borrow().get_focussed_node_id();
+    let this_id = this_node_id(this)?;
+    let focus_id = if this_id == ctx.doc.borrow().root_node().id {
+        ctx.doc.borrow().get_focussed_node_id()
+    } else {
+        None
+    };
     Ok(node_or_null(&ctx, focus_id, context))
 }
 
 fn default_view(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let this_id = this_node_id(this)?;
+    if this_id == ctx.doc.borrow().root_node().id {
+        Ok(context.global_object().into())
+    } else {
+        Ok(JsValue::null())
+    }
+}
+
+/// `document.location`: the window's `Location`, the same object.
+fn get_location(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let this_id = this_node_id(this)?;
+    if this_id != ctx.doc.borrow().root_node().id {
+        return Ok(JsValue::null());
+    }
+    context.global_object().get(js_string!("location"), context)
+}
+
+/// `document.location = url` navigates, as `location.href = url` does.
+fn set_location(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let this_id = this_node_id(this)?;
+    if this_id != ctx.doc.borrow().root_node().id {
+        return Ok(JsValue::undefined());
+    }
+    let location = context
+        .global_object()
+        .get(js_string!("location"), context)?;
+    if let Some(location) = location.as_object() {
+        location.set(
+            js_string!("href"),
+            args.first().cloned().unwrap_or_default(),
+            true,
+            context,
+        )?;
+    }
+    Ok(JsValue::undefined())
+}
+
+/// `document.domain`: the host of the document's URL.
+fn get_domain(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let _ = this_node_id(this)?;
-    Ok(context.global_object().into())
+    let location = context
+        .global_object()
+        .get(js_string!("location"), context)?;
+    match location.as_object() {
+        Some(location) => location.get(js_string!("hostname"), context),
+        None => Ok(js_string!("").into()),
+    }
+}
+
+/// Setting `document.domain` to the current host or one of its parent
+/// domains is accepted and changes nothing, which is what Chromium does now
+/// that documents are origin-keyed; anything else is a SecurityError.
+fn set_domain(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let requested = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?
+        .to_ascii_lowercase();
+    let current = get_domain(this, &[], context)?
+        .to_string(context)?
+        .to_std_string_escaped()
+        .to_ascii_lowercase();
+    let allowed = !requested.is_empty()
+        && (current == requested
+            || (current.ends_with(&requested)
+                && current[..current.len() - requested.len()].ends_with('.')
+                && requested.contains('.')));
+    if !allowed {
+        return Err(crate::dom_exception::error(
+            "SecurityError",
+            &format!("'{requested}' is not a suffix of '{current}'"),
+            context,
+        ));
+    }
+    Ok(JsValue::undefined())
 }
 
 // === Node creation ===
@@ -145,119 +254,97 @@ fn default_view(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResul
 fn create_element(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let _t = crate::script_stats::Timed::new(&ctx, "dom:createElement");
-    let _ = this_node_id(this)?;
-    let tag = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?
-        .to_ascii_lowercase();
+    let document_id = this_node_id(this)?;
+    let html = ctx
+        .doc
+        .borrow()
+        .get_node(document_id)
+        .is_some_and(|node| node.is_html_document());
+    let tag = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
+    let tag = if html { tag.to_ascii_lowercase() } else { tag };
     let node_id = {
         let mut doc = ctx.doc.borrow_mut();
-        doc.mutate().create_element(qual_name(&tag), Vec::new())
+        let mut mutr = doc.mutate();
+        let name = if html {
+            qual_name(&tag)
+        } else {
+            qual_name_ns(&tag, "")
+        };
+        let id = mutr.create_element(name, Vec::new());
+        mutr.adopt_node(id, document_id);
+        id
     };
     Ok(node_wrapper(&ctx, node_id, context).into())
 }
 
 fn create_element_ns(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
-    let _ = this_node_id(this)?;
-    let ns = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
+    let document_id = this_node_id(this)?;
+    let ns_value = &args.first().cloned().unwrap_or_default();
+    let ns = if ns_value.is_null_or_undefined() {
+        String::new()
+    } else {
+        to_rust_string(ns_value, context)?
+    };
     let tag = to_rust_string(args.get(1).unwrap_or(&JsValue::undefined()), context)?;
+    let (prefix, local) = match tag.split_once(':') {
+        Some((prefix, local)) => (Some(markup5ever::Prefix::from(prefix)), local),
+        None => (None, tag.as_str()),
+    };
     let node_id = {
         let mut doc = ctx.doc.borrow_mut();
-        doc.mutate()
-            .create_element(qual_name_ns(&tag, &ns), Vec::new())
+        let mut mutr = doc.mutate();
+        let name = blitz_dom::QualName::new(
+            prefix,
+            blitz_dom::Namespace::from(ns.as_str()),
+            blitz_dom::LocalName::from(local),
+        );
+        let id = mutr.create_element(name, Vec::new());
+        mutr.adopt_node(id, document_id);
+        id
     };
     Ok(node_wrapper(&ctx, node_id, context).into())
 }
 
 /// Clone a node for insertion into this document.
 ///
-/// Every script-visible node currently belongs to the document represented by
-/// this Boa realm, so importing is the same structural operation as
-/// `cloneNode`. Keeping it on `Document` still matters: Solid deliberately
-/// takes this path for custom-element template roots such as Chuzz's
-/// `<web-view>` page host.
+/// Import clones first, then uses native adoption so ownership, ID indexes,
+/// and custom element reactions remain consistent across document boundaries.
 fn import_node(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let _ = this_node_id(this)?;
+    let ctx = dom_ctx(context)?;
+    let document_id = this_node_id(this)?;
     let node = args.first().cloned().unwrap_or_else(JsValue::undefined);
+    let source_id = this_node_id(&node)?;
+    if ctx.doc.borrow().get_node(source_id).is_some_and(|node| {
+        matches!(
+            node.data,
+            blitz_dom::node::NodeData::Document(_) | blitz_dom::node::NodeData::ShadowRoot(_)
+        )
+    }) {
+        return Err(super::doma::dom_error(
+            "NotSupportedError",
+            "Cannot import this node",
+            context,
+        ));
+    }
     let deep = args.get(1).cloned().unwrap_or_else(JsValue::undefined);
-    super::node::clone_node(&node, &[deep], context)
-}
-
-/// `document.getSelection()`.
-///
-/// Enough of `Selection` for the idioms that reach for it: reading the
-/// highlighted string, and the save/restore-the-range dance around a temporary
-/// off-screen textarea. Without it the property is `undefined` and the *call*
-/// throws, so `document.getSelection()?.toString()` blows up rather than
-/// yielding `undefined` — which is how a missing method takes an entire keydown
-/// or copy handler down with it.
-///
-/// Ranges are not modelled, so `rangeCount` is 0 whenever the selection is
-/// empty and `getRangeAt` returns null. Callers guard on `rangeCount` (all of
-/// them, in practice) and then skip the restore rather than mis-restoring.
-fn get_selection(_: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let ctx = dom_ctx(context)?;
-    let text = ctx.doc.borrow().get_selected_text().unwrap_or_default();
-    let range_count = i32::from(!text.is_empty());
-    let selection = ObjectInitializer::new(context)
-        .function(
-            NativeFunction::from_fn_ptr(selection_to_string),
-            js_string!("toString"),
-            0,
-        )
-        .function(
-            NativeFunction::from_fn_ptr(selection_get_range_at),
-            js_string!("getRangeAt"),
-            1,
-        )
-        .function(
-            NativeFunction::from_fn_ptr(selection_remove_all_ranges),
-            js_string!("removeAllRanges"),
-            0,
-        )
-        .function(
-            NativeFunction::from_fn_ptr(selection_add_range),
-            js_string!("addRange"),
-            1,
-        )
-        .property(js_string!("rangeCount"), range_count, Attribute::all())
-        .property(js_string!("isCollapsed"), text.is_empty(), Attribute::all())
-        .build();
-    Ok(selection.into())
-}
-
-fn selection_to_string(_: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let ctx = dom_ctx(context)?;
-    let text = ctx.doc.borrow().get_selected_text().unwrap_or_default();
-    Ok(JsValue::from(JsString::from(text)))
-}
-
-fn selection_get_range_at(_: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    Ok(JsValue::null())
-}
-
-fn selection_remove_all_ranges(
-    _: &JsValue,
-    _: &[JsValue],
-    context: &mut Context,
-) -> JsResult<JsValue> {
-    dom_ctx(context)?.doc.borrow_mut().clear_text_selection();
-    Ok(JsValue::undefined())
-}
-
-/// Ranges are not modelled, so there is nothing to put back. Present and inert
-/// rather than absent, because absent is what throws.
-fn selection_add_range(_: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    Ok(JsValue::undefined())
+    let cloned = super::node::clone_node(&node, &[deep], context)?;
+    let id = this_node_id(&cloned)?;
+    ctx.doc.borrow_mut().mutate().adopt_node(id, document_id);
+    Ok(node_wrapper(&ctx, id, context).into())
 }
 
 fn create_text_node(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let _t = crate::script_stats::Timed::new(&ctx, "dom:createTextNode");
-    let _ = this_node_id(this)?;
+    let document_id = this_node_id(this)?;
     let text = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
     let node_id = {
         let mut doc = ctx.doc.borrow_mut();
-        doc.mutate().create_text_node(&text)
+        let mut mutr = doc.mutate();
+        let id = mutr.create_text_node(&text);
+        mutr.adopt_node(id, document_id);
+        id
     };
     Ok(node_wrapper(&ctx, node_id, context).into())
 }
@@ -313,11 +400,14 @@ fn text_constructor(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
 
 fn create_comment(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
-    let _ = this_node_id(this)?;
+    let document_id = this_node_id(this)?;
     let text = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
     let node_id = {
         let mut doc = ctx.doc.borrow_mut();
-        doc.mutate().create_comment_node(&text)
+        let mut mutr = doc.mutate();
+        let id = mutr.create_comment_node(&text);
+        mutr.adopt_node(id, document_id);
+        id
     };
     Ok(node_wrapper(&ctx, node_id, context).into())
 }
@@ -331,10 +421,9 @@ fn create_comment(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
 /// ```
 ///
 /// Without it the call threw `TypeError: not a callable function` and the
-/// library died before defining `jQuery`, so every page depending on it lost
-/// its scripting. Eight sites in a hundred-site corpus failed exactly there,
-/// across four jQuery versions on four CDNs, and every one of them reported it
-/// downstream as `jQuery is not defined` — a missing global that was never
+/// library died before defining `jQuery` and every page depending on it lost
+/// its scripting. Eight sites in a hundred-site corpus failed that way, and
+/// they reported it as `jQuery is not defined`: a missing global that was never
 /// missing.
 fn create_document_fragment(
     this: &JsValue,
@@ -342,10 +431,13 @@ fn create_document_fragment(
     context: &mut Context,
 ) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
-    let _ = this_node_id(this)?;
+    let document_id = this_node_id(this)?;
     let node_id = {
         let mut doc = ctx.doc.borrow_mut();
-        doc.mutate().create_document_fragment()
+        let mut mutr = doc.mutate();
+        let id = mutr.create_document_fragment();
+        mutr.adopt_node(id, document_id);
+        id
     };
     Ok(node_wrapper(&ctx, node_id, context).into())
 }
@@ -354,17 +446,21 @@ fn create_document_fragment(
 
 fn get_element_by_id(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
-    let _ = this_node_id(this)?;
+    let document_id = this_node_id(this)?;
     let id = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
-    let node_id = ctx.doc.borrow().get_element_by_id(&id);
+    let node_id = ctx.doc.borrow().get_element_by_id_in(document_id, &id);
     Ok(node_or_null(&ctx, node_id, context))
 }
 
 fn query_selector(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
-    let _ = this_node_id(this)?;
+    let document_id = this_node_id(this)?;
     let selector = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
-    let node_id = ctx.doc.borrow().query_selector(&selector).ok().flatten();
+    let node_id = ctx
+        .doc
+        .borrow()
+        .query_selector_in(document_id, &selector)
+        .map_err(|_| super::element::invalid_selector(&selector, context))?;
     Ok(node_or_null(&ctx, node_id, context))
 }
 
@@ -374,14 +470,14 @@ fn query_selector_all(
     context: &mut Context,
 ) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
-    let _ = this_node_id(this)?;
+    let document_id = this_node_id(this)?;
     let selector = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
     let matches: Vec<NodeId> = ctx
         .doc
         .borrow()
-        .query_selector_all(&selector)
+        .query_selector_all_in(document_id, &selector)
         .map(|matches| matches.into_iter().collect())
-        .unwrap_or_default();
+        .map_err(|_| super::element::invalid_selector(&selector, context))?;
     let wrappers: Vec<JsValue> = matches
         .into_iter()
         .map(|match_id| node_wrapper(&ctx, match_id, context).into())
@@ -449,5 +545,6 @@ fn create_html_document(
         let mut doc = ctx.doc.borrow_mut();
         doc.mutate().create_html_document(&title)
     };
+    ctx.state.borrow_mut().detached_nodes.push(node_id);
     Ok(node_wrapper(&ctx, node_id, context).into())
 }

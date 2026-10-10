@@ -8,10 +8,13 @@ use boa_engine::object::builtins::JsArray;
 use boa_engine::value::JsValue;
 use boa_engine::{Context, JsNativeError, JsResult};
 
+#[cfg(not(feature = "shadow-dom"))]
+use super::define_value;
 use super::{
-    define_accessor, define_method, define_value, dom_ctx, js_str, node_id_of_value, node_or_null,
-    node_wrapper, this_node_id, to_rust_string,
+    define_accessor, define_method, dom_ctx, js_str, node_id_of_value, node_or_null, node_wrapper,
+    this_node_id, to_rust_string,
 };
+#[cfg(not(feature = "shadow-dom"))]
 use crate::dom::event::{EventRef, set_event_path};
 use crate::state::NodeListener;
 
@@ -127,6 +130,7 @@ pub(crate) fn unroot_detached_listener_subtree(
     node_id: NodeId,
     context: &mut Context,
 ) {
+    super::doma::traversal::pre_remove(ctx, node_id, context);
     let ids = {
         let doc = ctx.doc.borrow();
         let mut ids = Vec::new();
@@ -135,6 +139,16 @@ pub(crate) fn unroot_detached_listener_subtree(
             ids.push(id);
             if let Some(node) = doc.get_node(id) {
                 stack.extend(node.children.iter().copied());
+                if let Some(contents) = node
+                    .element_data()
+                    .and_then(|element| element.template_contents)
+                {
+                    stack.push(contents);
+                }
+                #[cfg(feature = "shadow-dom")]
+                if let Some(root_id) = node.shadow_root_id() {
+                    stack.push(root_id);
+                }
             }
         }
         ids
@@ -252,6 +266,15 @@ fn node_type(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<J
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
     let doc = ctx.doc.borrow();
+    if let Some(markup) = doc
+        .get_node(node_id)
+        .and_then(|node| node.markup.as_deref())
+    {
+        return Ok(JsValue::from(match markup {
+            blitz_dom::node::MarkupNode::ProcessingInstruction { .. } => 7,
+            blitz_dom::node::MarkupNode::Doctype { .. } => 10,
+        }));
+    }
     let node_type = match doc.get_node(node_id).map(|node| &node.data) {
         Some(NodeData::Document(_)) => 9,
         Some(NodeData::Element(_)) | Some(NodeData::AnonymousBlock(_)) => 1,
@@ -269,11 +292,21 @@ fn node_name(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<J
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
     let doc = ctx.doc.borrow();
+    if let Some(markup) = doc
+        .get_node(node_id)
+        .and_then(|node| node.markup.as_deref())
+    {
+        return Ok(js_str(match markup {
+            blitz_dom::node::MarkupNode::ProcessingInstruction { target } => target,
+            blitz_dom::node::MarkupNode::Doctype { name, .. } => name,
+        }));
+    }
     let name = match doc.get_node(node_id).map(|node| &node.data) {
         Some(NodeData::Document(_)) => "#document".to_string(),
-        Some(NodeData::Element(data)) | Some(NodeData::AnonymousBlock(data)) => {
-            data.name.local.to_uppercase()
-        }
+        Some(NodeData::Element(_)) | Some(NodeData::AnonymousBlock(_)) => doc
+            .get_node(node_id)
+            .and_then(|node| node.qualified_element_name())
+            .unwrap_or_default(),
         Some(NodeData::Text(_)) => "#text".to_string(),
         Some(NodeData::Comment { .. }) => "#comment".to_string(),
         Some(NodeData::ShadowRoot(_)) | Some(NodeData::DocumentFragment) => {
@@ -287,11 +320,13 @@ fn node_name(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<J
 fn parent_node(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
-    let parent_id = ctx
-        .doc
-        .borrow()
-        .get_node(node_id)
-        .and_then(|node| node.parent);
+    let parent_id = ctx.doc.borrow().get_node(node_id).and_then(|node| {
+        if node.is_shadow_root() {
+            None
+        } else {
+            node.parent
+        }
+    });
     Ok(node_or_null(&ctx, parent_id, context))
 }
 
@@ -362,19 +397,19 @@ fn next_sibling(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResul
 fn is_connected(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
-    let connected = ctx
-        .doc
-        .borrow()
-        .get_node(node_id)
-        .is_some_and(|node| node.flags.is_in_document());
+    let connected = ctx.doc.borrow().script_node_is_connected(node_id);
     Ok(JsValue::from(connected))
 }
 
 fn owner_document(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
-    let _ = this_node_id(this)?;
-    let root_id = ctx.doc.borrow().root_node().id;
-    Ok(node_or_null(&ctx, Some(root_id), context))
+    let node = this_node_id(this)?;
+    let owner = ctx
+        .doc
+        .borrow()
+        .get_node(node)
+        .and_then(|node| node.owner_document);
+    Ok(node_or_null(&ctx, owner, context))
 }
 
 // === Text content ===
@@ -383,10 +418,21 @@ fn text_content(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResul
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
     let doc = ctx.doc.borrow();
-    let text = doc
-        .get_node(node_id)
-        .map(|node| node.text_content())
-        .unwrap_or_default();
+    if matches!(
+        doc.get_node(node_id)
+            .and_then(|node| node.markup.as_deref()),
+        Some(blitz_dom::node::MarkupNode::Doctype { .. })
+    ) {
+        return Ok(JsValue::null());
+    }
+    let text = match doc.get_node(node_id).map(|node| &node.data) {
+        Some(NodeData::Document(_)) => return Ok(JsValue::null()),
+        Some(NodeData::Comment { contents }) => contents.clone(),
+        _ => doc
+            .get_node(node_id)
+            .map(|node| node.text_content())
+            .unwrap_or_default(),
+    };
     Ok(js_str(&text))
 }
 
@@ -434,6 +480,13 @@ fn node_value(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
     let doc = ctx.doc.borrow();
+    if matches!(
+        doc.get_node(node_id)
+            .and_then(|node| node.markup.as_deref()),
+        Some(blitz_dom::node::MarkupNode::Doctype { .. })
+    ) {
+        return Ok(JsValue::null());
+    }
     match doc.get_node(node_id).map(|node| &node.data) {
         Some(NodeData::Text(data)) => Ok(js_str(&data.content)),
         // A comment is CharacterData, so `comment.data` and `comment.nodeValue`
@@ -483,11 +536,6 @@ fn append_child(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsRe
     super::mark_node_reattached(&ctx, child_id);
     root_inline_event_handlers(&ctx, child_id, context);
 
-    // An element created after its class was defined is upgraded on insertion,
-    // which is also when `connectedCallback` is due. Without this only the
-    // elements present when `define` ran would ever get the class.
-    super::custom_elements::upgrade_if_defined(&ctx, child_id, context)?;
-
     Ok(args[0].clone())
 }
 
@@ -528,7 +576,6 @@ fn append(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<J
         drop(doc);
         super::mark_node_reattached(&ctx, child_id);
         root_inline_event_handlers(&ctx, child_id, context);
-        super::custom_elements::upgrade_if_defined(&ctx, child_id, context)?;
     }
     Ok(JsValue::undefined())
 }
@@ -621,8 +668,20 @@ fn insert_before(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
 
 fn remove_child(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
-    let _parent_id = this_node_id(this)?;
+    let parent_id = this_node_id(this)?;
     let child_id = arg_node_id(args, 0)?;
+    let is_child = ctx
+        .doc
+        .borrow()
+        .get_node(child_id)
+        .is_some_and(|child| child.parent == Some(parent_id));
+    if !is_child {
+        return Err(super::doma::dom_error(
+            "NotFoundError",
+            "The node to be removed is not a child of this node.",
+            context,
+        ));
+    }
 
     // Detached when a wrapper still holds it, freed when none does. The node is
     // returned either way, as the spec requires, and holding that return value
@@ -690,7 +749,13 @@ fn contains(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult
         if current == node_id {
             return Ok(JsValue::from(true));
         }
-        match doc.get_node(current).and_then(|node| node.parent) {
+        match doc.get_node(current).and_then(|node| {
+            if node.is_shadow_root() {
+                None
+            } else {
+                node.parent
+            }
+        }) {
             Some(parent_id) => current = parent_id,
             None => return Ok(JsValue::from(false)),
         }
@@ -792,6 +857,7 @@ pub(super) fn clone_node(
         /// Comments carry their contents upstream, so a clone copies them
         /// rather than producing an empty comment.
         Comment(String),
+        Fragment,
         Other,
     }
 
@@ -806,6 +872,7 @@ pub(super) fn clone_node(
                 }
                 Some(NodeData::Text(data)) => CloneSrc::Text(data.content.clone()),
                 Some(NodeData::Comment { contents }) => CloneSrc::Comment(contents.clone()),
+                Some(NodeData::DocumentFragment) => CloneSrc::Fragment,
                 _ => CloneSrc::Other,
             };
             let mut mutr = doc.mutate();
@@ -813,17 +880,40 @@ pub(super) fn clone_node(
                 CloneSrc::Element(name, attrs) => mutr.create_element(name, attrs),
                 CloneSrc::Text(content) => mutr.create_text_node(&content),
                 CloneSrc::Comment(contents) => mutr.create_comment_node(&contents),
+                CloneSrc::Fragment => mutr.create_document_fragment(),
                 CloneSrc::Other => mutr.create_comment_node(""),
             }
         }
     };
 
+    if !deep {
+        let mut doc = ctx.doc.borrow_mut();
+        let (owner, markup, inert) = {
+            let source = doc.get_node(node_id).expect("clone source missing");
+            (
+                source.owner_document,
+                source.markup.clone(),
+                source
+                    .flags
+                    .contains(blitz_dom::node::NodeFlags::IS_PARSER_INERT_SCRIPT),
+            )
+        };
+        if let Some(owner) = owner {
+            doc.mutate().adopt_node(new_node_id, owner);
+        }
+        let cloned = doc.get_node_mut(new_node_id).expect("clone missing");
+        cloned.markup = markup;
+        cloned
+            .flags
+            .set(blitz_dom::node::NodeFlags::IS_PARSER_INERT_SCRIPT, inert);
+    }
+    ctx.state.borrow_mut().detached_nodes.push(new_node_id);
     Ok(node_wrapper(&ctx, new_node_id, context).into())
 }
 
 // === Event listeners ===
 
-fn add_event_listener(
+pub(crate) fn add_event_listener(
     this: &JsValue,
     args: &[JsValue],
     context: &mut Context,
@@ -892,7 +982,7 @@ fn add_event_listener(
     Ok(JsValue::undefined())
 }
 
-fn remove_event_listener(
+pub(crate) fn remove_event_listener(
     this: &JsValue,
     args: &[JsValue],
     context: &mut Context,
@@ -934,7 +1024,28 @@ fn remove_event_listener(
     Ok(JsValue::undefined())
 }
 
-fn dispatch_event(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+#[cfg(feature = "shadow-dom")]
+pub(crate) fn dispatch_event(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let target_id = this_node_id(this)?;
+    let event = args
+        .first()
+        .and_then(JsValue::as_object)
+        .ok_or_else(|| JsNativeError::typ().with_message("dispatchEvent requires an Event"))?;
+    let result = super::shadow_event::dispatch(&ctx, target_id, &event, true, context)?;
+    Ok(JsValue::from(!result.prevented))
+}
+
+#[cfg(not(feature = "shadow-dom"))]
+pub(crate) fn dispatch_event(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let target_id = this_node_id(this)?;
     let event = args
@@ -942,6 +1053,7 @@ fn dispatch_event(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
         .and_then(JsValue::as_object)
         .filter(|event| event.downcast_ref::<EventRef>().is_some())
         .ok_or_else(|| JsNativeError::typ().with_message("dispatchEvent requires an Event"))?;
+    let _dispatch = super::event::begin_dispatch(&event, true, context)?;
     let event_type = to_rust_string(
         &event.get(boa_engine::js_string!("type"), context)?,
         context,
@@ -949,9 +1061,11 @@ fn dispatch_event(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
     let bubbles = event
         .get(boa_engine::js_string!("bubbles"), context)?
         .to_boolean();
+    super::inline_handlers::sync(&ctx, context);
     let chain = ctx.doc.borrow().node_chain(target_id);
+    let reaches_window = chain.last() == Some(&ctx.doc.borrow().root_node().id);
     let target: JsValue = node_wrapper(&ctx, target_id, context).into();
-    define_value(&event, "target", target.clone(), context);
+    super::define_value(&event, "target", target.clone(), context);
     define_value(&event, "srcElement", target, context);
     define_value(&event, "eventPhase", JsValue::from(2), context);
     let mut event_path: Vec<JsObject> = chain
@@ -960,7 +1074,6 @@ fn dispatch_event(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
         .collect();
     event_path.push(context.global_object().clone());
     set_event_path(&event, event_path);
-    let on_name = boa_engine::JsString::from(format!("on{event_type}"));
 
     'chain: for node_id in chain {
         let mut callbacks = Vec::new();
@@ -980,22 +1093,6 @@ fn dispatch_event(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
             }
         }
         sync_node_listener_callbacks(&ctx, node_id, context);
-        // Upgraded: the cache is weak, and a node whose wrapper has been
-        // collected cannot be carrying an `on<event>` handler, because holding
-        // one would have kept the wrapper alive.
-        if let Some(wrapper) = ctx
-            .state
-            .borrow()
-            .node_wrappers
-            .get(&node_id)
-            .and_then(boa_engine::object::WeakJsObject::upgrade)
-        {
-            if let Some(handler) = wrapper.get(on_name.clone(), context)?.as_object()
-                && handler.is_callable()
-            {
-                callbacks.push(handler.clone());
-            }
-        }
 
         let current_target: JsValue = node_wrapper(&ctx, node_id, context).into();
         define_value(&event, "currentTarget", current_target.clone(), context);
@@ -1008,6 +1105,8 @@ fn dispatch_event(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
                 break 'chain;
             }
         }
+        let wrapper = node_wrapper(&ctx, node_id, context);
+        super::inline_handlers::invoke(&ctx, &wrapper, &event, &event_type, context);
         let stopped = event
             .downcast_ref::<EventRef>()
             .is_some_and(|event| event.stopped.get());
@@ -1016,6 +1115,16 @@ fn dispatch_event(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
         }
     }
 
+    if reaches_window && bubbles
+        && !event
+            .downcast_ref::<EventRef>()
+            .is_some_and(|event| event.stopped.get())
+    {
+        let window = context.global_object().clone();
+        define_value(&event, "currentTarget", window.clone().into(), context);
+        define_value(&event, "eventPhase", JsValue::from(3), context);
+        super::inline_handlers::invoke(&ctx, &window, &event, &event_type, context);
+    }
     define_value(&event, "currentTarget", JsValue::null(), context);
     define_value(&event, "eventPhase", JsValue::from(0), context);
     let prevented = event

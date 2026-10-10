@@ -4,41 +4,43 @@
 //! the resources a document needs, and of
 //! [`blitz_traits::platform::FetchProvider`], which serves a guest's `fetch()`.
 //!
-//! **Both run on the one client.** `Provider` holds a single `reqwest::Client`,
-//! built once with HTTP/2, the cookie jar, the compression codecs and the
-//! cacache disk cache, plus one per-host semaphore enforcing the browser's cap
-//! of six concurrent requests per origin. A guest's `fetch` therefore shares
-//! the connection pool, the cookies and the cache with the page's own loads,
-//! and counts against the same concurrency budget, which is what a browser
-//! does. A second client would have given a guest its own cookie jar and its
-//! own six connections per host.
+//! Both use one native HTTP/1.1 client, sharing its connection pool, cookie
+//! jar, compression codecs, private cache and six connection slots per origin.
+//! The `http2` feature is reserved for the subsequent HTTP/2 transport.
+//!
+//! Creating a native provider starts nagoya's process background runtime and
+//! the house client's shared reactor if absent. Multiple providers reuse them.
+//! Embedders do not need to enter an executor: callback requests use
+//! `nagoya::spawn`, and async methods also work under `nagoya::block_on`.
+//!
+//! Cookie persistence belongs to the embedder's cookie jar. Disk caching is
+//! attached explicitly with a profile directory; no global cache path is used.
+//! On wasm32, local URL handling remains available, but this native socket
+//! transport does not provide HTTP.
 
-use blitz_traits::net::{AbortSignal, Body, Bytes, NetHandler, NetProvider, NetWaker, Request};
+#[cfg(not(target_arch = "wasm32"))]
+mod h1;
+
+use blitz_traits::net::{
+    AbortSignal, Body, Bytes, CookieJar as CookieStorage, NetHandler, NetProvider, NetWaker, Request,
+    http::{HeaderValue, header::CONTENT_TYPE},
+};
 use blitz_traits::platform::{
     FetchError, FetchHandler, FetchProvider, FetchRequest, FetchResponse, HeaderMap, StatusCode,
 };
 use data_url::DataUrl;
-use std::{
-    collections::HashMap,
-    marker::PhantomData,
-    pin::Pin,
-    sync::{Arc, Mutex},
-    task::Poll,
-};
-use tokio::sync::Semaphore;
+use std::{marker::PhantomData, pin::Pin, sync::Arc, task::Poll};
 
 /// Cookie storage supplied to [`Provider::with_user_agent_and_cookie_provider`].
 ///
-/// Re-exported so an embedder can provide a persistent profile jar without
-/// depending on reqwest directly. Reqwest invokes it for every response in a
-/// redirect chain and before every request it sends.
+/// This house trait keeps embedders independent of the HTTP client. The provider
+/// consults the jar for each request and stores cookies from every response,
+/// including intermediate redirects and error responses.
 #[cfg(feature = "cookies")]
-pub use reqwest::cookie::CookieStore;
+pub use blitz_traits::net::CookieJar;
 
-#[cfg(feature = "cache")]
-use http_cache_reqwest::{
-    CACacheManager, Cache, CacheMode, CacheOptions, HttpCache, HttpCacheOptions,
-};
+#[cfg(all(feature = "cache", not(target_arch = "wasm32")))]
+pub use h1::cache::PrivateCache;
 
 /// The `User-Agent` sent when a caller does not choose one.
 ///
@@ -51,31 +53,29 @@ use http_cache_reqwest::{
 pub const DEFAULT_USER_AGENT: &str =
     "Mozilla/5.0 (X11; Linux x86_64; rv:60.0) Gecko/20100101 Firefox/81.0";
 
-/// Matches real browsers' per-origin cap of 6.
-const PER_HOST_MAX_CONCURRENT: usize = 6;
+#[cfg(not(target_arch = "wasm32"))]
+type Client = h1::H1Client;
 
-type HostLimits = Arc<Mutex<HashMap<String, Arc<Semaphore>>>>;
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone)]
+struct Client;
 
-#[cfg(feature = "cache")]
-type Client = reqwest_middleware::ClientWithMiddleware;
-#[cfg(not(feature = "cache"))]
-type Client = reqwest::Client;
+#[cfg(target_arch = "wasm32")]
+impl Client {
+    fn new(
+        user_agent: &str,
+        _cookies: Option<Arc<dyn CookieStorage>>,
+    ) -> Result<Self, FetchError> {
+        HeaderValue::from_str(user_agent)
+            .map_err(|error| FetchError::InvalidRequest(error.to_string()))?;
+        Ok(Self)
+    }
 
-#[cfg(feature = "cache")]
-type RequestBuilder = reqwest_middleware::RequestBuilder;
-#[cfg(not(feature = "cache"))]
-type RequestBuilder = reqwest::RequestBuilder;
-
-#[cfg(feature = "cache")]
-fn get_cache_path() -> std::path::PathBuf {
-    use directories::ProjectDirs;
-    let path = ProjectDirs::from("com", "DioxusLabs", "Blitz")
-        .expect("Failed to find cache directory")
-        .cache_dir()
-        .to_owned();
-    #[cfg(feature = "tracing")]
-    tracing::info!(path = ?path.display(), "Using cache dir");
-    path
+    async fn fetch(&self, _request: FetchRequest) -> Result<FetchResponse, FetchError> {
+        Err(FetchError::Network(
+            "the native HTTP transport is unavailable on wasm32".to_owned(),
+        ))
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -91,16 +91,20 @@ where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
-    tokio::spawn(fut);
+    nagoya::spawn(fut);
 }
 
+/// Document and script networking over one house client.
+///
+/// Native construction initializes the shared runtime and reactor. Supply a
+/// cookie jar for cookie storage and attach a profile cache before sharing the
+/// provider with documents.
 pub struct Provider {
     client: Client,
     waker: Arc<dyn NetWaker>,
-    per_host_limits: HostLimits,
     user_agent: Arc<str>,
-    #[cfg(feature = "cache")]
-    cache_manager: CACacheManager,
+    #[cfg(all(feature = "cache", not(target_arch = "wasm32")))]
+    cache_manager: Option<Arc<PrivateCache>>,
 }
 impl Provider {
     pub fn new(waker: Option<Arc<dyn NetWaker>>) -> Self {
@@ -115,18 +119,13 @@ impl Provider {
     /// with itself on only some would fetch a page assembled for two different
     /// browsers.
     pub fn with_user_agent(waker: Option<Arc<dyn NetWaker>>, user_agent: &str) -> Self {
-        let builder = reqwest::Client::builder();
-        #[cfg(feature = "cookies")]
-        let builder = builder.cookie_store(true);
-        Self::with_client_builder(waker, user_agent, builder)
+        Self::with_cookie_jar(waker, user_agent, None)
     }
 
     /// A provider that uses an embedder-owned cookie jar and identity.
     ///
-    /// The jar is installed on the provider's one reqwest client, so it sees
-    /// intermediate redirects and error responses as well as the final
-    /// successful response. It also supplies cookies for redirected requests;
-    /// no parallel client or second cookie store is involved.
+    /// The jar supplies cookies for each request and receives cookies from
+    /// intermediate redirects, error responses, and final responses.
     #[cfg(feature = "cookies")]
     pub fn with_user_agent_and_cookie_provider<C>(
         waker: Option<Arc<dyn NetWaker>>,
@@ -134,55 +133,55 @@ impl Provider {
         cookie_provider: Arc<C>,
     ) -> Self
     where
-        C: CookieStore + 'static,
+        C: CookieJar,
     {
-        let builder = reqwest::Client::builder().cookie_provider(cookie_provider);
-        Self::with_client_builder(waker, user_agent, builder)
+        Self::with_cookie_jar(waker, user_agent, Some(cookie_provider))
     }
 
-    fn with_client_builder(
+    fn with_cookie_jar(
         waker: Option<Arc<dyn NetWaker>>,
         user_agent: &str,
-        builder: reqwest::ClientBuilder,
+        cookies: Option<Arc<dyn CookieStorage>>,
     ) -> Self {
-        let client = builder.build().unwrap();
-
-        #[cfg(feature = "cache")]
-        let cache_manager = CACacheManager::new(get_cache_path(), true);
-
-        #[cfg(feature = "cache")]
-        let client = reqwest_middleware::ClientBuilder::new(client)
-            .with(Cache(HttpCache {
-                mode: CacheMode::Default,
-                manager: cache_manager.clone(),
-                options: HttpCacheOptions {
-                    // Evaluate cache policy as a single-user (private) cache, like a
-                    // real browser, rather than a shared/proxy cache. The default
-                    // (`shared: true`) treats any response carrying `Set-Cookie` without
-                    // an explicit `Cache-Control: public`/`immutable` as immediately
-                    // stale, forcing a revalidation request to the server on every load.
-                    // Many CDNs (e.g. Wikimedia image hosts) serve images this way, so
-                    // the shared-cache default defeats disk caching and gets us rate
-                    // limited. A private cache honours heuristic freshness instead.
-                    cache_options: Some(CacheOptions {
-                        shared: false,
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                },
-            }))
-            .build();
-
+        let client = Client::new(user_agent, cookies)
+            .expect("failed to initialize the house HTTP client");
         let waker = waker.unwrap_or(Arc::new(DummyNetWaker));
         Self {
             client,
             waker,
-            per_host_limits: Arc::new(Mutex::new(HashMap::new())),
             user_agent: Arc::from(user_agent),
-            #[cfg(feature = "cache")]
-            cache_manager,
+            #[cfg(all(feature = "cache", not(target_arch = "wasm32")))]
+            cache_manager: None,
         }
     }
+
+    /// Attach a cache already opened for this profile.
+    ///
+    /// Keep one open cache instance per profile. Document and script requests
+    /// share it, and cached Set-Cookie headers are never replayed.
+    #[cfg(all(feature = "cache", not(target_arch = "wasm32")))]
+    pub fn with_cache(mut self, cache: Arc<PrivateCache>) -> Self {
+        self.client = self.client.with_cache(cache.clone());
+        self.cache_manager = Some(cache);
+        self
+    }
+
+    /// Open persisted WorkTable metadata and bodies under the profile directory.
+    ///
+    /// Opening runs on a nagoya worker. Failure leaves the caller free to build
+    /// a provider without a cache instead.
+    #[cfg(all(feature = "cache", not(target_arch = "wasm32")))]
+    pub async fn with_cache_directory(
+        self,
+        profile_directory: impl AsRef<std::path::Path>,
+    ) -> std::io::Result<Self> {
+        let directory = profile_directory.as_ref().to_owned();
+        let cache = nagoya::spawn(async move { PrivateCache::open(directory).await })
+            .await
+            .ok_or_else(|| std::io::Error::other("cache opener was cancelled"))??;
+        Ok(self.with_cache(cache))
+    }
+
     pub fn shared(waker: Option<Arc<dyn NetWaker>>) -> Arc<dyn NetProvider> {
         Arc::new(Self::new(waker))
     }
@@ -203,13 +202,17 @@ impl Provider {
         Arc::strong_count(&self.waker) - 1
     }
 
-    #[cfg(feature = "cache")]
+    #[cfg(all(feature = "cache", not(target_arch = "wasm32")))]
     pub async fn clear_cache(&self) {
-        if let Err(e) = self.cache_manager.clear().await {
-            #[cfg(feature = "tracing")]
-            tracing::error!("Failed to clear HTTP cache: {:?}", e);
-            #[cfg(not(feature = "tracing"))]
-            let _ = e;
+        if let Some(cache) = &self.cache_manager {
+            let cache = cache.clone();
+            let result = nagoya::spawn(async move { cache.clear().await }).await;
+            if let Some(Err(e)) = result {
+                #[cfg(feature = "tracing")]
+                tracing::error!("Failed to clear HTTP cache: {:?}", e);
+                #[cfg(not(feature = "tracing"))]
+                let _ = e;
+            }
         }
     }
 }
@@ -217,77 +220,9 @@ impl Provider {
     async fn fetch_inner(
         client: Client,
         request: Request,
-        per_host_limits: HostLimits,
-        user_agent: Arc<str>,
     ) -> Result<(String, Bytes), ProviderError> {
-        match request.url.scheme() {
-            "data" => {
-                let data_url = DataUrl::process(request.url.as_str())?;
-                let decoded = data_url.decode_to_vec()?;
-                Ok((request.url.to_string(), Bytes::from(decoded.0)))
-            }
-            "file" => {
-                let file_content = std::fs::read(request.url.path())?;
-                Ok((request.url.to_string(), Bytes::from(file_content)))
-            }
-            _ => Self::fetch_http(client, request, per_host_limits, user_agent).await,
-        }
-    }
-
-    async fn fetch_http(
-        client: Client,
-        request: Request,
-        per_host_limits: HostLimits,
-        user_agent: Arc<str>,
-    ) -> Result<(String, Bytes), ProviderError> {
-        // Acquire a per-host permit, held for the duration of the request, to
-        // keep total in-flight requests per origin bounded.
-        let host_key = request
-            .url
-            .host_str()
-            .map(str::to_owned)
-            .unwrap_or_default();
-        let semaphore = {
-            let mut map = per_host_limits.lock().unwrap();
-            map.entry(host_key)
-                .or_insert_with(|| Arc::new(Semaphore::new(PER_HOST_MAX_CONCURRENT)))
-                .clone()
-        };
-        let _permit = semaphore
-            .acquire()
-            .await
-            .expect("per-host semaphore was closed");
-
-        let mut req = client
-            .request(request.method, request.url)
-            .headers(request.headers)
-            .header("User-Agent", &*user_agent);
-
-        if let Some(content_type) = request.content_type.as_ref() {
-            req = req.header("Content-Type", content_type);
-        }
-
-        let req = req
-            .apply_body(request.body, request.content_type.as_deref())
-            .await;
-        let response = req.send().await?;
-        let status = response.status();
-        let final_url = response.url().to_string();
-
-        if status.is_success() {
-            return Ok((final_url, response.bytes().await?));
-        }
-
-        #[cfg(feature = "tracing")]
-        tracing::warn!(
-            url = final_url.as_str(),
-            status = status.as_u16(),
-            "HTTP error status"
-        );
-        Err(ProviderError::HttpStatus {
-            status,
-            url: final_url,
-        })
+        let response = Self::fetch_response_inner(client, request).await?;
+        Ok((response.url.to_string(), response.body))
     }
 
     #[allow(clippy::type_complexity)]
@@ -300,17 +235,13 @@ impl Provider {
         let url = request.url.to_string();
 
         let client = self.client.clone();
-        let per_host_limits = self.per_host_limits.clone();
-        let user_agent = self.user_agent.clone();
         spawn(async move {
-            let result = Self::fetch_inner(client, request, per_host_limits, user_agent).await;
+            let result = Self::fetch_inner(client, request).await;
 
             #[cfg(feature = "tracing")]
             if let Err(e) = &result {
-                #[cfg(feature = "tracing")]
                 tracing::error!(url = url.as_str(), error = ?e, "Fetching");
             } else {
-                #[cfg(feature = "tracing")]
                 tracing::info!(url = url.as_str(), "Success fetching");
             }
 
@@ -322,17 +253,12 @@ impl Provider {
         #[cfg(feature = "tracing")]
         let url = request.url.to_string();
 
-        let client = self.client.clone();
-        let per_host_limits = self.per_host_limits.clone();
-        let user_agent = self.user_agent.clone();
-        let result = Self::fetch_inner(client, request, per_host_limits, user_agent).await;
+        let result = Self::fetch_inner(self.client.clone(), request).await;
 
         #[cfg(feature = "tracing")]
         if let Err(e) = &result {
-            #[cfg(feature = "tracing")]
             tracing::error!(url = url.as_str(), error = ?e, "Fetching");
         } else {
-            #[cfg(feature = "tracing")]
             tracing::info!(url = url.as_str(), "Success fetching");
         }
 
@@ -342,29 +268,18 @@ impl Provider {
     /// Fetch, keeping the response metadata that [`Provider::fetch_async`]
     /// discards.
     ///
-    /// `fetch_async` returns `(String, Bytes)`: the final URL and the body. That
-    /// is the right shape for the overwhelmingly common case, a document or a
-    /// subresource whose bytes are the whole answer, and it stays as it is.
-    ///
-    /// What it cannot answer is what the server *said* the bytes were. An
-    /// embedder loading a WebAssembly module wants to reject
-    /// `Content-Type: text/html` before handing the bytes to a parser that will
-    /// report an offset into a file that is not a module at all. That check
-    /// needs headers, and the headers already exist: `fetch_http` reads them off
-    /// the response and drops them on the way out.
-    ///
-    /// Additive rather than a widening of `fetch_async`, deliberately. Changing
-    /// that return type touches every caller in every embedder for a need only
-    /// some of them have, and `HeaderMap` is a heap-allocated multimap the hot
-    /// path would then build and clone for every subresource. This allocates
-    /// only for the callers that ask.
-    ///
-    /// `data:` and `file:` URLs synthesise a response. A `data:` URL states its
-    /// own mime type, so that becomes a real `Content-Type`; a `file:` URL has
-    /// none, and a caller that requires one should read an absent header as
-    /// unknown rather than as a mismatch.
+    /// HTTP error statuses remain errors on this document-loading API.
+    /// `FetchProvider` instead delivers every HTTP response, including errors.
+    /// A `data:` URL supplies its own Content-Type; a `file:` URL has none.
     pub async fn fetch_response_async(
         &self,
+        request: Request,
+    ) -> Result<FetchResponse, ProviderError> {
+        Self::fetch_response_inner(self.client.clone(), request).await
+    }
+
+    async fn fetch_response_inner(
+        client: Client,
         request: Request,
     ) -> Result<FetchResponse, ProviderError> {
         let url = request.url.clone();
@@ -377,7 +292,7 @@ impl Provider {
                     let decoded = data_url.decode_to_vec()?;
                     let mut headers = HeaderMap::new();
                     if let Ok(value) = data_url.mime_type().to_string().parse() {
-                        headers.insert(blitz_traits::platform::http::header::CONTENT_TYPE, value);
+                        headers.insert(CONTENT_TYPE, value);
                     }
                     (Bytes::from(decoded.0), headers)
                 };
@@ -389,78 +304,47 @@ impl Provider {
                 let file_content = std::fs::read(url.path())?;
                 Ok(FetchResponse::new(url, StatusCode::OK).body(Bytes::from(file_content)))
             }
-            _ => {
-                let client = self.client.clone();
-                let per_host_limits = self.per_host_limits.clone();
-                let user_agent = self.user_agent.clone();
-                Self::fetch_http_response(client, request, per_host_limits, user_agent).await
+            "http" | "https" => {
+                let mut wire_request = FetchRequest::get(request.url).method(request.method);
+                wire_request.headers = request.headers;
+                let content_type = request.content_type.or_else(|| {
+                    wire_request
+                        .headers
+                        .get(CONTENT_TYPE)
+                        .and_then(|value| value.to_str().ok())
+                        .map(str::to_owned)
+                });
+                if let Some(content_type) = &content_type {
+                    let value = HeaderValue::from_str(content_type)
+                        .map_err(|error| ProviderError::InvalidRequest(error.to_string()))?;
+                    wire_request.headers.insert(CONTENT_TYPE, value);
+                }
+                wire_request.body = encode_body(
+                    request.body,
+                    content_type.as_deref(),
+                    &mut wire_request.headers,
+                )?;
+                let response = client
+                    .fetch(wire_request)
+                    .await
+                    .map_err(|error| ProviderError::Network(error.to_string()))?;
+
+                if !response.status.is_success() {
+                    #[cfg(feature = "tracing")]
+                    tracing::warn!(
+                        url = response.url.as_str(),
+                        status = response.status.as_u16(),
+                        "HTTP error status"
+                    );
+                    return Err(ProviderError::HttpStatus {
+                        status: response.status,
+                        url: response.url.to_string(),
+                    });
+                }
+                Ok(response)
             }
+            scheme => Err(ProviderError::UnsupportedScheme(scheme.to_owned())),
         }
-    }
-
-    /// The HTTP half of [`Provider::fetch_response_async`].
-    ///
-    /// Deliberately a sibling of [`Provider::fetch_http`] rather than a wrapper
-    /// around it: that one consumes the response to get at the body and cannot
-    /// hand back what it read on the way. The per-host permit, the user agent
-    /// and the non-2xx handling are the same, so the two must be changed
-    /// together.
-    async fn fetch_http_response(
-        client: Client,
-        request: Request,
-        per_host_limits: HostLimits,
-        user_agent: Arc<str>,
-    ) -> Result<FetchResponse, ProviderError> {
-        let host_key = request
-            .url
-            .host_str()
-            .map(str::to_owned)
-            .unwrap_or_default();
-        let semaphore = {
-            let mut map = per_host_limits.lock().unwrap();
-            map.entry(host_key)
-                .or_insert_with(|| Arc::new(Semaphore::new(PER_HOST_MAX_CONCURRENT)))
-                .clone()
-        };
-        let _permit = semaphore
-            .acquire()
-            .await
-            .expect("per-host semaphore was closed");
-
-        let mut req = client
-            .request(request.method, request.url)
-            .headers(request.headers)
-            .header("User-Agent", &*user_agent);
-
-        if let Some(content_type) = request.content_type.as_ref() {
-            req = req.header("Content-Type", content_type);
-        }
-
-        let req = req
-            .apply_body(request.body, request.content_type.as_deref())
-            .await;
-        let response = req.send().await?;
-        let status = response.status();
-        let final_url = response.url().clone();
-
-        if !status.is_success() {
-            #[cfg(feature = "tracing")]
-            tracing::warn!(
-                url = final_url.as_str(),
-                status = status.as_u16(),
-                "HTTP error status"
-            );
-            return Err(ProviderError::HttpStatus {
-                status,
-                url: final_url.to_string(),
-            });
-        }
-
-        // Read before the body, because taking the body consumes the response.
-        let headers = response.headers().clone();
-        Ok(FetchResponse::new(final_url, status)
-            .headers(headers)
-            .body(response.bytes().await?))
     }
 }
 
@@ -475,15 +359,14 @@ impl Provider {
     async fn platform_fetch_inner(
         client: Client,
         request: FetchRequest,
-        per_host_limits: HostLimits,
-        user_agent: Arc<str>,
     ) -> Result<FetchResponse, FetchError> {
         match request.url.scheme() {
             "data" => Self::platform_fetch_data(request),
             "file" => Self::platform_fetch_file(request),
-            "http" | "https" => {
-                Self::platform_fetch_http(client, request, per_host_limits, user_agent).await
-            }
+            "http" | "https" => client
+                .fetch(request)
+                .await
+                .map_err(|error| FetchError::Network(error.to_string())),
             scheme => Err(FetchError::UnsupportedScheme(scheme.to_owned())),
         }
     }
@@ -504,9 +387,7 @@ impl Provider {
 
         let mut headers = HeaderMap::new();
         if let Ok(value) = mime.parse() {
-            // Via `reqwest`, which re-exports `http`'s header types. Naming
-            // `http` directly would mean a new dependency for one constant.
-            headers.insert(reqwest::header::CONTENT_TYPE, value);
+            headers.insert(CONTENT_TYPE, value);
         }
 
         Ok(FetchResponse::new(request.url, StatusCode::OK)
@@ -536,70 +417,17 @@ impl Provider {
 
         Ok(FetchResponse::new(request.url, StatusCode::OK).body(Bytes::from(body)))
     }
-
-    async fn platform_fetch_http(
-        client: Client,
-        request: FetchRequest,
-        per_host_limits: HostLimits,
-        user_agent: Arc<str>,
-    ) -> Result<FetchResponse, FetchError> {
-        // The same per-origin permit the page's own loads take, so a guest
-        // cannot open more connections to a host than a browser would.
-        let host_key = request
-            .url
-            .host_str()
-            .map(str::to_owned)
-            .unwrap_or_default();
-        let semaphore = {
-            let mut map = per_host_limits.lock().unwrap();
-            map.entry(host_key)
-                .or_insert_with(|| Arc::new(Semaphore::new(PER_HOST_MAX_CONCURRENT)))
-                .clone()
-        };
-        let _permit = semaphore
-            .acquire()
-            .await
-            .expect("per-host semaphore was closed");
-
-        let mut req = client
-            .request(request.method, request.url)
-            .headers(request.headers)
-            .header("User-Agent", &*user_agent);
-
-        if let Some(body) = request.body {
-            req = req.body(body);
-        }
-
-        let response = req
-            .send()
-            .await
-            .map_err(|err| FetchError::Network(err.to_string()))?;
-
-        // Everything below here is what `fetch_inner` throws away.
-        let status = response.status();
-        let headers = response.headers().clone();
-        let url = response.url().clone();
-        let body = response
-            .bytes()
-            .await
-            .map_err(|err| FetchError::Network(err.to_string()))?;
-
-        Ok(FetchResponse::new(url, status).headers(headers).body(body))
-    }
 }
 
 impl FetchProvider for Provider {
     fn fetch(&self, request: FetchRequest, handler: Box<dyn FetchHandler>) {
         let client = self.client.clone();
-        let per_host_limits = self.per_host_limits.clone();
-        let user_agent = self.user_agent.clone();
 
         #[cfg(feature = "tracing")]
         let url = request.url.to_string();
 
         spawn(async move {
-            let result =
-                Self::platform_fetch_inner(client, request, per_host_limits, user_agent).await;
+            let result = Self::platform_fetch_inner(client, request).await;
 
             #[cfg(feature = "tracing")]
             match &result {
@@ -619,8 +447,6 @@ impl FetchProvider for Provider {
 impl NetProvider for Provider {
     fn fetch(&self, doc_id: usize, mut request: Request, handler: Box<dyn NetHandler>) {
         let client = self.client.clone();
-        let per_host_limits = self.per_host_limits.clone();
-        let user_agent = self.user_agent.clone();
 
         #[cfg(feature = "tracing")]
         tracing::info!(url = request.url.as_str(), "Fetching");
@@ -634,13 +460,11 @@ impl NetProvider for Provider {
             let result = if let Some(signal) = signal {
                 AbortFetch::new(
                     signal,
-                    Box::pin(async move {
-                        Self::fetch_inner(client, request, per_host_limits, user_agent).await
-                    }),
+                    Box::pin(async move { Self::fetch_inner(client, request).await }),
                 )
                 .await
             } else {
-                Self::fetch_inner(client, request, per_host_limits, user_agent).await
+                Self::fetch_inner(client, request).await
             };
 
             waker.wake(doc_id);
@@ -707,11 +531,11 @@ pub enum ProviderError {
     Io(std::io::Error),
     DataUrl(data_url::DataUrlError),
     DataUrlBase64(data_url::forgiving_base64::InvalidBase64),
-    ReqwestError(reqwest::Error),
-    #[cfg(feature = "cache")]
-    ReqwestMiddlewareError(reqwest_middleware::Error),
+    Network(String),
+    InvalidRequest(String),
+    UnsupportedScheme(String),
     HttpStatus {
-        status: reqwest::StatusCode,
+        status: StatusCode,
         url: String,
     },
 }
@@ -723,13 +547,15 @@ impl std::fmt::Display for ProviderError {
             Self::Io(e) => write!(f, "io error: {e}"),
             Self::DataUrl(e) => write!(f, "data url error: {e:?}"),
             Self::DataUrlBase64(e) => write!(f, "data url base64 error: {e:?}"),
-            Self::ReqwestError(e) => write!(f, "reqwest error: {e}"),
-            #[cfg(feature = "cache")]
-            Self::ReqwestMiddlewareError(e) => write!(f, "reqwest middleware error: {e}"),
+            Self::Network(e) => write!(f, "network error: {e}"),
+            Self::InvalidRequest(e) => write!(f, "invalid request: {e}"),
+            Self::UnsupportedScheme(scheme) => write!(f, "unsupported URL scheme: {scheme}"),
             Self::HttpStatus { status, url } => write!(f, "HTTP {status} for {url}"),
         }
     }
 }
+
+impl std::error::Error for ProviderError {}
 
 impl From<std::io::Error> for ProviderError {
     fn from(value: std::io::Error) -> Self {
@@ -749,332 +575,124 @@ impl From<data_url::forgiving_base64::InvalidBase64> for ProviderError {
     }
 }
 
-impl From<reqwest::Error> for ProviderError {
-    fn from(value: reqwest::Error) -> Self {
-        Self::ReqwestError(value)
-    }
-}
-
-#[cfg(feature = "cache")]
-impl From<reqwest_middleware::Error> for ProviderError {
-    fn from(value: reqwest_middleware::Error) -> Self {
-        Self::ReqwestMiddlewareError(value)
-    }
-}
-
-trait ReqwestExt {
-    async fn apply_body(self, body: Body, content_type: Option<&str>) -> Self;
-}
-impl ReqwestExt for RequestBuilder {
-    async fn apply_body(self, body: Body, content_type: Option<&str>) -> Self {
-        match body {
-            Body::Bytes(bytes) => self.body(bytes),
-            Body::Form(form_data) => match content_type {
-                Some("application/x-www-form-urlencoded") => self.form(&form_data),
-                #[cfg(feature = "multipart")]
-                Some("multipart/form-data") => {
-                    use blitz_traits::net::Entry;
-                    use blitz_traits::net::EntryValue;
-                    let mut form_data = form_data;
-                    let mut form = reqwest::multipart::Form::new();
-                    for Entry { name, value } in form_data.0.drain(..) {
-                        form = match value {
-                            EntryValue::String(value) => form.text(name, value),
-                            EntryValue::File(path_buf) => form
-                                .file(name, path_buf)
-                                .await
-                                .expect("Couldn't read form file from disk"),
-                            EntryValue::EmptyFile => form.part(
-                                name,
-                                reqwest::multipart::Part::bytes(&[])
-                                    .mime_str("application/octet-stream")
-                                    .unwrap(),
-                            ),
-                        };
-                    }
-                    self.multipart(form)
+fn encode_body(
+    body: Body,
+    content_type: Option<&str>,
+    headers: &mut HeaderMap,
+) -> Result<Option<Bytes>, ProviderError> {
+    match body {
+        Body::Bytes(bytes) => Ok(Some(bytes)),
+        Body::Empty => Ok(None),
+        Body::Form(form) => {
+            let mime = content_type
+                .and_then(|value| value.split(';').next())
+                .map(str::trim)
+                .unwrap_or("");
+            if mime.eq_ignore_ascii_case("application/x-www-form-urlencoded") {
+                let mut encoded = url::form_urlencoded::Serializer::new(String::new());
+                for entry in &form.0 {
+                    encoded.append_pair(&entry.name, entry.value.as_ref());
                 }
-                _ => self,
-            },
-            Body::Empty => self,
+                return Ok(Some(Bytes::from(encoded.finish())));
+            }
+            if mime.eq_ignore_ascii_case("multipart/form-data") {
+                #[cfg(all(feature = "multipart", not(target_arch = "wasm32")))]
+                {
+                    return encode_multipart(form, headers).map(Some);
+                }
+                #[cfg(not(all(feature = "multipart", not(target_arch = "wasm32"))))]
+                {
+                    let _ = headers;
+                    return Err(ProviderError::InvalidRequest(
+                        "multipart requires the native multipart feature".to_owned(),
+                    ));
+                }
+            }
+            Err(ProviderError::InvalidRequest(
+                "unsupported form Content-Type".to_owned(),
+            ))
         }
     }
+}
+
+#[cfg(all(feature = "multipart", not(target_arch = "wasm32")))]
+fn encode_multipart(
+    form: blitz_traits::net::FormData,
+    headers: &mut HeaderMap,
+) -> Result<Bytes, ProviderError> {
+    use blitz_traits::net::{Entry, EntryValue};
+    use psc_nanoid::{Nanoid, alphabet::Base64UrlAlphabet};
+    use std::io::Read;
+
+    let boundary = Nanoid::<21, Base64UrlAlphabet>::new().to_string();
+    let mut encoded = Vec::new();
+    for Entry { name, value } in form.0 {
+        let mut head = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"{}\"",
+            multipart_parameter(&name),
+        );
+        let body = match value {
+            EntryValue::String(value) => Bytes::from(value),
+            EntryValue::File(path) => {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                head.push_str(&format!(
+                    "; filename=\"{}\"\r\nContent-Type: application/octet-stream",
+                    multipart_parameter(&name),
+                ));
+                let file = std::fs::File::open(path)?;
+                let mut body = Vec::new();
+                file.take(h1::MAX_BODY_BYTES as u64 + 1)
+                    .read_to_end(&mut body)?;
+                if body.len() > h1::MAX_BODY_BYTES {
+                    return Err(ProviderError::InvalidRequest(
+                        "multipart file exceeds the body limit".to_owned(),
+                    ));
+                }
+                Bytes::from(body)
+            }
+            EntryValue::EmptyFile => {
+                head.push_str("; filename=\"\"\r\nContent-Type: application/octet-stream");
+                Bytes::new()
+            }
+        };
+        head.push_str("\r\n\r\n");
+        let required = head
+            .len()
+            .checked_add(body.len())
+            .and_then(|length| length.checked_add(2))
+            .and_then(|length| length.checked_add(encoded.len()))
+            .ok_or_else(|| ProviderError::InvalidRequest("multipart body is too large".to_owned()))?;
+        if required > h1::MAX_BODY_BYTES {
+            return Err(ProviderError::InvalidRequest(
+                "multipart body exceeds the body limit".to_owned(),
+            ));
+        }
+        encoded.extend_from_slice(head.as_bytes());
+        encoded.extend_from_slice(&body);
+        encoded.extend_from_slice(b"\r\n");
+    }
+    let end = format!("--{boundary}--\r\n");
+    if end.len() > h1::MAX_BODY_BYTES.saturating_sub(encoded.len()) {
+        return Err(ProviderError::InvalidRequest(
+            "multipart body exceeds the body limit".to_owned(),
+        ));
+    }
+    encoded.extend_from_slice(end.as_bytes());
+    let content_type = HeaderValue::from_str(&format!("multipart/form-data; boundary={boundary}"))
+        .map_err(|error| ProviderError::InvalidRequest(error.to_string()))?;
+    headers.insert(CONTENT_TYPE, content_type);
+    Ok(Bytes::from(encoded))
+}
+
+#[cfg(all(feature = "multipart", not(target_arch = "wasm32")))]
+fn multipart_parameter(value: &str) -> String {
+    value
+        .replace('\r', "%0D")
+        .replace('\n', "%0A")
+        .replace('"', "%22")
 }
 
 struct DummyNetWaker;
 impl NetWaker for DummyNetWaker {
     fn wake(&self, _client_id: usize) {}
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use blitz_traits::net::Url;
-
-    /// A `data:` URL states its own mime type, so the synthesised response
-    /// carries a real `Content-Type` rather than nothing.
-    ///
-    /// This is the case that makes the header meaningful for a caller checking
-    /// one: a module inlined as a `data:` URL is as legitimate as a fetched
-    /// one, and refusing it for having no type would be wrong.
-    /// Serve exactly one HTTP request on loopback and hand back what was sent.
-    ///
-    /// A real socket rather than a mock, because the thing under test is a
-    /// header on the wire. Asserting that the provider stored the string it was
-    /// given would pass just as happily with the header never attached, which
-    /// is the failure this exists to catch.
-    fn capture_one_request() -> (Url, std::thread::JoinHandle<String>) {
-        use std::io::{Read, Write};
-
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback is available");
-        let port = listener
-            .local_addr()
-            .expect("the socket has an address")
-            .port();
-        let handle = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("the provider connects");
-            let mut seen = Vec::new();
-            let mut byte = [0u8; 1];
-            // Read only the head. Reading to EOF would block: the client keeps
-            // the connection open waiting for the response that follows.
-            while !seen.ends_with(b"\r\n\r\n") {
-                match stream.read(&mut byte) {
-                    Ok(0) | Err(_) => break,
-                    Ok(_) => seen.push(byte[0]),
-                }
-            }
-            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
-            let _ = stream.flush();
-            String::from_utf8_lossy(&seen).to_string()
-        });
-
-        let url = Url::parse(&format!("http://127.0.0.1:{port}/")).expect("a valid loopback URL");
-        (url, handle)
-    }
-
-    /// A caller that names a user agent has it sent.
-    ///
-    /// Sites decide what markup to serve from this header, so a browser that
-    /// cannot choose one is served whatever the default is taken for, and on a
-    /// large share of the popular web that is a challenge page rather than the
-    /// document.
-    #[tokio::test]
-    async fn a_chosen_user_agent_reaches_the_server() {
-        let (url, server) = capture_one_request();
-        let provider = Provider::with_user_agent(None, "Chuzz/1.0 (a stated identity)");
-
-        let _ = provider.fetch_async(Request::get(url)).await;
-
-        let request = server
-            .join()
-            .expect("the server thread finishes")
-            .to_lowercase();
-        assert!(
-            request.contains("user-agent: chuzz/1.0 (a stated identity)"),
-            "the chosen user agent should be on the wire, got:\n{request}"
-        );
-    }
-
-    /// A caller that names none is unchanged by this being configurable.
-    #[tokio::test]
-    async fn the_default_user_agent_is_still_sent_when_none_is_chosen() {
-        let (url, server) = capture_one_request();
-        let provider = Provider::new(None);
-
-        let _ = provider.fetch_async(Request::get(url)).await;
-
-        let request = server
-            .join()
-            .expect("the server thread finishes")
-            .to_lowercase();
-        assert!(
-            request.contains(&format!(
-                "user-agent: {}",
-                DEFAULT_USER_AGENT.to_lowercase()
-            )),
-            "the default user agent should be on the wire, got:\n{request}"
-        );
-    }
-
-    /// A consumer jar participates in the client's whole exchange. The first
-    /// request reads its existing cookie, a redirect writes another cookie
-    /// before the next request, and the final error response is written too.
-    #[cfg(feature = "cookies")]
-    #[tokio::test]
-    async fn a_consumer_cookie_store_sees_redirects_and_error_responses() {
-        use blitz_traits::net::http::HeaderValue;
-        use std::io::{Read, Write};
-
-        #[derive(Default)]
-        struct RecordingCookieStore {
-            request_header: Mutex<String>,
-            responses: Mutex<Vec<(String, Vec<String>)>>,
-        }
-
-        impl CookieStore for RecordingCookieStore {
-            fn set_cookies(
-                &self,
-                cookie_headers: &mut dyn Iterator<Item = &HeaderValue>,
-                url: &Url,
-            ) {
-                let fields = cookie_headers
-                    .filter_map(|header| header.to_str().ok().map(str::to_owned))
-                    .collect::<Vec<_>>();
-                let mut request_header = self.request_header.lock().unwrap();
-                for pair in fields
-                    .iter()
-                    .filter_map(|field| field.split(';').next())
-                    .filter(|pair| !pair.is_empty())
-                {
-                    if !request_header.is_empty() {
-                        request_header.push_str("; ");
-                    }
-                    request_header.push_str(pair);
-                }
-                self.responses
-                    .lock()
-                    .unwrap()
-                    .push((url.path().to_owned(), fields));
-            }
-
-            fn cookies(&self, _url: &Url) -> Option<HeaderValue> {
-                let header = self.request_header.lock().unwrap();
-                (!header.is_empty()).then(|| {
-                    HeaderValue::from_str(&header).expect("the fixture cookie header is valid")
-                })
-            }
-        }
-
-        let listener =
-            std::net::TcpListener::bind("127.0.0.1:0").expect("loopback listener is available");
-        let port = listener
-            .local_addr()
-            .expect("listener has an address")
-            .port();
-        let server = std::thread::spawn(move || {
-            let mut requests = Vec::new();
-            for index in 0..2 {
-                let (mut stream, _) = listener.accept().expect("the provider connects");
-                let mut head = Vec::new();
-                let mut byte = [0_u8; 1];
-                while !head.ends_with(b"\r\n\r\n") {
-                    match stream.read(&mut byte) {
-                        Ok(0) | Err(_) => break,
-                        Ok(_) => head.push(byte[0]),
-                    }
-                }
-                requests.push(String::from_utf8_lossy(&head).to_ascii_lowercase());
-                let response = if index == 0 {
-                    "HTTP/1.1 302 Found\r\nLocation: /finish\r\nSet-Cookie: redirected=one; Path=/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                } else {
-                    "HTTP/1.1 418 I'm a teapot\r\nSet-Cookie: final=two; Path=/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                };
-                stream
-                    .write_all(response.as_bytes())
-                    .expect("fixture response writes");
-            }
-            requests
-        });
-
-        let cookies = Arc::new(RecordingCookieStore {
-            request_header: Mutex::new("seed=outbound".to_owned()),
-            responses: Mutex::new(Vec::new()),
-        });
-        let provider = Provider::with_user_agent_and_cookie_provider(
-            None,
-            "FixtureBrowser/1.0",
-            Arc::clone(&cookies),
-        );
-        let result = provider
-            .fetch_response_async(Request::get(
-                Url::parse(&format!("http://127.0.0.1:{port}/start"))
-                    .expect("fixture URL is valid"),
-            ))
-            .await;
-
-        assert!(matches!(
-            result,
-            Err(ProviderError::HttpStatus { status, .. }) if status.as_u16() == 418
-        ));
-        let requests = server.join().expect("fixture server finishes");
-        assert!(requests[0].contains("cookie: seed=outbound"));
-        assert!(requests[0].contains("user-agent: fixturebrowser/1.0"));
-        assert!(requests[1].contains("cookie: seed=outbound; redirected=one"));
-
-        let responses = cookies.responses.lock().unwrap();
-        assert_eq!(responses.len(), 2);
-        assert_eq!(responses[0].0, "/start");
-        assert!(responses[0].1[0].starts_with("redirected=one;"));
-        assert_eq!(responses[1].0, "/finish");
-        assert!(responses[1].1[0].starts_with("final=two;"));
-    }
-
-    #[tokio::test]
-    async fn a_data_url_reports_the_mime_type_it_declares() {
-        let provider = Provider::new(None);
-        let request = Request::get(
-            // "hello" as base64, typed as a wasm module.
-            Url::parse("data:application/wasm;base64,aGVsbG8=").unwrap(),
-        );
-
-        let response = provider
-            .fetch_response_async(request)
-            .await
-            .expect("a data URL resolves without a network");
-
-        assert_eq!(
-            response
-                .headers
-                .get(blitz_traits::platform::http::header::CONTENT_TYPE)
-                .and_then(|value| value.to_str().ok()),
-            Some("application/wasm"),
-        );
-        assert_eq!(response.body.as_ref(), b"hello");
-        assert_eq!(response.status, StatusCode::OK);
-    }
-
-    /// A `file:` URL has no server and therefore no headers. The absence has to
-    /// be an absence, not an empty string or a guess: a caller requiring a
-    /// `Content-Type` must be able to tell "nobody said" from "said the wrong
-    /// thing".
-    #[tokio::test]
-    async fn a_file_url_has_no_content_type_to_report() {
-        let path = std::env::temp_dir().join("blitz-net-fetch-response-test.txt");
-        std::fs::write(&path, b"file body").expect("a scratch file");
-
-        let provider = Provider::new(None);
-        let url = Url::from_file_path(&path).expect("an absolute path");
-        let response = provider
-            .fetch_response_async(Request::get(url))
-            .await
-            .expect("a file URL resolves without a network");
-
-        assert!(
-            response
-                .headers
-                .get(blitz_traits::platform::http::header::CONTENT_TYPE)
-                .is_none(),
-            "a file has no server to declare a type"
-        );
-        assert_eq!(response.body.as_ref(), b"file body");
-
-        let _ = std::fs::remove_file(&path);
-    }
-
-    /// `fetch_async` is untouched by this addition, which is the point of
-    /// adding a method rather than widening it: every existing caller keeps the
-    /// cheap `(String, Bytes)` shape and allocates no `HeaderMap`.
-    #[tokio::test]
-    async fn fetch_async_still_returns_the_narrow_shape() {
-        let provider = Provider::new(None);
-        let (url, bytes) = provider
-            .fetch_async(Request::get(
-                Url::parse("data:text/plain;base64,aGVsbG8=").unwrap(),
-            ))
-            .await
-            .expect("a data URL resolves without a network");
-
-        assert!(url.starts_with("data:"));
-        assert_eq!(bytes.as_ref(), b"hello");
-    }
 }

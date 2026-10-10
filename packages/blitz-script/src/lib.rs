@@ -41,16 +41,29 @@
 #[cfg(feature = "debug-control")]
 mod debug_control;
 mod document;
+mod docwrite;
 mod dom;
+pub mod dom_exception;
+mod domc;
 mod event_handler;
 mod fetch;
+mod fonts;
+mod job_budget;
+pub mod media;
 mod module;
+mod raster;
 mod runtime;
 pub mod script_stats;
 mod state;
 mod timers;
 
+// Embedders extending the native script surface must use the same Boa types
+// and registry dependencies as this engine.
+pub use boa_engine;
+pub use boa_runtime;
+
 #[cfg(feature = "debug-control")]
 pub use debug_control::DebugController;
 pub use document::ScriptDocument;
 pub use fetch::{DefaultScriptFetcher, FetchError, ScriptFetcher};
+pub use raster::raster_image_for_attribute;

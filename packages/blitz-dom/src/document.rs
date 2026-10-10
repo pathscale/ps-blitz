@@ -145,6 +145,19 @@ pub trait Document: Any + 'static {
         false
     }
 
+    /// Drain immediate work for a host's settle loop.
+    ///
+    /// Pass `run_timers = true` only on the first pass to allow one batch of
+    /// due timer and animation callbacks. Subsequent passes must leave those
+    /// callbacks scheduled while draining scripts and microtasks.
+    ///
+    /// Documents that execute timers must override this method. Wrappers that
+    /// poll child documents must propagate the policy to their children.
+    fn poll_for_settle(&mut self, task_context: Option<TaskContext>, run_timers: bool) -> bool {
+        let _ = run_timers;
+        self.poll(task_context)
+    }
+
     /// Get the [`Document`]'s id
     fn id(&self) -> usize {
         self.inner().id
@@ -242,6 +255,12 @@ pub struct BaseDocument {
     /// Changes recorded for a script's `MutationObserver`, or `None` while no
     /// observer is registered. See [`crate::DomMutation`].
     pub(crate) mutation_log: Option<Vec<crate::DomMutation>>,
+    /// Content handler changes, independent of MutationObserver recording.
+    inline_handler_changes: Vec<(NodeId, crate::QualName, Option<crate::node::AttrAtom>)>,
+    /// Weak registrations make pages without live ranges pay only a branch.
+    pub(crate) live_ranges: Vec<crate::range::WeakRange>,
+    /// Script Selection shares the same live range object as getRangeAt().
+    pub dom_selection: Option<crate::LiveRange>,
     /// CSS media type used to evaluate `@media` rules.
     pub(crate) media_type: MediaType,
     /// Strategy for Stylo's style traversal during `resolve`.
@@ -263,6 +282,11 @@ pub struct BaseDocument {
     /// There is no way to create the tree - publicly or privately - that would invalidate that invariant.
     pub(crate) nodes: Box<NodeTree>,
 
+    /// Batch cache invalidation across recursive subtree teardown.
+    node_drop_depth: usize,
+    dropped_node_ids: HashSet<NodeId>,
+    dropped_node_parents: HashSet<NodeId>,
+
     /// The id of the root node (a Document node)
     pub(crate) root_node_id: NodeId,
 
@@ -276,6 +300,23 @@ pub struct BaseDocument {
     /// negative z-index fixed layer inside an `isolation: isolate` ancestor
     /// paints beneath every background between them and disappears.
     pub(crate) hoisted_fixed_parents: HashMap<NodeId, NodeId>,
+
+    /// Authored child slots restored temporarily for static-position layout.
+    pub(crate) hoisted_fixed_indices: HashMap<NodeId, usize>,
+
+    /// Escaped absolute boxes whose explicit axes follow a containing block.
+    pub(crate) abspos_placements: Vec<crate::layout::abspos::AbsposPlacement>,
+
+    /// Maintained during the existing fixed/sticky walk on style or tree changes.
+    pub(crate) abspos_candidates: Vec<crate::layout::abspos::AbsposCandidate>,
+    pub(crate) abspos_candidate_ids: HashSet<NodeId>,
+    pub(crate) abspos_inputs: HashMap<NodeId, crate::layout::abspos::AbsposInputs>,
+    /// Candidates whose hypothetical layouts or styles were written this pass.
+    pub(crate) abspos_written: HashSet<NodeId>,
+    pub(crate) abspos_candidates_dirty: bool,
+    pub(crate) abspos_layout_dirty: bool,
+    /// Whether the normal root layout missed its PerformLayout cache.
+    pub(crate) abspos_normal_layout: bool,
 
     /// Every `position: fixed` node whose containing block is the viewport,
     /// which is every one of them except those under a transformed ancestor.
@@ -317,7 +358,10 @@ pub struct BaseDocument {
     /// Collected while flushing styles so that `resolve_hoisted_clips` visits
     /// those contexts alone, rather than scanning every node in the document
     /// after every layout to find the handful that hoist anything at all.
-    pub(crate) hoisted_clip_hosts: Vec<NodeId>,
+    pub(crate) hoisted_clip_hosts: HashSet<NodeId>,
+
+    /// Contexts with hoisted paint children, maintained by the style flush.
+    pub(crate) hoisted_position_hosts: HashSet<NodeId>,
 
     // Stylo
     /// The Stylo engine
@@ -401,6 +445,15 @@ pub struct BaseDocument {
     pub(crate) nodes_to_id: HashMap<String, SmallVec<[NodeId; 1]>>,
     /// Map of `<style>` and `<link>` node IDs to their associated stylesheet
     pub(crate) nodes_to_stylesheet: BTreeMap<NodeId, DocumentStyleSheet>,
+    /// `<style>`/`<link>` nodes whose sheet is in the document Stylist. Shadow
+    /// tree sheets live elsewhere, and Stylo panics on removing a sheet it
+    /// does not hold.
+    pub(crate) document_sheet_nodes: HashSet<NodeId>,
+    /// The shadow root each shadow-tree `<style>`/`<link>` sheet was installed
+    /// into. Unloading happens after the node is detached, when its root can
+    /// no longer be found by walking up, so the owner is remembered here.
+    #[cfg(feature = "shadow-dom")]
+    pub(crate) shadow_sheet_roots: HashMap<NodeId, NodeId>,
     /// Stylesheets added by the useragent
     /// where the key is the hashed CSS
     pub(crate) ua_stylesheets: HashMap<String, DocumentStyleSheet>,
@@ -433,9 +486,20 @@ pub struct BaseDocument {
     /// Nodes that are shadow hosts (have an attached shadow root)
     #[cfg(feature = "shadow-dom")]
     pub(crate) shadow_host_nodes: HashSet<NodeId>,
+    #[cfg(feature = "shadow-dom")]
+    pub(crate) dirty_shadow_hosts: HashSet<NodeId>,
+    #[cfg(feature = "shadow-dom")]
+    pub(crate) pending_slot_changes: Vec<NodeId>,
+    #[cfg(feature = "shadow-dom")]
+    pub(crate) signaled_slots: HashSet<NodeId>,
+    #[cfg(feature = "shadow-dom")]
+    pub(crate) adopted_stylesheets: HashMap<NodeId, Vec<DocumentStyleSheet>>,
     /// Nodes that have an attached custom element controller
     #[cfg(feature = "shadow-dom")]
     pub(crate) custom_element_nodes: HashSet<NodeId>,
+
+    /// Native candidate index and mutation reactions for JavaScript custom elements.
+    pub(crate) script_custom_elements: crate::node::script_custom_element::Registry,
 
     /// Cache of loaded images, keyed by URL. Allows reusing images across multiple
     /// elements without re-fetching from the network.
@@ -449,6 +513,12 @@ pub struct BaseDocument {
     // Tracks in-flight "critical" resources (e.g. stylesheets linked from the `<head>`),
     // keyed by request id
     pub(crate) pending_critical_resources: HashSet<usize>,
+
+    pub(crate) web_fonts: Vec<Arc<crate::net::web_fonts::WebFont>>,
+    pub(crate) font_epoch: usize,
+    document_referrer: String,
+    document_content_type: String,
+    document_window_focused: bool,
 
     // Service providers
     /// Network provider. Can be used to fetch assets.
@@ -585,12 +655,25 @@ impl BaseDocument {
         let (tx, rx) = channel();
 
         let mut doc = Self {
+            node_drop_depth: 0,
+            dropped_node_ids: HashSet::new(),
+            dropped_node_parents: HashSet::new(),
             hoisted_fixed_parents: HashMap::new(),
+            hoisted_fixed_indices: HashMap::new(),
+            abspos_placements: Vec::new(),
+            abspos_candidates: Vec::new(),
+            abspos_candidate_ids: HashSet::new(),
+            abspos_inputs: HashMap::new(),
+            abspos_written: HashSet::new(),
+            abspos_candidates_dirty: true,
+            abspos_layout_dirty: true,
+            abspos_normal_layout: false,
             fixed_nodes: Vec::new(),
             fixed_scroll_offset: crate::Point::ZERO,
             sticky_nodes: Vec::new(),
             sticky_offsets: HashMap::new(),
-            hoisted_clip_hosts: Vec::new(),
+            hoisted_clip_hosts: HashSet::new(),
+            hoisted_position_hosts: HashSet::new(),
             id,
             tx,
             rx: Some(rx),
@@ -613,9 +696,15 @@ impl BaseDocument {
             devtool_settings: DevtoolSettings::default(),
             viewport_scroll: crate::Point::ZERO,
             mutation_log: None,
+            inline_handler_changes: Vec::new(),
+            live_ranges: Vec::new(),
+            dom_selection: None,
             url: base_url,
             ua_stylesheets: HashMap::new(),
             nodes_to_stylesheet: BTreeMap::new(),
+            document_sheet_nodes: HashSet::new(),
+            #[cfg(feature = "shadow-dom")]
+            shadow_sheet_roots: HashMap::new(),
             font_ctx,
             #[cfg(feature = "parallel-construct")]
             thread_font_contexts: ThreadLocal::new(),
@@ -645,13 +734,27 @@ impl BaseDocument {
             #[cfg(feature = "shadow-dom")]
             shadow_host_nodes: HashSet::new(),
             #[cfg(feature = "shadow-dom")]
+            dirty_shadow_hosts: HashSet::new(),
+            #[cfg(feature = "shadow-dom")]
+            pending_slot_changes: Vec::new(),
+            #[cfg(feature = "shadow-dom")]
+            signaled_slots: HashSet::new(),
+            #[cfg(feature = "shadow-dom")]
+            adopted_stylesheets: HashMap::new(),
+            #[cfg(feature = "shadow-dom")]
             custom_element_nodes: HashSet::new(),
 
             deferred_construction_nodes: Vec::new(),
             paint_damage: Default::default(),
+            script_custom_elements: Default::default(),
             image_cache: HashMap::new(),
             pending_images: HashMap::new(),
             pending_critical_resources: HashSet::new(),
+            web_fonts: Vec::new(),
+            font_epoch: 0,
+            document_referrer: String::new(),
+            document_content_type: String::from("text/html"),
+            document_window_focused: false,
             controls_to_form: HashMap::new(),
             net_provider,
             navigation_provider,
@@ -738,7 +841,10 @@ impl BaseDocument {
     /// Wrapper around [`crate::net::stamped_request`]. Use the free function
     /// when `&self` would conflict with a held `&mut` borrow on a field.
     pub(crate) fn build_request(&self, url: url::Url) -> Request {
-        crate::net::stamped_request(url, self.abort_signal.as_ref())
+        crate::net::with_referrer(
+            crate::net::stamped_request(url, self.abort_signal.as_ref()),
+            self.url(),
+        )
     }
 
     pub fn favicon_url(&self) -> Option<String> {
@@ -977,7 +1083,80 @@ impl BaseDocument {
         self.sub_document_nodes.iter().copied().collect()
     }
 
-    pub fn set_sub_document(&mut self, node_id: NodeId, sub_document: Box<dyn Document>) {
+    /// Install the effective navigation referrer and response MIME type.
+    pub fn set_navigation_metadata(&mut self, request: &Request, content_type: Option<&str>) {
+        self.document_referrer = request
+            .headers
+            .get(blitz_traits::net::http::header::REFERER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| Url::parse(value).ok())
+            .map(|mut url| {
+                let _ = url.set_username("");
+                let _ = url.set_password(None);
+                url.set_fragment(None);
+                url.to_string()
+            })
+            .unwrap_or_default();
+        self.document_content_type = content_type
+            .and_then(|value| value.split(';').next())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("text/html")
+            .to_ascii_lowercase();
+    }
+
+    pub fn referrer(&self) -> &str {
+        &self.document_referrer
+    }
+
+    pub fn content_type(&self) -> &str {
+        &self.document_content_type
+    }
+
+    pub fn window_focused(&self) -> bool {
+        self.document_window_focused
+    }
+
+    /// Hosts must deliver focus changes on the document's owning thread.
+    pub fn set_window_focused(&mut self, focused: bool) {
+        self.document_window_focused = focused;
+        for id in self.sub_document_node_ids() {
+            if let Some(child) = self
+                .get_node_mut(id)
+                .and_then(|node| node.element_data_mut())
+                .and_then(|element| element.sub_doc_data_mut())
+            {
+                child.inner_mut().set_window_focused(focused);
+            }
+        }
+    }
+
+    /// 0 is standards, 1 is limited quirks, and 2 is quirks.
+    pub fn set_document_quirks_mode(&mut self, mode: u8) {
+        if let NodeData::Document(data) = &mut self.root_node_mut().data {
+            data.quirks_mode = mode;
+        }
+    }
+
+    pub fn compat_mode(&self) -> &'static str {
+        if matches!(&self.root_node().data, NodeData::Document(data) if data.quirks_mode == 2) {
+            "BackCompat"
+        } else {
+            "CSS1Compat"
+        }
+    }
+
+    pub fn begin_document_stream(&mut self) {
+        self.reset_web_fonts();
+        self.pending_critical_resources.clear();
+        self.pending_images.clear();
+        self.set_document_quirks_mode(0);
+    }
+
+    pub fn set_sub_document(&mut self, node_id: NodeId, mut sub_document: Box<dyn Document>) {
+        sub_document
+            .inner_mut()
+            .set_window_focused(self.document_window_focused);
         self.nodes[node_id]
             .element_data_mut()
             .unwrap()
@@ -1002,6 +1181,23 @@ impl BaseDocument {
     ///
     /// Returns `true` if any sub-document reported changes.
     pub fn poll_subdocuments(&mut self, waker: Option<&Waker>) -> bool {
+        self.poll_subdocuments_inner(waker, None)
+    }
+
+    /// Propagate a settle pass's timer policy to every child document.
+    pub fn poll_subdocuments_for_settle(
+        &mut self,
+        waker: Option<&Waker>,
+        run_timers: bool,
+    ) -> bool {
+        self.poll_subdocuments_inner(waker, Some(run_timers))
+    }
+
+    fn poll_subdocuments_inner(
+        &mut self,
+        waker: Option<&Waker>,
+        settle_timers: Option<bool>,
+    ) -> bool {
         let mut has_changes = false;
         let node_ids: Vec<NodeId> = self.sub_document_nodes.iter().copied().collect();
         for node_id in node_ids {
@@ -1013,7 +1209,10 @@ impl BaseDocument {
                 continue;
             };
             let task_context = waker.map(TaskContext::from_waker);
-            has_changes |= sub_doc.poll(task_context);
+            has_changes |= match settle_timers {
+                Some(run_timers) => sub_doc.poll_for_settle(task_context, run_timers),
+                None => sub_doc.poll(task_context),
+            };
         }
         has_changes
     }
@@ -1097,6 +1296,7 @@ impl BaseDocument {
         // `children` list (which holds light-DOM children); it is referenced via
         // the host's `ElementData::shadow_root` field instead.
         self.nodes[shadow_root_id].parent = Some(host_id);
+        self.nodes[shadow_root_id].owner_document = self.nodes[host_id].owner_document;
         if self.nodes[host_id].flags.is_in_document() {
             self.nodes[shadow_root_id]
                 .flags
@@ -1108,6 +1308,10 @@ impl BaseDocument {
             .expect("Shadow host must be an element")
             .shadow_root = Some(shadow_root_id);
         self.shadow_host_nodes.insert(host_id);
+        self.dirty_shadow_hosts.insert(host_id);
+        self.nodes[host_id].set_restyle_hint(
+            style::invalidation::element::restyle_hints::RestyleHint::restyle_subtree(),
+        );
 
         // Host needs its box tree rebuilt to account for the shadow tree.
         self.nodes[host_id].insert_damage(ALL_DAMAGE);
@@ -1125,6 +1329,11 @@ impl BaseDocument {
         if let Some(shadow_root_id) = shadow_root_id {
             self.drop_node_ignoring_parent(shadow_root_id);
             self.shadow_host_nodes.remove(&host_id);
+            self.dirty_shadow_hosts.remove(&host_id);
+            self.nodes[host_id].flattened_children = None;
+            self.nodes[host_id].set_restyle_hint(
+                style::invalidation::element::restyle_hints::RestyleHint::restyle_subtree(),
+            );
             self.nodes[host_id].insert_damage(ALL_DAMAGE);
             self.nodes[host_id].mark_ancestors_dirty();
         }
@@ -1222,17 +1431,400 @@ impl BaseDocument {
     pub fn create_node(&mut self, node_data: NodeData) -> NodeId {
         let tree_ptr = self.nodes.as_mut() as *mut NodeTree;
         let guard = self.guard.clone();
-
-        self.nodes
-            .insert_with_key(|id| Node::new(tree_ptr, id, guard, node_data))
+        let is_document = matches!(node_data, NodeData::Document(_));
+        let id = self
+            .nodes
+            .insert_with_key(|id| Node::new(tree_ptr, id, guard, node_data));
+        if !is_document {
+            self.nodes[id].owner_document = Some(self.root_node_id);
+        }
+        self.register_script_custom_element(id);
+        if let Some(attributes) = self.nodes[id]
+            .element_data()
+            .and_then(|element| element.inline_event_attributes.as_deref())
+        {
+            self.inline_handler_changes.extend(
+                attributes
+                    .iter()
+                    .map(|attr| (id, attr.name.clone(), Some(attr.value.clone()))),
+            );
+        }
+        id
     }
 
-    /// Remove a node from the node tree, clearing any interaction state
-    /// (hover/active/focus/mousedown/selection/drag/scrollbar) that references
-    /// it so that stale NodeIds are never dereferenced after the slot is freed.
+    pub fn add_to_document_id_map(&mut self, document_id: NodeId, id: &str, node_id: NodeId) {
+        if document_id == self.root_node_id || id.is_empty() {
+            return;
+        }
+        let Some(node) = self.get_node_mut(document_id) else {
+            return;
+        };
+        let NodeData::Document(data) = &mut node.data else {
+            return;
+        };
+        let candidates = data.ids.entry(id.to_owned()).or_default();
+        if !candidates.contains(&node_id) {
+            candidates.push(node_id);
+        }
+    }
+
+    pub fn remove_from_document_id_map(&mut self, document_id: NodeId, id: &str, node_id: NodeId) {
+        if document_id == self.root_node_id {
+            return;
+        }
+        let Some(node) = self.get_node_mut(document_id) else {
+            return;
+        };
+        let NodeData::Document(data) = &mut node.data else {
+            return;
+        };
+        if let Some(candidates) = data.ids.get_mut(id) {
+            candidates.retain(|candidate| *candidate != node_id);
+            if candidates.is_empty() {
+                data.ids.remove(id);
+            }
+        }
+    }
+
+    /// Indexed lookup scoped to one document. Parent child-list membership
+    /// excludes removed nodes, template contents, and shadow trees.
+    pub fn get_element_by_id_in(&self, document_id: NodeId, id: &str) -> Option<NodeId> {
+        if document_id == self.root_node_id {
+            return self.get_element_by_id(id);
+        }
+        if id.is_empty() {
+            return None;
+        }
+        let NodeData::Document(data) = &self.get_node(document_id)?.data else {
+            return None;
+        };
+        data.ids
+            .get(id)?
+            .iter()
+            .filter_map(|candidate| {
+                let mut current = *candidate;
+                let mut path = Vec::new();
+                while current != document_id {
+                    let node = self.get_node(current)?;
+                    let parent_id = node.parent?;
+                    let parent = self.get_node(parent_id)?;
+                    path.push(parent.index_of_child(current)?);
+                    current = parent_id;
+                }
+                path.reverse();
+                Some((path, *candidate))
+            })
+            .min_by(|left, right| left.0.cmp(&right.0))
+            .map(|(_, node_id)| node_id)
+    }
+
+    /// Remove detached or freed ids from every persistent rendering cache.
+    ///
+    /// DOM ancestry alone cannot find the owners: fixed boxes can belong to
+    /// the root's layout list and another ancestor's stacking context, while
+    /// inline boxes and table cells have additional flattened representations.
+    /// Invalidate those owners before this mutation returns. Hidden subtrees
+    /// retain caches, so leaving cleanup until resolve is insufficient.
+    pub(crate) fn invalidate_node_references(
+        &mut self,
+        removed: &HashSet<NodeId>,
+        mut parents: HashSet<NodeId>,
+    ) {
+        if removed.is_empty() {
+            return;
+        }
+
+        fn layout_references_removed(
+            layout: &parley::Layout<TextBrush>,
+            removed: &HashSet<NodeId>,
+        ) -> bool {
+            layout
+                .inline_boxes()
+                .iter()
+                .any(|ibox| removed.contains(&NodeId::from_u64(ibox.id)))
+                || layout.styles().iter().any(|style| {
+                    removed.contains(&style.brush.id)
+                        || style
+                            .brush
+                            .text_node
+                            .is_some_and(|id| removed.contains(&id))
+                })
+        }
+
+        // An anonymous origin can disappear while its hoisted fixed box
+        // survives. Reconstruct the root edge too, so construction can give
+        // that box a current authored origin.
+        for (&id, &origin) in &self.hoisted_fixed_parents {
+            if removed.contains(&id) || removed.contains(&origin) {
+                if let Some(node) = self.nodes.get(id) {
+                    parents.extend(node.layout_parent.get());
+                }
+            }
+        }
+
+        self.fixed_nodes.retain(|id| !removed.contains(id));
+        self.sticky_nodes.retain(|id| !removed.contains(id));
+        self.sticky_offsets.retain(|id, _| !removed.contains(id));
+        self.hoisted_fixed_parents
+            .retain(|id, origin| !removed.contains(id) && !removed.contains(origin));
+        let fixed_parents = &self.hoisted_fixed_parents;
+        self.hoisted_fixed_indices
+            .retain(|id, _| fixed_parents.contains_key(id));
+        self.hoisted_clip_hosts.retain(|id| !removed.contains(id));
+        self.hoisted_position_hosts
+            .retain(|id| !removed.contains(id));
+
+        // These snapshots contain both box ids and containing-block/parent
+        // ids. Discard the complete snapshots rather than retaining inputs
+        // computed against a box tree that has just changed.
+        self.abspos_placements.clear();
+        self.abspos_candidates.clear();
+        self.abspos_candidate_ids.clear();
+        self.abspos_inputs.clear();
+        self.abspos_written.clear();
+        self.abspos_candidates_dirty = true;
+        self.abspos_layout_dirty = true;
+
+        let mut dirty = HashSet::new();
+        for (id, node) in self.nodes.iter_mut() {
+            // Detached nodes still owned by script keep their internal box
+            // tree, but must lose any edge back into the live layout tree.
+            if removed.contains(&id) {
+                if node
+                    .layout_parent
+                    .get()
+                    .is_some_and(|parent| !removed.contains(&parent))
+                {
+                    node.layout_parent.set(None);
+                }
+                continue;
+            }
+
+            let mut reconstruct = parents.contains(&id);
+            reconstruct |= node
+                .layout_children
+                .get_mut()
+                .as_ref()
+                .is_some_and(|children| children.iter().any(|id| removed.contains(id)));
+            let mut repaint = node
+                .paint_children
+                .get_mut()
+                .as_ref()
+                .is_some_and(|children| children.iter().any(|id| removed.contains(id)));
+
+            let old_anonymous_count = node.anonymous_blocks.len();
+            node.anonymous_blocks.retain(|id| !removed.contains(id));
+            reconstruct |= old_anonymous_count != node.anonymous_blocks.len();
+            if node.is_anonymous() {
+                let old_child_count = node.children.len();
+                node.children.retain(|id| !removed.contains(id));
+                reconstruct |= old_child_count != node.children.len();
+            }
+            if node
+                .layout_parent
+                .get()
+                .is_some_and(|parent| removed.contains(&parent))
+            {
+                node.layout_parent.set(None);
+                reconstruct = true;
+            }
+
+            if let Some(context) = node.stacking_context.as_mut() {
+                let old_count = context.children.len();
+                context.children.retain(|child| {
+                    !removed.contains(&child.node_id)
+                        && !child.clip_ancestors.iter().any(|id| removed.contains(id))
+                });
+                if old_count != context.children.len() {
+                    // Filtering changes the split between negative and
+                    // non-negative children as well as the content bounds.
+                    context.sort();
+                    context.content_area = taffy::Rect::ZERO;
+                    repaint = true;
+                }
+            }
+
+            #[cfg(feature = "shadow-dom")]
+            {
+                for children in [
+                    node.flattened_children.as_mut(),
+                    node.assigned_nodes.as_mut(),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    let old_count = children.len();
+                    children.retain(|id| !removed.contains(id));
+                    reconstruct |= old_count != children.len();
+                }
+                if node.assigned_slot.is_some_and(|id| removed.contains(&id)) {
+                    node.assigned_slot = None;
+                    reconstruct = true;
+                }
+                if let Some(root) = node.shadow_root_data_mut() {
+                    let old_count = root.slots.len() + root.slottables.len();
+                    root.slots.retain(|id| !removed.contains(id));
+                    root.slottables.retain(|id| !removed.contains(id));
+                    root.stylesheet_nodes.retain(|id| !removed.contains(id));
+                    reconstruct |= old_count != root.slots.len() + root.slottables.len();
+                }
+            }
+
+            let mut table_removed = false;
+            if let Some(element) = node.data.downcast_element_mut() {
+                for pseudo in [&mut element.before, &mut element.after] {
+                    if pseudo.is_some_and(|id| removed.contains(&id)) {
+                        *pseudo = None;
+                        reconstruct = true;
+                    }
+                }
+                if element
+                    .inline_layout_data
+                    .as_ref()
+                    .is_some_and(|inline| layout_references_removed(&inline.layout, removed))
+                {
+                    element.inline_layout_data = None;
+                    reconstruct = true;
+                }
+                if element
+                    .list_item_data
+                    .as_ref()
+                    .is_some_and(|item| match &item.position {
+                        crate::node::ListItemLayoutPosition::Outside(layout) => {
+                            layout_references_removed(layout, removed)
+                        }
+                        crate::node::ListItemLayoutPosition::Inside => false,
+                    })
+                {
+                    element.list_item_data = None;
+                    reconstruct = true;
+                }
+                if let SpecialElementData::TableRoot(context) = &element.special_data {
+                    table_removed = context.references_removed_nodes(removed);
+                }
+                if table_removed {
+                    element.special_data = SpecialElementData::None;
+                    reconstruct = true;
+                }
+                #[cfg(feature = "shadow-dom")]
+                if element
+                    .assigned_slot
+                    .is_some_and(|id| removed.contains(&id))
+                {
+                    element.assigned_slot = None;
+                    reconstruct = true;
+                }
+            }
+            if table_removed {
+                node.flags.remove(NodeFlags::IS_TABLE_ROOT);
+            }
+
+            if reconstruct || repaint {
+                node.layout_children.get_mut().take();
+                node.paint_children.get_mut().take();
+                if let Some(element) = node.data.downcast_element_mut() {
+                    element.inline_layout_data = None;
+                }
+                dirty.insert(id);
+            }
+        }
+
+        // Clear ancestor layout caches immediately, including ancestors that
+        // the next incremental traversal would otherwise skip. Follow both
+        // trees and tolerate parents already freed by a root-first drop.
+        let mut stack: Vec<NodeId> = dirty.iter().copied().collect();
+        let mut visited = HashSet::new();
+        while let Some(id) = stack.pop() {
+            if !visited.insert(id) || removed.contains(&id) {
+                continue;
+            }
+            let Some(node) = self.nodes.get_mut(id) else {
+                continue;
+            };
+            stack.extend(node.parent);
+            stack.extend(node.layout_parent.get());
+            #[cfg(feature = "shadow-dom")]
+            {
+                stack.extend(node.assigned_slot);
+                if let Some(root) = node.shadow_root_data() {
+                    stack.push(root.host);
+                }
+            }
+            node.set_dirty_descendants();
+            if node.stylo_element_data_opt().is_some() {
+                node.insert_damage(if dirty.contains(&id) {
+                    ALL_DAMAGE
+                } else {
+                    crate::layout::damage::ONLY_RELAYOUT
+                        | style::selector_parser::RestyleDamage::REPAINT
+                });
+                node.cache_mut().clear();
+            }
+            if let Some(inline) = node
+                .data
+                .downcast_element_mut()
+                .and_then(|element| element.inline_layout_data.as_mut())
+            {
+                inline.content_widths = None;
+            }
+        }
+
+        #[cfg(feature = "shadow-dom")]
+        {
+            let nodes = &self.nodes;
+            self.shadow_host_nodes.retain(|id| nodes.contains_key(*id));
+            self.dirty_shadow_hosts.retain(|id| nodes.contains_key(*id));
+            self.pending_slot_changes
+                .retain(|id| nodes.contains_key(*id));
+            self.signaled_slots.retain(|id| nodes.contains_key(*id));
+            self.dirty_shadow_hosts
+                .extend(self.shadow_host_nodes.iter().copied());
+        }
+
+        self.controls_to_form
+            .retain(|control, form| !removed.contains(control) && !removed.contains(form));
+        if !dirty.is_empty() {
+            self.shell_provider.request_redraw();
+        }
+
+        // PaintDamage deliberately keeps old rectangles until resolve so
+        // pixels formerly occupied by removed boxes are included in damage.
+    }
+
+    fn purge_dropped_node_references(&mut self) {
+        if self.node_drop_depth != 0 || self.dropped_node_ids.is_empty() {
+            return;
+        }
+        let removed = std::mem::take(&mut self.dropped_node_ids);
+        let parents = std::mem::take(&mut self.dropped_node_parents);
+        self.invalidate_node_references(&removed, parents);
+    }
+
+    /// Remove a node from the node tree, clearing interaction state and
+    /// invalidating rendering references before the surrounding drop returns.
     pub(crate) fn remove_node_from_tree(&mut self, node_id: NodeId) -> Option<Node> {
         self.clear_interaction_state_for_removed_node(node_id);
-        self.nodes.remove(node_id)
+        let indexed = self.get_node(node_id).and_then(|node| {
+            Some((
+                node.owner_document?,
+                node.element_data()?.id.as_ref()?.to_string(),
+            ))
+        });
+        if let Some((document_id, id)) = indexed {
+            self.remove_from_document_id_map(document_id, &id, node_id);
+        }
+        self.forget_script_custom_element(node_id);
+        let node = self.nodes.remove(node_id);
+        if let Some(node) = &node {
+            self.dropped_node_ids.insert(node_id);
+            self.dropped_node_parents.extend(
+                [node.parent, node.layout_parent.get()]
+                    .into_iter()
+                    .flatten(),
+            );
+            self.purge_dropped_node_references();
+        }
+        node
     }
 
     /// The nearest element ancestor of `node_id` that is still in the
@@ -1283,6 +1875,9 @@ impl BaseDocument {
         if self.hover_hit_node_id == Some(node_id) {
             self.hover_hit_node_id = None;
         }
+        if self.semantic_hover_node_id == Some(node_id) {
+            self.semantic_hover_node_id = None;
+        }
         if self.active_node_id == Some(node_id) {
             self.active_node_id = self.nearest_surviving_element_ancestor(node_id);
         }
@@ -1313,6 +1908,12 @@ impl BaseDocument {
         if drag_references_node {
             self.drag_mode = DragMode::None;
         }
+        if matches!(
+            &self.scroll_animation,
+            ScrollAnimationState::Fling(state) if state.target == node_id
+        ) {
+            self.scroll_animation = ScrollAnimationState::None;
+        }
         self.scrollbar_activity.remove(&node_id);
 
         // The form-owner map is keyed by control id and was never pruned, so a
@@ -1333,6 +1934,7 @@ impl BaseDocument {
         node_id: NodeId,
         on_drop: &mut dyn FnMut(NodeId),
     ) -> Option<Node> {
+        self.node_drop_depth += 1;
         let mut node = self.remove_node_from_tree(node_id);
         if let Some(node) = &mut node {
             on_drop(node_id);
@@ -1346,6 +1948,12 @@ impl BaseDocument {
             for &child in &node.children {
                 self.drop_node_ignoring_parent_with(child, on_drop);
             }
+            if let Some(contents) = node
+                .element_data()
+                .and_then(|element| element.template_contents)
+            {
+                self.drop_node_ignoring_parent_with(contents, on_drop);
+            }
 
             // Anonymous blocks live only in the slab, so deallocate the ones this
             // node owns rather than leaking them.
@@ -1358,10 +1966,13 @@ impl BaseDocument {
             #[cfg(feature = "shadow-dom")]
             if let Some(shadow_root_id) = node.shadow_root_id() {
                 self.shadow_host_nodes.remove(&node_id);
+                self.dirty_shadow_hosts.remove(&node_id);
                 self.custom_element_nodes.remove(&node_id);
-                self.drop_node_ignoring_parent(shadow_root_id);
+                self.drop_node_ignoring_parent_with(shadow_root_id, on_drop);
             }
         }
+        self.node_drop_depth -= 1;
+        self.purge_dropped_node_references();
         node
     }
 
@@ -1375,12 +1986,15 @@ impl BaseDocument {
         }
 
         // Free any anonymous blocks that this block owns before removing it.
+        self.node_drop_depth += 1;
         let nested = std::mem::take(&mut self.nodes[anon_id].anonymous_blocks);
         for nested_id in nested {
             self.deallocate_anonymous_block(nested_id);
         }
 
         self.remove_node_from_tree(anon_id);
+        self.node_drop_depth -= 1;
+        self.purge_dropped_node_references();
     }
 
     pub fn create_text_node(&mut self, text: &str) -> NodeId {
@@ -1406,9 +2020,38 @@ impl BaseDocument {
         }
 
         let children = node.children.clone();
+        let template_contents = node
+            .element_data()
+            .and_then(|element| element.template_contents);
+        let owner_document = node.owner_document;
+        let markup = node.markup.clone();
+        let inert_script = node
+            .flags
+            .contains(crate::node::NodeFlags::IS_PARSER_INERT_SCRIPT);
 
         // Create new node
         let new_node_id = self.create_node(data);
+        self.nodes[new_node_id].owner_document = owner_document;
+        self.nodes[new_node_id].markup = markup;
+        self.nodes[new_node_id]
+            .flags
+            .set(crate::node::NodeFlags::IS_PARSER_INERT_SCRIPT, inert_script);
+        if let Some(document_id) = owner_document {
+            let id = self.nodes[new_node_id]
+                .element_data()
+                .and_then(|element| element.id.as_ref())
+                .map(ToString::to_string);
+            if let Some(id) = id {
+                self.add_to_document_id_map(document_id, &id, new_node_id);
+            }
+        }
+        if let Some(contents) = template_contents {
+            let cloned_contents = self.deep_clone_node(contents);
+            self.nodes[new_node_id]
+                .element_data_mut()
+                .expect("template clone must be an element")
+                .template_contents = Some(cloned_contents);
+        }
 
         // Recursively clone children
         let new_children: ThinVec<NodeId> = children
@@ -1417,6 +2060,7 @@ impl BaseDocument {
             .collect();
         for &child_id in &new_children {
             self.nodes[child_id].parent = Some(new_node_id);
+            self.attach_script_custom_element_subtree(child_id, new_node_id);
         }
         self.nodes[new_node_id].children = new_children;
 
@@ -1437,6 +2081,7 @@ impl BaseDocument {
             node
         }
 
+        self.node_drop_depth += 1;
         let node = remove_pe_ignoring_parent(self, node_id);
 
         // Update child_idx values
@@ -1445,6 +2090,8 @@ impl BaseDocument {
             parent.children.retain(|id| *id != node_id);
         }
 
+        self.node_drop_depth -= 1;
+        self.purge_dropped_node_references();
         node
     }
 
@@ -1588,11 +2235,28 @@ impl BaseDocument {
     }
 
     pub fn add_stylesheet_for_node(&mut self, stylesheet: DocumentStyleSheet, node_id: NodeId) {
+        self.platform_initial_sheet_media(&stylesheet, node_id);
+        #[cfg(feature = "shadow-dom")]
+        if let Some(root_id) = self.containing_shadow_root(node_id) {
+            // A sheet that moved from the document into a shadow tree leaves
+            // the document Stylist first.
+            if self.document_sheet_nodes.remove(&node_id)
+                && let Some(old) = self.nodes_to_stylesheet.get(&node_id).cloned()
+            {
+                self.stylist.remove_stylesheet(old, &self.guard.read());
+            }
+            self.install_shadow_stylesheet(root_id, node_id, stylesheet);
+            return;
+        }
+
         let old = self.nodes_to_stylesheet.insert(node_id, stylesheet.clone());
 
-        if let Some(old) = old {
+        if let Some(old) = old
+            && self.document_sheet_nodes.contains(&node_id)
+        {
             self.stylist.remove_stylesheet(old, &self.guard.read())
         }
+        self.document_sheet_nodes.insert(node_id);
 
         // Fetch @font-face fonts
         crate::net::fetch_font_face(
@@ -1604,6 +2268,8 @@ impl BaseDocument {
             &self.shell_provider,
             &self.guard.read(),
             self.abort_signal.as_ref(),
+            &mut self.web_fonts,
+            self.font_epoch,
         );
 
         // Store data on element
@@ -1691,6 +2357,28 @@ impl BaseDocument {
             }
         };
 
+        let (resource, font_ticket) = match resource {
+            Resource::TrackedFont(bytes, overrides, ticket) => {
+                if ticket.css && ticket.epoch != self.font_epoch {
+                    ticket.finish(false);
+                    return;
+                }
+                (Resource::Font(bytes, overrides), Some(ticket))
+            }
+            resource => (resource, None),
+        };
+        if matches!(&resource, Resource::Css(_) | Resource::Font(_, _))
+            && res.node_id.is_some_and(|id| {
+                self.get_node(id)
+                    .is_none_or(|node| !node.flags.is_in_document())
+            })
+        {
+            if let Some(ticket) = font_ticket {
+                ticket.finish(false);
+            }
+            return;
+        }
+
         match resource {
             Resource::Css(css) => {
                 let node_id = res.node_id.unwrap();
@@ -1723,6 +2411,8 @@ impl BaseDocument {
                     &self.shell_provider,
                     &self.guard.read(),
                     self.abort_signal.as_ref(),
+                    &mut self.web_fonts,
+                    self.font_epoch,
                 );
             }
             Resource::Image(_kind, width, height, image_data) => {
@@ -1770,9 +2460,10 @@ impl BaseDocument {
 
                 // TODO: Investigate eliminating double-box
                 let mut global_font_ctx = self.font_ctx.lock().unwrap();
-                global_font_ctx
+                let registered = global_font_ctx
                     .collection
                     .register_fonts(font.clone(), Some(info_override));
+                let registered = !registered.is_empty();
 
                 #[cfg(feature = "parallel-construct")]
                 {
@@ -1790,7 +2481,11 @@ impl BaseDocument {
 
                 // TODO: see if we can only invalidate if resolved fonts may have changed
                 self.invalidate_inline_contexts();
+                if let Some(ticket) = font_ticket {
+                    ticket.finish(registered);
+                }
             }
+            Resource::TrackedFont(..) => unreachable!("tracked font was normalized"),
             Resource::None => {
                 // Do nothing
             }
@@ -1917,6 +2612,18 @@ impl BaseDocument {
                     other_attributes_changed: true,
                 },
             );
+        }
+    }
+
+    /// Preserve the original attributes and accumulate names changed before traversal.
+    pub(crate) fn snapshot_attribute(&mut self, node_id: NodeId, name: &markup5ever::LocalName) {
+        self.snapshot_node(node_id);
+        let opaque_node_id = TNode::opaque(&&self.nodes[node_id]);
+        if let Some(snapshot) = self.snapshots.get_mut(&opaque_node_id) {
+            let changed_attr = GenericAtomIdent(name.clone());
+            if !snapshot.changed_attrs.contains(&changed_attr) {
+                snapshot.changed_attrs.extend(std::iter::once(changed_attr));
+            }
         }
     }
 
@@ -2558,6 +3265,12 @@ impl BaseDocument {
             self.stylist.set_device(device, &guards)
         };
         self.stylist.force_stylesheet_origins_dirty(origins);
+        #[cfg(feature = "shadow-dom")]
+        for host_id in self.shadow_host_node_ids() {
+            if let Some(root_id) = self.shadow_root_id(host_id) {
+                self.invalidate_shadow_styles(root_id);
+            }
+        }
     }
 
     pub fn stylist_device(&mut self) -> &Device {
@@ -2666,7 +3379,7 @@ impl BaseDocument {
     ) -> bool {
         let has_changed = self.scroll_node_by_inner(node_id, x, y, dispatch_event);
         if has_changed {
-            self.resolve_sticky_positions();
+            self.resolve_positioned_scroll();
         }
         has_changed
     }
@@ -2871,8 +3584,7 @@ impl BaseDocument {
             // against, and the containing block a fixed box is pinned to, so
             // both move with this and not with the next relayout. See
             // `resolve_sticky_positions` and `resolve_fixed_positions`.
-            self.resolve_sticky_positions();
-            self.resolve_fixed_positions();
+            self.resolve_positioned_scroll();
         }
         has_changed
     }
@@ -3145,8 +3857,27 @@ impl BaseDocument {
         false
     }
 
+    /// SVG graphics bounds in the element's user coordinate system.
+    /// Callers must flush layout before reading, as for client rectangles.
+    pub fn get_svg_bbox(&self, node_id: NodeId) -> Option<BoundingRect> {
+        #[cfg(feature = "svg")]
+        {
+            self.svg_user_bbox(node_id)
+        }
+        #[cfg(not(feature = "svg"))]
+        {
+            let _ = node_id;
+            None
+        }
+    }
+
     /// Computes the size and position of the `Node` relative to the viewport
     pub fn get_client_bounding_rect(&self, node_id: NodeId) -> Option<BoundingRect> {
+        #[cfg(feature = "svg")]
+        if let Some(root) = self.svg_geometry_root(node_id) {
+            return self.svg_client_rect(root, node_id);
+        }
+
         // Non-atomic inline elements have no layout box of their own: return
         // the union of their per-line-box fragment rects.
         if let Some(rects) = self.inline_fragment_rects(node_id) {
@@ -3197,7 +3928,11 @@ impl BaseDocument {
 
     /// Map the layout rectangle through the same two-dimensional transforms as paint.
     /// Layout coordinates deliberately exclude transforms; CSSOM client rectangles do not.
-    fn transformed_client_rect(&self, node_id: NodeId, rect: BoundingRect) -> BoundingRect {
+    pub(crate) fn transformed_client_rect(
+        &self,
+        node_id: NodeId,
+        rect: BoundingRect,
+    ) -> BoundingRect {
         let mut matrix = kurbo::Affine::IDENTITY;
         let mut current = self.get_node(node_id);
         let scale = self.viewport.scale_f64();
@@ -3241,6 +3976,10 @@ impl BaseDocument {
     /// return a single rect. Non-atomic inline elements (which are laid out as style
     /// spans within an inline root's text layout) return one rect per line box.
     pub fn node_client_rects(&self, node_id: NodeId) -> Vec<BoundingRect> {
+        #[cfg(feature = "svg")]
+        if self.svg_geometry_root(node_id).is_some() {
+            return self.get_client_bounding_rect(node_id).into_iter().collect();
+        }
         match self.inline_fragment_rects(node_id) {
             Some(rects) => rects
                 .into_iter()
@@ -3583,6 +4322,7 @@ root={:?} root_right={root_right:.1} root_w={:.1} lines={} layout_scale={:.2} vp
         focus_node: NodeId,
         focus_offset: usize,
     ) {
+        self.dom_selection = None;
         self.text_selection =
             TextSelection::new(anchor_node, anchor_offset, focus_node, focus_offset);
 
@@ -3639,11 +4379,13 @@ root={:?} root_right={root_right:.1} root_w={:.1} lines={} layout_scale={:.2} vp
 
     /// Clear the text selection
     pub fn clear_text_selection(&mut self) {
+        self.dom_selection = None;
         self.text_selection.clear();
     }
 
     /// Update the selection focus point (used during mouse drag to extend selection).
     pub fn update_selection_focus(&mut self, focus_node: NodeId, focus_offset: usize) {
+        self.dom_selection = None;
         // For anonymous blocks, store parent+sibling_index; otherwise store node directly
         if let (Some(parent), Some(idx)) = self.anonymous_block_location(focus_node) {
             self.text_selection
@@ -3689,11 +4431,18 @@ root={:?} root_right={root_right:.1} root_w={:.1} lines={} layout_scale={:.2} vp
 
     /// Check if there is an active (non-empty) text selection
     pub fn has_text_selection(&self) -> bool {
-        self.text_selection.is_active()
+        self.dom_selection.as_ref().map_or_else(
+            || self.text_selection.is_active(),
+            |range| !range.bounds().collapsed(),
+        )
     }
 
     /// Get the selected text content, supporting selection across multiple inline roots.
     pub fn get_selected_text(&self) -> Option<String> {
+        if let Some(range) = &self.dom_selection {
+            let text = self.range_string(range.bounds());
+            return (!text.is_empty()).then_some(text);
+        }
         let ranges = self.get_text_selection_ranges();
         if ranges.is_empty() {
             return None;
@@ -3785,6 +4534,9 @@ root={:?} root_right={root_right:.1} root_w={:.1} lines={} layout_scale={:.2} vp
     /// Get all selection ranges as Vec<(node_id, start_offset, end_offset)>.
     /// Returns empty vec if no selection.
     pub fn get_text_selection_ranges(&self) -> Vec<(NodeId, usize, usize)> {
+        if let Some(range) = &self.dom_selection {
+            return self.range_layout_ranges(range.bounds());
+        }
         let lookup = |parent_id, idx| self.find_anonymous_block_by_index(parent_id, idx);
 
         let anchor_node = match self.text_selection.anchor.resolve_node_id(lookup) {
@@ -3904,6 +4656,67 @@ pub struct BoundingRect {
 /// The record of changes a script's `MutationObserver` reads. See
 /// [`crate::DomMutation`] for what is recorded and why.
 impl BaseDocument {
+    /// Update the raw content handler state at the attribute mutation boundary.
+    /// Equal-value writes still replace a compiled or script-assigned handler.
+    pub(crate) fn record_inline_handler_attribute(
+        &mut self,
+        node_id: NodeId,
+        name: &crate::QualName,
+        value: Option<&str>,
+    ) {
+        if name.ns != markup5ever::ns!() || !name.local.as_ref().starts_with("on") {
+            return;
+        }
+        let Some(element) = self
+            .nodes
+            .get_mut(node_id)
+            .and_then(|node| node.element_data_mut())
+        else {
+            return;
+        };
+        let value = value.map(crate::node::AttrAtom::from);
+        if let Some(value) = &value {
+            let attributes = element
+                .inline_event_attributes
+                .get_or_insert_with(|| Box::new(Vec::new()));
+            if let Some(attribute) = attributes
+                .iter_mut()
+                .find(|attribute| attribute.name.local == name.local)
+            {
+                attribute.name = name.clone();
+                attribute.value = value.clone();
+            } else {
+                attributes.push(crate::node::Attribute {
+                    name: name.clone(),
+                    value: value.clone(),
+                });
+            }
+        } else {
+            let Some(attributes) = element.inline_event_attributes.as_mut() else {
+                return;
+            };
+            let Some(index) = attributes
+                .iter()
+                .position(|attribute| attribute.name.local == name.local)
+            else {
+                return;
+            };
+            attributes.remove(index);
+            if attributes.is_empty() {
+                element.inline_event_attributes = None;
+            }
+        }
+        self.inline_handler_changes
+            .push((node_id, name.clone(), value));
+    }
+
+    /// Take content handler changes in mutation order.
+    pub fn take_inline_handler_changes(
+        &mut self,
+    ) -> Vec<(NodeId, crate::QualName, Option<crate::node::AttrAtom>)> {
+        std::mem::take(&mut self.inline_handler_changes)
+    }
+
     /// Start or stop recording changes. Stopping discards what was recorded
     /// and not yet taken.
     pub fn set_recording_mutations(&mut self, recording: bool) {

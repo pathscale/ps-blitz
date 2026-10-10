@@ -19,22 +19,30 @@ pub(crate) fn generate_focus_events(
     if let Some(old_focus) = old_focus {
         dispatch_event(DomEvent::new(
             old_focus,
-            DomEventData::Blur(BlitzFocusEvent),
+            DomEventData::Blur(BlitzFocusEvent {
+                related_target: new_focus,
+            }),
         ));
         dispatch_event(DomEvent::new(
             old_focus,
-            DomEventData::FocusOut(BlitzFocusEvent),
+            DomEventData::FocusOut(BlitzFocusEvent {
+                related_target: new_focus,
+            }),
         ));
     }
 
     if let Some(new_focus) = new_focus {
         dispatch_event(DomEvent::new(
             new_focus,
-            DomEventData::Focus(BlitzFocusEvent),
+            DomEventData::Focus(BlitzFocusEvent {
+                related_target: old_focus,
+            }),
         ));
         dispatch_event(DomEvent::new(
             new_focus,
-            DomEventData::FocusIn(BlitzFocusEvent),
+            DomEventData::FocusIn(BlitzFocusEvent {
+                related_target: old_focus,
+            }),
         ));
     }
 }

@@ -25,6 +25,8 @@ pub(crate) fn init_element_proto(proto: &JsObject, context: &mut Context) {
     define_accessor(proto, "id", Some(get_id), Some(set_id), context);
     define_accessor(proto, "src", Some(get_src), Some(set_src), context);
     define_accessor(proto, "href", Some(get_href), Some(set_href), context);
+    define_accessor(proto, "target", Some(get_target), Some(set_target), context);
+    init_hyperlink_utils(proto, context);
     define_accessor(
         proto,
         "className",
@@ -77,7 +79,7 @@ pub(crate) fn init_element_proto(proto: &JsObject, context: &mut Context) {
         Some(set_autofocus),
         context,
     );
-    define_accessor(proto, "style", Some(get_style), None, context);
+    define_accessor(proto, "style", Some(get_style), Some(set_style), context);
     define_accessor(proto, "dataset", Some(get_dataset), None, context);
     define_accessor(proto, "classList", Some(get_class_list), None, context);
     define_accessor(
@@ -87,9 +89,21 @@ pub(crate) fn init_element_proto(proto: &JsObject, context: &mut Context) {
         Some(set_inner_html),
         context,
     );
-    define_accessor(proto, "outerHTML", Some(get_outer_html), None, context);
+    define_accessor(
+        proto,
+        "outerHTML",
+        Some(get_outer_html),
+        Some(super::doma::tree::set_outer_html),
+        context,
+    );
     define_accessor(proto, "children", Some(children), None, context);
-    define_accessor(proto, "content", Some(get_template_content), None, context);
+    define_accessor(
+        proto,
+        "content",
+        Some(get_template_content),
+        Some(set_content),
+        context,
+    );
     define_accessor(
         proto,
         "scrollLeft",
@@ -148,6 +162,28 @@ pub(crate) fn init_element_proto(proto: &JsObject, context: &mut Context) {
     define_method(proto, "querySelector", 1, query_selector, context);
     define_method(proto, "querySelectorAll", 1, query_selector_all, context);
     define_method(proto, "matches", 1, matches_selector, context);
+    define_method(proto, "webkitMatchesSelector", 1, matches_selector, context);
+    define_method(
+        proto,
+        "insertAdjacentElement",
+        2,
+        super::doma::tree::insert_adjacent_element,
+        context,
+    );
+    define_method(
+        proto,
+        "insertAdjacentText",
+        2,
+        super::doma::tree::insert_adjacent_text,
+        context,
+    );
+    define_method(
+        proto,
+        "insertAdjacentHTML",
+        2,
+        super::doma::tree::insert_adjacent_html,
+        context,
+    );
     define_method(proto, "closest", 1, closest, context);
     define_method(proto, "setPointerCapture", 1, set_pointer_capture, context);
     define_method(
@@ -246,10 +282,16 @@ fn read_attr(ctx: &DomCtx, node_id: NodeId, name: &str) -> Option<String> {
     let doc = ctx.doc.borrow();
     let node = doc.get_node(node_id)?;
     let element = node.element_data()?;
+    let (prefix, local) = name
+        .split_once(':')
+        .map_or((None, name), |(prefix, local)| (Some(prefix), local));
     element
         .attrs()
         .iter()
-        .find(|attr| &*attr.name.local == name)
+        .find(|attr| {
+            (&*attr.name.local == local && attr.name.prefix.as_deref() == prefix)
+                || (attr.name.prefix.is_none() && &*attr.name.local == name)
+        })
         .map(|attr| attr.value.to_string())
 }
 
@@ -261,13 +303,34 @@ fn write_attr(ctx: &DomCtx, node_id: NodeId, name: &str, value: &str) {
     // like it touched no DOM at all while dirtying layout every time.
     let _t = crate::script_stats::Timed::new(ctx, "dom:attr=");
     let mut doc = ctx.mutate_doc();
-    doc.mutate().set_attribute(node_id, attr_name(name), value);
+    let qualified_name = existing_attr_name(&doc, node_id, name).unwrap_or_else(|| attr_name(name));
+    doc.mutate().set_attribute(node_id, qualified_name, value);
 }
 
 fn clear_attr(ctx: &DomCtx, node_id: NodeId, name: &str) {
     let _t = crate::script_stats::Timed::new(ctx, "dom:attr-remove");
     let mut doc = ctx.mutate_doc();
-    doc.mutate().clear_attribute(node_id, attr_name(name));
+    let qualified_name = existing_attr_name(&doc, node_id, name).unwrap_or_else(|| attr_name(name));
+    doc.mutate().clear_attribute(node_id, qualified_name);
+}
+
+fn existing_attr_name(
+    doc: &blitz_dom::BaseDocument,
+    node_id: NodeId,
+    name: &str,
+) -> Option<QualName> {
+    let (prefix, local) = name
+        .split_once(':')
+        .map_or((None, name), |(prefix, local)| (Some(prefix), local));
+    doc.get_node(node_id)?
+        .element_data()?
+        .attrs()
+        .iter()
+        .find(|attr| {
+            (&*attr.name.local == local && attr.name.prefix.as_deref() == prefix)
+                || (attr.name.prefix.is_none() && &*attr.name.local == name)
+        })
+        .map(|attr| attr.name.clone())
 }
 
 fn attr_getter(name: &str, this: &JsValue, context: &mut Context) -> JsResult<JsValue> {
@@ -297,8 +360,7 @@ fn tag_name(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<Js
     let doc = ctx.doc.borrow();
     let name = doc
         .get_node(node_id)
-        .and_then(|node| node.element_data())
-        .map(|element| element.name.local.to_uppercase())
+        .and_then(|node| node.qualified_element_name())
         .unwrap_or_default();
     Ok(js_str(&name))
 }
@@ -315,16 +377,30 @@ fn local_name(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<
     Ok(js_str(&name))
 }
 
+fn element_namespace_uri(ctx: &DomCtx, node_id: NodeId) -> String {
+    let doc = ctx.doc.borrow();
+    doc.get_node(node_id)
+        .and_then(|node| node.element_data())
+        .map(|element| element.name.ns.to_string())
+        .unwrap_or_default()
+}
+
+fn is_svg_element(ctx: &DomCtx, node_id: NodeId) -> bool {
+    element_namespace_uri(ctx, node_id) == "http://www.w3.org/2000/svg"
+}
+
+fn is_anchor(ctx: &DomCtx, node_id: NodeId) -> bool {
+    ctx.doc
+        .borrow()
+        .get_node(node_id)
+        .and_then(|node| node.element_data())
+        .is_some_and(|element| &*element.name.local == "a")
+}
+
 fn namespace_uri(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
-    let doc = ctx.doc.borrow();
-    let ns = doc
-        .get_node(node_id)
-        .and_then(|node| node.element_data())
-        .map(|element| element.name.ns.to_string())
-        .unwrap_or_default();
-    Ok(js_str(&ns))
+    Ok(js_str(&element_namespace_uri(&ctx, node_id)))
 }
 
 fn children(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
@@ -417,25 +493,70 @@ fn set_src(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<
     attr_setter("src", this, args, context)
 }
 
-/// The `href` IDL attribute, which is the *resolved absolute* URL.
+/// The `href` IDL attribute.
 ///
-/// Deliberately not `attr_getter`. An IDL `href` is absolute by definition, and
-/// the difference is not cosmetic: `@solidjs/router` intercepts in-app anchor
-/// clicks by reading `a.href` and handing it straight to `new URL(href)` with
-/// no base argument. With no `href` accessor at all the read was `undefined`,
-/// the router declined the click before it could call `preventDefault`, and the
-/// anchor's own default action ran instead. Every in-app navigation therefore
-/// became a full document load: a new script context, a re-bootstrapped
-/// application, and every WebSocket the page was holding closed with it.
-/// Reflecting the raw attribute rather than resolving it would move the same
-/// bug one step along, into `new URL("/platform/users")`, which throws.
+/// HTML elements expose the resolved absolute URL. SVG elements expose an
+/// SVGAnimatedString-like object whose `baseVal` and `animVal` contain the raw
+/// `href` attribute, falling back to `xlink:href`.
 ///
-/// Resolution is against the document URL. A `<base>` element is not consulted
-/// yet, which is the remaining gap here.
+/// The HTML path deliberately does not use `attr_getter`. An IDL `href` is
+/// absolute by definition, and `@solidjs/router` hands it straight to
+/// `new URL(href)` with no base argument. Resolution is against the document
+/// URL. A `<base>` element is not consulted yet.
+fn svg_animated_string(
+    node_id: NodeId,
+    getter: fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>,
+    setter: fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>,
+    context: &mut Context,
+) -> JsValue {
+    let object = JsObject::from_proto_and_data(
+        Some(context.intrinsics().constructors().object().prototype()),
+        super::NodeRef { node_id },
+    );
+    define_accessor(&object, "baseVal", Some(getter), Some(setter), context);
+    define_accessor(&object, "animVal", Some(getter), None, context);
+    object.into()
+}
+
+fn get_svg_href_string(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let _ = args;
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    let value = read_attr(&ctx, node_id, "href")
+        .or_else(|| read_attr(&ctx, node_id, "xlink:href"))
+        .unwrap_or_default();
+    Ok(js_str(&value))
+}
+
+fn get_svg_target_string(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let _ = args;
+    attr_getter("target", this, context)
+}
+
 fn get_href(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let _ = args;
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
+    if is_svg_element(&ctx, node_id) {
+        if !is_anchor(&ctx, node_id) {
+            return Ok(JsValue::undefined());
+        }
+        return Ok(svg_animated_string(
+            node_id,
+            get_svg_href_string,
+            set_href,
+            context,
+        ));
+    }
+
     // Undefined rather than the empty string when the content attribute is
     // absent. This proto is shared by every element, so a `div` reaches here
     // too, and a `div` has no `href` in any browser.
@@ -453,6 +574,28 @@ fn get_href(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult
 
 fn set_href(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     attr_setter("href", this, args, context)
+}
+
+fn get_target(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let _ = args;
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    if is_svg_element(&ctx, node_id) {
+        if !is_anchor(&ctx, node_id) {
+            return Ok(JsValue::undefined());
+        }
+        return Ok(svg_animated_string(
+            node_id,
+            get_svg_target_string,
+            set_target,
+            context,
+        ));
+    }
+    attr_getter("target", this, context)
+}
+
+fn set_target(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    attr_setter("target", this, args, context)
 }
 
 fn get_class_name(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
@@ -983,10 +1126,19 @@ fn write_class_tokens(ctx: &DomCtx, node_id: NodeId, tokens: &[String]) {
 
 fn class_token(value: &JsValue, context: &mut Context) -> JsResult<String> {
     let token = to_rust_string(value, context)?;
-    if token.is_empty() || token.chars().any(|ch| ch.is_ascii_whitespace()) {
-        return Err(JsNativeError::syntax()
-            .with_message("classList token must be non-empty and contain no ASCII whitespace")
-            .into());
+    if token.is_empty() {
+        return Err(crate::dom_exception::error(
+            "SyntaxError",
+            "classList token must not be empty",
+            context,
+        ));
+    }
+    if token.chars().any(|ch| ch.is_ascii_whitespace()) {
+        return Err(crate::dom_exception::error(
+            "InvalidCharacterError",
+            "classList token contains ASCII whitespace",
+            context,
+        ));
     }
     Ok(token)
 }
@@ -1172,56 +1324,114 @@ fn get_style(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<J
     super::style::make_style_object(proto, node_id, context)
 }
 
+fn set_style(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    // [PutForwards=cssText] assigns through the declaration's setter.
+    let declaration = get_style(this, &[], context)?
+        .as_object()
+        .expect("inline style declaration is an object");
+    declaration.set(
+        js_string!("cssText"),
+        args.first().cloned().unwrap_or_else(JsValue::undefined),
+        true,
+        context,
+    )?;
+    Ok(JsValue::undefined())
+}
+
 // === innerHTML / outerHTML ===
+
+/// `meta.content = text` reflects to the attribute; `template.content` is
+/// read-only, so assigning it changes nothing.
+fn set_content(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    if is_html_element_named(&ctx, node_id, "meta") {
+        return attr_setter("content", this, args, context);
+    }
+    Ok(JsValue::undefined())
+}
+
+fn is_html_element_named(ctx: &DomCtx, node_id: NodeId, local: &str) -> bool {
+    ctx.doc
+        .borrow()
+        .get_node(node_id)
+        .and_then(|node| node.element_data())
+        .is_some_and(|element| {
+            element.name.ns == markup5ever::ns!(html) && &*element.name.local == local
+        })
+}
 
 fn get_template_content(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
-    let is_template = ctx
+    let contents = ctx
         .doc
         .borrow()
         .get_node(node_id)
         .and_then(|node| node.element_data())
-        .is_some_and(|element| element.name.local == markup5ever::local_name!("template"));
-
-    // Blitz currently stores parsed template children on the template node
-    // itself. Expose that node as the content container until blitz-dom grows a
-    // distinct DocumentFragment node type.
-    Ok(if is_template {
-        this.clone()
-    } else {
-        JsValue::undefined()
-    })
+        .and_then(|element| element.template_contents);
+    let Some(contents) = contents else {
+        // HTMLMetaElement.content reflects its attribute.
+        if is_html_element_named(&ctx, node_id, "meta") {
+            return attr_getter("content", this, context);
+        }
+        return Ok(JsValue::undefined());
+    };
+    let fragment = node_wrapper(&ctx, contents, context);
+    // Template ownership belongs in the collectable wrapper graph, so a
+    // retained template keeps its content wrapper's expandos and listeners.
+    if let Some(template) = this.as_object() {
+        super::define_value(
+            &template,
+            "__blitz_internal_template_content__",
+            fragment.clone().into(),
+            context,
+        );
+    }
+    Ok(fragment.into())
 }
 
-fn get_inner_html(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn get_inner_html(
+    this: &JsValue,
+    _: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
     let doc = ctx.doc.borrow();
     let mut html = String::new();
     if let Some(node) = doc.get_node(node_id) {
-        for child_id in &node.children {
-            if let Some(child) = doc.get_node(*child_id) {
-                child.write_outer_html(&mut html);
-            }
-        }
+        node.write_children_html(&mut html);
     }
     Ok(js_str(&html))
 }
 
-fn set_inner_html(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn set_inner_html(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
     let html = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
 
-    let mut doc = ctx.mutate_doc();
-    let mut mutr = doc.mutate();
-    // Detach (rather than drop) any existing children so that JS wrappers
-    // referencing them remain valid.
-    for child_id in mutr.child_ids(node_id) {
-        mutr.remove_node(child_id);
+    let target = ctx
+        .doc
+        .borrow()
+        .get_node(node_id)
+        .and_then(|node| node.element_data())
+        .and_then(|element| element.template_contents)
+        .unwrap_or(node_id);
+    let children = ctx
+        .doc
+        .borrow()
+        .get_node(target)
+        .map(|node| node.children.to_vec())
+        .unwrap_or_default();
+    for child_id in children {
+        super::remove_and_free_node(&ctx, child_id, context);
     }
-    mutr.set_inner_html(node_id, &html);
+    ctx.mutate_doc().mutate().set_inner_html(node_id, &html);
     Ok(JsValue::undefined())
 }
 
@@ -1229,10 +1439,10 @@ fn get_outer_html(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsRes
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
     let doc = ctx.doc.borrow();
-    let html = doc
-        .get_node(node_id)
-        .map(|node| node.outer_html())
-        .unwrap_or_default();
+    let mut html = String::new();
+    if let Some(node) = doc.get_node(node_id) {
+        node.write_html(&mut html);
+    }
     Ok(js_str(&html))
 }
 
@@ -1551,34 +1761,19 @@ fn get_bounding_client_rect(
 
 // === Scoped selector queries ===
 
-fn is_descendant_of(doc: &blitz_dom::BaseDocument, node_id: NodeId, ancestor_id: NodeId) -> bool {
-    let mut current = doc.get_node(node_id).and_then(|node| node.parent);
-    while let Some(id) = current {
-        if id == ancestor_id {
-            return true;
-        }
-        current = doc.get_node(id).and_then(|node| node.parent);
-    }
-    false
+/// The SyntaxError a selector API throws for a selector it cannot parse.
+pub(crate) fn invalid_selector(selector: &str, context: &mut Context) -> boa_engine::JsError {
+    crate::dom_exception::error(
+        "SyntaxError",
+        &format!("'{selector}' is not a valid selector"),
+        context,
+    )
 }
 
-fn query_selector(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let ctx = dom_ctx(context)?;
-    let node_id = this_node_id(this)?;
-    let selector = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
-
-    let result = {
-        let doc = ctx.doc.borrow();
-        doc.query_selector_all(&selector).ok().and_then(|matches| {
-            matches
-                .into_iter()
-                .find(|match_id| is_descendant_of(&doc, *match_id, node_id))
-        })
-    };
-    Ok(super::node_or_null(&ctx, result, context))
-}
-
-fn query_selector_all(
+// Selector APIs match within the receiver's own subtree, so they work on a
+// detached tree (built with innerHTML before insertion) exactly as on a
+// connected one, and cost the subtree rather than the whole document.
+pub(crate) fn query_selector(
     this: &JsValue,
     args: &[JsValue],
     context: &mut Context,
@@ -1587,17 +1782,28 @@ fn query_selector_all(
     let node_id = this_node_id(this)?;
     let selector = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
 
-    let matches: Vec<NodeId> = {
-        let doc = ctx.doc.borrow();
-        doc.query_selector_all(&selector)
-            .map(|matches| {
-                matches
-                    .into_iter()
-                    .filter(|match_id| is_descendant_of(&doc, *match_id, node_id))
-                    .collect()
-            })
-            .unwrap_or_default()
-    };
+    let result = ctx
+        .doc
+        .borrow()
+        .query_selector_in(node_id, &selector)
+        .map_err(|_| invalid_selector(&selector, context))?;
+    Ok(super::node_or_null(&ctx, result, context))
+}
+
+pub(crate) fn query_selector_all(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    let selector = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
+
+    let matches = ctx
+        .doc
+        .borrow()
+        .query_selector_all_in(node_id, &selector)
+        .map_err(|_| invalid_selector(&selector, context))?;
     let wrappers: Vec<JsValue> = matches
         .into_iter()
         .map(|match_id| node_wrapper(&ctx, match_id, context).into())
@@ -1612,8 +1818,8 @@ fn matches_selector(this: &JsValue, args: &[JsValue], context: &mut Context) -> 
     let is_match = ctx
         .doc
         .borrow()
-        .query_selector_all(&selector)
-        .is_ok_and(|matches| matches.contains(&node_id));
+        .matches_selector(node_id, &selector)
+        .map_err(|_| invalid_selector(&selector, context))?;
     Ok(JsValue::from(is_match))
 }
 
@@ -1621,19 +1827,166 @@ fn closest(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
     let selector = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
-    let result = {
-        let doc = ctx.doc.borrow();
-        let matches = doc.query_selector_all(&selector).unwrap_or_default();
-        let mut current = Some(node_id);
-        let mut result = None;
-        while let Some(id) = current {
-            if matches.contains(&id) {
-                result = Some(id);
-                break;
-            }
-            current = doc.get_node(id).and_then(|node| node.parent);
-        }
-        result
-    };
+    let result = ctx
+        .doc
+        .borrow()
+        .closest(node_id, &selector)
+        .map_err(|_| invalid_selector(&selector, context))?;
     Ok(super::node_or_null(&ctx, result, context))
+}
+
+/// HTMLHyperlinkElementUtils on `a` and `area`: the URL parts of the resolved
+/// `href`. Other elements share this prototype and read `undefined`, as with
+/// `href` itself. Setters rewrite the `href` content attribute.
+#[derive(Clone, Copy)]
+enum UrlPart {
+    Protocol,
+    Username,
+    Password,
+    Host,
+    Hostname,
+    Port,
+    Pathname,
+    Search,
+    Hash,
+    Origin,
+}
+
+macro_rules! url_part_accessors {
+    ($($get:ident, $set:ident, $name:literal, $part:expr;)*) => {
+        fn init_hyperlink_utils(proto: &JsObject, context: &mut Context) {
+            $(define_accessor(proto, $name, Some($get), Some($set), context);)*
+            define_accessor(proto, "origin", Some(get_url_origin), None, context);
+        }
+        $(
+            fn $get(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+                url_part_get(this, $part, context)
+            }
+            fn $set(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+                url_part_set(this, args, $part, context)
+            }
+        )*
+    };
+}
+
+url_part_accessors! {
+    get_url_protocol, set_url_protocol, "protocol", UrlPart::Protocol;
+    get_url_username, set_url_username, "username", UrlPart::Username;
+    get_url_password, set_url_password, "password", UrlPart::Password;
+    get_url_host, set_url_host, "host", UrlPart::Host;
+    get_url_hostname, set_url_hostname, "hostname", UrlPart::Hostname;
+    get_url_port, set_url_port, "port", UrlPart::Port;
+    get_url_pathname, set_url_pathname, "pathname", UrlPart::Pathname;
+    get_url_search, set_url_search, "search", UrlPart::Search;
+    get_url_hash, set_url_hash, "hash", UrlPart::Hash;
+}
+
+fn get_url_origin(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    url_part_get(this, UrlPart::Origin, context)
+}
+
+fn is_hyperlink(ctx: &DomCtx, node_id: NodeId) -> bool {
+    ctx.doc
+        .borrow()
+        .get_node(node_id)
+        .and_then(|node| node.element_data())
+        .is_some_and(|element| {
+            element.name.ns == markup5ever::ns!(html)
+                && matches!(&*element.name.local, "a" | "area")
+        })
+}
+
+/// The resolved `href`, or `None` when it is absent or does not parse.
+fn hyperlink_url(ctx: &DomCtx, node_id: NodeId) -> Option<url::Url> {
+    let href = read_attr(ctx, node_id, "href")?;
+    ctx.doc.borrow().url().join(&href).ok()
+}
+
+fn url_part_get(this: &JsValue, part: UrlPart, context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    if !is_hyperlink(&ctx, node_id) {
+        return Ok(JsValue::undefined());
+    }
+    let Some(url) = hyperlink_url(&ctx, node_id) else {
+        return Ok(js_str(""));
+    };
+    let value = match part {
+        UrlPart::Protocol => format!("{}:", url.scheme()),
+        UrlPart::Username => url.username().to_string(),
+        UrlPart::Password => url.password().unwrap_or_default().to_string(),
+        UrlPart::Host => match (url.host_str(), url.port()) {
+            (Some(host), Some(port)) => format!("{host}:{port}"),
+            (Some(host), None) => host.to_string(),
+            _ => String::new(),
+        },
+        UrlPart::Hostname => url.host_str().unwrap_or_default().to_string(),
+        UrlPart::Port => url.port().map(|p| p.to_string()).unwrap_or_default(),
+        UrlPart::Pathname => url.path().to_string(),
+        UrlPart::Search => url
+            .query()
+            .filter(|q| !q.is_empty())
+            .map(|q| format!("?{q}"))
+            .unwrap_or_default(),
+        UrlPart::Hash => url
+            .fragment()
+            .filter(|f| !f.is_empty())
+            .map(|f| format!("#{f}"))
+            .unwrap_or_default(),
+        UrlPart::Origin => url.origin().ascii_serialization(),
+    };
+    Ok(js_str(&value))
+}
+
+fn url_part_set(
+    this: &JsValue,
+    args: &[JsValue],
+    part: UrlPart,
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    let value = to_rust_string(&args.first().cloned().unwrap_or_default(), context)?;
+    if !is_hyperlink(&ctx, node_id) {
+        return Ok(JsValue::undefined());
+    }
+    let Some(mut url) = hyperlink_url(&ctx, node_id) else {
+        return Ok(JsValue::undefined());
+    };
+    // The url crate refuses the inputs a browser also ignores; a refused part
+    // leaves the attribute as it was.
+    let applied = match part {
+        UrlPart::Protocol => url.set_scheme(value.trim_end_matches(':')).is_ok(),
+        UrlPart::Username => url.set_username(&value).is_ok(),
+        UrlPart::Password => url
+            .set_password(Some(value.as_str()).filter(|v| !v.is_empty()))
+            .is_ok(),
+        UrlPart::Host => match value.rsplit_once(':') {
+            Some((host, port)) if port.parse::<u16>().is_ok() => {
+                url.set_host(Some(host)).is_ok() && url.set_port(port.parse().ok()).is_ok()
+            }
+            _ => url.set_host(Some(&value)).is_ok(),
+        },
+        UrlPart::Hostname => url.set_host(Some(&value)).is_ok(),
+        UrlPart::Port => url.set_port(value.parse().ok()).is_ok(),
+        UrlPart::Pathname => {
+            url.set_path(&value);
+            true
+        }
+        UrlPart::Search => {
+            let query = value.strip_prefix('?').unwrap_or(&value);
+            url.set_query(Some(query).filter(|q| !q.is_empty()));
+            true
+        }
+        UrlPart::Hash => {
+            let fragment = value.strip_prefix('#').unwrap_or(&value);
+            url.set_fragment(Some(fragment).filter(|f| !f.is_empty()));
+            true
+        }
+        UrlPart::Origin => false,
+    };
+    if applied {
+        write_attr(&ctx, node_id, "href", url.as_str());
+    }
+    Ok(JsValue::undefined())
 }

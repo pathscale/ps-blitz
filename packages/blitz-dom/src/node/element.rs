@@ -55,6 +55,10 @@ pub struct ElementData {
     /// The element's attributes
     pub attrs: Attributes,
 
+    /// Raw event handler content attributes. Script-assigned handlers live in
+    /// the script runtime instead. Absent on elements without on* attributes.
+    pub inline_event_attributes: Option<Box<Vec<Attribute>>>,
+
     /// Whether the element is focussable
     pub is_focussable: bool,
 
@@ -67,6 +71,10 @@ pub struct ElementData {
     ///   - The parley Layout for inline roots.
     ///   - The text editor for input/textarea elements
     pub special_data: SpecialElementData,
+
+    /// DOM geometry owned by an inline SVG root, rebuilt with its image.
+    #[cfg(feature = "svg")]
+    pub(crate) svg_geometry: Option<Arc<crate::layout::svg_geometry::SvgGeometry>>,
 
     pub background_images: Vec<Option<ImageResourceData>>,
 
@@ -139,6 +147,10 @@ pub struct ElementData {
     /// keeps the pointee alive, and comparing its identity is how a restyle is
     /// told apart from a no-op. See `flush_styles_to_layout_impl`.
     pub style_source: Option<ServoArc<ComputedValues>>,
+    /// For a node outside the box tree (an `<option>`, SVG content), which is
+    /// never flushed and so never gets a `style_source`: the computed values
+    /// damage propagation last saw, so only a real restyle counts as one.
+    pub unflushed_style_seen: Option<ServoArc<ComputedValues>>,
     pub display_constructed_as: StyloDisplay,
     /// Taffy's layout cache, allocated on first use.
     ///
@@ -173,6 +185,12 @@ pub struct ElementData {
 /// carries the same style/layout fields that were previously stored directly on
 /// [`Node`](super::Node).
 pub struct DocumentData {
+    pub content_type: &'static str,
+    /// Ownership index for detached documents. The live document retains its
+    /// existing ID map. Lookup verifies ancestry and current tree order.
+    pub ids: std::collections::HashMap<String, Vec<NodeId>>,
+    /// 0 is standards, 1 is limited quirks, and 2 is quirks.
+    pub quirks_mode: u8,
     pub stylo_element_data: StyloData,
     /// Selector flags deposited here by `apply_selector_flags` when a
     /// `for_parent()` flag is applied while matching the root `<html>` element,
@@ -225,6 +243,9 @@ pub struct DocumentData {
 impl std::fmt::Debug for DocumentData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DocumentData")
+            .field("content_type", &self.content_type)
+            .field("ids", &self.ids)
+            .field("quirks_mode", &self.quirks_mode)
             .field("stylo_element_data", &self.stylo_element_data)
             .field("guard", &self.guard)
             .field("dirty_descendants", &self.dirty_descendants)
@@ -265,6 +286,9 @@ impl DocumentData {
 
     pub fn new() -> Self {
         Self {
+            content_type: "text/html",
+            ids: Default::default(),
+            quirks_mode: 0,
             stylo_element_data: Default::default(),
             selector_flags: Cell::new(ElementSelectorFlags::empty()),
             guard: None,
@@ -297,6 +321,8 @@ impl Clone for DocumentData {
         // Runtime style/layout state is reset (the document node is not
         // meaningfully cloneable), matching `ElementData`'s clone semantics.
         Self {
+            content_type: self.content_type,
+            quirks_mode: self.quirks_mode,
             guard: self.guard.clone(),
             ..Self::new()
         }
@@ -334,14 +360,17 @@ impl Clone for ElementData {
             name: self.name.clone(),
             id: self.id.clone(),
             attrs: self.attrs.clone(),
+            inline_event_attributes: self.inline_event_attributes.clone(),
             is_focussable: self.is_focussable,
             style_attribute: self.style_attribute.clone(),
             special_data: self.special_data.clone(),
+            #[cfg(feature = "svg")]
+            svg_geometry: None,
             background_images: self.background_images.clone(),
             mask_images: self.mask_images.clone(),
             inline_layout_data: self.inline_layout_data.clone(),
             list_item_data: self.list_item_data.clone(),
-            template_contents: self.template_contents,
+            template_contents: None,
 
             // Runtime state: reset to defaults.
             //
@@ -362,6 +391,7 @@ impl Clone for ElementData {
             detailed_grid_info: None,
             style: Default::default(),
             style_source: None,
+            unflushed_style_seen: None,
             subtree_hoists: false,
             display_constructed_as: StyloDisplay::Block,
             cache: None,
@@ -490,6 +520,14 @@ impl ElementData {
     }
 
     pub fn new(name: QualName, attrs: Vec<Attribute>) -> Self {
+        let handlers: Vec<_> = attrs
+            .iter()
+            .filter(|attr| {
+                attr.name.ns == markup5ever::ns!() && attr.name.local.as_ref().starts_with("on")
+            })
+            .cloned()
+            .collect();
+        let inline_event_attributes = (!handlers.is_empty()).then(|| Box::new(handlers));
         let id_attr_atom = attrs
             .iter()
             .find(|attr| &attr.name.local == "id")
@@ -500,11 +538,14 @@ impl ElementData {
             name,
             id: id_attr_atom,
             attrs: Attributes::new(attrs),
+            inline_event_attributes,
             is_focussable: false,
             style_attribute: Default::default(),
             inline_layout_data: None,
             list_item_data: None,
             special_data: SpecialElementData::None,
+            #[cfg(feature = "svg")]
+            svg_geometry: None,
             template_contents: None,
             shadow_root: None,
             assigned_slot: None,
@@ -523,6 +564,7 @@ impl ElementData {
             detailed_grid_info: None,
             style: Default::default(),
             style_source: None,
+            unflushed_style_seen: None,
             subtree_hoists: false,
             display_constructed_as: StyloDisplay::Block,
             cache: None,
@@ -551,18 +593,42 @@ impl ElementData {
     }
 
     pub fn attr(&self, name: impl PartialEq<LocalName>) -> Option<&str> {
-        let attr = self.attrs.iter().find(|attr| name == attr.name.local)?;
+        let attr = self
+            .attrs
+            .iter()
+            .find(|attr| attr.name.ns == markup5ever::ns!() && name == attr.name.local)?;
         Some(&attr.value)
     }
 
+    /// SVG links accept xlink:href, with an unnamespaced href taking precedence.
+    pub fn link_href(&self) -> Option<&str> {
+        self.attr(local_name!("href")).or_else(|| {
+            if self.name.ns != markup5ever::ns!(svg) {
+                return None;
+            }
+            self.attrs()
+                .iter()
+                .find(|attr| {
+                    attr.name.ns == markup5ever::ns!(xlink)
+                        && attr.name.local == local_name!("href")
+                })
+                .map(|attr| attr.value.as_ref())
+        })
+    }
+
     pub fn attr_parsed<T: FromStr>(&self, name: impl PartialEq<LocalName>) -> Option<T> {
-        let attr = self.attrs.iter().find(|attr| name == attr.name.local)?;
+        let attr = self
+            .attrs
+            .iter()
+            .find(|attr| attr.name.ns == markup5ever::ns!() && name == attr.name.local)?;
         attr.value.parse::<T>().ok()
     }
 
     /// Detects the presence of the attribute, treating *any* value as truthy.
     pub fn has_attr(&self, name: impl PartialEq<LocalName>) -> bool {
-        self.attrs.iter().any(|attr| name == attr.name.local)
+        self.attrs
+            .iter()
+            .any(|attr| attr.name.ns == markup5ever::ns!() && name == attr.name.local)
     }
 
     pub fn can_be_disabled(&self) -> bool {

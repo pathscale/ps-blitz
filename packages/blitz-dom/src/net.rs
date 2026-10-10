@@ -1,9 +1,16 @@
+#[path = "web_fonts.rs"]
+pub mod web_fonts;
+
 use blitz_traits::node_id::NodeId;
 use selectors::context::QuirksMode;
 use std::sync::atomic::Ordering as Ao;
 use std::{
     io::Cursor,
-    sync::{Arc, atomic::AtomicUsize, mpsc::Sender},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize},
+        mpsc::Sender,
+    },
 };
 use style::{
     font_face::{FontFaceSourceFormat, FontFaceSourceFormatKeyword, FontStyleRange, Source},
@@ -30,6 +37,34 @@ pub(crate) fn stamped_request(url: Url, signal: Option<&AbortSignal>) -> Request
     let mut req = Request::get(url);
     if let Some(sig) = signal {
         req = req.signal(sig.clone());
+    }
+    req
+}
+
+/// Add the `Referer` a browser sends for a subresource under the default
+/// `strict-origin-when-cross-origin` policy: the full URL (minus fragment and
+/// credentials) to the same origin, only the origin across origins, nothing
+/// on an HTTPS to HTTP downgrade or from a non-HTTP document. CDNs commonly
+/// refuse image requests without one.
+pub(crate) fn with_referrer(mut req: Request, document: &Url) -> Request {
+    if !matches!(document.scheme(), "http" | "https") {
+        return req;
+    }
+    if document.scheme() == "https" && req.url.scheme() == "http" {
+        return req;
+    }
+    let referrer = if document.origin() == req.url.origin() {
+        let mut full = document.clone();
+        full.set_fragment(None);
+        let _ = full.set_username("");
+        let _ = full.set_password(None);
+        full.to_string()
+    } else {
+        format!("{}/", document.origin().ascii_serialization())
+    };
+    if let Ok(value) = blitz_traits::net::http::HeaderValue::from_str(&referrer) {
+        req.headers
+            .insert(blitz_traits::net::http::header::REFERER, value);
     }
     req
 }
@@ -61,6 +96,7 @@ pub enum Resource {
     Svg(ImageType, crate::node::SvgImageData),
     Css(DocumentStyleSheet),
     Font(Bytes, FontFaceOverrides),
+    TrackedFont(Bytes, FontFaceOverrides, Arc<web_fonts::WebFont>),
     /// HTML fetched for an `<iframe>` element's `src`
     DocumentSrc(String),
     /// A stylesheet fetched for an `@import` rule, and the rule it belongs to.
@@ -81,6 +117,10 @@ pub(crate) struct ResourceHandler<T: Send + Sync + 'static> {
     node_id: Option<NodeId>,
     tx: Sender<DocumentEvent>,
     shell_provider: Arc<dyn ShellProvider>,
+    /// Set once `respond` has delivered a result. A fetch that never calls
+    /// `bytes` drops the handler; without this the critical-resource id stays
+    /// registered and painting never starts.
+    settled: AtomicBool,
     data: T,
 }
 
@@ -99,6 +139,7 @@ impl<T: Send + Sync + 'static> ResourceHandler<T> {
             node_id,
             tx,
             shell_provider,
+            settled: AtomicBool::new(false),
             data,
         }
     }
@@ -121,6 +162,7 @@ impl<T: Send + Sync + 'static> ResourceHandler<T> {
     }
 
     fn respond(&self, resolved_url: String, result: Result<Resource, String>) {
+        self.settled.store(true, Ao::Release);
         let response = ResourceLoadResponse {
             request_id: self.request_id,
             node_id: self.node_id,
@@ -128,6 +170,23 @@ impl<T: Send + Sync + 'static> ResourceHandler<T> {
             result,
         };
         let _ = self.tx.send(DocumentEvent::ResourceLoad(response));
+        self.shell_provider.request_redraw();
+    }
+}
+
+impl<T: Send + Sync + 'static> Drop for ResourceHandler<T> {
+    fn drop(&mut self) {
+        if self.settled.load(Ao::Acquire) {
+            return;
+        }
+        let _ = self
+            .tx
+            .send(DocumentEvent::ResourceLoad(ResourceLoadResponse {
+                request_id: self.request_id,
+                node_id: self.node_id,
+                resolved_url: None,
+                result: Err(String::from("resource fetch failed")),
+            }));
         self.shell_provider.request_redraw();
     }
 }
@@ -284,10 +343,29 @@ impl NetHandler for ResourceHandler<NestedStylesheetHandler> {
 struct FontFaceHandler {
     format: FontFaceSourceFormatKeyword,
     overrides: FontFaceOverrides,
+    ticket: Option<Arc<web_fonts::WebFont>>,
+    queued: bool,
+}
+impl Drop for FontFaceHandler {
+    fn drop(&mut self) {
+        if !self.queued {
+            if let Some(ticket) = &self.ticket {
+                ticket.finish(false);
+            }
+        }
+    }
 }
 impl NetHandler for ResourceHandler<FontFaceHandler> {
     fn bytes(mut self: Box<Self>, resolved_url: String, bytes: Bytes) {
         let result = self.data.parse(bytes);
+        let result = match (result, self.data.ticket.as_ref()) {
+            (Ok(Resource::Font(bytes, overrides)), Some(ticket)) => {
+                self.data.queued = true;
+                Ok(Resource::TrackedFont(bytes, overrides, Arc::clone(ticket)))
+            }
+            (Ok(Resource::None), Some(_)) => Err(String::from("Unsupported font data")),
+            (result, _) => result,
+        };
         self.respond(resolved_url, result)
     }
 }
@@ -372,6 +450,8 @@ pub(crate) fn fetch_font_face(
     shell_provider: &Arc<dyn ShellProvider>,
     read_guard: &SharedRwLockReadGuard,
     abort_signal: Option<&AbortSignal>,
+    fonts: &mut Vec<Arc<web_fonts::WebFont>>,
+    epoch: usize,
 ) {
     sheet
         .contents(read_guard)
@@ -464,6 +544,15 @@ pub(crate) fn fetch_font_face(
                 });
 
             if let Some((url, format)) = preferred_source {
+                let ticket = web_fonts::WebFont::new(
+                    overrides.clone(),
+                    Some(url.clone()),
+                    None,
+                    true,
+                    epoch,
+                    shell_provider.clone(),
+                );
+                fonts.push(Arc::clone(&ticket));
                 network_provider.fetch(
                     doc_id,
                     stamped_request(url, abort_signal),
@@ -472,7 +561,12 @@ pub(crate) fn fetch_font_face(
                         doc_id,
                         node_id,
                         shell_provider.clone(),
-                        FontFaceHandler { format, overrides },
+                        FontFaceHandler {
+                            format,
+                            overrides,
+                            ticket: Some(ticket),
+                            queued: false,
+                        },
                     ),
                 );
             }
@@ -484,6 +578,46 @@ pub(crate) fn fetch_font_face(
 /// angle distinctly; CSS's bare `normal` is parsed as `Oblique(0deg, 0deg)`
 /// by stylo (see the `FontStyle::parse` impl in stylo's `font_face.rs`), so
 /// that pattern is treated as `Normal` here.
+fn load_script_font(doc: &mut crate::BaseDocument, face: &Arc<web_fonts::WebFont>) {
+    if !face.start() {
+        return;
+    }
+    let mut handler = FontFaceHandler {
+        format: FontFaceSourceFormatKeyword::None,
+        overrides: face.overrides.clone(),
+        ticket: Some(Arc::clone(face)),
+        queued: false,
+    };
+    if let Some(bytes) = &face.data {
+        match handler.parse(bytes.clone()) {
+            Ok(Resource::Font(bytes, overrides)) => {
+                handler.queued = true;
+                doc.load_resource(ResourceLoadResponse {
+                    request_id: usize::MAX,
+                    node_id: None,
+                    resolved_url: None,
+                    result: Ok(Resource::TrackedFont(bytes, overrides, Arc::clone(face))),
+                });
+            }
+            _ => face.finish(false),
+        }
+    } else if let Some(url) = &face.source {
+        doc.net_provider.fetch(
+            crate::Document::id(doc),
+            stamped_request(url.clone(), doc.abort_signal.as_ref()),
+            ResourceHandler::boxed(
+                doc.tx.clone(),
+                crate::Document::id(doc),
+                None,
+                doc.shell_provider.clone(),
+                handler,
+            ),
+        );
+    } else {
+        face.finish(false);
+    }
+}
+
 fn stylo_to_fontique_style(style: &FontStyleRange) -> parley::fontique::FontStyle {
     use parley::fontique::FontStyle as Fq;
     match style {

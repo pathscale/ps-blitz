@@ -6,11 +6,27 @@
 //! node id. Native functions look the document up via the [`DomCtx`] stored as
 //! host-defined data on the Boa [`Context`].
 
+mod collections;
 pub(crate) mod custom_elements;
 pub(crate) mod document;
+pub(crate) mod doma;
 pub(crate) mod element;
 pub(crate) mod event;
+pub(crate) mod event_interfaces;
+mod event_target;
+mod geometry;
+mod html_element;
+pub(crate) mod inline_handlers;
+pub(crate) mod interfaces;
 pub(crate) mod node;
+mod parsing;
+pub(crate) mod range;
+#[cfg(feature = "shadow-dom")]
+pub(crate) mod shadow;
+#[cfg(feature = "shadow-dom")]
+pub(crate) mod shadow_event;
+#[cfg(feature = "shadow-dom")]
+pub(crate) mod sheets;
 pub(crate) mod style;
 
 use blitz_dom::NodeId;
@@ -62,41 +78,49 @@ pub(crate) fn this_node_id(this: &JsValue) -> JsResult<NodeId> {
 ///
 /// Wrappers are cached in [`RuntimeState::node_wrappers`](crate::state::RuntimeState::node_wrappers)
 /// so that object identity (`===`) and expando properties behave as scripts expect.
-pub(crate) fn node_wrapper(ctx: &DomCtx, node_id: NodeId, _context: &mut Context) -> JsObject {
+pub(crate) fn node_wrapper(ctx: &DomCtx, node_id: NodeId, context: &mut Context) -> JsObject {
     // Upgraded rather than cloned: the cache holds weak handles, so an entry
     // whose wrapper nothing else kept has been collected and a fresh one is
     // built below. Identity still holds for every wrapper something is actually
-    // holding, which is the only case identity can be observed in.
-    if let Some(wrapper) = ctx
+    // holding, which is the only case identity can be observed in a program.
+    let cached = ctx
         .state
         .borrow()
         .node_wrappers
         .get(&node_id)
-        .and_then(WeakJsObject::upgrade)
-    {
+        .and_then(WeakJsObject::upgrade);
+    if let Some(wrapper) = cached {
+        pin_detached_document(ctx, node_id, &wrapper, context);
         return wrapper;
     }
 
+    let custom_prototype = custom_elements::element_prototype(ctx, node_id, context);
     let proto = {
         let doc = ctx.doc.borrow();
         let state = ctx.state.borrow();
-        let protos = state.protos();
-        match doc.get_node(node_id).map(|node| &node.data) {
-            Some(NodeData::Document(_)) => protos.document.clone(),
-            Some(NodeData::Element(_)) | Some(NodeData::AnonymousBlock(_)) => {
-                protos.element.clone()
+        let node = doc.get_node(node_id);
+        let data = node.map(|node| &node.data);
+        let is_element = matches!(
+            data,
+            Some(NodeData::Element(_)) | Some(NodeData::AnonymousBlock(_))
+        );
+        match node.and_then(|node| node.markup.as_deref()) {
+            Some(blitz_dom::node::MarkupNode::Doctype { .. }) => {
+                interfaces::prototype("DocumentType", context)
             }
-            Some(NodeData::Text(_)) | Some(NodeData::Comment { .. }) => {
-                protos.character_data.clone()
+            Some(blitz_dom::node::MarkupNode::ProcessingInstruction { .. }) => {
+                interfaces::prototype("ProcessingInstruction", context)
             }
-            // A shadow root is not exposed through any of the specific
-            // prototypes: script reaches it only via `element.shadowRoot`,
-            // which is not implemented, so the plain Node prototype is right.
-            // A fragment is reached only through the reference the page kept
-            // from `createDocumentFragment`, and needs nothing beyond the node
-            // methods, so it takes the same plain prototype.
-            Some(NodeData::ShadowRoot(_)) | Some(NodeData::DocumentFragment) => protos.node.clone(),
-            None => protos.node.clone(),
+            None => match custom_prototype {
+                // A defined custom element takes its class's prototype.
+                Some(custom) if is_element => custom,
+                #[cfg(feature = "shadow-dom")]
+                _ if matches!(data, Some(NodeData::ShadowRoot(_))) => shadow::root_proto(context),
+                _ if matches!(data, Some(NodeData::Document(data)) if data.content_type != "text/html") => {
+                    interfaces::prototype("XMLDocument", context)
+                }
+                _ => interfaces::node_prototype(data, state.protos(), context),
+            },
         }
     };
 
@@ -111,7 +135,41 @@ pub(crate) fn node_wrapper(ctx: &DomCtx, node_id: NodeId, _context: &mut Context
     if connected {
         state.connected_wrappers.insert(node_id, wrapper.clone());
     }
+    drop(state);
+    inline_handlers::seed(ctx, node_id, &wrapper, context);
+    pin_detached_document(ctx, node_id, &wrapper, context);
     wrapper
+}
+
+/// Only wrappers touched by script participate in these traced links. A
+/// detached document and its node wrappers can be collected together.
+fn pin_detached_document(ctx: &DomCtx, node_id: NodeId, wrapper: &JsObject, context: &mut Context) {
+    const OWNER_KEY: &str = "__blitz_internal_owner_document__";
+    let owner = {
+        let doc = ctx.doc.borrow();
+        doc.get_node(node_id)
+            .and_then(|node| node.owner_document)
+            .filter(|owner| *owner != doc.root_node().id)
+    };
+    let previous = wrapper
+        .get(JsString::from(OWNER_KEY), context)
+        .ok()
+        .and_then(|value| value.as_object());
+    let previous_id = previous
+        .as_ref()
+        .and_then(|object| object.downcast_ref::<NodeRef>().map(|node| node.node_id));
+    let owned_key = format!("__blitz_internal_owned_node_{}", node_id.as_u64());
+    if previous_id != owner {
+        if let Some(previous) = previous {
+            let _ = previous.delete_property_or_throw(JsString::from(owned_key.as_str()), context);
+        }
+        define_value(wrapper, OWNER_KEY, JsValue::null(), context);
+    }
+    if let Some(owner) = owner {
+        let document = node_wrapper(ctx, owner, context);
+        define_value(wrapper, OWNER_KEY, document.clone().into(), context);
+        define_value(&document, &owned_key, wrapper.clone().into(), context);
+    }
 }
 
 /// Detach a node, and free it when script can no longer reach it.
@@ -144,9 +202,21 @@ pub(crate) fn mark_node_reattached(ctx: &DomCtx, node_id: NodeId) {
         let mut ids = Vec::new();
         let mut stack = vec![node_id];
         while let Some(id) = stack.pop() {
-            ids.push(id);
             if let Some(node) = doc.get_node(id) {
+                if node.flags.is_in_document() {
+                    ids.push(id);
+                }
                 stack.extend(node.children.iter().copied());
+                if let Some(contents) = node
+                    .element_data()
+                    .and_then(|element| element.template_contents)
+                {
+                    stack.push(contents);
+                }
+                #[cfg(feature = "shadow-dom")]
+                if let Some(root_id) = node.shadow_root_id() {
+                    stack.push(root_id);
+                }
             }
         }
         ids
@@ -169,10 +239,10 @@ pub(crate) fn mark_node_reattached(ctx: &DomCtx, node_id: NodeId) {
 /// Free detached nodes whose wrappers the collector has taken.
 ///
 /// This is the half that could not be written before wrappers were weak. A node
-/// is removed while script may still hold it, and that cannot be judged at the
-/// moment of removal; it can be judged later, and "later" is any point after a
-/// collection. An entry that still upgrades is a node something is holding on
-/// to, so it stays detached exactly as before.
+/// is removed while script may still hold its wrapper, and that cannot be judged
+/// at the moment of removal; it can be judged later, and "later" is any point
+/// after a collection. An entry that still upgrades is a node something is
+/// holding on to, so it stays detached exactly as before.
 ///
 /// Called from the poll loop, so the cost is bounded by how much was removed
 /// rather than by the size of the document.
@@ -186,8 +256,17 @@ pub(crate) fn sweep_detached_nodes(ctx: &DomCtx) {
     // Do not collect on every removal. Small detached sets are normal DOM
     // behavior and Boa may collect them naturally. Crossing this threshold is
     // the signal that delayed collection is now more expensive than one GC.
+    //
+    // Count only nodes detached since the last sweep. Nodes the last sweep kept
+    // are still held by script; a forced collection cannot free them, and
+    // counting them made a page holding 256 detached wrappers run a full GC on
+    // every poll.
     const DETACHED_NODE_GC_THRESHOLD: usize = 256;
-    if ctx.state.borrow().detached_nodes.len() >= DETACHED_NODE_GC_THRESHOLD {
+    let fresh = {
+        let state = ctx.state.borrow();
+        state.detached_nodes.len().saturating_sub(state.detached_kept)
+    };
+    if fresh >= DETACHED_NODE_GC_THRESHOLD {
         boa_gc::force_collect();
     }
 
@@ -227,6 +306,16 @@ pub(crate) fn sweep_detached_nodes(ctx: &DomCtx) {
                 }
                 if let Some(node) = doc.get_node(id) {
                     stack.extend(node.children.iter().copied());
+                    if let Some(contents) = node
+                        .element_data()
+                        .and_then(|element| element.template_contents)
+                    {
+                        stack.push(contents);
+                    }
+                    #[cfg(feature = "shadow-dom")]
+                    if let Some(root_id) = node.shadow_root_id() {
+                        stack.push(root_id);
+                    }
                 }
             }
             held
@@ -248,6 +337,7 @@ pub(crate) fn sweep_detached_nodes(ctx: &DomCtx) {
     // be reused, and a stale entry would hand out a wrapper for a different
     // node entirely.
     let mut state = ctx.state.borrow_mut();
+    state.detached_kept = keep.len();
     state.detached_nodes = keep;
     for id in freed {
         state.node_wrappers.remove(&id);
@@ -308,10 +398,15 @@ pub(crate) fn define_method(
     body: NativeFnPtr,
     context: &mut Context,
 ) {
-    let function = FunctionObjectBuilder::new(context.realm(), NativeFunction::from_fn_ptr(body))
-        .name(JsString::from(name))
-        .length(length)
-        .build();
+    let function = FunctionObjectBuilder::new(
+        context.realm(),
+        NativeFunction::from_copy_closure(move |this, args, context| {
+            custom_elements::native_scope(this, args, context, body)
+        }),
+    )
+    .name(JsString::from(name))
+    .length(length)
+    .build();
     obj.define_property_or_throw(
         PropertyKey::from(JsString::from(name)),
         PropertyDescriptor::builder()
@@ -340,10 +435,15 @@ pub(crate) fn define_accessor(
             .build()
     });
     let setter = setter.map(|s| {
-        FunctionObjectBuilder::new(context.realm(), NativeFunction::from_fn_ptr(s))
-            .name(JsString::from(format!("set {name}")))
-            .length(1)
-            .build()
+        FunctionObjectBuilder::new(
+            context.realm(),
+            NativeFunction::from_copy_closure(move |this, args, context| {
+                custom_elements::native_scope(this, args, context, s)
+            }),
+        )
+        .name(JsString::from(format!("set {name}")))
+        .length(1)
+        .build()
     });
     let mut builder = PropertyDescriptor::builder()
         .enumerable(false)
@@ -364,6 +464,9 @@ pub(crate) fn define_accessor(
 
 /// Define a plain data property
 pub(crate) fn define_value(obj: &JsObject, name: &str, value: JsValue, context: &mut Context) {
+    if event::set_event_field(obj, name, &value) {
+        return;
+    }
     obj.define_property_or_throw(
         PropertyKey::from(JsString::from(name)),
         PropertyDescriptor::builder()
@@ -417,6 +520,7 @@ pub(crate) const ON_EVENT_TYPES: &[&str] = &[
     "wheel",
     "error",
     "load",
+    "slotchange",
 ];
 
 /// Where an `on<event>` handler is actually stored on the instance.
@@ -428,30 +532,19 @@ pub(crate) const ON_HANDLER_PREFIX: &str = "__blitz_internal_on_";
 /// roots the wrapper for as long as the node is in the document. A data
 /// property cannot do the second half: nothing observes the write, so the only
 /// thing keeping the handler alive was the page's own reference to the element.
-/// The wrapper cache is weak, so a page that creates an element, wires it up and
-/// drops it lost the handler to the collector while the element was still in the
-/// tree. Reading is unchanged: `el.onclick` answers with what was assigned, or
-/// `null`, and `'onclick' in el` is still true.
-fn define_on_event_accessor(proto: &JsObject, event_type: &'static str, context: &mut Context) {
-    // The event name is captured as the `'static` string it already is, so
-    // both closures stay `Copy` and need no unsafe constructor. Building the
-    // key costs one small allocation, on a path taken when a handler is read
-    // or written rather than once per frame.
+///
+/// Every CDN loader has this shape: create a script, set `onload`, append it,
+/// return, and wait on the promise the script resolves. Keeping its wrapper
+/// alive preserves the callback until the script load is acknowledged.
+pub(crate) fn define_on_event_accessor(
+    proto: &JsObject,
+    event_type: &'static str,
+    context: &mut Context,
+) {
     let getter = FunctionObjectBuilder::new(
         context.realm(),
         NativeFunction::from_copy_closure(move |this, _args, context| {
-            let Some(object) = this.as_object() else {
-                return Ok(JsValue::null());
-            };
-            let stored = object.get(
-                JsString::from(format!("{ON_HANDLER_PREFIX}{event_type}")),
-                context,
-            )?;
-            Ok(if stored.is_undefined() {
-                JsValue::null()
-            } else {
-                stored
-            })
+            inline_handlers::get(this, event_type, context)
         }),
     )
     .name(JsString::from(format!("get on{event_type}")))
@@ -461,27 +554,7 @@ fn define_on_event_accessor(proto: &JsObject, event_type: &'static str, context:
     let setter = FunctionObjectBuilder::new(
         context.realm(),
         NativeFunction::from_copy_closure(move |this, args, context| {
-            let Some(object) = this.as_object() else {
-                return Ok(JsValue::undefined());
-            };
-            let value = args.first().cloned().unwrap_or(JsValue::null());
-            define_value(
-                &object,
-                &format!("{ON_HANDLER_PREFIX}{event_type}"),
-                value,
-                context,
-            );
-            // A handler on a node already in the document has to outlive the
-            // reference the page is about to drop. One assigned before
-            // insertion is rooted by the insertion instead: rooting a detached
-            // node here would keep alive exactly what the weak cache exists to
-            // release.
-            if let Ok(ctx) = dom_ctx(context)
-                && let Some(node_id) = node_id_of_value(this)
-            {
-                crate::dom::node::root_inline_event_handlers(&ctx, node_id, context);
-            }
-            Ok(JsValue::undefined())
+            inline_handlers::set(this, args, event_type, context)
         }),
     )
     .name(JsString::from(format!("set on{event_type}")))
@@ -543,6 +616,12 @@ pub(crate) fn init_protos(ctx: &DomCtx, context: &mut Context) {
         style: style_proto,
     });
     event::register_event_constructor(&event_proto, context);
-    event::register_custom_event_constructor(&event_proto, context);
     document::register_text_constructor(&character_data_proto, context);
+    interfaces::init(context);
+    doma::install(ctx, context);
+    #[cfg(feature = "shadow-dom")]
+    shadow::init(ctx, context);
+    range::init(context);
+    parsing::install(ctx, context);
+    inline_handlers::install(context);
 }

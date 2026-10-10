@@ -7,12 +7,13 @@ mod custom_element;
 mod custom_widget;
 mod element;
 mod node;
+pub mod script_custom_element;
 pub(crate) mod scrollbar;
 mod select;
 mod stylo_data;
 mod text;
 
-pub use attributes::{AttrAtom, Attribute, Attributes};
+pub use attributes::{AttrAtom, Attribute, AttributeNode, Attributes};
 #[cfg(feature = "shadow-dom")]
 pub use custom_element::{
     CustomElement, CustomElementCtx, CustomElementData, CustomElementDefinition,

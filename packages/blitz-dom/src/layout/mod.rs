@@ -265,11 +265,14 @@ pub mod layout_counters {
     }
 }
 
+pub(crate) mod abspos;
 pub(crate) mod construct;
 pub(crate) mod damage;
 pub(crate) mod inline;
 pub(crate) mod list;
 pub(crate) mod replaced;
+#[cfg(feature = "svg")]
+pub(crate) mod svg_geometry;
 pub(crate) mod table;
 
 use self::replaced::{ReplacedContext, is_replaced_element, replaced_measure_function};
@@ -396,6 +399,12 @@ impl BaseDocument {
         // radius separates them, and a cache hit never reaches this function.
         #[cfg(feature = "log-phase-times")]
         layout_counters::note_computed(dom_node_id(node_id));
+
+        if inputs.run_mode == taffy::RunMode::PerformLayout
+            && dom_node_id(node_id) == self.root_element().id
+        {
+            self.abspos_normal_layout = true;
+        }
 
         // Read before the node is borrowed mutably: a `<select>` is sized from
         // its options, which are other nodes.
@@ -824,6 +833,10 @@ impl LayoutPartialTree for BaseDocument {
     }
 
     fn set_unrounded_layout(&mut self, node_id: NodeId, layout: &Layout) {
+        let id = dom_node_id(node_id);
+        if self.abspos_candidate_ids.contains(&id) {
+            self.abspos_written.insert(id);
+        }
         *self.node_from_id_mut(node_id).unrounded_layout_mut() = *layout;
     }
 

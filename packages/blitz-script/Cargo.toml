@@ -16,7 +16,9 @@ path = "src/bin/solid_debug_harness.rs"
 required-features = ["debug-control"]
 
 [features]
-default = []
+default = ["shadow-dom"]
+# Native roots, slots, scoped styles and composed event dispatch.
+shadow-dom = ["blitz-dom/shadow-dom", "dep:style"]
 # Per-DOM-call timing. Off by default: a shipping build has no reader for it
 # and the clock reads are a measurable share of a mount. See `script_stats`.
 dom-stats = []
@@ -65,6 +67,7 @@ boa_gc = { workspace = true }
 # Servo dependencies
 markup5ever = { workspace = true }
 rustc-hash = { workspace = true }
+style = { workspace = true, optional = true }
 
 # Other dependencies
 keyboard-types = { workspace = true }
@@ -101,3 +104,4 @@ url = { workspace = true }
 # of this crate -- shipped or under test -- links no system library at all.
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 blitz-dom = { workspace = true, features = ["system-fonts"] }
+

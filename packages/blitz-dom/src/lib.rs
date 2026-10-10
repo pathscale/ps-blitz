@@ -5,7 +5,7 @@
 //!
 //!  - [`HtmlDocument`](https://docs.rs/blitz-html/latest/blitz_html/struct.HtmlDocument.html) from the [blitz-html](https://docs.rs/blitz-html) crate.
 //!    Allows you to parse HTML (or XHTML) into a Blitz [`BaseDocument`], and can be combined with a markdown-to-html converter like [comrak](https://docs.rs/comrak)
-//!    or [pulldown-cmark](https://docs.rs/pulldown-cmark) to render/process markdown.
+//!    or [pulldown-cmark](https://docs.rs/pulldown-cmark)) to render/process markdown.
 //!  - [`DioxusDocument`](https://docs.rs/dioxus-native/latest/dioxus_native/struct.DioxusDocument.html) from the [dioxus-native](https://docs.rs/dioxus-native) crate.
 //!    Combines a [`BaseDocument`] with a Dioxus `VirtualDom` to enable dynamic rendering and event handling.
 //!
@@ -52,7 +52,10 @@ mod layout;
 mod mutation_record;
 mod mutator;
 pub mod paint_damage;
+/// Engine-backed CSSOM operations used by script bindings.
+pub mod platform;
 mod query_selector;
+pub mod range;
 mod resolve;
 mod select;
 mod selection;
@@ -112,6 +115,7 @@ pub use mutation_record::DomMutation;
 pub use mutator::DocumentMutator;
 pub use node::{Attribute, DocumentData, ElementData, Node, NodeData, SelectData, TextNodeData};
 pub use paint_damage::PaintDamage;
+pub use range::{LiveRange, RangeBoundary, RangeBounds, RangeContent};
 // Re-exported because `PaintDamage` takes and returns `kurbo::Rect` across the
 // crate boundary. A consumer that pulls kurbo in itself and lands on a
 // different version gets a type mismatch on a name that looks identical.

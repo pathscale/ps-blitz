@@ -1,7 +1,7 @@
 //! Abstractions of networking so that custom networking implementations can be provided
 
 pub use bytes::Bytes;
-pub use http::{self, HeaderMap, Method};
+pub use http::{self, HeaderMap, HeaderValue, Method};
 use serde::{
     Serialize,
     ser::{SerializeSeq, SerializeTuple},
@@ -12,6 +12,16 @@ use std::sync::{
 };
 use std::{ops::Deref, path::PathBuf};
 pub use url::Url;
+
+/// A cookie jar used by network providers to supply request cookies and store
+/// cookies received in response headers.
+pub trait CookieJar: Send + Sync + 'static {
+    /// Returns the `Cookie` header to send with a request to `url`, if present.
+    fn cookies_header(&self, url: &Url) -> Option<HeaderValue>;
+
+    /// Stores cookies from the response headers received from `url`.
+    fn store_from_response(&self, url: &Url, headers: &HeaderMap);
+}
 
 /// A type that fetches resources for a Document.
 ///
@@ -173,7 +183,8 @@ impl NetProvider for DummyNetProvider {
 }
 
 /// The AbortController interface represents a controller object that
-/// allows you to abort one or more Web requests as and when desired.
+/// allows you to abort one or more Web requests as and when desired via
+/// `AbortController`.
 ///
 /// <https://developer.mozilla.org/en-US/docs/Web/API/AbortController>
 #[derive(Debug, Default)]
@@ -193,8 +204,7 @@ impl AbortController {
 }
 
 /// The AbortSignal interface represents a signal object that allows you to
-/// communicate with an asynchronous operation (such as a fetch request) and
-/// abort it if required via an AbortController object.
+/// communicate that an operation should be aborted via `AbortController`.
 ///
 /// <https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal>
 #[derive(Debug, Default, Clone)]
@@ -202,11 +212,9 @@ pub struct AbortSignal(Arc<AtomicBool>);
 
 impl AbortSignal {
     /// The aborted read-only property returns a value that indicates whether
-    /// the asynchronous operations the signal is communicating with are
-    /// aborted (true) or not (false).
-    ///
-    /// <https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal/aborted>
+    /// the asynchronous operations the signal is communicating with has been aborted.
     pub fn aborted(&self) -> bool {
         self.0.load(Ordering::SeqCst)
     }
 }
+

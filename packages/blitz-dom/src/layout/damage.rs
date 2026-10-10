@@ -68,6 +68,61 @@ impl BaseDocument {
         if !damage.is_empty() {
             self.paint_damage.note_own_damage(node_id);
         }
+        // A node that is never flushed on its own (an <option> inside a
+        // select, an inline <span> or <a> shaped into its parent's text, SVG
+        // content consumed by the image parser) has no style source and read
+        // as restyled on every pass. That re-ran the positioned-candidate scan
+        // and a full layout, and rebuilt every inline SVG, on every tick. Such
+        // nodes compare against the style this pass last saw instead.
+        let style_changed = {
+            let node = &mut self.nodes[node_id];
+            let current = node.primary_styles().map(|style| (*style).clone());
+            if node.style_source_opt().is_some() {
+                match (current.as_ref(), node.style_source_opt()) {
+                    (Some(current), Some(cached)) => !ServoArc::ptr_eq(current, cached),
+                    (None, None) => false,
+                    _ => true,
+                }
+            } else if let Some(element) = node.element_data_mut() {
+                let changed = match (current.as_ref(), element.unflushed_style_seen.as_ref()) {
+                    (Some(current), Some(seen)) => !ServoArc::ptr_eq(current, seen),
+                    (None, None) => false,
+                    _ => true,
+                };
+                element.unflushed_style_seen = current;
+                changed
+            } else {
+                current.is_some()
+            }
+        };
+        // SVG computed values can change the serialized image without
+        // changing a taffy box. Rebuild the image and geometry together.
+        #[cfg(feature = "svg")]
+        if super::svg_geometry::is_svg(&self.nodes[node_id])
+            && (style_changed || !damage.is_empty())
+        {
+            damage.insert(CONSTRUCT_BOX);
+        }
+
+        // Which boxes are positioned candidates, and their containing blocks,
+        // follow position, display, overflow and the transform properties (the
+        // Box style struct) plus filter. An animation that restyles colour or
+        // opacity every frame changes none of them, and rescanning on it ran a
+        // full layout every tick.
+        let candidate_inputs_changed = style_changed && {
+            let node = &self.nodes[node_id];
+            match (node.primary_styles(), node.style_source_opt()) {
+                (Some(current), Some(cached)) => {
+                    current.get_box() != cached.get_box()
+                        || current.get_effects().filter != cached.get_effects().filter
+                }
+                _ => true,
+            }
+        };
+        self.abspos_candidates_dirty |= candidate_inputs_changed
+            || damage.intersects(CONSTRUCT_BOX | CONSTRUCT_FC | CONSTRUCT_DESCENDENT);
+        self.abspos_layout_dirty |=
+            damage.intersects(ONLY_RELAYOUT | CONSTRUCT_BOX | CONSTRUCT_FC | CONSTRUCT_DESCENDENT);
         damage |= damage_from_parent;
 
         // Flush updated pseudo-element styles to their anonymous nodes so that
@@ -78,15 +133,29 @@ impl BaseDocument {
 
         let damage_for_children = RestyleDamage::empty();
         let children = std::mem::take(&mut self.nodes[node_id].children);
+        #[cfg(feature = "shadow-dom")]
+        let flattened_children = self.nodes[node_id].flattened_children.clone();
         let layout_children = std::mem::take(self.nodes[node_id].layout_children.get_mut());
         let use_layout_children = self.nodes[node_id].should_traverse_layout_children();
+        // SVG image roots have empty layout children but live DOM descendants.
+        #[cfg(feature = "svg")]
+        let use_layout_children =
+            use_layout_children && !super::svg_geometry::is_svg(&self.nodes[node_id]);
+        // A host or assigned slot must follow its current composition. Its
+        // retained box children may still describe the previous assignment.
+        #[cfg(feature = "shadow-dom")]
+        let use_layout_children = use_layout_children && flattened_children.is_none();
         if use_layout_children {
             let layout_children = layout_children.as_ref().unwrap();
             for child in layout_children.iter() {
                 damage |= self.propagate_damage_flags(*child, damage_for_children);
             }
         } else {
-            for child in children.iter() {
+            #[cfg(feature = "shadow-dom")]
+            let traversal_children = flattened_children.as_deref().unwrap_or(&children);
+            #[cfg(not(feature = "shadow-dom"))]
+            let traversal_children = &children;
+            for child in traversal_children.iter() {
                 damage |= self.propagate_damage_flags(*child, damage_for_children);
             }
             if let Some(before_id) = self.nodes[node_id].before() {
@@ -506,10 +575,11 @@ impl BaseDocument {
     }
 
     pub fn flush_styles_to_layout(&mut self, node_id: NodeId) {
-        // Rebuilt by the walk below, and stale otherwise: an incremental flush
-        // can rebuild a context whose hoisted children no longer cross
-        // anything that clips.
-        self.hoisted_clip_hosts.clear();
+        // Skipped subtrees retain their contexts and host registrations.
+        let nodes = &self.nodes;
+        self.hoisted_clip_hosts.retain(|id| nodes.contains_key(*id));
+        self.hoisted_position_hosts
+            .retain(|id| nodes.contains_key(*id));
         self.flush_styles_to_layout_impl(node_id, None);
     }
 
@@ -581,9 +651,12 @@ impl BaseDocument {
 
                         self.net_provider.fetch(
                             doc_id,
-                            crate::net::stamped_request(
-                                (**new_url).clone(),
-                                self.abort_signal.as_ref(),
+                            crate::net::with_referrer(
+                                crate::net::stamped_request(
+                                    (**new_url).clone(),
+                                    self.abort_signal.as_ref(),
+                                ),
+                                &self.url,
                             ),
                             ResourceHandler::boxed(
                                 self.tx.clone(),
@@ -676,6 +749,10 @@ impl BaseDocument {
             return;
         }
 
+        if style_changed && self.abspos_candidate_ids.contains(&node_id) {
+            self.abspos_written.insert(node_id);
+        }
+
         let display = {
             let node = self.nodes.get_mut(node_id).unwrap();
             let damage = node.damage().unwrap_or(ALL_DAMAGE);
@@ -756,6 +833,7 @@ impl BaseDocument {
                 *node.style_mut() = taffy_style;
                 *node.display_constructed_as_mut() = display_constructed_as;
                 if layout_inputs_changed {
+                    self.abspos_layout_dirty = true;
                     node.cache_mut().clear();
                     if let Some(inline_layout) = node
                         .data
@@ -812,6 +890,8 @@ impl BaseDocument {
         // This walk could not reach a hidden subtree before, because hiding a
         // pane emptied its layout children and stylo discarded its styles.
         if matches!(display, taffy::Display::None) {
+            self.hoisted_clip_hosts.remove(&node_id);
+            self.hoisted_position_hosts.remove(&node_id);
             return;
         }
 
@@ -865,10 +945,15 @@ impl BaseDocument {
                 let position = style.clone_position();
                 let z_index = style.clone_z_index().integer_or(0);
 
-                // TODO: more complete hoisting detection
                 // z-index applies to static flex/grid items too
                 // (css-flexbox-1 §painting, css-grid-1 §z-order).
-                if z_index != 0 && (position != Position::Static || is_flex_or_grid) {
+                // Ordinary absolute children stay in the normal paint tree.
+                // Hoist zero-z-index boxes only across an intermediate clip,
+                // or to restore an already reparented fixed box's paint host.
+                if self.hoisted_fixed_parents.contains_key(&child_id)
+                    || self.abspos_escapes_clip(child_id)
+                    || (z_index != 0 && (position != Position::Static || is_flex_or_grid))
+                {
                     // A hoisted fixed node paints in the stacking context its
                     // box tree gives it, not the one the hoist moved it to.
                     // `hoist_fixed_position_nodes` reparents it onto the root
@@ -914,6 +999,8 @@ impl BaseDocument {
             || (parent_stacking_context.is_some() && !stacking_context.children.is_empty());
         *self.nodes[node_id].subtree_hoists_mut() = feeds_an_ancestor;
 
+        self.hoisted_clip_hosts.remove(&node_id);
+        self.hoisted_position_hosts.remove(&node_id);
         if let Some(parent_stacking_context) = parent_stacking_context {
             let position = self.nodes[node_id].final_layout().location;
             let scroll_offset = *self.nodes[node_id].scroll_offset();
@@ -961,7 +1048,10 @@ impl BaseDocument {
                 .iter()
                 .any(|child| !child.clip_ancestors.is_empty())
             {
-                self.hoisted_clip_hosts.push(node_id);
+                self.hoisted_clip_hosts.insert(node_id);
+            }
+            if !stacking_context.children.is_empty() {
+                self.hoisted_position_hosts.insert(node_id);
             }
             self.nodes[node_id].stacking_context = Some(Box::new(new_stacking_context));
         }

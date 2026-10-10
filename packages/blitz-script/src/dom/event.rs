@@ -8,11 +8,11 @@ use blitz_traits::events::{
 use boa_engine::object::JsObject;
 use boa_engine::object::builtins::JsArray;
 use boa_engine::value::JsValue;
-use boa_engine::{Context, Finalize, JsData, JsNativeError, JsResult, NativeFunction, Trace};
+use boa_engine::{Context, Finalize, JsData, JsNativeError, JsResult, JsString, Trace};
 use boa_gc::GcRefCell;
 use keyboard_types::Modifiers;
 
-use super::{define_accessor, define_method, define_value, dom_ctx, js_str, to_rust_string};
+use super::{define_accessor, define_method, define_value, js_str, node_or_null};
 use crate::state::DomCtx;
 
 /// Native data attached to JS `Event` objects. Tracks the flags set by
@@ -20,6 +20,13 @@ use crate::state::DomCtx;
 #[derive(Default, Trace, Finalize, JsData)]
 pub(crate) struct EventRef {
     pub path: GcRefCell<Vec<JsObject>>,
+    pub fields: GcRefCell<Vec<(JsString, JsValue)>>,
+    #[unsafe_ignore_trace]
+    pub interface: Cell<&'static str>,
+    #[unsafe_ignore_trace]
+    pub initialized: Cell<bool>,
+    #[unsafe_ignore_trace]
+    pub dispatching: Cell<bool>,
     #[unsafe_ignore_trace]
     pub prevented: Cell<bool>,
     #[unsafe_ignore_trace]
@@ -28,7 +35,39 @@ pub(crate) struct EventRef {
     pub stopped_immediate: Cell<bool>,
 }
 
+impl EventRef {
+    pub(crate) fn get(&self, name: &str) -> JsValue {
+        let key = JsString::from(name);
+        self.fields
+            .borrow()
+            .iter()
+            .find(|(stored, _)| stored == &key)
+            .map(|(_, value)| value.clone())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn put(&self, name: &str, value: JsValue) {
+        let key = JsString::from(name);
+        let mut fields = self.fields.borrow_mut();
+        if let Some((_, stored)) = fields.iter_mut().find(|(stored, _)| stored == &key) {
+            *stored = value;
+        } else {
+            fields.push((key, value));
+        }
+    }
+}
+
+/// Host writes update native slots rather than creating writable JS properties.
+pub(crate) fn set_event_field(object: &JsObject, name: &str, value: &JsValue) -> bool {
+    let Some(event) = object.downcast_ref::<EventRef>() else {
+        return false;
+    };
+    event.put(name, value.clone());
+    true
+}
+
 pub(crate) fn init_event_proto(proto: &JsObject, context: &mut Context) {
+    super::event_interfaces::init_base_accessors(proto, context);
     define_method(proto, "composedPath", 0, composed_path, context);
     define_method(proto, "preventDefault", 0, prevent_default, context);
     define_method(proto, "stopPropagation", 0, stop_propagation, context);
@@ -59,6 +98,14 @@ pub(crate) fn init_event_proto(proto: &JsObject, context: &mut Context) {
         Some(set_cancel_bubble),
         context,
     );
+    define_accessor(
+        proto,
+        "returnValue",
+        Some(get_return_value),
+        Some(set_return_value),
+        context,
+    );
+    define_method(proto, "initEvent", 1, init_event, context);
 }
 
 pub(crate) fn set_event_path(event: &JsObject, path: Vec<JsObject>) {
@@ -68,153 +115,80 @@ pub(crate) fn set_event_path(event: &JsObject, path: Vec<JsObject>) {
 }
 
 pub(crate) fn register_event_constructor(proto: &JsObject, context: &mut Context) {
-    context
-        .register_global_callable(
-            boa_engine::js_string!("Event"),
-            1,
-            NativeFunction::from_fn_ptr(event_constructor),
-        )
-        .expect("failed to register Event constructor");
-    let global = context.global_object().clone();
-    let constructor = global
-        .get(boa_engine::js_string!("Event"), context)
-        .expect("Event constructor missing")
-        .as_object()
-        .expect("Event is not an object");
-    constructor
-        .set(
-            boa_engine::js_string!("prototype"),
-            proto.clone(),
-            true,
-            context,
-        )
-        .expect("failed to set Event prototype");
-    define_value(proto, "constructor", constructor.into(), context);
+    super::event_interfaces::register(proto, context);
 }
 
-fn event_constructor(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let event_type = args
-        .first()
-        .ok_or_else(|| JsNativeError::typ().with_message("Event constructor requires a type"))?;
-    let event_type = to_rust_string(event_type, context)?;
-    let (bubbles, cancelable, composed) = match args.get(1).and_then(JsValue::as_object) {
-        Some(init) => (
-            init.get(boa_engine::js_string!("bubbles"), context)?
-                .to_boolean(),
-            init.get(boa_engine::js_string!("cancelable"), context)?
-                .to_boolean(),
-            init.get(boa_engine::js_string!("composed"), context)?
-                .to_boolean(),
-        ),
-        None => (false, false, false),
-    };
-    let ctx = dom_ctx(context)?;
-    let event = create_event(
-        &ctx,
-        &event_type,
-        bubbles,
-        cancelable,
-        &JsValue::null(),
-        context,
-    );
-    define_value(&event, "composed", JsValue::from(composed), context);
-    define_value(&event, "isTrusted", JsValue::from(false), context);
-    define_value(&event, "eventPhase", JsValue::from(0), context);
-    Ok(event.into())
-}
-
-/// `CustomEvent`, which pages use to talk to themselves.
-///
-/// It has to be a real `Event` rather than a script-level shim: `dispatchEvent`
-/// downcasts its argument to [`EventRef`] and rejects anything else, so an
-/// object shaped like an event but built in JavaScript is a `TypeError` at the
-/// point of dispatch rather than at the point of construction.
-///
-/// The constructor shares `Event.prototype` instead of introducing one that
-/// inherits from it. The visible consequence is that `event instanceof
-/// CustomEvent` is true for any event, which no page has been observed to test;
-/// what pages do test is `event.detail`, and that is carried faithfully.
-pub(crate) fn register_custom_event_constructor(proto: &JsObject, context: &mut Context) {
-    context
-        .register_global_callable(
-            boa_engine::js_string!("CustomEvent"),
-            1,
-            NativeFunction::from_fn_ptr(custom_event_constructor),
-        )
-        .expect("failed to register CustomEvent constructor");
-    let global = context.global_object().clone();
-    let constructor = global
-        .get(boa_engine::js_string!("CustomEvent"), context)
-        .expect("CustomEvent constructor missing")
-        .as_object()
-        .expect("CustomEvent is not an object");
-    constructor
-        .set(
-            boa_engine::js_string!("prototype"),
-            proto.clone(),
-            true,
-            context,
-        )
-        .expect("failed to set CustomEvent prototype");
-}
-
-fn custom_event_constructor(
-    _: &JsValue,
-    args: &[JsValue],
-    context: &mut Context,
-) -> JsResult<JsValue> {
-    let event_type = args.first().ok_or_else(|| {
-        JsNativeError::typ().with_message("CustomEvent constructor requires a type")
-    })?;
-    let event_type = to_rust_string(event_type, context)?;
-    let init = args.get(1).and_then(JsValue::as_object);
-    let (bubbles, cancelable, composed, detail) = match &init {
-        Some(init) => (
-            init.get(boa_engine::js_string!("bubbles"), context)?
-                .to_boolean(),
-            init.get(boa_engine::js_string!("cancelable"), context)?
-                .to_boolean(),
-            init.get(boa_engine::js_string!("composed"), context)?
-                .to_boolean(),
-            init.get(boa_engine::js_string!("detail"), context)?,
-        ),
-        None => (false, false, false, JsValue::null()),
-    };
-    let ctx = dom_ctx(context)?;
-    let event = create_event(
-        &ctx,
-        &event_type,
-        bubbles,
-        cancelable,
-        &JsValue::null(),
-        context,
-    );
-    define_value(&event, "composed", JsValue::from(composed), context);
-    define_value(&event, "isTrusted", JsValue::from(false), context);
-    define_value(&event, "eventPhase", JsValue::from(0), context);
-    // `detail` defaults to null rather than undefined, which is what a page
-    // reading `event.detail ?? fallback` expects.
-    define_value(&event, "detail", detail, context);
-    Ok(event.into())
-}
-
-fn event_ref<T>(this: &JsValue, f: impl FnOnce(&EventRef) -> T) -> Option<T> {
+fn event_ref<T>(this: &JsValue, f: impl FnOnce(&EventRef) -> T) -> JsResult<T> {
     this.as_object()
         .and_then(|obj| obj.downcast_ref::<EventRef>().map(|event| f(&event)))
+        .ok_or_else(|| {
+            JsNativeError::typ()
+                .with_message("Illegal invocation")
+                .into()
+        })
+}
+
+/// Clearing dispatch state also happens when a listener throws.
+pub(crate) struct DispatchGuard {
+    event: JsObject,
+}
+
+impl Drop for DispatchGuard {
+    fn drop(&mut self) {
+        if let Some(event) = self.event.downcast_ref::<EventRef>() {
+            event.dispatching.set(false);
+            event.stopped.set(false);
+            event.stopped_immediate.set(false);
+            event.path.borrow_mut().clear();
+            event.put("currentTarget", JsValue::null());
+            event.put("eventPhase", JsValue::from(0));
+        }
+    }
+}
+
+pub(crate) fn begin_dispatch(
+    event: &JsObject,
+    scripted: bool,
+    context: &mut Context,
+) -> JsResult<DispatchGuard> {
+    let invalid = event
+        .downcast_ref::<EventRef>()
+        .is_none_or(|event| !event.initialized.get() || event.dispatching.get());
+    if invalid {
+        return Err(super::event_interfaces::named_error(
+            "InvalidStateError",
+            "The event is uninitialized or is already being dispatched",
+            context,
+        ));
+    }
+    {
+        let data = event.downcast_ref::<EventRef>().expect("validated Event");
+        data.dispatching.set(true);
+        if scripted {
+            data.put("isTrusted", JsValue::from(false));
+        }
+    }
+    Ok(DispatchGuard {
+        event: event.clone(),
+    })
 }
 
 fn composed_path(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let path = event_ref(this, |event| event.path.borrow().clone()).unwrap_or_default();
+    let path = event_ref(this, |event| event.path.borrow().clone())?;
     Ok(JsArray::from_iter(path.into_iter().map(Into::into), context).into())
 }
 
 fn prevent_default(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    event_ref(this, |event| event.prevented.set(true));
+    event_ref(this, |event| {
+        if event.get("cancelable").to_boolean() {
+            event.prevented.set(true);
+        }
+    })?;
     Ok(JsValue::undefined())
 }
 
 fn stop_propagation(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    event_ref(this, |event| event.stopped.set(true));
+    event_ref(this, |event| event.stopped.set(true))?;
     Ok(JsValue::undefined())
 }
 
@@ -222,32 +196,52 @@ fn stop_immediate_propagation(this: &JsValue, _: &[JsValue], _: &mut Context) ->
     event_ref(this, |event| {
         event.stopped.set(true);
         event.stopped_immediate.set(true);
-    });
+    })?;
     Ok(JsValue::undefined())
 }
 
 fn get_cancel_bubble(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    Ok(JsValue::from(
-        event_ref(this, |event| event.stopped.get()).unwrap_or(false),
-    ))
+    Ok(JsValue::from(event_ref(this, |event| event.stopped.get())?))
 }
 
 /// Setting it to true sets the stop-propagation flag. Setting it to false does
 /// nothing, per the DOM standard: the flag cannot be unset once raised.
 fn set_cancel_bubble(this: &JsValue, args: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    if args.first().unwrap_or(&JsValue::undefined()).to_boolean() {
-        event_ref(this, |event| event.stopped.set(true));
-    }
+    let value = args.first().unwrap_or(&JsValue::undefined()).to_boolean();
+    event_ref(this, |event| {
+        if value {
+            event.stopped.set(true);
+        }
+    })?;
     Ok(JsValue::undefined())
 }
 
 fn default_prevented(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    Ok(JsValue::from(
-        event_ref(this, |event| event.prevented.get()).unwrap_or(false),
-    ))
+    Ok(JsValue::from(event_ref(this, |event| {
+        event.prevented.get()
+    })?))
 }
 
-/// Create a JS event object with the standard `Event` fields
+fn get_return_value(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+    Ok(JsValue::from(!event_ref(this, |event| {
+        event.prevented.get()
+    })?))
+}
+
+fn set_return_value(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    if !args.first().unwrap_or(&JsValue::undefined()).to_boolean() {
+        prevent_default(this, &[], context)?;
+    } else {
+        event_ref(this, |_| ())?;
+    }
+    Ok(JsValue::undefined())
+}
+
+fn init_event(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    super::event_interfaces::legacy_init("Event", this, args, context)
+}
+
+/// Create a JS event object with the standard `Event` fields.
 pub(crate) fn create_event(
     ctx: &DomCtx,
     event_type: &str,
@@ -257,7 +251,10 @@ pub(crate) fn create_event(
     context: &mut Context,
 ) -> JsObject {
     let proto = ctx.state.borrow().protos().event.clone();
-    let event = JsObject::from_proto_and_data(Some(proto), EventRef::default());
+    let data = EventRef::default();
+    data.interface.set("Event");
+    data.initialized.set(true);
+    let event = JsObject::from_proto_and_data(Some(proto), data);
     define_value(&event, "type", js_str(event_type), context);
     define_value(&event, "target", target.clone(), context);
     define_value(&event, "srcElement", target.clone(), context);
@@ -266,40 +263,26 @@ pub(crate) fn create_event(
     define_value(&event, "cancelable", JsValue::from(cancelable), context);
     define_value(&event, "composed", JsValue::from(false), context);
     define_value(&event, "isTrusted", JsValue::from(true), context);
-    define_value(&event, "eventPhase", JsValue::from(2), context);
-    let timestamp = web_time::SystemTime::now()
-        .duration_since(web_time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs_f64() * 1000.0)
-        .unwrap_or(0.0);
+    define_value(&event, "eventPhase", JsValue::from(0), context);
+    let timestamp = super::event_interfaces::timestamp(context);
     define_value(&event, "timeStamp", JsValue::from(timestamp), context);
+    super::event_interfaces::install_trust_accessor(&event, context);
     event
 }
 
 fn add_modifiers(event: &JsObject, mods: Modifiers, context: &mut Context) {
-    define_value(
-        event,
-        "ctrlKey",
-        JsValue::from(mods.contains(Modifiers::CONTROL)),
-        context,
-    );
-    define_value(
-        event,
-        "shiftKey",
-        JsValue::from(mods.contains(Modifiers::SHIFT)),
-        context,
-    );
-    define_value(
-        event,
-        "altKey",
-        JsValue::from(mods.contains(Modifiers::ALT)),
-        context,
-    );
-    define_value(
-        event,
-        "metaKey",
-        JsValue::from(mods.contains(Modifiers::META)),
-        context,
-    );
+    for (name, modifier) in [
+        ("ctrlKey", Modifiers::CONTROL),
+        ("shiftKey", Modifiers::SHIFT),
+        ("altKey", Modifiers::ALT),
+        ("metaKey", Modifiers::META),
+        ("modifierAltGraph", Modifiers::ALT_GRAPH),
+        ("modifierCapsLock", Modifiers::CAPS_LOCK),
+        ("modifierNumLock", Modifiers::NUM_LOCK),
+        ("modifierScrollLock", Modifiers::SCROLL_LOCK),
+    ] {
+        define_value(event, name, JsValue::from(mods.contains(modifier)), context);
+    }
 }
 
 fn add_pointer_fields(event: &JsObject, data: &BlitzPointerEvent, context: &mut Context) {
@@ -308,13 +291,54 @@ fn add_pointer_fields(event: &JsObject, data: &BlitzPointerEvent, context: &mut 
         BlitzPointerId::Pen => (2, "pen"),
         BlitzPointerId::Finger(id) => (id.saturating_add(3), "touch"),
     };
-    define_value(event, "pointerId", JsValue::from(pointer_id), context);
+    define_value(
+        event,
+        "pointerId",
+        JsValue::from(pointer_id as i32),
+        context,
+    );
     define_value(event, "pointerType", js_str(pointer_type), context);
     define_value(event, "isPrimary", JsValue::from(data.is_primary), context);
     define_value(
         event,
         "pressure",
         JsValue::from(data.details.pressure),
+        context,
+    );
+    define_value(
+        event,
+        "tangentialPressure",
+        JsValue::from(data.details.tangential_pressure),
+        context,
+    );
+    define_value(
+        event,
+        "tiltX",
+        JsValue::from(data.details.tilt_x as i32),
+        context,
+    );
+    define_value(
+        event,
+        "tiltY",
+        JsValue::from(data.details.tilt_y as i32),
+        context,
+    );
+    define_value(
+        event,
+        "twist",
+        JsValue::from(data.details.twist as i32),
+        context,
+    );
+    define_value(
+        event,
+        "altitudeAngle",
+        JsValue::from(data.details.altitude),
+        context,
+    );
+    define_value(
+        event,
+        "azimuthAngle",
+        JsValue::from(data.details.azimuth),
         context,
     );
     define_value(
@@ -329,8 +353,6 @@ fn add_pointer_fields(event: &JsObject, data: &BlitzPointerEvent, context: &mut 
         JsValue::from(data.client_y() as f64),
         context,
     );
-    define_value(event, "x", JsValue::from(data.client_x() as f64), context);
-    define_value(event, "y", JsValue::from(data.client_y() as f64), context);
     define_value(event, "pageX", JsValue::from(data.page_x() as f64), context);
     define_value(event, "pageY", JsValue::from(data.page_y() as f64), context);
     define_value(
@@ -364,7 +386,24 @@ fn add_pointer_fields(event: &JsObject, data: &BlitzPointerEvent, context: &mut 
         JsValue::from(data.buttons.bits()),
         context,
     );
-    define_value(event, "detail", JsValue::from(1), context);
+    let event_type = event.downcast_ref::<EventRef>().expect("Event").get("type");
+    let event_type = event_type
+        .as_string()
+        .map(|s| s.to_std_string_lossy())
+        .unwrap_or_default();
+    let detail = match event_type.as_str() {
+        "dblclick" => 2,
+        "click" | "mousedown" | "mouseup" => 1,
+        _ => 0,
+    };
+    define_value(event, "detail", JsValue::from(detail), context);
+    define_value(
+        event,
+        "__which",
+        JsValue::from(data.button as u8 + 1),
+        context,
+    );
+    super::event_interfaces::add_movement(event, data, &event_type, context);
     add_modifiers(event, data.mods, context);
 }
 
@@ -389,11 +428,12 @@ fn add_key_fields(event: &JsObject, data: &BlitzKeyEvent, context: &mut Context)
         JsValue::from(data.is_composing),
         context,
     );
+    super::event_interfaces::add_legacy_key_fields(event, data, context);
     add_modifiers(event, data.modifiers, context);
 }
 
 /// Create a JS event object for a Blitz [`DomEventData`], populating
-/// type-specific fields (mouse coordinates, key names, etc)
+/// type-specific fields (mouse coordinates, key names, etc).
 pub(crate) fn create_event_for_dom_event(
     ctx: &DomCtx,
     data: &DomEventData,
@@ -403,6 +443,13 @@ pub(crate) fn create_event_for_dom_event(
     context: &mut Context,
 ) -> JsObject {
     let event = create_event(ctx, data.name(), bubbles, cancelable, target, context);
+    let class = super::event_interfaces::class_for_dom_event(data);
+    super::event_interfaces::initialize_native(&event, class, context);
+    if super::event_interfaces::inherits(class, "UIEvent") {
+        let view: JsValue = context.global_object().into();
+        define_value(&event, "view", view, context);
+        define_value(&event, "composed", JsValue::from(true), context);
+    }
 
     match data {
         DomEventData::PointerMove(pointer)
@@ -420,14 +467,24 @@ pub(crate) fn create_event_for_dom_event(
         | DomEventData::MouseLeave(pointer)
         | DomEventData::MouseOver(pointer)
         | DomEventData::MouseOut(pointer)
-        | DomEventData::TouchStart(pointer)
-        | DomEventData::TouchMove(pointer)
-        | DomEventData::TouchEnd(pointer)
-        | DomEventData::TouchCancel(pointer)
         | DomEventData::Click(pointer)
         | DomEventData::ContextMenu(pointer)
         | DomEventData::DoubleClick(pointer) => {
             add_pointer_fields(&event, pointer, context);
+        }
+
+        DomEventData::TouchStart(pointer)
+        | DomEventData::TouchMove(pointer)
+        | DomEventData::TouchEnd(pointer)
+        | DomEventData::TouchCancel(pointer) => {
+            super::event_interfaces::add_touch_fields(
+                &event,
+                pointer,
+                data.name(),
+                target,
+                context,
+            );
+            add_modifiers(&event, pointer.mods, context);
         }
 
         DomEventData::KeyPress(key) | DomEventData::KeyDown(key) | DomEventData::KeyUp(key) => {
@@ -443,13 +500,64 @@ pub(crate) fn create_event_for_dom_event(
             define_value(&event, "deltaY", JsValue::from(delta_y), context);
             define_value(&event, "deltaZ", JsValue::from(0.0), context);
             define_value(&event, "deltaMode", JsValue::from(delta_mode), context);
+            define_value(
+                &event,
+                "screenX",
+                JsValue::from(wheel.coords.screen_x),
+                context,
+            );
+            define_value(
+                &event,
+                "screenY",
+                JsValue::from(wheel.coords.screen_y),
+                context,
+            );
+            define_value(
+                &event,
+                "clientX",
+                JsValue::from(wheel.coords.client_x),
+                context,
+            );
+            define_value(
+                &event,
+                "clientY",
+                JsValue::from(wheel.coords.client_y),
+                context,
+            );
+            define_value(&event, "pageX", JsValue::from(wheel.coords.page_x), context);
+            define_value(&event, "pageY", JsValue::from(wheel.coords.page_y), context);
+            define_value(&event, "offsetX", JsValue::from(wheel.element.x), context);
+            define_value(&event, "offsetY", JsValue::from(wheel.element.y), context);
+            define_value(
+                &event,
+                "buttons",
+                JsValue::from(wheel.buttons.bits()),
+                context,
+            );
             add_modifiers(&event, wheel.mods, context);
         }
 
-        DomEventData::Input(input) => {
-            define_value(&event, "data", js_str(&input.value), context);
-            define_value(&event, "inputType", js_str("insertText"), context);
+        DomEventData::Focus(focus)
+        | DomEventData::Blur(focus)
+        | DomEventData::FocusIn(focus)
+        | DomEventData::FocusOut(focus) => {
+            let related = node_or_null(ctx, focus.related_target, context);
+            define_value(&event, "relatedTarget", related, context);
         }
+
+        DomEventData::Submit(submit) => {
+            let submitter = if submit.submitter == submit.form {
+                None
+            } else {
+                Some(blitz_dom::NodeId::from_u64(submit.submitter))
+            };
+            let submitter = node_or_null(ctx, submitter, context);
+            define_value(&event, "submitter", submitter, context);
+        }
+
+        // The producer currently supplies the resulting value, not the edit.
+        // Do not misreport the entire value as newly inserted text.
+        DomEventData::Input(_) => {}
 
         _ => {}
     }

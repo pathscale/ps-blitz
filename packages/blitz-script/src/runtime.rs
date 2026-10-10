@@ -11,6 +11,7 @@ use blitz_dom::BaseDocument;
 use blitz_dom::NodeId;
 use blitz_traits::events::{BlitzPointerId, DomEvent, DomEventData, EventState};
 use boa_engine::builtins::promise::PromiseState;
+use boa_engine::job::SimpleJobExecutor;
 use boa_engine::object::builtins::JsPromise;
 use boa_engine::object::{JsObject, ObjectInitializer};
 use boa_engine::property::Attribute;
@@ -26,6 +27,7 @@ use web_time::{Duration, Instant};
 
 use crate::dom::event::{EventRef, create_event, create_event_for_dom_event, set_event_path};
 use crate::dom::{define_accessor, dom_ctx, node_wrapper};
+use crate::job_budget::{JobBudget, JobSlice};
 use crate::module::{BlitzModuleLoader, SharedFetcher};
 use crate::state::{DomCtx, Listener};
 
@@ -131,6 +133,20 @@ fn report_js_error(
     eprintln!("Uncaught JS error in {what}: {error}");
 }
 
+#[derive(Clone, Trace, Finalize, boa_engine::JsData)]
+struct HandlerErrorReporter {
+    #[unsafe_ignore_trace]
+    diagnostics: Rc<RefCell<RuntimeDiagnostics>>,
+}
+
+pub(crate) fn report_handler_error(context: &Context, what: &str, error: &JsError) {
+    if let Some(reporter) = context.get_data::<HandlerErrorReporter>() {
+        report_js_error(&reporter.diagnostics, what, error);
+    } else {
+        eprintln!("Uncaught JS error in {what}: {error}");
+    }
+}
+
 fn listener_error_context(
     event_name: &str,
     target: &str,
@@ -150,6 +166,8 @@ pub(crate) struct ScriptRuntime {
     pub ctx: DomCtx,
     diagnostics: Rc<RefCell<RuntimeDiagnostics>>,
     module_loader: Rc<BlitzModuleLoader>,
+    job_executor: Rc<SimpleJobExecutor>,
+    job_budget: Rc<JobBudget>,
     /// Module evaluations that had not settled when their script ran.
     ///
     /// Top-level `await` makes this ordinary rather than exceptional: a module
@@ -176,8 +194,10 @@ impl ScriptRuntime {
         // process's working directory, which for a browser is both useless and
         // the wrong thing to expose to a page.
         let module_loader = Rc::new(BlitzModuleLoader::new(fetcher, base_url.cloned()));
+        let job_executor = Rc::new(SimpleJobExecutor::new());
         let mut context = Context::builder()
             .module_loader(Rc::clone(&module_loader))
+            .job_executor(Rc::clone(&job_executor))
             .build()
             .expect("building the script context should not fail");
         /*
@@ -191,35 +211,40 @@ impl ScriptRuntime {
          * grows with how deeply the page is nested rather than with anything
          * the author would recognise as recursion.
          *
-         * Measured on support.cafe, driven headlessly: the home page renders,
-         * and following the link to `/login` throws
+         * Two budgets, because they are not the same resource. The recursion
+         * limit counts JavaScript frames. V8 allows roughly 10_000 to 12_000
+         * frames of ordinary code; 16384 covers that and a 9_000-deep call.
+         * Crossing it throws a catchable RangeError ("Maximum call stack size
+         * exceeded"), which is what `try/catch` plus `instanceof RangeError`
+         * stack probes look for. The old engine error was not catchable, so
+         * the probe became an uncaught failure and the page stopped.
          *
-         *   RuntimeLimitError: reached the maximum number of recursive calls
+         * Native re-entry is separate. `JsObject::call` nests `Context::run`
+         * on this thread's Rust stack (a getter, a listener, a promise
+         * reaction). Counting that as a JavaScript frame made every accessor
+         * cost two frames, so a page Chrome runs crossed 8192 here. The host
+         * cap is 4096, the depth the old combined budget already allowed,
+         * which fits the GUI thread and a worker's 2 MB stack. The headless
+         * page thread reserves 256 MB for the same nesting.
          *
-         * mid-render, leaving a partial tree. Nothing in the page is
-         * recursive; the route is simply deeper than 512 frames. The failure
-         * is also silent to a person: the click is dispatched, the old page
-         * goes, and what arrives is a fragment.
-         *
-         * Both limits move, because raising one alone does nothing. The
-         * recursion count is not what a deep render runs out of first: the VM's
-         * value stack is, at roughly seven slots a frame, so the default 10240
-         * slots stop a page at about 1460 frames however high the call limit
-         * is. Measured by recursing from a page and reporting the deepest frame
-         * reached: 511 with the defaults, 1462 with only the call limit raised.
-         *
-         * The pair below reaches about 8000 frames, which is the range browsers
-         * are in, and costs 1.6 MB of value stack. They are still limits: a page
-         * that really does recurse without a base case is stopped, with the same
-         * error, before it can exhaust the machine.
+         * The value stack is the third number. A plain recursive function
+         * uses about 7 slots a frame: the default 10240 slots stop a page
+         * near frame 1460, and raising only the call limit used to run out
+         * of slots at 1462. 32 slots of room per frame (16384 * 32) lets a
+         * function with locals reach the frame limit first. Past either
+         * limit the same RangeError is thrown.
          */
         let limits = context.runtime_limits_mut();
-        limits.set_recursion_limit(8192);
-        limits.set_stack_size_limit(1024 * 100);
+        limits.set_recursion_limit(16384);
+        limits.set_host_recursion_limit(4096);
+        limits.set_stack_size_limit(16384 * 32);
 
         let ctx = DomCtx::new(doc);
         context.insert_data(ctx.clone());
         let diagnostics = Rc::new(RefCell::new(RuntimeDiagnostics::default()));
+        context.insert_data(HandlerErrorReporter {
+            diagnostics: Rc::clone(&diagnostics),
+        });
 
         Console::register_with_logger(
             CapturingLogger {
@@ -349,30 +374,7 @@ impl ScriptRuntime {
             .build();
         register_global(&mut context, "navigator", navigator.into());
 
-        // `customElements`
-        //
-        // Absent entirely before this, so `customElements.define(...)` threw a
-        // ReferenceError out of whatever module ran it. A framework that
-        // registers its components at import time loses that whole module, and
-        // the page renders as unstyled markup or not at all.
-        let custom_elements = ObjectInitializer::new(&mut context)
-            .function(
-                NativeFunction::from_fn_ptr(crate::dom::custom_elements::define),
-                js_string!("define"),
-                2,
-            )
-            .function(
-                NativeFunction::from_fn_ptr(crate::dom::custom_elements::get),
-                js_string!("get"),
-                1,
-            )
-            .function(
-                NativeFunction::from_fn_ptr(crate::dom::custom_elements::get_name),
-                js_string!("getName"),
-                1,
-            )
-            .build();
-        register_global(&mut context, "customElements", custom_elements.into());
+        crate::dom::custom_elements::install(&ctx, &mut context);
 
         // `performance`
         let performance = ObjectInitializer::new(&mut context)
@@ -383,6 +385,8 @@ impl ScriptRuntime {
             )
             .build();
         register_global(&mut context, "performance", performance.into());
+        register_global_fn(&mut context, "__blitzViewportScroll", 0, viewport_scroll);
+        register_global_fn(&mut context, "__blitzScrollViewport", 2, scroll_viewport);
 
         // The switch the prelude's `MutationObserver` flips: the document
         // records changes only while an observer is registered.
@@ -418,6 +422,18 @@ impl ScriptRuntime {
             window_remove_event_listener,
         );
         register_global_fn(&mut context, "dispatchEvent", 1, window_dispatch_event);
+        register_global_fn(
+            &mut context,
+            "__blitzDispatchHistoryEvent",
+            1,
+            window_dispatch_history_event,
+        );
+        register_global_fn(
+            &mut context,
+            "__blitzDispatchMessageEvent",
+            1,
+            window_dispatch_history_event,
+        );
         register_global_fn(&mut context, "__blitzRandomU32", 0, random_u32);
 
         let mut runtime = Self {
@@ -425,6 +441,8 @@ impl ScriptRuntime {
             ctx,
             diagnostics,
             module_loader,
+            job_executor,
+            job_budget: Rc::new(JobBudget::default()),
             pending_modules: Vec::new(),
             focussed_text_value: None,
         };
@@ -561,26 +579,36 @@ impl ScriptRuntime {
                 })();
             }
             if (typeof globalThis.structuredClone !== "function") {
+                const Exception = globalThis.DOMException;
+                const exceptionName = Object.getOwnPropertyDescriptor(Exception.prototype, "name").get;
+                const exceptionMessage = Object.getOwnPropertyDescriptor(Exception.prototype, "message").get;
                 globalThis.structuredClone = function (input, options) {
                     if (options && options.transfer && options.transfer.length) {
-                        throw new TypeError("structuredClone transfer is not supported");
+                        throw new Exception("structuredClone transfer is not supported", "DataCloneError");
                     }
 
                     const seen = new Map();
                     const clone = function (value) {
                         if (value === null || typeof value !== "object") {
                             if (typeof value === "function" || typeof value === "symbol") {
-                                throw new TypeError("value cannot be structured-cloned");
+                                throw new Exception("value cannot be structured-cloned", "DataCloneError");
                             }
                             return value;
                         }
                         if (value === globalThis || typeof value.nodeType === "number") {
-                            throw new TypeError("value cannot be structured-cloned");
+                            throw new Exception("value cannot be structured-cloned", "DataCloneError");
                         }
                         if (seen.has(value)) return seen.get(value);
 
                         let copy;
-                        if (Array.isArray(value)) {
+                        if (value instanceof Exception) {
+                            copy = new Exception(
+                                exceptionMessage.call(value),
+                                exceptionName.call(value),
+                            );
+                            seen.set(value, copy);
+                            return copy;
+                        } else if (Array.isArray(value)) {
                             copy = [];
                         } else if (value instanceof Date) {
                             return new Date(value.getTime());
@@ -604,8 +632,9 @@ impl ScriptRuntime {
                                 return new DataView(buffer, value.byteOffset, value.byteLength);
                             }
                             return new value.constructor(buffer, value.byteOffset, value.length);
-                        } else if (value instanceof WeakMap || value instanceof WeakSet || value instanceof Promise) {
-                            throw new TypeError("value cannot be structured-cloned");
+                        } else if (value instanceof WeakMap || value instanceof WeakSet || value instanceof Promise ||
+                            (typeof MessagePort === "function" && value instanceof MessagePort)) {
+                            throw new Exception("value cannot be structured-cloned", "DataCloneError");
                         } else {
                             copy = Object.create(Object.getPrototypeOf(value) === null ? null : Object.prototype);
                         }
@@ -645,7 +674,7 @@ impl ScriptRuntime {
                             throw new TypeError("getRandomValues requires an integer TypedArray");
                         }
                         if (array.byteLength > 65536) {
-                            throw new TypeError("getRandomValues quota exceeded");
+                            throw new DOMException("getRandomValues quota exceeded", "QuotaExceededError");
                         }
                         for (let index = 0; index < array.length; index += 1) {
                             array[index] = randomU32();
@@ -660,6 +689,22 @@ impl ScriptRuntime {
             if (typeof globalThis.history !== "object" || globalThis.history === null) {
                 const entries = [{ state: null, url: globalThis.location.href }];
                 let index = 0;
+                const dispatchHistoryEvent = globalThis.__blitzDispatchHistoryEvent;
+                let applyingUrl = false;
+                const resolveHistoryUrl = function (url) {
+                    if (url === undefined || url === null) return globalThis.location.href;
+                    let resolved;
+                    try {
+                        resolved = new URL(String(url), globalThis.location.href);
+                    } catch (error) {
+                        throw new DOMException("Invalid history URL", "SecurityError");
+                    }
+                    const current = new URL(globalThis.location.href);
+                    if (resolved.origin !== current.origin) {
+                        throw new DOMException("History URL must have the document's origin", "SecurityError");
+                    }
+                    return resolved.href;
+                };
                 const applyUrl = function (url) {
                     if (url === undefined || url === null) return;
                     const value = String(url);
@@ -695,34 +740,55 @@ impl ScriptRuntime {
                     globalThis.location.pathname = pathname || "/";
                     globalThis.location.search = search;
                     globalThis.location.hash = hash;
-                    globalThis.location.href = globalThis.location.protocol + "//" +
-                        globalThis.location.host + globalThis.location.pathname + search + hash;
+                    applyingUrl = true;
+                    try {
+                        globalThis.location.href = globalThis.location.protocol + "//" +
+                            globalThis.location.host + globalThis.location.pathname + search + hash;
+                    } finally {
+                        applyingUrl = false;
+                    }
                 };
                 const history = {
                     scrollRestoration: "auto",
                     get length() { return entries.length; },
                     get state() { return entries[index].state; },
                     pushState(state, _unused, url) {
-                        const entry = { state: structuredClone(state), url: url ?? globalThis.location.href };
+                        const entry = { state: structuredClone(state), url: resolveHistoryUrl(url) };
                         entries.splice(index + 1, entries.length, entry);
                         index += 1;
-                        applyUrl(url);
+                        applyUrl(entry.url);
                     },
                     replaceState(state, _unused, url) {
-                        entries[index] = { state: structuredClone(state), url: url ?? entries[index].url };
-                        applyUrl(url);
+                        const entry = { state: structuredClone(state), url: resolveHistoryUrl(url) };
+                        entries[index] = entry;
+                        applyUrl(entry.url);
                     },
                     go(delta) {
-                        const next = Math.max(0, Math.min(entries.length - 1, index + Number(delta || 0)));
-                        if (next === index) return;
-                        index = next;
-                        applyUrl(entries[index].url);
-                        // A traversal has to announce itself. Without this a
-                        // router's `navigate(-1)` changed the URL and nothing
-                        // redrew, so every route was one-way.
-                        const event = new Event("popstate");
-                        event.state = entries[index].state;
-                        globalThis.dispatchEvent(event);
+                        const number = Number(delta === undefined ? 0 : delta);
+                        const integer = Number.isFinite(number) ? Math.trunc(number) : 0;
+                        const distance = (integer >>> 0) | 0;
+                        if (distance === 0) {
+                            globalThis.location.reload();
+                            return;
+                        }
+                        setTimeout(function () {
+                            const next = index + distance;
+                            if (next < 0 || next >= entries.length) return;
+                            const oldURL = globalThis.location.href;
+                            const oldHash = globalThis.location.hash;
+                            index = next;
+                            applyUrl(entries[index].url);
+                            const newURL = globalThis.location.href;
+                            dispatchHistoryEvent(new PopStateEvent("popstate", {
+                                state: entries[index].state,
+                            }));
+                            if (oldHash !== globalThis.location.hash) {
+                                dispatchHistoryEvent(new HashChangeEvent("hashchange", {
+                                    oldURL: oldURL,
+                                    newURL: newURL,
+                                }));
+                            }
+                        }, 0);
                     },
                     back() { this.go(-1); },
                     forward() { this.go(1); },
@@ -733,15 +799,71 @@ impl ScriptRuntime {
                     enumerable: true,
                     configurable: true,
                 });
+                // `location.href = url` navigates. A plain data property only
+                // stored the string, so pages that redirect by assignment never
+                // left. A change of fragment alone stays in this document, as a
+                // history entry with a hashchange; applyUrl keeps the value in sync.
+                let currentHref = globalThis.location.href;
+                Object.defineProperty(globalThis.location, "href", {
+                    get() { return currentHref; },
+                    set(value) {
+                        if (applyingUrl) {
+                            currentHref = String(value);
+                            return;
+                        }
+                        const target = new URL(String(value), currentHref);
+                        const current = new URL(currentHref);
+                        const withoutHash = function (href) {
+                            const hashAt = href.indexOf("#");
+                            return hashAt < 0 ? href : href.slice(0, hashAt);
+                        };
+                        if (target.hash && withoutHash(target.href) === withoutHash(current.href)) {
+                            const oldURL = currentHref;
+                            history.pushState(null, "", target.href);
+                            if (current.hash !== target.hash) {
+                                dispatchHistoryEvent(new HashChangeEvent("hashchange", {
+                                    oldURL: oldURL,
+                                    newURL: currentHref,
+                                }));
+                            }
+                            return;
+                        }
+                        globalThis.location.assign(target.href);
+                    },
+                    enumerable: true,
+                    configurable: true,
+                });
             }
+            const htmlConstructor = globalThis.__blitzHTMLConstructor;
+            const domPrototype = globalThis.__blitzDOMPrototype;
+            const sequenceFrom = Array.from;
+            const sequenceString = String;
+            globalThis.__blitzCEInitialize(function (value) {
+                return sequenceFrom(value, sequenceString);
+            });
+            delete globalThis.__blitzCEInitialize;
             const defineDomInterface = function (name, matches) {
                 if (typeof globalThis[name] === "function") return;
-                const Interface = function () {
+                const html = name === "HTMLElement"
+                    || (name.startsWith("HTML") && name.endsWith("Element"));
+                const Interface = html ? function () {
+                    return htmlConstructor(new.target, name);
+                } : function () {
                     throw new TypeError("Illegal constructor");
                 };
                 Object.defineProperty(Interface, "name", { value: name, configurable: true });
+                Interface.prototype = domPrototype(name);
+                Object.defineProperty(Interface.prototype, "constructor", {
+                    value: Interface,
+                    writable: true,
+                    configurable: true,
+                });
+                if (html) {
+                    Object.setPrototypeOf(Interface,
+                        name === "HTMLElement" ? globalThis.Element : globalThis.HTMLElement);
+                }
                 Object.defineProperty(Interface, Symbol.hasInstance, {
-                    value: matches,
+                    value: html ? Function.prototype[Symbol.hasInstance] : matches,
                     configurable: true,
                 });
                 Object.defineProperty(globalThis, name, {
@@ -793,10 +915,27 @@ impl ScriptRuntime {
             defineDomInterface("HTMLStyleElement", isTag("STYLE"));
             defineDomInterface("HTMLTemplateElement", isTag("TEMPLATE"));
             defineDomInterface("HTMLTextAreaElement", isTag("TEXTAREA"));
+            delete globalThis.__blitzDispatchHistoryEvent;
+            defineDomInterface("HTMLDivElement", isTag("DIV"));
+            defineDomInterface("HTMLSpanElement", isTag("SPAN"));
+            defineDomInterface("HTMLParagraphElement", isTag("P"));
+            defineDomInterface("HTMLLIElement", isTag("LI"));
+            defineDomInterface("HTMLUListElement", isTag("UL"));
+            defineDomInterface("HTMLOListElement", isTag("OL"));
+            delete globalThis.__blitzHTMLConstructor;
+            delete globalThis.__blitzDOMPrototype;
             delete globalThis.__blitzRandomU32;
             "##,
             "<blitz-bootstrap>",
         );
+
+        crate::domc::install(&mut runtime.context);
+        runtime.eval_internal(include_str!("domc.js"), "<blitz-domc>");
+        runtime.eval_internal(include_str!("domexc.js"), "<blitz-domexc>");
+        let loader = Rc::clone(&runtime.module_loader);
+        crate::docwrite::install(&mut runtime.context, loader);
+        crate::fonts::install(&mut runtime.context);
+        runtime.eval_internal(include_str!("docwrite.js"), "<blitz-docwrite>");
 
         runtime
     }
@@ -824,6 +963,7 @@ impl ScriptRuntime {
         if let Err(error) = self.context.eval(source) {
             report_js_error(&self.diagnostics, description, &error);
         }
+        crate::domc::set_current_script(&self.context, None);
         self.run_jobs(description);
     }
 
@@ -955,30 +1095,109 @@ impl ScriptRuntime {
             .collect()
     }
 
-    fn eval_internal(&mut self, code: &str, description: &str) {
-        if let Err(error) = self.context.eval(Source::from_bytes(code)) {
+    pub(crate) fn eval_internal(&mut self, code: &str, description: &str) {
+        // The description doubles as the source path, so stack traces and
+        // profiles name the prelude (`<blitz-domc>:500`) instead of a bare line.
+        let source = Source::from_bytes(code).with_path(Path::new(description));
+        if let Err(error) = self.context.eval(source) {
             report_js_error(&self.diagnostics, description, &error);
         }
     }
 
-    /// Run pending promise jobs (microtasks)
-    pub fn run_jobs(&mut self, description: &str) {
-        // Every script turn ends here, so this is where recorded DOM changes
-        // reach the page's `MutationObserver`s: after the turn's synchronous
-        // code and its microtasks, before anything renders, which is when a
-        // browser delivers them. A callback can queue jobs and change the DOM
-        // again, so this repeats until nothing is left. The cap stops an
-        // observer that rewrites what it observes from holding the thread;
-        // records past it wait for the next turn rather than being lost.
-        const MUTATION_DELIVERY_ROUNDS: usize = 32;
-        for _ in 0..MUTATION_DELIVERY_ROUNDS {
-            if let Err(error) = self.context.run_jobs() {
-                report_js_error(&self.diagnostics, description, &error);
-            }
-            if !self.deliver_mutations() {
-                return;
+    pub(crate) fn begin_job_slice(&self) -> JobSlice {
+        self.job_budget.begin()
+    }
+
+    pub(crate) fn set_document_ready_state(&mut self, next: &'static str) -> bool {
+        if !crate::domc::set_ready_state(&self.context, next) {
+            return false;
+        }
+        let root_id = self.ctx.doc.borrow().root_node().id;
+        self.dispatch_node_event(root_id, "readystatechange");
+        true
+    }
+
+    pub(crate) fn has_pending_module_evaluations(&self) -> bool {
+        self.pending_modules
+            .iter()
+            .any(|(promise, _)| matches!(promise.state(), PromiseState::Pending))
+    }
+
+    pub(crate) fn poll_domc(&mut self) -> bool {
+        let global = self.context.global_object().clone();
+        let mut changed = false;
+        for name in ["__blitzDOMCPoll", "__blitzDocwritePoll"] {
+            let result = global
+                .get(boa_engine::JsString::from(name), &mut self.context)
+                .and_then(|value| {
+                    let Some(function) = value.as_object() else {
+                        return Ok(JsValue::from(false));
+                    };
+                    function.call(&JsValue::undefined(), &[], &mut self.context)
+                });
+            match result {
+                Ok(value) => changed |= value.to_boolean(),
+                Err(error) => {
+                    report_js_error(&self.diagnostics, "document platform changes", &error);
+                }
             }
         }
+        changed
+    }
+
+    pub(crate) fn job_budget(&self) -> Duration {
+        self.job_budget.duration()
+    }
+
+    pub(crate) fn set_job_budget(&self, duration: Duration) {
+        self.job_budget.set_duration(duration);
+    }
+
+    pub(crate) fn jobs_remain(&self) -> bool {
+        self.job_executor.has_pending_jobs(&self.context)
+    }
+
+    /// Run pending promise jobs (microtasks) within the current slice.
+    pub fn run_jobs(&mut self, description: &str) {
+        self.run_jobs_with_progress(description);
+    }
+
+    /// Run a slice and report jobs executed, queued work, or mutation delivery.
+    ///
+    /// Every drain in a poll shares one deadline. Observer delivery still
+    /// happens at the slice end, including when promise jobs remain queued.
+    /// Observer callbacks can enqueue more jobs and mutations; those jobs use
+    /// the remaining budget and records retain the existing delivery cap.
+    pub(crate) fn run_jobs_with_progress(&mut self, description: &str) -> bool {
+        let _slice = self.begin_job_slice();
+        let before = self.job_executor.executed_job_count();
+        const MUTATION_DELIVERY_ROUNDS: usize = 32;
+        let mut delivered = false;
+        for _ in 0..MUTATION_DELIVERY_ROUNDS {
+            crate::dom::inline_handlers::sync(&self.ctx, &mut self.context);
+            crate::dom::custom_elements::checkpoint(&self.ctx, &mut self.context);
+            if let Err(error) = Rc::clone(&self.job_executor)
+                .run_jobs_with_budget(&mut self.context, self.job_budget.remaining())
+            {
+                report_js_error(&self.diagnostics, description, &error);
+            }
+            let mutations_delivered = self.deliver_mutations();
+            #[cfg(feature = "shadow-dom")]
+            let slots_delivered =
+                crate::dom::shadow::deliver_slot_changes(&self.ctx, &mut self.context);
+            #[cfg(not(feature = "shadow-dom"))]
+            let slots_delivered = false;
+            if !mutations_delivered && !slots_delivered {
+                return delivered
+                    || self.jobs_remain()
+                    || self.job_executor.executed_job_count() != before;
+            }
+            delivered = true;
+            if self.job_budget.exhausted() {
+                break;
+            }
+        }
+        delivered || self.jobs_remain() || self.job_executor.executed_job_count() != before
     }
 
     /// Hand recorded DOM changes to the prelude's `MutationObserver`. Returns
@@ -1016,9 +1235,17 @@ impl ScriptRuntime {
         true
     }
 
-    /// The deadline of the soonest pending timer (if any)
+    /// The deadline of the soonest pending DOM or Boa timer (if any).
     pub fn next_timer_deadline(&self) -> Option<Instant> {
-        self.ctx.state.borrow().timers.next_deadline()
+        let dom = self.ctx.state.borrow().timers.next_deadline();
+        let boa = self
+            .job_executor
+            .next_job_timeout(&self.context)
+            .map(|delay| Instant::now() + delay);
+        match (dom, boa) {
+            (Some(dom), Some(boa)) => Some(dom.min(boa)),
+            (dom, boa) => dom.or(boa),
+        }
     }
 
     /// Free detached nodes whose wrappers script no longer holds.
@@ -1109,21 +1336,25 @@ impl ScriptRuntime {
         });
         let chain = captured_chain.as_deref().unwrap_or(chain);
 
+        if chain.is_empty() {
+            return false;
+        }
         let name = event.name().to_string();
+        // Touch and movement state must advance even without a listener.
+        let target: JsValue = node_wrapper(&self.ctx, chain[0], &mut self.context).into();
+        let event_object = create_event_for_dom_event(
+            &self.ctx,
+            &event.data,
+            event.bubbles,
+            event.cancelable,
+            &target,
+            &mut self.context,
+        );
         let mut any_called = self.dispatch_event_inner(
             chain,
             &name,
             event.bubbles,
-            |ctx, target, context| {
-                create_event_for_dom_event(
-                    ctx,
-                    &event.data,
-                    event.bubbles,
-                    event.cancelable,
-                    target,
-                    context,
-                )
-            },
+            |_, _, _| event_object,
             event_state,
         );
 
@@ -1232,9 +1463,59 @@ impl ScriptRuntime {
     ) -> bool {
         let ctx = self.ctx.clone();
         let context = &mut self.context;
+        crate::dom::inline_handlers::sync(&ctx, context);
         let on_name = JsString::from(format!("on{name}"));
 
+        #[cfg(feature = "shadow-dom")]
+        if ctx.doc.borrow().has_shadow_roots() {
+            let Some(&target_id) = chain.first() else {
+                return false;
+            };
+            let target: JsValue = node_wrapper(&ctx, target_id, context).into();
+            let event_obj = make_event(&ctx, &target, context);
+            let composed = name.starts_with("pointer")
+                || name.starts_with("mouse")
+                || name.starts_with("touch")
+                || name.starts_with("key")
+                || matches!(
+                    name,
+                    "click"
+                        | "dblclick"
+                        | "contextmenu"
+                        | "wheel"
+                        | "input"
+                        | "focus"
+                        | "blur"
+                        | "focusin"
+                        | "focusout"
+                );
+            crate::dom::define_value(&event_obj, "composed", JsValue::from(composed), context);
+            match crate::dom::shadow_event::dispatch(&ctx, target_id, &event_obj, false, context) {
+                Ok(result) => {
+                    if result.prevented {
+                        event_state.prevent_default();
+                    }
+                    if result.stopped {
+                        event_state.stop_propagation();
+                    }
+                    if result.called {
+                        event_state.request_redraw();
+                    }
+                    return result.called;
+                }
+                Err(error) => {
+                    report_js_error(&self.diagnostics, name, &error);
+                    return false;
+                }
+            }
+        }
+
         // Fast path: bail if no listener of this type could possibly be registered
+        let window_handler = bubbles
+            && context
+                .global_object()
+                .get(on_name, context)
+                .is_ok_and(|handler| handler.is_callable());
         let may_have_listeners = {
             let state = ctx.state.borrow();
             let registry_hit = chain.iter().any(|node_id| {
@@ -1247,12 +1528,11 @@ impl ScriptRuntime {
                 .window_listeners
                 .get(name)
                 .is_some_and(|listeners| !listeners.is_empty());
-            // `on<event>` handlers can only exist on nodes that script has touched
-            // (i.e. nodes with a cached wrapper)
+            // Recorded content attributes have already seeded their wrappers.
             let wrapper_hit = chain
                 .iter()
                 .any(|node_id| state.node_wrappers.contains_key(node_id));
-            registry_hit || wrapper_hit
+            registry_hit || wrapper_hit || window_handler
         };
         if !may_have_listeners {
             return false;
@@ -1260,6 +1540,9 @@ impl ScriptRuntime {
 
         let target: JsValue = node_wrapper(&ctx, chain[0], context).into();
         let event_obj = make_event(&ctx, &target, context);
+        let _dispatch = crate::dom::event::begin_dispatch(&event_obj, false, context)
+            .expect("fresh native event");
+        crate::dom::define_value(&event_obj, "eventPhase", JsValue::from(2), context);
         let mut event_path: Vec<JsObject> = chain
             .iter()
             .map(|&node_id| node_wrapper(&ctx, node_id, context))
@@ -1296,33 +1579,10 @@ impl ScriptRuntime {
                 }
             }
             crate::dom::node::sync_node_listener_callbacks(&ctx, node_id, context);
-            // Upgraded: the cache is weak, and a wrapper the collector has
-            // taken cannot be carrying an `on<event>` handler, because holding
-            // one would have kept it alive.
-            let wrapper = ctx
-                .state
-                .borrow()
-                .node_wrappers
-                .get(&node_id)
-                .and_then(boa_engine::object::WeakJsObject::upgrade);
-            if let Some(wrapper) = wrapper {
-                if let Ok(handler) = wrapper.get(on_name.clone(), context) {
-                    if let Some(handler) = handler.as_object() {
-                        if handler.is_callable() {
-                            callbacks.push(handler);
-                        }
-                    }
-                }
-            }
-
-            if callbacks.is_empty() {
-                if !bubbles {
-                    break;
-                }
-                continue;
-            }
 
             let current_target: JsValue = node_wrapper(&ctx, node_id, context).into();
+            let phase = if node_id == chain[0] { 2 } else { 3 };
+            crate::dom::define_value(&event_obj, "eventPhase", JsValue::from(phase), context);
             crate::dom::define_value(&event_obj, "currentTarget", current_target.clone(), context);
 
             for callback in callbacks {
@@ -1343,6 +1603,12 @@ impl ScriptRuntime {
                 }
             }
 
+            let wrapper = node_wrapper(&ctx, node_id, context);
+            any_called |=
+                crate::dom::inline_handlers::invoke(&ctx, &wrapper, &event_obj, name, context);
+            if event_ref(&event_obj, &|event| event.stopped_immediate.get()) {
+                break 'chain;
+            }
             if !bubbles || event_ref(&event_obj, &|event| event.stopped.get()) {
                 break;
             }
@@ -1361,24 +1627,27 @@ impl ScriptRuntime {
                     None => Vec::new(),
                 }
             };
-            if !listeners.is_empty() {
-                let global: JsValue = context.global_object().into();
-                crate::dom::define_value(&event_obj, "currentTarget", global.clone(), context);
-                for listener in listeners {
-                    any_called = true;
-                    if let Err(error) =
-                        listener
-                            .callback
-                            .call(&global, &[event_obj.clone().into()], context)
-                    {
-                        let what =
-                            listener_error_context(name, "window", &listener.callback, context);
-                        report_js_error(&self.diagnostics, &what, &error);
-                    }
-                    if event_ref(&event_obj, &|event| event.stopped_immediate.get()) {
-                        break;
-                    }
+            let window = context.global_object().clone();
+            let global: JsValue = window.clone().into();
+            crate::dom::define_value(&event_obj, "eventPhase", JsValue::from(3), context);
+            crate::dom::define_value(&event_obj, "currentTarget", global.clone(), context);
+            for listener in listeners {
+                any_called = true;
+                if let Err(error) =
+                    listener
+                        .callback
+                        .call(&global, &[event_obj.clone().into()], context)
+                {
+                    let what = listener_error_context(name, "window", &listener.callback, context);
+                    report_js_error(&self.diagnostics, &what, &error);
                 }
+                if event_ref(&event_obj, &|event| event.stopped_immediate.get()) {
+                    break;
+                }
+            }
+            if !event_ref(&event_obj, &|event| event.stopped_immediate.get()) {
+                any_called |=
+                    crate::dom::inline_handlers::invoke(&ctx, &window, &event_obj, name, context);
             }
         }
 
@@ -1470,19 +1739,15 @@ impl ScriptRuntime {
             }
         }
 
-        // `window.onload = ...` style handler
-        let on_name = JsString::from(format!("on{name}"));
-        if let Ok(handler) = context.global_object().get(on_name, context) {
-            if let Some(handler) = handler.as_object() {
-                if handler.is_callable() {
-                    any_called = true;
-                    if let Err(error) = handler.call(&global, &[event_obj.into()], context) {
-                        let what = listener_error_context(name, "window.on*", &handler, context);
-                        report_js_error(&self.diagnostics, &what, &error);
-                    }
-                }
-            }
+        if !event_obj
+            .downcast_ref::<EventRef>()
+            .is_some_and(|event| event.stopped_immediate.get())
+        {
+            let window = context.global_object().clone();
+            any_called |=
+                crate::dom::inline_handlers::invoke(&ctx, &window, &event_obj, name, context);
         }
+        crate::dom::define_value(&event_obj, "currentTarget", JsValue::null(), context);
 
         if any_called {
             self.run_jobs("event microtasks");
@@ -1500,86 +1765,10 @@ impl ScriptRuntime {
 /// which at least stopped loudly. Three sites in a hundred-site corpus died on
 /// that error.
 ///
-/// The returned object carries a fixed set of properties as own keys and a
-/// `getPropertyValue` that reads them. A property outside the set returns the
-/// empty string, which is what a real browser returns for one it does not
-/// recognise, so a caller cannot tell an unsupported property from an unset
-/// one. That is the honest limit of this: it answers well for what it covers
-/// and says nothing for the rest.
+/// The declaration retains its element and reads live computed values after a
+/// synchronous layout flush. Longhand serialization belongs to Stylo.
 fn get_computed_style(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let Some(node_id) = args.first().and_then(crate::dom::node_id_of_value) else {
-        return Err(JsNativeError::typ()
-            .with_message("getComputedStyle expects an element")
-            .into());
-    };
-
-    let properties = {
-        let ctx = dom_ctx(context)?;
-        let doc = ctx.doc.borrow();
-        doc.get_node(node_id)
-            .and_then(|node| node.computed_style_properties())
-            .unwrap_or_default()
-    };
-
-    let mut declaration = ObjectInitializer::new(context);
-    for (name, value) in &properties {
-        // Both spellings, because scripts read `style.fontSize` as often as
-        // they call `getPropertyValue("font-size")`.
-        let camel: String = {
-            let mut out = String::with_capacity(name.len());
-            let mut upper = false;
-            for ch in name.chars() {
-                if ch == '-' {
-                    upper = true;
-                } else if upper {
-                    out.extend(ch.to_uppercase());
-                    upper = false;
-                } else {
-                    out.push(ch);
-                }
-            }
-            out
-        };
-        declaration.property(
-            js_string!(*name),
-            JsValue::from(js_string!(value.as_str())),
-            Attribute::all(),
-        );
-        if camel != *name {
-            declaration.property(
-                js_string!(camel.as_str()),
-                JsValue::from(js_string!(value.as_str())),
-                Attribute::all(),
-            );
-        }
-    }
-    declaration.function(
-        NativeFunction::from_fn_ptr(get_property_value),
-        js_string!("getPropertyValue"),
-        1,
-    );
-    Ok(declaration.build().into())
-}
-
-/// `CSSStyleDeclaration.getPropertyValue(name)` over the object built above.
-fn get_property_value(
-    this: &JsValue,
-    args: &[JsValue],
-    context: &mut Context,
-) -> JsResult<JsValue> {
-    let name = args
-        .first()
-        .unwrap_or(&JsValue::undefined())
-        .to_string(context)?;
-    let Some(object) = this.as_object() else {
-        return Ok(JsValue::from(js_string!("")));
-    };
-    match object.get(name, context) {
-        Ok(value) if !value.is_undefined() => Ok(value),
-        // A property this does not carry reads as unset, which is what a real
-        // browser answers for one it does not recognise.
-        _ => Ok(JsValue::from(js_string!(""))),
-    }
+    crate::domc::get_computed_style(args, context)
 }
 
 /// `__blitzObserveMutations(on)`: the prelude's `MutationObserver` turns the
@@ -1721,10 +1910,9 @@ fn clipboard_write_text(_: &JsValue, args: &[JsValue], context: &mut Context) ->
     let promise = if wrote {
         JsPromise::resolve(JsValue::undefined(), context)
     } else {
-        JsPromise::reject(
-            JsNativeError::error().with_message("the clipboard is unavailable"),
-            context,
-        )
+        let error =
+            crate::dom_exception::error("NotAllowedError", "the clipboard is unavailable", context);
+        JsPromise::reject(error, context)
     };
     Ok(JsValue::from(promise?))
 }
@@ -1740,10 +1928,14 @@ fn clipboard_read_text(_: &JsValue, _: &[JsValue], context: &mut Context) -> JsR
         .get_clipboard_text();
     let promise = match read {
         Ok(text) => JsPromise::resolve(JsValue::from(JsString::from(text)), context),
-        Err(_) => JsPromise::reject(
-            JsNativeError::error().with_message("the clipboard is unavailable"),
-            context,
-        ),
+        Err(_) => {
+            let error = crate::dom_exception::error(
+                "NotAllowedError",
+                "the clipboard is unavailable",
+                context,
+            );
+            JsPromise::reject(error, context)
+        }
     };
     Ok(JsValue::from(promise?))
 }
@@ -1757,11 +1949,45 @@ fn performance_now(_: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsVa
     Ok(JsValue::new(TIME_ORIGIN.elapsed().as_secs_f64() * 1000.0))
 }
 
-fn random_u32(_: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+fn viewport_scroll(_: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let scroll = ctx.doc.borrow().viewport_scroll();
+    Ok(boa_engine::object::builtins::JsArray::from_iter(
+        [JsValue::new(scroll.x), JsValue::new(scroll.y)],
+        context,
+    )
+    .into())
+}
+
+fn scroll_viewport(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let x = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .to_number(context)?;
+    let y = args
+        .get(1)
+        .unwrap_or(&JsValue::undefined())
+        .to_number(context)?;
+    let x = if x.is_finite() { x } else { 0.0 };
+    let y = if y.is_finite() { y } else { 0.0 };
+    ctx.flush_layout();
+    let mut document = ctx.doc.borrow_mut();
+    let current = document.viewport_scroll();
+    let changed = document.scroll_viewport_by_has_changed(current.x - x, current.y - y);
+    if changed {
+        document.shell_provider.request_redraw();
+    }
+    Ok(JsValue::new(changed))
+}
+
+fn random_u32(_: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     getrandom::u32().map(JsValue::new).map_err(|error| {
-        JsNativeError::error()
-            .with_message(format!("secure random generation failed: {error}"))
-            .into()
+        crate::dom_exception::error(
+            "OperationError",
+            &format!("secure random generation failed: {error}"),
+            context,
+        )
     })
 }
 
@@ -1856,6 +2082,11 @@ fn build_location(base_url: Option<&Url>, context: &mut Context) -> JsValue {
             js_string!("reload"),
             0,
         )
+        .function(
+            NativeFunction::from_fn_ptr(location_to_string),
+            js_string!("toString"),
+            0,
+        )
         .build()
         .into()
 }
@@ -1867,9 +2098,11 @@ fn location_assign(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsRe
     let ctx = dom_ctx(context)?;
     let url = crate::dom::to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
     if !ctx.doc.borrow().navigate_to_url(&url) {
-        return Err(JsNativeError::typ()
-            .with_message(format!("{url} is not a valid URL"))
-            .into());
+        return Err(crate::dom_exception::error(
+            "SyntaxError",
+            &format!("{url} is not a valid URL"),
+            context,
+        ));
     }
     Ok(JsValue::undefined())
 }
@@ -1880,6 +2113,17 @@ fn location_reload(_: &JsValue, _: &[JsValue], context: &mut Context) -> JsResul
     let current = doc.current_url();
     doc.navigate_to_url(&current);
     Ok(JsValue::undefined())
+}
+
+/// `Location`'s stringifier. `String(location)` and `new URL(input, location)`
+/// convert the object with ToString, and the result is the current href.
+/// The default object stringifier returns "[object Object]", which the URL
+/// parser rejects as a relative base.
+fn location_to_string(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    match this.as_object() {
+        Some(object) => object.get(js_string!("href"), context),
+        None => Ok(js_string!("").into()),
+    }
 }
 
 fn window_inner_width(_: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
@@ -2004,9 +2248,31 @@ fn clear_timer(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult
 /// `Node.prototype.dispatchEvent` walks a node chain and never reaches the
 /// window listeners, so there was no way at all to raise a window-targeted
 /// event, from a page or from the runtime's own `history` shim.
-fn window_dispatch_event(
+pub(crate) fn window_dispatch_event(
     _: &JsValue,
     args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    dispatch_window_supplied_event(args, true, context)
+}
+
+fn window_dispatch_history_event(
+    _: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let event = args
+        .first()
+        .and_then(JsValue::as_object)
+        .filter(|event| event.downcast_ref::<EventRef>().is_some())
+        .ok_or_else(|| JsNativeError::typ().with_message("History dispatch requires an Event"))?;
+    crate::dom::define_value(&event, "isTrusted", JsValue::from(true), context);
+    dispatch_window_supplied_event(args, false, context)
+}
+
+fn dispatch_window_supplied_event(
+    args: &[JsValue],
+    scripted: bool,
     context: &mut Context,
 ) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
@@ -2015,8 +2281,10 @@ fn window_dispatch_event(
         .and_then(JsValue::as_object)
         .filter(|event| event.downcast_ref::<EventRef>().is_some())
         .ok_or_else(|| JsNativeError::typ().with_message("dispatchEvent requires an Event"))?;
+    let _dispatch = crate::dom::event::begin_dispatch(&event, scripted, context)?;
     let event_type = crate::dom::to_rust_string(&event.get(js_string!("type"), context)?, context)?;
 
+    set_event_path(&event, vec![context.global_object().clone()]);
     let global: JsValue = context.global_object().into();
     crate::dom::define_value(&event, "target", global.clone(), context);
     crate::dom::define_value(&event, "srcElement", global.clone(), context);
@@ -2046,13 +2314,13 @@ fn window_dispatch_event(
         }
     }
 
-    // The `window.on<event>` form, which is how a page most often listens for
-    // `popstate`.
-    let on_name = JsString::from(format!("on{event_type}"));
-    if let Some(handler) = context.global_object().get(on_name, context)?.as_object()
-        && handler.is_callable()
+    // The `window.on<event>` form, including lazy body/frameset handlers.
+    if !event
+        .downcast_ref::<EventRef>()
+        .is_some_and(|event| event.stopped_immediate.get())
     {
-        handler.call(&global, &[event.clone().into()], context)?;
+        let window = context.global_object().clone();
+        crate::dom::inline_handlers::invoke(&ctx, &window, &event, &event_type, context);
     }
 
     crate::dom::define_value(&event, "currentTarget", JsValue::null(), context);
@@ -2062,7 +2330,7 @@ fn window_dispatch_event(
     Ok(JsValue::from(!prevented))
 }
 
-fn window_add_event_listener(
+pub(crate) fn window_add_event_listener(
     _: &JsValue,
     args: &[JsValue],
     context: &mut Context,
@@ -2092,7 +2360,7 @@ fn window_add_event_listener(
     Ok(JsValue::undefined())
 }
 
-fn window_remove_event_listener(
+pub(crate) fn window_remove_event_listener(
     _: &JsValue,
     args: &[JsValue],
     context: &mut Context,

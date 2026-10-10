@@ -38,6 +38,10 @@ impl BaseDocument {
         if id.is_empty() {
             return;
         }
+        #[cfg(feature = "shadow-dom")]
+        if self.containing_shadow_root(node_id).is_some() {
+            return;
+        }
         let node_ids = self.nodes_to_id.entry(id.to_string()).or_default();
         if !node_ids.contains(&node_id) {
             node_ids.push(node_id);
@@ -105,6 +109,13 @@ impl BaseDocument {
         scope: NodeId,
         selector_list: &SelectorList<SelectorImpl>,
     ) -> Option<NodeId> {
+        #[cfg(feature = "shadow-dom")]
+        if self.has_shadow_roots() {
+            return query_dom_descendants(&self.nodes[scope], selector_list, true)
+                .first()
+                .copied();
+        }
+
         let root_node = &self.nodes[scope];
         let mut result = None;
         query_selector::<&Node, QueryFirst>(
@@ -119,8 +130,8 @@ impl BaseDocument {
 
     /// Find all nodes that match the selector specified as a string
     /// Returns:
-    ///   - `Err(_)` if parsing the selector fails
-    ///   - `Ok(SmallVec<usize>)` with all matching nodes otherwise
+    ///   - Err(_) if parsing the selector fails
+    ///   - Ok(SmallVec<usize>) with all matching nodes otherwise
     pub fn query_selector_all<'input>(
         &self,
         selector: &'input str,
@@ -169,6 +180,11 @@ impl BaseDocument {
         scope: NodeId,
         selector_list: &SelectorList<SelectorImpl>,
     ) -> SmallVec<[NodeId; 32]> {
+        #[cfg(feature = "shadow-dom")]
+        if self.has_shadow_roots() {
+            return query_dom_descendants(&self.nodes[scope], selector_list, false);
+        }
+
         let root_node = &self.nodes[scope];
         let mut results = SmallVec::new();
         query_selector::<&Node, QueryAll>(
@@ -224,6 +240,47 @@ impl BaseDocument {
     }
 }
 
+/// Stylo's TNode links describe style traversal. DOM queries instead walk
+/// DOM children, including slot fallback and excluding attached shadow roots.
+/// Match with the receiver as :scope and keep Stylo's selector semantics.
+#[cfg(feature = "shadow-dom")]
+fn query_dom_descendants(
+    scope: &Node,
+    selector_list: &SelectorList<SelectorImpl>,
+    first: bool,
+) -> SmallVec<[NodeId; 32]> {
+    use selectors::context::{
+        MatchingContext, MatchingForInvalidation, MatchingMode, NeedsSelectorFlags, SelectorCaches,
+    };
+    use selectors::matching::matches_selector_list;
+
+    let mut caches = SelectorCaches::default();
+    let mut context = MatchingContext::new(
+        MatchingMode::Normal,
+        None,
+        &mut caches,
+        scope.owner_doc().quirks_mode(),
+        NeedsSelectorFlags::No,
+        MatchingForInvalidation::No,
+    );
+    context.scope_element = scope
+        .as_element()
+        .map(|element| selectors::Element::opaque(&element));
+    let mut results = SmallVec::new();
+    let mut stack: Vec<_> = scope.children.iter().rev().copied().collect();
+    while let Some(id) = stack.pop() {
+        let node = scope.with(id);
+        if node.is_element() && matches_selector_list(selector_list, &node, &mut context) {
+            results.push(id);
+            if first {
+                break;
+            }
+        }
+        stack.extend(node.children.iter().rev().copied());
+    }
+    results
+}
+
 impl Node {
     /// Find the first descendant of this node that matches the selector(s)
     /// specified in `selector_list`.
@@ -233,14 +290,23 @@ impl Node {
     ///
     /// Text and comment scope nodes return no matches.
     pub fn query_selector_raw(&self, selector_list: &SelectorList<SelectorImpl>) -> Option<NodeId> {
-        let mut result = None;
-        query_selector::<&Node, QueryFirst>(
-            self,
-            selector_list,
-            &mut result,
-            MayUseInvalidation::No,
-        );
-        result.map(|node| node.id)
+        #[cfg(feature = "shadow-dom")]
+        {
+            query_dom_descendants(self, selector_list, true)
+                .first()
+                .copied()
+        }
+        #[cfg(not(feature = "shadow-dom"))]
+        {
+            let mut result = None;
+            query_selector::<&Node, QueryFirst>(
+                self,
+                selector_list,
+                &mut result,
+                MayUseInvalidation::No,
+            );
+            result.map(|node| node.id)
+        }
     }
 
     /// Find all descendants of this node that match the selector(s) specified
@@ -254,14 +320,21 @@ impl Node {
         &self,
         selector_list: &SelectorList<SelectorImpl>,
     ) -> SmallVec<[NodeId; 32]> {
-        let mut results = SmallVec::new();
-        query_selector::<&Node, QueryAll>(
-            self,
-            selector_list,
-            &mut results,
-            MayUseInvalidation::No,
-        );
-        results.iter().map(|node| node.id).collect()
+        #[cfg(feature = "shadow-dom")]
+        {
+            query_dom_descendants(self, selector_list, false)
+        }
+        #[cfg(not(feature = "shadow-dom"))]
+        {
+            let mut results = SmallVec::new();
+            query_selector::<&Node, QueryAll>(
+                self,
+                selector_list,
+                &mut results,
+                MayUseInvalidation::No,
+            );
+            results.iter().map(|node| node.id).collect()
+        }
     }
 
     /// Test whether this element matches the selector(s) specified in

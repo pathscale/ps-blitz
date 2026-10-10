@@ -703,6 +703,16 @@ impl BaseDocument {
         .maybe_max(container_pb.sum_axes().map(Some));
 
         let container_direction = self.nodes[node_id].style().direction;
+        // Absolute children use the parent's padding box in the first pass.
+        // This also handles positioned inline roots without a correction pass.
+        let abspos_area = Size {
+            width: (final_size.width - border.left - border.right - scrollbar_gutter.x).max(0.0),
+            height: (final_size.height - border.top - border.bottom - scrollbar_gutter.y).max(0.0),
+        };
+        let abspos_offset = Point {
+            x: border.left,
+            y: border.top,
+        };
 
         // Store sizes and positions of inline boxes.
         //
@@ -801,7 +811,7 @@ impl BaseDocument {
                         let is_floated = false;
 
                         if node.style().position == Position::Absolute {
-                            let direction = node.style().direction;
+                            let direction = container_direction;
 
                             // The static position of an absolutely positioned box depends on the
                             // display its hypothetical box would have had (the display specified
@@ -828,8 +838,8 @@ impl BaseDocument {
                                 ibox.id,
                                 static_position,
                                 is_inline_level,
-                                final_size,
-                                taffy::Point::ZERO,
+                                abspos_area,
+                                abspos_offset,
                                 direction,
                             );
                         } else if is_floated {
@@ -938,7 +948,7 @@ fn f32_max(a: f32, b: f32) -> f32 {
 
 /// Perform absolute layout on all absolutely positioned children.
 #[inline]
-fn layout_abspos_child(
+pub(crate) fn layout_abspos_child(
     tree: &mut impl taffy::LayoutBlockContainer,
     item_id: u64,
     static_position: Point<f32>,
@@ -1043,20 +1053,36 @@ fn layout_abspos_child(
             .maybe_clamp(min_size, max_size);
     }
 
+    // Shrink-to-fit space is the space left by the insets and margins.
+    // Percentages still resolve against the complete containing block.
+    let available_space = Size {
+        width: AvailableSpace::Definite(
+            (area_width
+                - left.unwrap_or(0.0)
+                - right.unwrap_or(0.0)
+                - margin.left.unwrap_or(0.0)
+                - margin.right.unwrap_or(0.0))
+            .max(0.0)
+            .maybe_clamp(min_size.width, max_size.width),
+        ),
+        height: AvailableSpace::Definite(
+            (area_height
+                - top.unwrap_or(0.0)
+                - bottom.unwrap_or(0.0)
+                - margin.top.unwrap_or(0.0)
+                - margin.bottom.unwrap_or(0.0))
+            .max(0.0)
+            .maybe_clamp(min_size.height, max_size.height),
+        ),
+    };
+
     let measured_size = tree
         .compute_child_layout(
             node_id,
             taffy::LayoutInput {
                 known_dimensions,
                 parent_size: area_size.map(Some),
-                available_space: Size {
-                    width: AvailableSpace::Definite(
-                        area_width.maybe_clamp(min_size.width, max_size.width),
-                    ),
-                    height: AvailableSpace::Definite(
-                        area_height.maybe_clamp(min_size.height, max_size.height),
-                    ),
-                },
+                available_space,
                 sizing_mode: SizingMode::ContentSize,
                 run_mode: RunMode::ComputeSize,
                 axis: taffy::RequestedAxis::Both,
@@ -1074,14 +1100,7 @@ fn layout_abspos_child(
         taffy::LayoutInput {
             known_dimensions: final_size.map(Some),
             parent_size: area_size.map(Some),
-            available_space: Size {
-                width: AvailableSpace::Definite(
-                    area_width.maybe_clamp(min_size.width, max_size.width),
-                ),
-                height: AvailableSpace::Definite(
-                    area_height.maybe_clamp(min_size.height, max_size.height),
-                ),
-            },
+            available_space,
             sizing_mode: SizingMode::ContentSize,
             run_mode: RunMode::PerformLayout,
             axis: taffy::RequestedAxis::Both,

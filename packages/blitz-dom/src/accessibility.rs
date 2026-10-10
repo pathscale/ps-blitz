@@ -112,7 +112,7 @@ pub fn implicit_role(element: &ElementData) -> Role {
 
         // Interactive
         // An <a> is only a link when it has an href.
-        "a" => match element.attr(local_name!("href")) {
+        "a" => match element.link_href() {
             Some(_) => Role::Link,
             None => Role::GenericContainer,
         },
@@ -167,9 +167,8 @@ impl BaseDocument {
         let mut nodes = std::collections::HashMap::new();
         let mut window = AccessKitNode::new(Role::Window);
 
-        self.visit(|node_id, node| {
-            let parent = node
-                .parent
+        self.visit_flattened(|node_id, parent_id, node| {
+            let parent = parent_id
                 .and_then(|parent_id| nodes.get_mut(&parent_id))
                 .map(|(_, parent)| parent)
                 .unwrap_or(&mut window);

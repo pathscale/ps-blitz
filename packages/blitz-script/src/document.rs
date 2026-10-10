@@ -9,10 +9,11 @@ use std::task::{Context as TaskContext, Waker};
 use blitz_dom::{
     BaseDocument, DEFAULT_CSS, DocGuard, DocGuardMut, Document, DocumentConfig, EventDriver, NodeId,
 };
+use blitz_html::stream::StreamingParser;
 use blitz_html::{DocumentHtmlParser, HtmlProvider};
 use blitz_traits::events::{BlitzPointerEvent, DomEvent, UiEvent};
 use url::Url;
-use web_time::Instant;
+use web_time::{Duration, Instant};
 
 use crate::event_handler::ScriptEventHandler;
 use crate::fetch::{DefaultScriptFetcher, ScriptFetcher};
@@ -68,6 +69,8 @@ pub struct ScriptDocument {
     /// call reach the earlier object.
     fetcher: SharedFetcher,
     scripts_executed: bool,
+    startup_events_pending: bool,
+    load_event_pending: bool,
     /// Which `<script>` nodes have already run.
     ///
     /// By node rather than a single "done" flag, because scripts keep arriving
@@ -84,11 +87,14 @@ pub struct ScriptDocument {
 }
 
 impl ScriptDocument {
-    /// Parse HTML into a [`ScriptDocument`].
+    /// Parse HTML up to its first script boundary into a [`ScriptDocument`].
     ///
-    /// Note: this does *not* execute any scripts yet. Call
-    /// [`execute_scripts`](Self::execute_scripts) to do so (or rely on the
-    /// first `poll` doing it automatically).
+    /// Embedders install their shims on this live DOM before scripts execute.
+    /// [`execute_scripts`](Self::execute_scripts), or the first `poll`, resumes
+    /// the same parser without replacing any nodes.
+    ///
+    /// HTML without a script boundary is parsed completely before returning.
+    /// XHTML keeps its non-streaming XML parser. No scripts execute here.
     pub fn from_html(html: &str, mut config: DocumentConfig) -> Self {
         if let Some(ss) = &mut config.ua_stylesheets {
             if !ss.iter().any(|s| s == DEFAULT_CSS) {
@@ -106,14 +112,29 @@ impl ScriptDocument {
             .as_deref()
             .and_then(|url| Url::parse(url).ok());
 
+        let is_xml = DocumentHtmlParser::is_xhtml_document(html);
         let mut doc = BaseDocument::new(config);
-        let mut mutr = doc.mutate();
-        DocumentHtmlParser::parse_into_mutator(&mut mutr, html);
-        drop(mutr);
+        if is_xml {
+            let mut mutr = doc.mutate();
+            DocumentHtmlParser::parse_into_mutator(&mut mutr, html);
+            drop(mutr);
+        }
 
         let inner = Rc::new(RefCell::new(doc));
+        let parser = if is_xml {
+            None
+        } else {
+            let mut parser = StreamingParser::new(Rc::clone(&inner), html);
+            if parser.next_script().is_some() {
+                Some(parser)
+            } else {
+                parser.finish();
+                None
+            }
+        };
         let fetcher: SharedFetcher = Rc::new(RefCell::new(Rc::new(DefaultScriptFetcher)));
         let runtime = ScriptRuntime::new(Rc::clone(&inner), base_url.as_ref(), Rc::clone(&fetcher));
+        crate::docwrite::prepare(&runtime.context, html, Rc::clone(&fetcher), parser);
 
         Self {
             inner,
@@ -121,11 +142,40 @@ impl ScriptDocument {
             base_url,
             fetcher,
             scripts_executed: false,
+            startup_events_pending: false,
+            load_event_pending: false,
             executed_scripts: std::collections::HashSet::new(),
             poll_hook: None,
             waker: Arc::new(Mutex::new(None)),
             timer_thread: None,
         }
+    }
+
+    /// Set the microtask budget shared by all drains in one poll.
+    ///
+    /// Defaults to 16 milliseconds. Individual jobs run to completion and
+    /// cannot be preempted. Panics if `duration` is zero.
+    pub fn set_job_budget(&mut self, duration: Duration) {
+        self.runtime.set_job_budget(duration);
+    }
+
+    /// The configured microtask budget.
+    pub fn job_budget(&self) -> Duration {
+        self.runtime.job_budget()
+    }
+
+    /// Whether immediate Boa jobs remain for a later host tick.
+    ///
+    /// Future timers and suspended module evaluations alone do not count.
+    pub fn has_pending_jobs(&self) -> bool {
+        self.runtime.jobs_remain()
+    }
+
+    /// When the soonest page timer is due, so a host can sleep exactly until
+    /// then instead of on a fixed tick (a `setTimeout(0)` continuation should
+    /// not wait for the host's next frame).
+    pub fn next_timer_deadline(&self) -> Option<std::time::Instant> {
+        self.runtime.next_timer_deadline()
     }
 
     /// Override the [`ScriptFetcher`] used to load external (`src="..."`) scripts.
@@ -176,15 +226,24 @@ impl ScriptDocument {
     /// Does nothing if scripts have already been executed.
     pub fn execute_scripts(&mut self) {
         let _profiling = self.runtime.ctx.enter_profiling_boundary();
+        let _slice = self.runtime.begin_job_slice();
         if self.scripts_executed {
             return;
         }
         self.scripts_executed = true;
+        self.startup_events_pending = true;
 
-        self.run_pending_scripts();
-
-        self.runtime.dispatch_document_event("DOMContentLoaded");
-        self.runtime.dispatch_window_event("load");
+        crate::docwrite::begin(&mut self.runtime.context);
+        loop {
+            let progressed = self.run_pending_scripts();
+            if !progressed
+                || self.runtime.jobs_remain()
+                || !crate::docwrite::active(&self.runtime.context)
+            {
+                break;
+            }
+        }
+        self.finish_startup_events();
 
         self.request_redraw();
         self.arm_timer_thread();
@@ -198,6 +257,16 @@ impl ScriptDocument {
     /// [`execute_scripts`](Self::execute_scripts), and then serve them from memory
     /// via a custom fetcher (see [`with_fetcher`](Self::with_fetcher)).
     pub fn external_script_urls(&self) -> Vec<Url> {
+        if let Some(original) = crate::docwrite::original(&self.runtime.context) {
+            // The navigation DOM stops at its first boundary. Discover later
+            // source scripts without creating native nodes or loading resources.
+            return blitz_html::scan_script_tags(&original)
+                .into_iter()
+                .filter(|script| script.is_javascript())
+                .filter_map(|script| script.src)
+                .filter_map(|src| self.resolve_script_url(src.as_ref()))
+                .collect();
+        }
         self.collect_scripts()
             .iter()
             // An import map is inline-only per the HTML spec, so a `src` on one
@@ -216,10 +285,32 @@ impl ScriptDocument {
         }
     }
 
+    /// Extend the native JavaScript surface on the document's owning thread.
+    ///
+    /// The callback does not execute a microtask checkpoint or request a
+    /// redraw. Poll hooks can therefore deliver native values and report work
+    /// only when an event actually reaches the page.
+    pub fn with_js_context<R>(
+        &mut self,
+        callback: impl FnOnce(&mut boa_engine::Context) -> R,
+    ) -> R {
+        callback(&mut self.runtime.context)
+    }
+
     /// Evaluate arbitrary JavaScript code in the document's script context
     pub fn eval(&mut self, code: &str) {
         let _profiling = self.runtime.ctx.enter_profiling_boundary();
         self.runtime.eval(code, "<eval>");
+        self.request_redraw();
+        self.arm_timer_thread();
+    }
+
+    /// Evaluate an embedder prelude under a name, which becomes its source path
+    /// in stack traces and profiles (for example `<chuzz-webgpu>`).
+    pub fn eval_named(&mut self, code: &str, name: &str) {
+        let _profiling = self.runtime.ctx.enter_profiling_boundary();
+        self.runtime.eval_internal(code, name);
+        self.runtime.run_jobs(name);
         self.request_redraw();
         self.arm_timer_thread();
     }
@@ -293,14 +384,33 @@ impl ScriptDocument {
     /// Loaders wait on those before continuing — nofilter.io keeps the body
     /// hidden until the bundle's `load` arrives — so a script that ran silently
     /// would still leave the page blank.
-    fn run_pending_scripts(&mut self) {
+    fn run_pending_scripts(&mut self) -> bool {
+        let _slice = self.runtime.begin_job_slice();
+        if self.runtime.jobs_remain() {
+            return false;
+        }
+        if crate::docwrite::take_restart(&self.runtime.context) {
+            self.executed_scripts.clear();
+            self.startup_events_pending = true;
+            self.load_event_pending = false;
+        }
+        let parsed = crate::docwrite::advance(&mut self.runtime.context);
+        let generation = crate::docwrite::generation(&self.runtime.context);
+        if parsed {
+            self.runtime.ctx.mark_layout_dirty();
+        }
         // Collect first, then run: executing a script can append more, and the
         // borrow on the document has to be released before any of them runs.
         let pending: Vec<PendingScript> = self
             .collect_scripts()
             .into_iter()
             .filter(|script| !self.executed_scripts.contains(&script.node_id))
+            .filter(|script| {
+                !crate::docwrite::was_executed(&self.runtime.context, script.node_id)
+                    && (!script.deferred || !crate::docwrite::active(&self.runtime.context))
+            })
             .collect();
+        let ran = parsed || !pending.is_empty();
 
         // Import maps first, across the whole batch. A page is free to write
         // its map after the module that needs it, and a map installed too late
@@ -327,6 +437,15 @@ impl ScriptDocument {
             pending.into_iter().partition(|script| script.deferred);
 
         for script in immediate.into_iter().chain(deferred) {
+            if generation != crate::docwrite::generation(&self.runtime.context) {
+                break;
+            }
+            if self.startup_events_pending && script.deferred {
+                self.runtime.set_document_ready_state("interactive");
+                if self.runtime.jobs_remain() {
+                    break;
+                }
+            }
             // Marked before running, not after: a script that appends another
             // copy of itself, or that throws, must not be retried on every
             // poll for the life of the page.
@@ -339,6 +458,9 @@ impl ScriptDocument {
                     let Some(url) = self.resolve_script_url(&src) else {
                         eprintln!("blitz-script: could not resolve script URL {src:?}");
                         self.runtime.dispatch_node_event(script.node_id, "error");
+                        if self.runtime.jobs_remain() {
+                            break;
+                        }
                         continue;
                     };
                     let fetcher = Rc::clone(&self.fetcher.borrow());
@@ -347,6 +469,10 @@ impl ScriptDocument {
                             if script.kind == ScriptKind::Module {
                                 self.runtime.eval_module(&code, Some(&url), url.as_str());
                             } else {
+                                crate::domc::set_current_script(
+                                    &self.runtime.context,
+                                    Some(script.node_id),
+                                );
                                 self.runtime.eval_at(&code, Some(&url), url.as_str());
                             }
                             self.runtime.dispatch_node_event(script.node_id, "load");
@@ -370,6 +496,10 @@ impl ScriptDocument {
                                 "<inline module>",
                             );
                         } else {
+                            crate::domc::set_current_script(
+                                &self.runtime.context,
+                                Some(script.node_id),
+                            );
                             self.runtime.eval_at(
                                 &script.inline_text,
                                 base_url.as_ref(),
@@ -379,7 +509,59 @@ impl ScriptDocument {
                     }
                 }
             }
+            // Preserve the checkpoint before the next script, even when it
+            // takes several host ticks to finish the queued promise jobs.
+            if self.runtime.jobs_remain() {
+                break;
+            }
         }
+        ran
+    }
+
+    fn finish_startup_events(&mut self) -> bool {
+        if !(self.startup_events_pending || self.load_event_pending)
+            || self.runtime.jobs_remain()
+            || crate::docwrite::active(&self.runtime.context)
+        {
+            return false;
+        }
+        if self.startup_events_pending
+            && self.collect_scripts().iter().any(|script| {
+                !self.executed_scripts.contains(&script.node_id)
+                    && !crate::docwrite::was_executed(&self.runtime.context, script.node_id)
+            })
+        {
+            return false;
+        }
+
+        let mut ran = false;
+        if self.startup_events_pending {
+            ran |= self.runtime.set_document_ready_state("interactive");
+            if self.runtime.jobs_remain() {
+                return ran;
+            }
+            self.startup_events_pending = false;
+            self.load_event_pending = true;
+            self.runtime.dispatch_document_event("DOMContentLoaded");
+            ran = true;
+        }
+        let resources_pending = {
+            let doc = self.inner.borrow();
+            doc.has_pending_critical_resources() || doc.pending_image_count() != 0
+        };
+        if self.load_event_pending
+            && !self.runtime.jobs_remain()
+            && !resources_pending
+            && !self.runtime.has_pending_module_evaluations()
+        {
+            ran |= self.runtime.set_document_ready_state("complete");
+            if !self.runtime.jobs_remain() {
+                self.load_event_pending = false;
+                self.runtime.dispatch_window_event("load");
+                ran = true;
+            }
+        }
+        ran
     }
 
     /// Find `<script>` elements in document order
@@ -395,6 +577,12 @@ impl ScriptDocument {
 
             if let Some(element) = node.element_data() {
                 if element.name.local == blitz_dom::local_name!("script") {
+                    if node
+                        .flags
+                        .contains(blitz_dom::node::NodeFlags::IS_PARSER_INERT_SCRIPT)
+                    {
+                        continue;
+                    }
                     // Skip non-JavaScript script types (e.g. JSON data blocks).
                     let script_type = element
                         .attr(blitz_dom::local_name!("type"))
@@ -543,18 +731,32 @@ impl Document for ScriptDocument {
     }
 
     fn poll(&mut self, task_context: Option<TaskContext>) -> bool {
+        self.poll_with_timer_policy(task_context, None)
+    }
+
+    fn poll_for_settle(&mut self, task_context: Option<TaskContext>, run_timers: bool) -> bool {
+        self.poll_with_timer_policy(task_context, Some(run_timers))
+    }
+}
+
+impl ScriptDocument {
+    /// `None` preserves normal polling; `Some` selects a settle pass's policy.
+    fn poll_with_timer_policy(
+        &mut self,
+        task_context: Option<TaskContext>,
+        settle_timers: Option<bool>,
+    ) -> bool {
         let profiling_boundary = self.runtime.ctx.enter_profiling_boundary();
         let profiling = profiling_boundary.enabled();
         let poll_started = profiling.then(std::time::Instant::now);
-        let ran = self.poll_inner(task_context, profiling);
+        let _slice = self.runtime.begin_job_slice();
+        let ran = self.poll_inner(task_context, profiling, settle_timers);
         if let Some(started) = poll_started {
             crate::script_stats::record_poll(started.elapsed(), ran);
         }
         ran
     }
-}
 
-impl ScriptDocument {
     /// Move a semantic automation pointer to the exact resolved DOM node.
     ///
     /// Normal window input remains coordinate hit-tested through
@@ -594,7 +796,12 @@ impl ScriptDocument {
 
     /// The real poll. Split out so every exit path is timed by the wrapper
     /// above rather than by a stopwatch threaded through each early return.
-    fn poll_inner(&mut self, task_context: Option<TaskContext>, profiling: bool) -> bool {
+    fn poll_inner(
+        &mut self,
+        task_context: Option<TaskContext>,
+        profiling: bool,
+        settle_timers: Option<bool>,
+    ) -> bool {
         // Store the waker so the timer thread can wake the event loop
         if let Some(cx) = &task_context {
             let mut waker = self.waker.lock().unwrap();
@@ -611,13 +818,22 @@ impl ScriptDocument {
         // is one: its `<web-view>` elements own the page documents. Poll those
         // children at the same outer boundary so their timers, resource
         // completions, and script work continue to make progress.
-        let subdocument_changes = self
-            .inner
-            .borrow_mut()
-            .poll_subdocuments(task_context.as_ref().map(TaskContext::waker));
+        let subdocument_changes = {
+            let mut inner = self.inner.borrow_mut();
+            let waker = task_context.as_ref().map(TaskContext::waker);
+            match settle_timers {
+                Some(run_timers) => inner.poll_subdocuments_for_settle(waker, run_timers),
+                None => inner.poll_subdocuments(waker),
+            }
+        };
+
+        let mut ran = subdocument_changes;
+        ran |= self.runtime.poll_domc();
+        // Every poll resumes a yielded checkpoint, including a timer-free
+        // settle pass. Jobs do not need a timer or a dummy eval to advance.
+        ran |= self.runtime.run_jobs_with_progress("poll microtasks");
 
         // Execute scripts on first poll if they haven't been run explicitly
-        let mut ran = subdocument_changes;
         if !self.scripts_executed {
             // One-time: parsing and running the application bundle. Separated
             // because it is startup cost, and folding it into the steady-state
@@ -632,10 +848,13 @@ impl ScriptDocument {
             // Steady state: pick up any script the page appended since the last
             // turn. Cheap when there are none, and it is the only path by which
             // a runtime-injected bundle ever runs.
-            self.run_pending_scripts();
+            ran |= self.run_pending_scripts();
         }
+        ran |= self.finish_startup_events();
 
-        ran |= self.runtime.run_due_timers(profiling);
+        if settle_timers.unwrap_or(true) {
+            ran |= self.runtime.run_due_timers(profiling);
+        }
 
         // A module that opened with a top-level `await` may have settled since
         // the last turn. Checking here is what turns a silent half-mounted page
@@ -660,6 +879,13 @@ impl ScriptDocument {
         // is cheap and the answer is current.
         self.runtime.sweep_detached_nodes();
 
+        if self.runtime.jobs_remain() {
+            ran = true;
+            self.request_redraw();
+            if let Some(cx) = &task_context {
+                cx.waker().wake_by_ref();
+            }
+        }
         self.arm_timer_thread();
         ran
     }
