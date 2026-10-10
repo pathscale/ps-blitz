@@ -184,6 +184,32 @@ impl LayoutChildren {
 }
 
 #[cfg(feature = "svg")]
+#[cfg_attr(not(feature = "shadow-dom"), allow(unused_variables))]
+fn find_inline_svg_reference(
+    doc: &BaseDocument,
+    svg_node_id: NodeId,
+    fragment: &str,
+) -> Option<NodeId> {
+    #[cfg(feature = "shadow-dom")]
+    if let Some(root_id) = doc.containing_shadow_root(svg_node_id) {
+        // The document ID index deliberately excludes shadow descendants.
+        // Resolve within this root's DOM tree, without entering nested roots
+        // or falling back to an identically named document-level definition.
+        let mut stack: Vec<_> = doc.nodes[root_id].children.iter().rev().copied().collect();
+        while let Some(node_id) = stack.pop() {
+            let node = &doc.nodes[node_id];
+            if node.attr(local_name!("id")) == Some(fragment) {
+                return Some(node_id);
+            }
+            stack.extend(node.children.iter().rev().copied());
+        }
+        return None;
+    }
+
+    doc.get_element_by_id(fragment)
+}
+
+#[cfg(feature = "svg")]
 fn enqueue_local_svg_references(
     doc: &BaseDocument,
     root_node_id: NodeId,
@@ -193,9 +219,19 @@ fn enqueue_local_svg_references(
     while let Some(node_id) = stack.pop() {
         let node = &doc.nodes[node_id];
         if let Some(element) = node.data.downcast_element()
+            && element.name.ns == ns!(svg)
             && element.name.local == local_name!("use")
             && let Some(fragment) = element
                 .attr(local_name!("href"))
+                .or_else(|| {
+                    element
+                        .attrs()
+                        .iter()
+                        .find(|attr| {
+                            attr.name.ns == ns!(xlink) && attr.name.local == local_name!("href")
+                        })
+                        .map(|attr| attr.value.as_ref())
+                })
                 .and_then(|href| href.strip_prefix('#'))
             && !fragment.is_empty()
         {
@@ -237,7 +273,7 @@ fn serialize_inline_svg(doc: &BaseDocument, svg_node_id: NodeId) -> String {
     // a descendant carrying an xmlns would otherwise suppress the one usvg
     // needs on the root, and usvg refuses to parse without it.
     if let Some(root_open_end) = outer_html.find('>')
-        && !outer_html[..root_open_end].contains("xmlns")
+        && !outer_html[..root_open_end].contains(" xmlns=\"")
     {
         outer_html.insert_str("<svg".len(), " xmlns=\"http://www.w3.org/2000/svg\"");
     }
@@ -255,7 +291,7 @@ fn serialize_inline_svg(doc: &BaseDocument, svg_node_id: NodeId) -> String {
         if !imported.insert(fragment.clone()) {
             continue;
         }
-        let Some(reference_node_id) = doc.get_element_by_id(&fragment) else {
+        let Some(reference_node_id) = find_inline_svg_reference(doc, svg_node_id, &fragment) else {
             continue;
         };
         // Already inside the SVG being serialised, so usvg can resolve it and
@@ -274,6 +310,18 @@ fn serialize_inline_svg(doc: &BaseDocument, svg_node_id: NodeId) -> String {
     {
         let defs = format!("<defs>{definitions}</defs>");
         outer_html.insert_str(root_open_end + 1, &defs);
+    }
+
+    // An imported definition can introduce xlink attributes even when the
+    // visible SVG did not contain any. Bind the prefix after importing it.
+    if let Some(root_open_end) = outer_html.find('>')
+        && outer_html.contains(" xlink:")
+        && !outer_html[..root_open_end].contains(" xmlns:xlink=\"")
+    {
+        outer_html.insert_str(
+            "<svg".len(),
+            " xmlns:xlink=\"http://www.w3.org/1999/xlink\"",
+        );
     }
 
     outer_html
