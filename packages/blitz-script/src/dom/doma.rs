@@ -1,8 +1,8 @@
 //! Attribute identities and DOM tree operations.
 
 pub(crate) mod attr;
-pub(crate) mod tree;
 pub(crate) mod traversal;
+pub(crate) mod tree;
 
 use std::cell::{Cell, RefCell};
 use std::sync::{RwLock, Weak};
@@ -61,7 +61,9 @@ pub(crate) fn install(ctx: &DomCtx, context: &mut Context) {
 }
 
 fn illegal_constructor(_: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    Err(JsNativeError::typ().with_message("Illegal constructor").into())
+    Err(JsNativeError::typ()
+        .with_message("Illegal constructor")
+        .into())
 }
 
 fn interface(name: &str, proto: &JsObject, context: &mut Context) {
@@ -100,7 +102,11 @@ fn interface(name: &str, proto: &JsObject, context: &mut Context) {
 pub(crate) fn dom_error(name: &str, message: &str, context: &mut Context) -> JsError {
     let error = ObjectInitializer::new(context)
         .property(js_string!("name"), JsString::from(name), Attribute::all())
-        .property(js_string!("message"), JsString::from(message), Attribute::all())
+        .property(
+            js_string!("message"),
+            JsString::from(message),
+            Attribute::all(),
+        )
         .build();
     JsError::from_opaque(error.into())
 }
@@ -125,13 +131,11 @@ struct ListIterator {
 }
 
 pub(crate) fn install_iterator(proto: &JsObject, context: &mut Context) {
-    let function = FunctionObjectBuilder::new(
-        context.realm(),
-        NativeFunction::from_fn_ptr(list_iterator),
-    )
-    .name(js_string!("values"))
-    .length(0)
-    .build();
+    let function =
+        FunctionObjectBuilder::new(context.realm(), NativeFunction::from_fn_ptr(list_iterator))
+            .name(js_string!("values"))
+            .length(0)
+            .build();
     proto
         .define_property_or_throw(
             JsSymbol::iterator(),
@@ -189,7 +193,9 @@ fn iterator_next(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResu
             .ok_or_else(|| JsNativeError::typ().with_message("invalid iterator"))?;
         (data.source.clone(), data.index.get())
     };
-    let length = source.get(js_string!("length"), context)?.to_number(context)?;
+    let length = source
+        .get(js_string!("length"), context)?
+        .to_number(context)?;
     let done = index as f64 >= length;
     let value = if done {
         JsValue::undefined()
@@ -209,4 +215,3 @@ fn iterator_next(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResu
         .build()
         .into())
 }
-

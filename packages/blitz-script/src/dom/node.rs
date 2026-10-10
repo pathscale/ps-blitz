@@ -11,8 +11,8 @@ use boa_engine::{Context, JsNativeError, JsResult};
 #[cfg(not(feature = "shadow-dom"))]
 use super::define_value;
 use super::{
-    define_accessor, define_method, dom_ctx, js_str, node_id_of_value, node_or_null,
-    node_wrapper, this_node_id, to_rust_string,
+    define_accessor, define_method, dom_ctx, js_str, node_id_of_value, node_or_null, node_wrapper,
+    this_node_id, to_rust_string,
 };
 #[cfg(not(feature = "shadow-dom"))]
 use crate::dom::event::{EventRef, set_event_path};
@@ -301,11 +301,13 @@ fn node_name(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<J
 fn parent_node(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
-    let parent_id = ctx
-        .doc
-        .borrow()
-        .get_node(node_id)
-        .and_then(|node| if node.is_shadow_root() { None } else { node.parent });
+    let parent_id = ctx.doc.borrow().get_node(node_id).and_then(|node| {
+        if node.is_shadow_root() {
+            None
+        } else {
+            node.parent
+        }
+    });
     Ok(node_or_null(&ctx, parent_id, context))
 }
 
@@ -383,7 +385,11 @@ fn is_connected(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResul
 fn owner_document(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let node = this_node_id(this)?;
-    let owner = ctx.doc.borrow().get_node(node).and_then(|node| node.owner_document);
+    let owner = ctx
+        .doc
+        .borrow()
+        .get_node(node)
+        .and_then(|node| node.owner_document);
     Ok(node_or_null(&ctx, owner, context))
 }
 
@@ -496,7 +502,6 @@ fn append_child(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsRe
     drop(doc);
     super::mark_node_reattached(&ctx, child_id);
     root_inline_event_handlers(&ctx, child_id, context);
-
 
     Ok(args[0].clone())
 }
@@ -699,9 +704,13 @@ fn contains(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult
         if current == node_id {
             return Ok(JsValue::from(true));
         }
-        match doc.get_node(current)
-            .and_then(|node| if node.is_shadow_root() { None } else { node.parent })
-        {
+        match doc.get_node(current).and_then(|node| {
+            if node.is_shadow_root() {
+                None
+            } else {
+                node.parent
+            }
+        }) {
             Some(parent_id) => current = parent_id,
             None => return Ok(JsValue::from(false)),
         }
@@ -949,17 +958,27 @@ pub(crate) fn remove_event_listener(
 }
 
 #[cfg(feature = "shadow-dom")]
-pub(crate) fn dispatch_event(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn dispatch_event(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let target_id = this_node_id(this)?;
-    let event = args.first().and_then(JsValue::as_object)
+    let event = args
+        .first()
+        .and_then(JsValue::as_object)
         .ok_or_else(|| JsNativeError::typ().with_message("dispatchEvent requires an Event"))?;
     let result = super::shadow_event::dispatch(&ctx, target_id, &event, context)?;
     Ok(JsValue::from(!result.prevented))
 }
 
 #[cfg(not(feature = "shadow-dom"))]
-pub(crate) fn dispatch_event(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn dispatch_event(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let target_id = this_node_id(this)?;
     let event = args

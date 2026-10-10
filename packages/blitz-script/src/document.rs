@@ -447,9 +447,7 @@ impl ScriptDocument {
     }
 
     fn finish_startup_events(&mut self) -> bool {
-        if !(self.startup_events_pending || self.load_event_pending)
-            || self.runtime.jobs_remain()
-        {
+        if !(self.startup_events_pending || self.load_event_pending) || self.runtime.jobs_remain() {
             return false;
         }
         if self.startup_events_pending
@@ -655,11 +653,7 @@ impl Document for ScriptDocument {
         self.poll_with_timer_policy(task_context, None)
     }
 
-    fn poll_for_settle(
-        &mut self,
-        task_context: Option<TaskContext>,
-        run_timers: bool,
-    ) -> bool {
+    fn poll_for_settle(&mut self, task_context: Option<TaskContext>, run_timers: bool) -> bool {
         self.poll_with_timer_policy(task_context, Some(run_timers))
     }
 }

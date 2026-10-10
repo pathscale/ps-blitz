@@ -55,6 +55,7 @@ pub mod paint_damage;
 /// Engine-backed CSSOM operations used by script bindings.
 pub mod platform;
 mod query_selector;
+pub mod range;
 mod resolve;
 mod select;
 mod selection;
@@ -114,6 +115,7 @@ pub use mutation_record::DomMutation;
 pub use mutator::DocumentMutator;
 pub use node::{Attribute, DocumentData, ElementData, Node, NodeData, SelectData, TextNodeData};
 pub use paint_damage::PaintDamage;
+pub use range::{LiveRange, RangeBoundary, RangeBounds, RangeContent};
 // Re-exported because `PaintDamage` takes and returns `kurbo::Rect` across the
 // crate boundary. A consumer that pulls kurbo in itself and lands on a
 // different version gets a type mismatch on a name that looks identical.

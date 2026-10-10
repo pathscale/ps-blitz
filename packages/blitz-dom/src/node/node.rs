@@ -1588,10 +1588,13 @@ impl Node {
             if node.is_element() && node.is_display_none() {
                 return;
             }
-            let visible = node.primary_styles()
+            let visible = node
+                .primary_styles()
                 .is_none_or(|style| style.clone_visibility() == Visibility::Visible);
             if node.is_text_node() {
-                let visible = node.parent.map(|id| node.with(id))
+                let visible = node
+                    .parent
+                    .map(|id| node.with(id))
                     .and_then(Node::primary_styles)
                     .is_none_or(|style| style.clone_visibility() == Visibility::Visible);
                 if visible {
@@ -1614,8 +1617,7 @@ impl Node {
             }
             let display = node.primary_styles().map(|style| style.clone_display());
             let block = display.is_some_and(|display| {
-                display.outside() == DisplayOutside::Block
-                    && !display.is_contents()
+                display.outside() == DisplayOutside::Block && !display.is_contents()
             });
             let breaks = if tag == "p" { 2 } else { usize::from(block) };
             if breaks != 0 {
@@ -1626,8 +1628,12 @@ impl Node {
             }
             if visible {
                 if matches!(tag, "td" | "th") {
-                    let next_cell = node.parent.map(|parent| node.with(parent))
-                        .and_then(|parent| parent.index_of_child(node.id).map(|index| (parent, index)))
+                    let next_cell = node
+                        .parent
+                        .map(|parent| node.with(parent))
+                        .and_then(|parent| {
+                            parent.index_of_child(node.id).map(|index| (parent, index))
+                        })
                         .is_some_and(|(parent, index)| {
                             parent.children[index + 1..].iter().any(|id| {
                                 let child = parent.with(*id);
@@ -1694,9 +1700,7 @@ impl Node {
             return None;
         }
         let style = self.primary_styles()?;
-        if style.clone_position() == Position::Fixed
-            || style.clone_display().is_contents()
-        {
+        if style.clone_position() == Position::Fixed || style.clone_display().is_contents() {
             return None;
         }
         let mut current = Some(self);

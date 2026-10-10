@@ -267,6 +267,68 @@ impl DocumentMutator<'_> {
     // Node mutation methods
 
     pub fn set_node_text(&mut self, node_id: NodeId, value: &str) {
+        if !self.doc.live_ranges.is_empty()
+            && let Some(length) = self
+                .doc
+                .range_character_data(node_id)
+                .map(|text| text.encode_utf16().count())
+        {
+            self.doc
+                .range_replace_data(node_id, 0, length, value.encode_utf16().count());
+        }
+        self.set_node_text_without_range_update(node_id, value);
+    }
+
+    /// Replace CharacterData without resetting endpoints outside the replaced span.
+    pub fn replace_character_data(
+        &mut self,
+        node_id: NodeId,
+        offset: usize,
+        count: usize,
+        value: &str,
+    ) -> Result<(), &'static str> {
+        let old = self
+            .doc
+            .range_character_data(node_id)
+            .ok_or("InvalidNodeTypeError")?;
+        let length = old.encode_utf16().count();
+        if offset > length {
+            return Err("IndexSizeError");
+        }
+        let count = count.min(length - offset);
+        let mut replacement = crate::range::utf16_slice(old, 0, offset);
+        replacement.push_str(value);
+        replacement.push_str(&crate::range::utf16_slice(old, offset + count, length));
+        self.doc
+            .range_replace_data(node_id, offset, count, value.encode_utf16().count());
+        self.set_node_text_without_range_update(node_id, &replacement);
+        Ok(())
+    }
+
+    pub fn split_text(&mut self, node_id: NodeId, offset: usize) -> Result<NodeId, &'static str> {
+        let node = self.doc.get_node(node_id).ok_or("InvalidNodeTypeError")?;
+        let NodeData::Text(text) = &node.data else {
+            return Err("InvalidNodeTypeError");
+        };
+        let length = text.content.encode_utf16().count();
+        if offset > length {
+            return Err("IndexSizeError");
+        }
+        let before = crate::range::utf16_slice(&text.content, 0, offset);
+        let after = crate::range::utf16_slice(&text.content, offset, length);
+        let position = node
+            .parent
+            .and_then(|parent| Some((parent, self.doc.get_node(parent)?.index_of_child(node_id)?)));
+        let new_id = self.create_text_node(&after);
+        if position.is_some() {
+            self.insert_nodes_after(node_id, &[new_id]);
+        }
+        self.doc.range_split_text(node_id, new_id, offset, position);
+        self.set_node_text_without_range_update(node_id, &before);
+        Ok(new_id)
+    }
+
+    fn set_node_text_without_range_update(&mut self, node_id: NodeId, value: &str) {
         let node_is_in_document = self.doc.nodes[node_id].flags.is_in_document();
         if node_is_in_document && self.doc.is_recording_mutations() {
             let old_value = match &self.doc.nodes[node_id].data {
@@ -372,7 +434,8 @@ impl DocumentMutator<'_> {
         if name.local == local_name!("slot") || name.local == local_name!("name") {
             self.doc.note_shadow_tree_change(node_id);
         }
-        self.doc.record_script_custom_element_attribute(node_id, &name, Some(value));
+        self.doc
+            .record_script_custom_element_attribute(node_id, &name, Some(value));
         let node_is_in_document = self.doc.nodes[node_id].flags.is_in_document();
         if node_is_in_document && self.doc.is_recording_mutations() {
             // Recorded even when the value does not change: a browser reports
@@ -627,7 +690,8 @@ impl DocumentMutator<'_> {
         if name.local == local_name!("slot") || name.local == local_name!("name") {
             self.doc.note_shadow_tree_change(node_id);
         }
-        self.doc.record_script_custom_element_attribute(node_id, &name, None);
+        self.doc
+            .record_script_custom_element_attribute(node_id, &name, None);
         let node_is_in_document = self.doc.nodes[node_id].flags.is_in_document();
         if node_is_in_document && self.doc.is_recording_mutations() {
             // Removing an attribute that is not there changes nothing, and a
@@ -1011,6 +1075,7 @@ impl DocumentMutator<'_> {
     /// Record `node_id` leaving its parent, for a `MutationObserver`. Called
     /// before the link is cut, while its siblings can still be read.
     fn record_removal(&mut self, node_id: NodeId) {
+        self.doc.range_remove_node(node_id);
         if !self.doc.is_recording_mutations() || !self.doc.nodes[node_id].flags.is_in_document() {
             return;
         }
@@ -1105,6 +1170,12 @@ impl DocumentMutator<'_> {
     }
 
     pub fn remove_and_drop_all_children(&mut self, node_id: NodeId) {
+        if !self.doc.live_ranges.is_empty() {
+            let children = self.doc.nodes[node_id].children.clone();
+            for child in children.into_iter().rev() {
+                self.doc.range_remove_node(child);
+            }
+        }
         if self.doc.is_recording_mutations()
             && self.doc.nodes[node_id].flags.is_in_document()
             && !self.doc.nodes[node_id].children.is_empty()
@@ -1200,6 +1271,12 @@ impl DocumentMutator<'_> {
             let mut flattened = Vec::with_capacity(child_ids.len());
             for id in child_ids.iter().copied() {
                 if matches!(self.doc.nodes[id].data, NodeData::DocumentFragment) {
+                    if !self.doc.live_ranges.is_empty() {
+                        let children = self.doc.nodes[id].children.clone();
+                        for child in children.into_iter().rev() {
+                            self.doc.range_remove_node(child);
+                        }
+                    }
                     let moved = std::mem::take(&mut self.doc.nodes[id].children);
                     flattened.extend(moved);
                 } else {
@@ -1266,12 +1343,20 @@ impl DocumentMutator<'_> {
         }
 
         insert_children_fn(new_parent, child_ids);
+        if !self.doc.live_ranges.is_empty()
+            && let Some(first) = child_ids.first()
+            && let Some(index) = self.doc.nodes[parent_id].index_of_child(*first)
+        {
+            self.doc
+                .range_insert_nodes(parent_id, index, child_ids.len());
+        }
 
         for child_id in child_ids.iter().copied() {
             let child = &mut self.doc.nodes[child_id];
             let child_was_in_doc = child.flags.is_in_document();
             child.parent = Some(parent_id);
-            self.doc.attach_script_custom_element_subtree(child_id, parent_id);
+            self.doc
+                .attach_script_custom_element_subtree(child_id, parent_id);
 
             if new_parent_is_in_document && !child_was_in_doc {
                 self.process_added_subtree(child_id);
@@ -1321,6 +1406,12 @@ impl DocumentMutator<'_> {
                 previous_sibling: None,
                 next_sibling: None,
             });
+        }
+        if !self.doc.live_ranges.is_empty() {
+            let children = self.doc.nodes[old_parent_id].children.clone();
+            for child in children.into_iter().rev() {
+                self.doc.range_remove_node(child);
+            }
         }
         let child_ids = std::mem::take(&mut self.doc.nodes[old_parent_id].children);
         self.maybe_record_node(old_parent_id);
@@ -1423,7 +1514,10 @@ impl<'doc> DocumentMutator<'doc> {
             .unwrap_or(node_id);
         self.remove_and_drop_all_children(target);
         #[cfg(feature = "shadow-dom")]
-        if let Some(host_id) = self.doc.nodes[node_id].shadow_root_data().map(|root| root.host) {
+        if let Some(host_id) = self.doc.nodes[node_id]
+            .shadow_root_data()
+            .map(|root| root.host)
+        {
             // html5ever's fragment context must be an element. Parsing into a
             // detached host-shaped element also keeps scripts inert.
             let name = self.doc.nodes[host_id].element_data().unwrap().name.clone();
@@ -1471,171 +1565,174 @@ impl<'doc> DocumentMutator<'doc> {
     }
 
     fn process_added_subtree(&mut self, node_id: NodeId) {
-        self.doc.iter_shadow_including_subtree_mut(node_id, |node_id, doc| {
-            let node = &mut doc.nodes[node_id];
-            node.flags.set(NodeFlags::IS_IN_DOCUMENT, true);
-            node.insert_damage(ALL_DAMAGE);
+        self.doc
+            .iter_shadow_including_subtree_mut(node_id, |node_id, doc| {
+                let node = &mut doc.nodes[node_id];
+                node.flags.set(NodeFlags::IS_IN_DOCUMENT, true);
+                node.insert_damage(ALL_DAMAGE);
 
-            // If the node has an "id" attribute, store it in the ID map.
-            if let Some(id_attr) = node.attr(local_name!("id")).map(ToString::to_string) {
-                doc.add_to_id_map(&id_attr, node_id);
-            }
-
-            let node = &mut doc.nodes[node_id];
-            let NodeData::Element(ref mut element) = node.data else {
-                return;
-            };
-
-            // Custom post-processing by element tag name
-            let tag = element.name.local.as_ref();
-            match tag {
-                "title" if element.name.ns == ns!(html) => self.title_node = Some(node_id),
-                "link" => self.eager_op_queue.push(SpecialOp::LoadStylesheet(node_id)),
-                "img" => self.eager_op_queue.push(SpecialOp::LoadImage(node_id)),
-                "iframe" => self.eager_op_queue.push(SpecialOp::LoadIframe(node_id)),
-                "canvas" => self
-                    .eager_op_queue
-                    .push(SpecialOp::LoadCustomPaintSource(node_id)),
-                "style" => {
-                    self.style_nodes.insert(node_id);
+                // If the node has an "id" attribute, store it in the ID map.
+                if let Some(id_attr) = node.attr(local_name!("id")).map(ToString::to_string) {
+                    doc.add_to_id_map(&id_attr, node_id);
                 }
-                "button" | "fieldset" | "input" | "select" | "textarea" | "object" | "output" => {
-                    self.eager_op_queue
-                        .push(SpecialOp::ProcessButtonInput(node_id));
-                    self.form_nodes.insert(node_id);
-                }
-                _ => {}
-            }
 
-            // If the element's tag name matches a registered custom element
-            // definition (and it hasn't already been upgraded), queue it for
-            // upgrade.
-            #[cfg(feature = "shadow-dom")]
-            {
-                let needs_upgrade = doc.custom_element_registry.contains(&element.name.local)
-                    && element.custom_element_data().is_none();
-                if needs_upgrade {
-                    self.eager_op_queue
-                        .push(SpecialOp::UpgradeCustomElement(node_id));
-                }
-            }
+                let node = &mut doc.nodes[node_id];
+                let NodeData::Element(ref mut element) = node.data else {
+                    return;
+                };
 
-            // `autofocus` is a boolean attribute: present is true, whatever
-            // the value, and absent is the only false. Requiring the literal
-            // string "true" meant the one spelling almost nothing uses, since
-            // markup writes `<input autofocus>` and the parser stores that as
-            // the empty string. Every framework agrees: Solid's boolean
-            // attribute setter is `setAttribute(name, "")`.
-            //
-            // So a field marked autofocus in markup never took focus, and
-            // blitz-script papered over its own path by writing "true" from
-            // the property setter, which left the parsed path broken.
-            #[cfg(feature = "autofocus")]
-            if node.is_focussable() {
-                if let NodeData::Element(ref element) = node.data {
-                    if element.attr(local_name!("autofocus")).is_some() {
-                        self.node_to_autofocus = Some(node_id);
+                // Custom post-processing by element tag name
+                let tag = element.name.local.as_ref();
+                match tag {
+                    "title" if element.name.ns == ns!(html) => self.title_node = Some(node_id),
+                    "link" => self.eager_op_queue.push(SpecialOp::LoadStylesheet(node_id)),
+                    "img" => self.eager_op_queue.push(SpecialOp::LoadImage(node_id)),
+                    "iframe" => self.eager_op_queue.push(SpecialOp::LoadIframe(node_id)),
+                    "canvas" => self
+                        .eager_op_queue
+                        .push(SpecialOp::LoadCustomPaintSource(node_id)),
+                    "style" => {
+                        self.style_nodes.insert(node_id);
+                    }
+                    "button" | "fieldset" | "input" | "select" | "textarea" | "object"
+                    | "output" => {
+                        self.eager_op_queue
+                            .push(SpecialOp::ProcessButtonInput(node_id));
+                        self.form_nodes.insert(node_id);
+                    }
+                    _ => {}
+                }
+
+                // If the element's tag name matches a registered custom element
+                // definition (and it hasn't already been upgraded), queue it for
+                // upgrade.
+                #[cfg(feature = "shadow-dom")]
+                {
+                    let needs_upgrade = doc.custom_element_registry.contains(&element.name.local)
+                        && element.custom_element_data().is_none();
+                    if needs_upgrade {
+                        self.eager_op_queue
+                            .push(SpecialOp::UpgradeCustomElement(node_id));
                     }
                 }
-            }
-        });
+
+                // `autofocus` is a boolean attribute: present is true, whatever
+                // the value, and absent is the only false. Requiring the literal
+                // string "true" meant the one spelling almost nothing uses, since
+                // markup writes `<input autofocus>` and the parser stores that as
+                // the empty string. Every framework agrees: Solid's boolean
+                // attribute setter is `setAttribute(name, "")`.
+                //
+                // So a field marked autofocus in markup never took focus, and
+                // blitz-script papered over its own path by writing "true" from
+                // the property setter, which left the parsed path broken.
+                #[cfg(feature = "autofocus")]
+                if node.is_focussable() {
+                    if let NodeData::Element(ref element) = node.data {
+                        if element.attr(local_name!("autofocus")).is_some() {
+                            self.node_to_autofocus = Some(node_id);
+                        }
+                    }
+                }
+            });
 
         self.flush_eager_ops();
     }
 
     fn process_removed_subtree(&mut self, node_id: NodeId) {
-        self.doc.iter_shadow_including_subtree_mut(node_id, |node_id, doc| {
-            doc.nodes[node_id]
-                .flags
-                .set(NodeFlags::IS_IN_DOCUMENT, false);
+        self.doc
+            .iter_shadow_including_subtree_mut(node_id, |node_id, doc| {
+                doc.nodes[node_id]
+                    .flags
+                    .set(NodeFlags::IS_IN_DOCUMENT, false);
 
-            // Clear any interaction state that references this node, running
-            // the usual teardown steps (unhover/unactive the surviving
-            // ancestor chain, IME disable on blur of a focused input).
-            doc.clear_interaction_state_for_removed_node(node_id);
+                // Clear any interaction state that references this node, running
+                // the usual teardown steps (unhover/unactive the surviving
+                // ancestor chain, IME disable on blur of a focused input).
+                doc.clear_interaction_state_for_removed_node(node_id);
 
-            let node = &mut doc.nodes[node_id];
+                let node = &mut doc.nodes[node_id];
 
-            // Same for focus and for the node the last press landed on.
-            //
-            // These two were missed, and they are the two most likely to point
-            // at a node that is being removed: dismissing a panel is a click on
-            // a control *inside* it, so that control is both the focused node
-            // and the mousedown node at the moment its subtree goes away.
-            //
-            // A stale id here is not inert. The next click calls `set_focus_to`,
-            // which blurs the old node by indexing it, and indexing a dropped
-            // id panics inside the event handler. The window then stops
-            // responding to clicks until something forces a full rebuild.
-            //
-            // The upstream fix carried a second failure mode, the blur landing
-            // on whatever node had taken the recycled slot. That one cannot
-            // happen here: `NodeId` is versioned, so a dropped id resolves to
-            // nothing rather than aliasing its successor.
-            if doc.focus_node_id == Some(node_id) {
-                doc.focus_node_id = None;
-            }
-            if doc.mousedown_node_id == Some(node_id) {
-                doc.mousedown_node_id = None;
-            }
-
-            // Clear the text selection if one of its endpoints references this node.
-            // This prevents stale selection endpoint references.
-            if doc.text_selection.anchor.node_or_parent == Some(node_id)
-                || doc.text_selection.focus.node_or_parent == Some(node_id)
-            {
-                doc.text_selection.clear();
-            }
-
-            // Remove any snapshot for this node to prevent stale snapshot references
-            // during style invalidation.
-            if node.has_snapshot() {
-                let opaque_id = style::dom::TNode::opaque(&&*node);
-                doc.snapshots.remove(&opaque_id);
-                node.set_has_snapshot(false);
-            }
-
-            // If the node has an "id" attribute remove it from the ID map.
-            if let Some(id_attr) = node.attr(local_name!("id")).map(ToString::to_string) {
-                doc.remove_from_id_map(&id_attr, node_id);
-            }
-
-            let node = &mut doc.nodes[node_id];
-            let NodeData::Element(ref mut element) = node.data else {
-                return;
-            };
-
-            match &element.special_data {
-                SpecialElementData::SubDocument(_) => {
-                    self.eager_op_queue
-                        .push(SpecialOp::UnloadSubDocument(node_id));
+                // Same for focus and for the node the last press landed on.
+                //
+                // These two were missed, and they are the two most likely to point
+                // at a node that is being removed: dismissing a panel is a click on
+                // a control *inside* it, so that control is both the focused node
+                // and the mousedown node at the moment its subtree goes away.
+                //
+                // A stale id here is not inert. The next click calls `set_focus_to`,
+                // which blurs the old node by indexing it, and indexing a dropped
+                // id panics inside the event handler. The window then stops
+                // responding to clicks until something forces a full rebuild.
+                //
+                // The upstream fix carried a second failure mode, the blur landing
+                // on whatever node had taken the recycled slot. That one cannot
+                // happen here: `NodeId` is versioned, so a dropped id resolves to
+                // nothing rather than aliasing its successor.
+                if doc.focus_node_id == Some(node_id) {
+                    doc.focus_node_id = None;
                 }
-                #[cfg(feature = "custom-widget")]
-                SpecialElementData::CustomWidget(_) => {
-                    self.eager_op_queue
-                        .push(SpecialOp::UnloadCustomWidget(node_id));
+                if doc.mousedown_node_id == Some(node_id) {
+                    doc.mousedown_node_id = None;
                 }
-                #[cfg(feature = "shadow-dom")]
-                SpecialElementData::CustomElement(_) => {
-                    self.eager_op_queue
-                        .push(SpecialOp::DisconnectCustomElement(node_id));
+
+                // Clear the text selection if one of its endpoints references this node.
+                // This prevents stale selection endpoint references.
+                if doc.text_selection.anchor.node_or_parent == Some(node_id)
+                    || doc.text_selection.focus.node_or_parent == Some(node_id)
+                {
+                    doc.text_selection.clear();
                 }
-                SpecialElementData::Stylesheet(_) => self
-                    .eager_op_queue
-                    .push(SpecialOp::UnloadStylesheet(node_id)),
-                SpecialElementData::Image(_) => {}
-                SpecialElementData::Canvas(_) => {
-                    self.recompute_is_animating = true;
+
+                // Remove any snapshot for this node to prevent stale snapshot references
+                // during style invalidation.
+                if node.has_snapshot() {
+                    let opaque_id = style::dom::TNode::opaque(&&*node);
+                    doc.snapshots.remove(&opaque_id);
+                    node.set_has_snapshot(false);
                 }
-                SpecialElementData::TableRoot(_) => {}
-                SpecialElementData::TextInput(_) => {}
-                SpecialElementData::CheckboxInput(_) => {}
-                SpecialElementData::Select(_) => {}
-                #[cfg(feature = "file-input")]
-                SpecialElementData::FileInput(_) => {}
-                SpecialElementData::None => {}
-            }
-        });
+
+                // If the node has an "id" attribute remove it from the ID map.
+                if let Some(id_attr) = node.attr(local_name!("id")).map(ToString::to_string) {
+                    doc.remove_from_id_map(&id_attr, node_id);
+                }
+
+                let node = &mut doc.nodes[node_id];
+                let NodeData::Element(ref mut element) = node.data else {
+                    return;
+                };
+
+                match &element.special_data {
+                    SpecialElementData::SubDocument(_) => {
+                        self.eager_op_queue
+                            .push(SpecialOp::UnloadSubDocument(node_id));
+                    }
+                    #[cfg(feature = "custom-widget")]
+                    SpecialElementData::CustomWidget(_) => {
+                        self.eager_op_queue
+                            .push(SpecialOp::UnloadCustomWidget(node_id));
+                    }
+                    #[cfg(feature = "shadow-dom")]
+                    SpecialElementData::CustomElement(_) => {
+                        self.eager_op_queue
+                            .push(SpecialOp::DisconnectCustomElement(node_id));
+                    }
+                    SpecialElementData::Stylesheet(_) => self
+                        .eager_op_queue
+                        .push(SpecialOp::UnloadStylesheet(node_id)),
+                    SpecialElementData::Image(_) => {}
+                    SpecialElementData::Canvas(_) => {
+                        self.recompute_is_animating = true;
+                    }
+                    SpecialElementData::TableRoot(_) => {}
+                    SpecialElementData::TextInput(_) => {}
+                    SpecialElementData::CheckboxInput(_) => {}
+                    SpecialElementData::Select(_) => {}
+                    #[cfg(feature = "file-input")]
+                    SpecialElementData::FileInput(_) => {}
+                    SpecialElementData::None => {}
+                }
+            });
 
         self.flush_eager_ops();
     }

@@ -6,13 +6,19 @@
 //! node id. Native functions look the document up via the [`DomCtx`] stored as
 //! host-defined data on the Boa [`Context`].
 
+mod collections;
 pub(crate) mod custom_elements;
 pub(crate) mod document;
 pub(crate) mod doma;
 pub(crate) mod element;
 pub(crate) mod event;
 pub(crate) mod event_interfaces;
+mod event_target;
+mod geometry;
+mod html_element;
+pub(crate) mod interfaces;
 pub(crate) mod node;
+pub(crate) mod range;
 #[cfg(feature = "shadow-dom")]
 pub(crate) mod shadow;
 #[cfg(feature = "shadow-dom")]
@@ -20,11 +26,6 @@ pub(crate) mod shadow_event;
 #[cfg(feature = "shadow-dom")]
 pub(crate) mod sheets;
 pub(crate) mod style;
-pub(crate) mod interfaces;
-mod collections;
-mod event_target;
-mod geometry;
-mod html_element;
 
 use blitz_dom::NodeId;
 use blitz_dom::node::NodeData;
@@ -79,7 +80,7 @@ pub(crate) fn node_wrapper(ctx: &DomCtx, node_id: NodeId, context: &mut Context)
     // Upgraded rather than cloned: the cache holds weak handles, so an entry
     // whose wrapper nothing else kept has been collected and a fresh one is
     // built below. Identity still holds for every wrapper something is actually
-    // holding, which is the only case identity can be observed in.
+    // holding, which is the only case identity can be observed in a program.
     if let Some(wrapper) = ctx
         .state
         .borrow()
@@ -344,9 +345,9 @@ pub(crate) fn define_method(
             custom_elements::native_scope(this, args, context, body)
         }),
     )
-        .name(JsString::from(name))
-        .length(length)
-        .build();
+    .name(JsString::from(name))
+    .length(length)
+    .build();
     obj.define_property_or_throw(
         PropertyKey::from(JsString::from(name)),
         PropertyDescriptor::builder()
@@ -381,9 +382,9 @@ pub(crate) fn define_accessor(
                 custom_elements::native_scope(this, args, context, s)
             }),
         )
-            .name(JsString::from(format!("set {name}")))
-            .length(1)
-            .build()
+        .name(JsString::from(format!("set {name}")))
+        .length(1)
+        .build()
     });
     let mut builder = PropertyDescriptor::builder()
         .enumerable(false)
@@ -472,10 +473,10 @@ pub(crate) const ON_HANDLER_PREFIX: &str = "__blitz_internal_on_";
 /// roots the wrapper for as long as the node is in the document. A data
 /// property cannot do the second half: nothing observes the write, so the only
 /// thing keeping the handler alive was the page's own reference to the element.
-/// The wrapper cache is weak, so a page that creates an element, wires it up and
-/// drops it lost the handler to the collector while the element was still in the
-/// tree. Reading is unchanged: `el.onclick` answers with what was assigned, or
-/// `null`, and `'onclick' in el` is still true.
+///
+/// Every CDN loader has this shape: create a script, set `onload`, append it,
+/// return, and wait on the promise the script resolves. Keeping its wrapper
+/// alive preserves the callback until the script load is acknowledged.
 fn define_on_event_accessor(proto: &JsObject, event_type: &'static str, context: &mut Context) {
     // The event name is captured as the `'static` string it already is, so
     // both closures stay `Copy` and need no unsafe constructor. Building the
@@ -592,5 +593,5 @@ pub(crate) fn init_protos(ctx: &DomCtx, context: &mut Context) {
     doma::install(ctx, context);
     #[cfg(feature = "shadow-dom")]
     shadow::init(ctx, context);
+    range::init(context);
 }
-

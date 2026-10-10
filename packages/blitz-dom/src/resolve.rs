@@ -716,7 +716,8 @@ impl BaseDocument {
             &mut escaped,
         );
         if let Some(candidates) = escaped {
-            self.abspos_candidate_ids = candidates.iter()
+            self.abspos_candidate_ids = candidates
+                .iter()
                 .map(|candidate| candidate.node_id)
                 .collect();
             let ids = &self.abspos_candidate_ids;
@@ -815,10 +816,7 @@ impl BaseDocument {
 
                 if let Some(escaped) = escaped.as_mut() {
                     if position.is_absolutely_positioned() {
-                        let cb = doc.abspos_containing_block(
-                            child_id,
-                            position == Position::Fixed,
-                        );
+                        let cb = doc.abspos_containing_block(child_id, position == Position::Fixed);
                         if cb != child.layout_parent.get() {
                             escaped.push(crate::layout::abspos::AbsposCandidate {
                                 node_id: child_id,
@@ -1178,7 +1176,8 @@ impl BaseDocument {
     pub(crate) fn resolve_hoisted_positions(&mut self) {
         self.resolve_abspos_positions();
         let nodes = &self.nodes;
-        self.hoisted_position_hosts.retain(|id| nodes.contains_key(*id));
+        self.hoisted_position_hosts
+            .retain(|id| nodes.contains_key(*id));
         let hosts: Vec<NodeId> = self.hoisted_position_hosts.iter().copied().collect();
 
         for host in hosts {
@@ -1392,10 +1391,7 @@ impl BaseDocument {
     pub fn resolve_layout(&mut self) {
         // Preserve corrected boxes, fixed parent slots, caches and positional
         // offsets when neither style/tree changes nor layout damage occurred.
-        if self.incremental_layout
-            && !self.abspos_layout_dirty
-            && !self.abspos_candidates_dirty
-        {
+        if self.incremental_layout && !self.abspos_layout_dirty && !self.abspos_candidates_dirty {
             return;
         }
         let size = self.stylist.device().au_viewport_size();

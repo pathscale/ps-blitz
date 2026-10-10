@@ -12,11 +12,10 @@ use style::properties::{
 use style::selector_parser::PseudoElement;
 use style::servo_arc::Arc as ServoArc;
 use style::shared_lock::ToCssWithGuard;
-use style::stylesheets::{
-    CssRuleType, CustomMediaEvaluator, DocumentStyleSheet, Origin, OriginSet,
-    StylesheetInDocument,
-};
 use style::stylesheets::supports_rule::{Declaration, SupportsCondition};
+use style::stylesheets::{
+    CssRuleType, CustomMediaEvaluator, DocumentStyleSheet, Origin, OriginSet, StylesheetInDocument,
+};
 use style_traits::{CssString, ParsingMode, ToCss};
 
 use crate::{BaseDocument, NodeId, local_name};
@@ -115,9 +114,7 @@ impl BaseDocument {
         let url_data = self.url.url_extra_data();
         let mut context = self.platform_parser_context(&url_data);
         let mut input = ParserInput::new(condition);
-        if let Ok(condition) =
-            Parser::new(&mut input).parse_entirely(SupportsCondition::parse)
-        {
+        if let Ok(condition) = Parser::new(&mut input).parse_entirely(SupportsCondition::parse) {
             return condition.eval(&mut context);
         }
         // CSS.supports also accepts a declaration with implicit parentheses.
@@ -202,12 +199,7 @@ impl BaseDocument {
     }
 
     /// Serialize any enabled longhand or custom property from computed values.
-    pub fn platform_computed_value(
-        &self,
-        node_id: NodeId,
-        pseudo: &str,
-        name: &str,
-    ) -> String {
+    pub fn platform_computed_value(&self, node_id: NodeId, pseudo: &str, name: &str) -> String {
         let Some(style) = self.platform_computed_values(node_id, pseudo) else {
             return String::new();
         };
@@ -339,12 +331,7 @@ impl BaseDocument {
             let mut input = ParserInput::new(value);
             Parser::new(&mut input)
                 .parse_entirely(|input| {
-                    PropertyDeclaration::parse_into(
-                        &mut source,
-                        property.clone(),
-                        &context,
-                        input,
-                    )
+                    PropertyDeclaration::parse_into(&mut source, property.clone(), &context, input)
                 })
                 .ok()?;
         }
@@ -398,11 +385,7 @@ impl BaseDocument {
     }
 
     /// Apply an owner's initial media attribute to its sheet.
-    pub(crate) fn platform_initial_sheet_media(
-        &self,
-        sheet: &DocumentStyleSheet,
-        owner: NodeId,
-    ) {
+    pub(crate) fn platform_initial_sheet_media(&self, sheet: &DocumentStyleSheet, owner: NodeId) {
         let text = self
             .get_node(owner)
             .and_then(|node| node.attr(local_name!("media")))
@@ -474,13 +457,7 @@ impl BaseDocument {
             return Vec::new();
         };
         let mut hits = Some(Vec::new());
-        root.hit_inner_collect(
-            x,
-            y,
-            viewport.scale_f64(),
-            &mut None,
-            &mut hits,
-        );
+        root.hit_inner_collect(x, y, viewport.scale_f64(), &mut None, &mut hits);
         let mut seen = std::collections::HashSet::new();
         hits.unwrap_or_default()
             .into_iter()

@@ -706,10 +706,8 @@ impl BaseDocument {
         // Absolute children use the parent's padding box in the first pass.
         // This also handles positioned inline roots without a correction pass.
         let abspos_area = Size {
-            width: (final_size.width - border.left - border.right
-                - scrollbar_gutter.x).max(0.0),
-            height: (final_size.height - border.top - border.bottom
-                - scrollbar_gutter.y).max(0.0),
+            width: (final_size.width - border.left - border.right - scrollbar_gutter.x).max(0.0),
+            height: (final_size.height - border.top - border.bottom - scrollbar_gutter.y).max(0.0),
         };
         let abspos_offset = Point {
             x: border.left,
@@ -1059,16 +1057,22 @@ pub(crate) fn layout_abspos_child(
     // Percentages still resolve against the complete containing block.
     let available_space = Size {
         width: AvailableSpace::Definite(
-            (area_width - left.unwrap_or(0.0) - right.unwrap_or(0.0)
-                - margin.left.unwrap_or(0.0) - margin.right.unwrap_or(0.0))
-                .max(0.0)
-                .maybe_clamp(min_size.width, max_size.width),
+            (area_width
+                - left.unwrap_or(0.0)
+                - right.unwrap_or(0.0)
+                - margin.left.unwrap_or(0.0)
+                - margin.right.unwrap_or(0.0))
+            .max(0.0)
+            .maybe_clamp(min_size.width, max_size.width),
         ),
         height: AvailableSpace::Definite(
-            (area_height - top.unwrap_or(0.0) - bottom.unwrap_or(0.0)
-                - margin.top.unwrap_or(0.0) - margin.bottom.unwrap_or(0.0))
-                .max(0.0)
-                .maybe_clamp(min_size.height, max_size.height),
+            (area_height
+                - top.unwrap_or(0.0)
+                - bottom.unwrap_or(0.0)
+                - margin.top.unwrap_or(0.0)
+                - margin.bottom.unwrap_or(0.0))
+            .max(0.0)
+            .maybe_clamp(min_size.height, max_size.height),
         ),
     };
 

@@ -6,8 +6,8 @@ use blitz_dom::NodeData;
 use boa_engine::object::{FunctionObjectBuilder, JsObject};
 use boa_engine::property::PropertyDescriptor;
 use boa_engine::{
-    Context, Finalize, JsData, JsError, JsNativeError, JsResult, JsString, JsSymbol,
-    JsValue, NativeFunction, Trace,
+    Context, Finalize, JsData, JsError, JsNativeError, JsResult, JsString, JsSymbol, JsValue,
+    NativeFunction, Trace,
 };
 use boa_gc::GcRefCell;
 
@@ -98,7 +98,9 @@ pub(super) fn register(
 }
 
 pub(super) fn illegal(_: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    Err(JsNativeError::typ().with_message("Illegal constructor").into())
+    Err(JsNativeError::typ()
+        .with_message("Illegal constructor")
+        .into())
 }
 
 fn html_constructor(
@@ -130,12 +132,10 @@ pub(super) fn construction_prototype(
         .unwrap_or_else(|| prototype(fallback, context)))
 }
 
-pub(super) fn exception(
-    name: &str,
-    message: &str,
-    context: &mut Context,
-) -> JsError {
-    let error: JsError = JsNativeError::error().with_message(message.to_owned()).into();
+pub(super) fn exception(name: &str, message: &str, context: &mut Context) -> JsError {
+    let error: JsError = JsNativeError::error()
+        .with_message(message.to_owned())
+        .into();
     let value = match error.into_opaque(context) {
         Ok(value) => value,
         Err(error) => return error,
@@ -260,12 +260,56 @@ const HTML_INTERFACES: &[(&str, &str)] = &[
 ];
 
 const GENERIC_HTML_TAGS: &[&str] = &[
-    "abbr", "acronym", "address", "article", "aside", "b", "basefont", "bdi",
-    "bdo", "big", "center", "cite", "code", "dd", "dfn", "dt", "em",
-    "figcaption", "figure", "footer", "header", "hgroup", "i", "kbd", "main",
-    "mark", "nav", "nobr", "noembed", "noframes", "noscript", "plaintext",
-    "rb", "rp", "rt", "rtc", "ruby", "s", "samp", "search", "section",
-    "small", "strike", "strong", "sub", "summary", "sup", "tt", "u", "var",
+    "abbr",
+    "acronym",
+    "address",
+    "article",
+    "aside",
+    "b",
+    "basefont",
+    "bdi",
+    "bdo",
+    "big",
+    "center",
+    "cite",
+    "code",
+    "dd",
+    "dfn",
+    "dt",
+    "em",
+    "figcaption",
+    "figure",
+    "footer",
+    "header",
+    "hgroup",
+    "i",
+    "kbd",
+    "main",
+    "mark",
+    "nav",
+    "nobr",
+    "noembed",
+    "noframes",
+    "noscript",
+    "plaintext",
+    "rb",
+    "rp",
+    "rt",
+    "rtc",
+    "ruby",
+    "s",
+    "samp",
+    "search",
+    "section",
+    "small",
+    "strike",
+    "strong",
+    "sub",
+    "summary",
+    "sup",
+    "tt",
+    "u",
+    "var",
     "wbr",
 ];
 
@@ -358,8 +402,12 @@ pub(super) fn init(context: &mut Context) {
     let object = || JsObject::with_object_proto(context.intrinsics());
     let event_target = object();
     register(
-        "EventTarget", None, event_target, 0,
-        NativeFunction::from_fn_ptr(super::event_target::construct), context,
+        "EventTarget",
+        None,
+        event_target,
+        0,
+        NativeFunction::from_fn_ptr(super::event_target::construct),
+        context,
     );
     for (name, parent, proto) in [
         ("Node", "EventTarget", node.clone()),
@@ -368,8 +416,12 @@ pub(super) fn init(context: &mut Context) {
         ("Document", "Node", document.clone()),
     ] {
         register(
-            name, Some(parent), proto, 0,
-            NativeFunction::from_fn_ptr(illegal), context,
+            name,
+            Some(parent),
+            proto,
+            0,
+            NativeFunction::from_fn_ptr(illegal),
+            context,
         );
     }
     for (name, parent) in [
@@ -404,8 +456,12 @@ pub(super) fn init(context: &mut Context) {
         };
         let proto = JsObject::with_object_proto(context.intrinsics());
         register(
-            name, Some(parent), proto, 0,
-            NativeFunction::from_fn_ptr(html_constructor), context,
+            name,
+            Some(parent),
+            proto,
+            0,
+            NativeFunction::from_fn_ptr(html_constructor),
+            context,
         );
     }
     for (name, parent, length) in [
@@ -415,7 +471,10 @@ pub(super) fn init(context: &mut Context) {
     ] {
         let proto = JsObject::with_object_proto(context.intrinsics());
         register(
-            name, Some(parent), proto, length,
+            name,
+            Some(parent),
+            proto,
+            length,
             NativeFunction::from_copy_closure(move |target, args, context| {
                 node_constructor(name, target, args, context)
             }),
@@ -427,7 +486,14 @@ pub(super) fn init(context: &mut Context) {
     // Window.prototype > EventTarget.prototype > Object.prototype, so
     // `window instanceof Window` and `Window.prototype` patching work.
     let window_proto = JsObject::with_object_proto(context.intrinsics());
-    register("Window", Some("EventTarget"), window_proto.clone(), 0, NativeFunction::from_fn_ptr(illegal), context);
+    register(
+        "Window",
+        Some("EventTarget"),
+        window_proto.clone(),
+        0,
+        NativeFunction::from_fn_ptr(illegal),
+        context,
+    );
     let global = context.global_object();
     global.set_prototype(Some(window_proto));
     // Node types the HTML tree never creates, but whose interfaces scripts
@@ -438,15 +504,30 @@ pub(super) fn init(context: &mut Context) {
         ("DocumentType", "Node"),
     ] {
         let proto = JsObject::with_object_proto(context.intrinsics());
-        register(name, Some(parent), proto, 0, NativeFunction::from_fn_ptr(illegal), context);
+        register(
+            name,
+            Some(parent),
+            proto,
+            0,
+            NativeFunction::from_fn_ptr(illegal),
+            context,
+        );
     }
     for (name, value) in [
-        ("ELEMENT_NODE", 1), ("ATTRIBUTE_NODE", 2), ("TEXT_NODE", 3),
-        ("CDATA_SECTION_NODE", 4), ("PROCESSING_INSTRUCTION_NODE", 7),
-        ("COMMENT_NODE", 8), ("DOCUMENT_NODE", 9), ("DOCUMENT_TYPE_NODE", 10),
-        ("DOCUMENT_FRAGMENT_NODE", 11), ("DOCUMENT_POSITION_DISCONNECTED", 1),
-        ("DOCUMENT_POSITION_PRECEDING", 2), ("DOCUMENT_POSITION_FOLLOWING", 4),
-        ("DOCUMENT_POSITION_CONTAINS", 8), ("DOCUMENT_POSITION_CONTAINED_BY", 16),
+        ("ELEMENT_NODE", 1),
+        ("ATTRIBUTE_NODE", 2),
+        ("TEXT_NODE", 3),
+        ("CDATA_SECTION_NODE", 4),
+        ("PROCESSING_INSTRUCTION_NODE", 7),
+        ("COMMENT_NODE", 8),
+        ("DOCUMENT_NODE", 9),
+        ("DOCUMENT_TYPE_NODE", 10),
+        ("DOCUMENT_FRAGMENT_NODE", 11),
+        ("DOCUMENT_POSITION_DISCONNECTED", 1),
+        ("DOCUMENT_POSITION_PRECEDING", 2),
+        ("DOCUMENT_POSITION_FOLLOWING", 4),
+        ("DOCUMENT_POSITION_CONTAINS", 8),
+        ("DOCUMENT_POSITION_CONTAINED_BY", 16),
         ("DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC", 32),
     ] {
         node.define_property_or_throw(
@@ -457,11 +538,11 @@ pub(super) fn init(context: &mut Context) {
                 .enumerable(true)
                 .configurable(false),
             context,
-        ).expect("failed to define Node constant");
+        )
+        .expect("failed to define Node constant");
     }
     super::event_target::init(&node, context);
     super::collections::init(&node, &element, &document, context);
     super::geometry::init(&element, context);
     super::html_element::init(&element, context);
 }
-

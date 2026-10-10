@@ -83,10 +83,14 @@ impl BaseDocument {
             return saved;
         }
 
-        saved.children.push((root, self.nodes[root].layout_children.borrow().clone()));
+        saved
+            .children
+            .push((root, self.nodes[root].layout_children.borrow().clone()));
         for &(_, parent, _) in &moved {
             if !saved.children.iter().any(|entry| entry.0 == parent) {
-                saved.children.push((parent, self.nodes[parent].layout_children.borrow().clone()));
+                saved
+                    .children
+                    .push((parent, self.nodes[parent].layout_children.borrow().clone()));
             }
         }
 
@@ -140,25 +144,22 @@ impl BaseDocument {
 
     /// Find the containing block through the box tree, including flattened
     /// positioned inline ancestors and the authored parent of a fixed box.
-    pub(crate) fn abspos_containing_block(
-        &self,
-        node_id: NodeId,
-        fixed: bool,
-    ) -> Option<NodeId> {
+    pub(crate) fn abspos_containing_block(&self, node_id: NodeId, fixed: bool) -> Option<NodeId> {
         let mut current = node_id;
         loop {
             if let Some(id) = self.abspos_inline_ancestor(current, None, fixed) {
                 return Some(id);
             }
             let node = self.nodes.get(current)?;
-            let parent = if current == node_id
-                && node.layout_parent.get() == Some(self.root_element().id)
-            {
-                self.hoisted_fixed_parents.get(&current).copied()
-                    .or(node.layout_parent.get())
-            } else {
-                node.layout_parent.get()
-            }?;
+            let parent =
+                if current == node_id && node.layout_parent.get() == Some(self.root_element().id) {
+                    self.hoisted_fixed_parents
+                        .get(&current)
+                        .copied()
+                        .or(node.layout_parent.get())
+                } else {
+                    node.layout_parent.get()
+                }?;
             let ancestor = self.nodes.get(parent)?;
             if ancestor.primary_styles().is_some_and(|styles| {
                 establishes_transform_containing_block(&styles)
@@ -235,7 +236,8 @@ impl BaseDocument {
                 continue;
             }
 
-            let (position, inline_level) = node.primary_styles()
+            let (position, inline_level) = node
+                .primary_styles()
                 .map(|styles| {
                     (
                         styles.clone_position(),
@@ -299,7 +301,8 @@ impl BaseDocument {
             if auto_x {
                 layout.location.x = if inline_level && direction == Direction::Rtl {
                     old.location.x + old.size.width + old.margin.right
-                        - layout.size.width - layout.margin.right
+                        - layout.size.width
+                        - layout.margin.right
                 } else {
                     old.location.x - old.margin.left + layout.margin.left
                 };
@@ -336,7 +339,8 @@ impl BaseDocument {
         }
 
         // Rebuild only paths affected by a correction, deepest first.
-        let mut changed: Vec<_> = changed_ancestors.into_iter()
+        let mut changed: Vec<_> = changed_ancestors
+            .into_iter()
             .map(|id| {
                 let mut depth = 0;
                 let mut current = self.nodes[id].layout_parent.get();
@@ -396,7 +400,11 @@ impl BaseDocument {
             let Some(node) = self.nodes.get(id) else {
                 break;
             };
-            let layout = if rounded { node.final_layout() } else { node.unrounded_layout() };
+            let layout = if rounded {
+                node.final_layout()
+            } else {
+                node.unrounded_layout()
+            };
             origin.x += layout.location.x;
             origin.y += layout.location.y;
             current = node.layout_parent.get();
@@ -409,7 +417,11 @@ impl BaseDocument {
             return area;
         }
         let node = &self.nodes[node_id];
-        let layout = if rounded { node.final_layout() } else { node.unrounded_layout() };
+        let layout = if rounded {
+            node.final_layout()
+        } else {
+            node.unrounded_layout()
+        };
         let origin = self.abspos_layout_origin(node_id, rounded);
         (
             Point {
@@ -417,10 +429,16 @@ impl BaseDocument {
                 y: origin.y + layout.border.top,
             },
             Size {
-                width: (layout.size.width - layout.border.left - layout.border.right
-                    - layout.scrollbar_size.width).max(0.0),
-                height: (layout.size.height - layout.border.top - layout.border.bottom
-                    - layout.scrollbar_size.height).max(0.0),
+                width: (layout.size.width
+                    - layout.border.left
+                    - layout.border.right
+                    - layout.scrollbar_size.width)
+                    .max(0.0),
+                height: (layout.size.height
+                    - layout.border.top
+                    - layout.border.bottom
+                    - layout.scrollbar_size.height)
+                    .max(0.0),
             },
         )
     }
@@ -469,8 +487,10 @@ impl BaseDocument {
                     {
                         let metrics = line.metrics();
                         Some((
-                            run.offset(), metrics.block_min_coord,
-                            run.offset() + run.advance(), metrics.block_max_coord,
+                            run.offset(),
+                            metrics.block_min_coord,
+                            run.offset() + run.advance(),
+                            metrics.block_max_coord,
                         ))
                     }
                     parley::PositionedLayoutItem::InlineBox(ibox) => {
@@ -498,12 +518,16 @@ impl BaseDocument {
             }
         }
 
-        let root_layout = if rounded { root.final_layout() } else { root.unrounded_layout() };
+        let root_layout = if rounded {
+            root.final_layout()
+        } else {
+            root.unrounded_layout()
+        };
         let root_origin = self.abspos_layout_origin(root.id, rounded);
         let style = stylo_taffy::to_taffy_style(&styles);
-        let padding = style.padding.resolve_or_zero(
-            Some(root_layout.content_box_width()), resolve_calc_value,
-        );
+        let padding = style
+            .padding
+            .resolve_or_zero(Some(root_layout.content_box_width()), resolve_calc_value);
         let first = first.unwrap_or((0.0, 0.0, 0.0, 0.0));
         let last = last.unwrap_or(first);
         let x = first.0 / scale - padding.left;
@@ -526,7 +550,9 @@ impl BaseDocument {
         };
         node.cache_release();
         node.insert_damage(RestyleDamage::RECALCULATE_OVERFLOW);
-        if let Some(inline) = node.data.downcast_element_mut()
+        if let Some(inline) = node
+            .data
+            .downcast_element_mut()
             .and_then(|element| element.inline_layout_data.as_mut())
         {
             inline.content_widths = None;
@@ -557,49 +583,70 @@ impl BaseDocument {
         let node = &self.nodes[node_id];
         let layout = *node.unrounded_layout();
         let mut content = Size {
-            width: (layout.size.width - layout.border.left - layout.border.right
-                - layout.scrollbar_size.width).max(0.0),
-            height: (layout.size.height - layout.border.top - layout.border.bottom
-                - layout.scrollbar_size.height).max(0.0),
+            width: (layout.size.width
+                - layout.border.left
+                - layout.border.right
+                - layout.scrollbar_size.width)
+                .max(0.0),
+            height: (layout.size.height
+                - layout.border.top
+                - layout.border.bottom
+                - layout.scrollbar_size.height)
+                .max(0.0),
         };
-        if let Some(inline) = node.element_data()
+        if let Some(inline) = node
+            .element_data()
             .and_then(|element| element.inline_layout_data.as_ref())
         {
             let scale = inline.layout.scale();
-            content.width = content.width.max(
-                inline.layout.width() / scale + layout.padding.left + layout.padding.right,
-            );
-            content.height = content.height.max(
-                inline.layout.height() / scale + layout.padding.top + layout.padding.bottom,
-            );
+            content.width = content
+                .width
+                .max(inline.layout.width() / scale + layout.padding.left + layout.padding.right);
+            content.height = content
+                .height
+                .max(inline.layout.height() / scale + layout.padding.top + layout.padding.bottom);
         }
         if let Some(children) = node.layout_children.borrow().as_ref() {
             for &id in children {
                 let child = &self.nodes[id];
                 if child.is_display_none()
-                    || child.primary_styles().is_some_and(|styles| styles.clone_position() == Position::Fixed)
+                    || child
+                        .primary_styles()
+                        .is_some_and(|styles| styles.clone_position() == Position::Fixed)
                 {
                     continue;
                 }
                 let child_layout = child.unrounded_layout();
                 let overflow = child.style().overflow;
                 let width = if overflow.x == Overflow::Visible {
-                    child_layout.size.width.max(child_layout.content_size.width + child_layout.border.left)
+                    child_layout
+                        .size
+                        .width
+                        .max(child_layout.content_size.width + child_layout.border.left)
                 } else {
                     child_layout.size.width
                 };
                 let height = if overflow.y == Overflow::Visible {
-                    child_layout.size.height.max(child_layout.content_size.height + child_layout.border.top)
+                    child_layout
+                        .size
+                        .height
+                        .max(child_layout.content_size.height + child_layout.border.top)
                 } else {
                     child_layout.size.height
                 };
                 content.width = content.width.max(
-                    child_layout.location.x + width + child_layout.margin.right
-                        + layout.padding.right - layout.border.left,
+                    child_layout.location.x
+                        + width
+                        + child_layout.margin.right
+                        + layout.padding.right
+                        - layout.border.left,
                 );
                 content.height = content.height.max(
-                    child_layout.location.y + height + child_layout.margin.bottom
-                        + layout.padding.bottom - layout.border.top,
+                    child_layout.location.y
+                        + height
+                        + child_layout.margin.bottom
+                        + layout.padding.bottom
+                        - layout.border.top,
                 );
             }
         }
@@ -609,7 +656,8 @@ impl BaseDocument {
     pub(crate) fn finish_abspos_placements(&mut self, mut placements: Vec<AbsposPlacement>) {
         for placement in &mut placements {
             let origin = self.abspos_layout_origin(placement.node_id, true);
-            let cb_origin = placement.containing_block
+            let cb_origin = placement
+                .containing_block
                 .map(|id| self.abspos_padding_box(id, true).0)
                 .unwrap_or(Point::ZERO);
             placement.offset = Point {
@@ -651,10 +699,14 @@ impl BaseDocument {
             };
             let old = self.nodes[placement.node_id].final_layout().location;
             let location = Point {
-                x: if placement.auto_x { old.x } else {
+                x: if placement.auto_x {
+                    old.x
+                } else {
                     cb_origin.x + placement.offset.x - parent_origin.x + parent_scroll.x as f32
                 },
-                y: if placement.auto_y { old.y } else {
+                y: if placement.auto_y {
+                    old.y
+                } else {
                     cb_origin.y + placement.offset.y - parent_origin.y + parent_scroll.y as f32
                 },
             };
