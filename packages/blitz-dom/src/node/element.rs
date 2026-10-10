@@ -147,6 +147,10 @@ pub struct ElementData {
     /// keeps the pointee alive, and comparing its identity is how a restyle is
     /// told apart from a no-op. See `flush_styles_to_layout_impl`.
     pub style_source: Option<ServoArc<ComputedValues>>,
+    /// For a node outside the box tree (an `<option>`, SVG content), which is
+    /// never flushed and so never gets a `style_source`: the computed values
+    /// damage propagation last saw, so only a real restyle counts as one.
+    pub unflushed_style_seen: Option<ServoArc<ComputedValues>>,
     pub display_constructed_as: StyloDisplay,
     /// Taffy's layout cache, allocated on first use.
     ///
@@ -387,6 +391,7 @@ impl Clone for ElementData {
             detailed_grid_info: None,
             style: Default::default(),
             style_source: None,
+            unflushed_style_seen: None,
             subtree_hoists: false,
             display_constructed_as: StyloDisplay::Block,
             cache: None,
@@ -559,6 +564,7 @@ impl ElementData {
             detailed_grid_info: None,
             style: Default::default(),
             style_source: None,
+            unflushed_style_seen: None,
             subtree_hoists: false,
             display_constructed_as: StyloDisplay::Block,
             cache: None,

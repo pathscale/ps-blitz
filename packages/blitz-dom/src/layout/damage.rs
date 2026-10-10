@@ -68,12 +68,31 @@ impl BaseDocument {
         if !damage.is_empty() {
             self.paint_damage.note_own_damage(node_id);
         }
+        // A node that is never flushed on its own (an <option> inside a
+        // select, an inline <span> or <a> shaped into its parent's text, SVG
+        // content consumed by the image parser) has no style source and read
+        // as restyled on every pass. That re-ran the positioned-candidate scan
+        // and a full layout, and rebuilt every inline SVG, on every tick. Such
+        // nodes compare against the style this pass last saw instead.
         let style_changed = {
-            let node = &self.nodes[node_id];
-            match (node.primary_styles(), node.style_source_opt()) {
-                (Some(current), Some(cached)) => !ServoArc::ptr_eq(&current, cached),
-                (None, None) => false,
-                _ => true,
+            let node = &mut self.nodes[node_id];
+            let current = node.primary_styles().map(|style| (*style).clone());
+            if node.style_source_opt().is_some() {
+                match (current.as_ref(), node.style_source_opt()) {
+                    (Some(current), Some(cached)) => !ServoArc::ptr_eq(current, cached),
+                    (None, None) => false,
+                    _ => true,
+                }
+            } else if let Some(element) = node.element_data_mut() {
+                let changed = match (current.as_ref(), element.unflushed_style_seen.as_ref()) {
+                    (Some(current), Some(seen)) => !ServoArc::ptr_eq(current, seen),
+                    (None, None) => false,
+                    _ => true,
+                };
+                element.unflushed_style_seen = current;
+                changed
+            } else {
+                current.is_some()
             }
         };
         // SVG computed values can change the serialized image without
@@ -85,8 +104,23 @@ impl BaseDocument {
             damage.insert(CONSTRUCT_BOX);
         }
 
-        self.abspos_candidates_dirty |=
-            style_changed || damage.intersects(CONSTRUCT_BOX | CONSTRUCT_FC | CONSTRUCT_DESCENDENT);
+        // Which boxes are positioned candidates, and their containing blocks,
+        // follow position, display, overflow and the transform properties (the
+        // Box style struct) plus filter. An animation that restyles colour or
+        // opacity every frame changes none of them, and rescanning on it ran a
+        // full layout every tick.
+        let candidate_inputs_changed = style_changed && {
+            let node = &self.nodes[node_id];
+            match (node.primary_styles(), node.style_source_opt()) {
+                (Some(current), Some(cached)) => {
+                    current.get_box() != cached.get_box()
+                        || current.get_effects().filter != cached.get_effects().filter
+                }
+                _ => true,
+            }
+        };
+        self.abspos_candidates_dirty |= candidate_inputs_changed
+            || damage.intersects(CONSTRUCT_BOX | CONSTRUCT_FC | CONSTRUCT_DESCENDENT);
         self.abspos_layout_dirty |=
             damage.intersects(ONLY_RELAYOUT | CONSTRUCT_BOX | CONSTRUCT_FC | CONSTRUCT_DESCENDENT);
         damage |= damage_from_parent;
