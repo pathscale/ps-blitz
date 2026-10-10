@@ -64,9 +64,51 @@ fn options(args: &[JsValue], context: &mut Context) -> JsResult<(bool, bool, Opt
     }
 }
 
+#[derive(Clone, Copy)]
+enum Method {
+    Add,
+    Remove,
+    Dispatch,
+}
+
+/// EventTarget.prototype's methods work on every EventTarget, not only on
+/// script-constructed ones: the window and DOM nodes keep their own native
+/// listener lists, so a call on them (ShadyDOM keeps
+/// `EventTarget.prototype.addEventListener` and calls it on `window`) goes to
+/// that implementation.
+fn delegate(
+    object: &JsObject,
+    method: Method,
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Option<JsResult<JsValue>> {
+    if object.downcast_ref::<Target>().is_some() {
+        return None;
+    }
+    if JsObject::equals(object, &context.global_object()) {
+        return Some(match method {
+            Method::Add => crate::runtime::window_add_event_listener(this, args, context),
+            Method::Remove => crate::runtime::window_remove_event_listener(this, args, context),
+            Method::Dispatch => crate::runtime::window_dispatch_event(this, args, context),
+        });
+    }
+    if super::node_id_of_value(this).is_some() {
+        return Some(match method {
+            Method::Add => super::node::add_event_listener(this, args, context),
+            Method::Remove => super::node::remove_event_listener(this, args, context),
+            Method::Dispatch => super::node::dispatch_event(this, args, context),
+        });
+    }
+    None
+}
+
 fn add(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let object = this.as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("Invalid EventTarget receiver"))?;
+    if let Some(result) = delegate(&object, Method::Add, this, args, context) {
+        return result;
+    }
     let target = object.downcast_ref::<Target>()
         .ok_or_else(|| JsNativeError::typ().with_message("Invalid EventTarget receiver"))?;
     let kind: Arc<str> = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?.into();
@@ -95,6 +137,9 @@ fn add(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsVa
 fn remove(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let object = this.as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("Invalid EventTarget receiver"))?;
+    if let Some(result) = delegate(&object, Method::Remove, this, args, context) {
+        return result;
+    }
     let target = object.downcast_ref::<Target>()
         .ok_or_else(|| JsNativeError::typ().with_message("Invalid EventTarget receiver"))?;
     let kind = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
@@ -113,6 +158,9 @@ fn remove(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<J
 fn dispatch(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let object = this.as_object()
         .ok_or_else(|| JsNativeError::typ().with_message("Invalid EventTarget receiver"))?;
+    if let Some(result) = delegate(&object, Method::Dispatch, this, args, context) {
+        return result;
+    }
     if object.downcast_ref::<Target>().is_none() {
         return Err(JsNativeError::typ().with_message("Invalid EventTarget receiver").into());
     }

@@ -2141,7 +2141,7 @@ fn clear_timer(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult
 /// `Node.prototype.dispatchEvent` walks a node chain and never reaches the
 /// window listeners, so there was no way at all to raise a window-targeted
 /// event, from a page or from the runtime's own `history` shim.
-fn window_dispatch_event(
+pub(crate) fn window_dispatch_event(
     _: &JsValue,
     args: &[JsValue],
     context: &mut Context,
@@ -2224,7 +2224,7 @@ fn dispatch_window_supplied_event(
     Ok(JsValue::from(!prevented))
 }
 
-fn window_add_event_listener(
+pub(crate) fn window_add_event_listener(
     _: &JsValue,
     args: &[JsValue],
     context: &mut Context,
@@ -2254,7 +2254,7 @@ fn window_add_event_listener(
     Ok(JsValue::undefined())
 }
 
-fn window_remove_event_listener(
+pub(crate) fn window_remove_event_listener(
     _: &JsValue,
     args: &[JsValue],
     context: &mut Context,
