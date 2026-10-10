@@ -635,8 +635,20 @@ fn insert_before(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
 
 fn remove_child(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
-    let _parent_id = this_node_id(this)?;
+    let parent_id = this_node_id(this)?;
     let child_id = arg_node_id(args, 0)?;
+    let is_child = ctx
+        .doc
+        .borrow()
+        .get_node(child_id)
+        .is_some_and(|child| child.parent == Some(parent_id));
+    if !is_child {
+        return Err(super::doma::dom_error(
+            "NotFoundError",
+            "The node to be removed is not a child of this node.",
+            context,
+        ));
+    }
 
     // Detached when a wrapper still holds it, freed when none does. The node is
     // returned either way, as the spec requires, and holding that return value
