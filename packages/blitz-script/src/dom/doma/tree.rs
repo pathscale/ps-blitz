@@ -390,14 +390,13 @@ fn get_root_node(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
             let node = doc
                 .get_node(id)
                 .ok_or_else(|| JsNativeError::typ().with_message("node no longer exists"))?;
-            if let Some(parent) = node.parent {
-                id = parent;
-            } else if composed {
-                if let NodeData::ShadowRoot(root) = &node.data {
-                    id = root.host;
-                } else {
+            if let NodeData::ShadowRoot(root) = &node.data {
+                if !composed {
                     break;
                 }
+                id = root.host;
+            } else if let Some(parent) = node.parent {
+                id = parent;
             } else {
                 break;
             }

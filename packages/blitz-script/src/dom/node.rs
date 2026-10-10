@@ -1036,7 +1036,7 @@ pub(crate) fn dispatch_event(
         .first()
         .and_then(JsValue::as_object)
         .ok_or_else(|| JsNativeError::typ().with_message("dispatchEvent requires an Event"))?;
-    let result = super::shadow_event::dispatch(&ctx, target_id, &event, context)?;
+    let result = super::shadow_event::dispatch(&ctx, target_id, &event, true, context)?;
     Ok(JsValue::from(!result.prevented))
 }
 

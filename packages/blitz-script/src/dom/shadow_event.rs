@@ -6,12 +6,10 @@ use boa_engine::{Context, JsNativeError, JsResult, JsString, JsValue, js_string}
 
 use super::{
     define_value,
-    event::{EventRef, set_event_path},
+    event::{EventRef, begin_dispatch, set_event_path},
     node_wrapper, to_rust_string,
 };
 use crate::state::DomCtx;
-
-const DISPATCHING: &str = "__blitz_event_dispatching__";
 
 pub(crate) struct DispatchResult {
     pub called: bool,
@@ -41,6 +39,7 @@ pub(crate) fn dispatch(
     ctx: &DomCtx,
     target_id: NodeId,
     event: &JsObject,
+    scripted: bool,
     context: &mut Context,
 ) -> JsResult<DispatchResult> {
     if event.downcast_ref::<EventRef>().is_none() {
@@ -48,20 +47,8 @@ pub(crate) fn dispatch(
             .with_message("dispatchEvent requires an Event")
             .into());
     }
-    if event
-        .get(JsString::from(DISPATCHING), context)?
-        .to_boolean()
-    {
-        return Err(JsNativeError::typ()
-            .with_message("InvalidStateError: event is dispatching")
-            .into());
-    }
+    let _dispatch = begin_dispatch(event, scripted, context)?;
     let name = to_rust_string(&event.get(js_string!("type"), context)?, context)?;
-    if name.is_empty() {
-        return Err(JsNativeError::typ()
-            .with_message("InvalidStateError: empty event type")
-            .into());
-    }
     let bubbles = event.get(js_string!("bubbles"), context)?.to_boolean();
     let composed = event.get(js_string!("composed"), context)?.to_boolean();
     let cancelable = event.get(js_string!("cancelable"), context)?.to_boolean();
@@ -86,11 +73,14 @@ pub(crate) fn dispatch(
         )
     };
 
-    if let Some(data) = event.downcast_ref::<EventRef>() {
-        data.stopped.set(false);
-        data.stopped_immediate.set(false);
-    }
-    define_value(event, DISPATCHING, JsValue::from(true), context);
+    // Cleanup uses the last observer's adjusted target. A local event must
+    // not gain an outside target that was never on its propagation path.
+    let final_target = entries.last().map_or(target_id, |entry| entry.target);
+    let clear_target = ctx
+        .doc
+        .borrow()
+        .containing_shadow_root(final_target)
+        .is_some();
     let result = (|| {
         let mut called = false;
         for entry in entries.iter().rev().filter(|entry| entry.id != target_id) {
@@ -158,11 +148,14 @@ pub(crate) fn dispatch(
         })
     })();
 
-    define_value(event, DISPATCHING, JsValue::from(false), context);
     define_value(event, "currentTarget", JsValue::null(), context);
     define_value(event, "eventPhase", JsValue::from(0), context);
     set_event_path(event, Vec::new());
-    let target: JsValue = node_wrapper(ctx, outer_target, context).into();
+    let target = if clear_target {
+        JsValue::null()
+    } else {
+        node_wrapper(ctx, final_target, context).into()
+    };
     define_value(event, "target", target.clone(), context);
     define_value(event, "srcElement", target, context);
     result

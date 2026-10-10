@@ -1426,7 +1426,7 @@ impl ScriptRuntime {
                         | "focusout"
                 );
             crate::dom::define_value(&event_obj, "composed", JsValue::from(composed), context);
-            match crate::dom::shadow_event::dispatch(&ctx, target_id, &event_obj, context) {
+            match crate::dom::shadow_event::dispatch(&ctx, target_id, &event_obj, false, context) {
                 Ok(result) => {
                     if result.prevented {
                         event_state.prevent_default();
