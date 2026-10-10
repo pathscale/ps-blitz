@@ -955,6 +955,7 @@ fn dispatch_event(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
         .and_then(JsValue::as_object)
         .filter(|event| event.downcast_ref::<EventRef>().is_some())
         .ok_or_else(|| JsNativeError::typ().with_message("dispatchEvent requires an Event"))?;
+    let _dispatch = super::event::begin_dispatch(&event, true, context)?;
     let event_type = to_rust_string(
         &event.get(boa_engine::js_string!("type"), context)?,
         context,

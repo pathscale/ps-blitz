@@ -424,6 +424,12 @@ impl ScriptRuntime {
             window_remove_event_listener,
         );
         register_global_fn(&mut context, "dispatchEvent", 1, window_dispatch_event);
+        register_global_fn(
+            &mut context,
+            "__blitzDispatchHistoryEvent",
+            1,
+            window_dispatch_history_event,
+        );
         register_global_fn(&mut context, "__blitzRandomU32", 0, random_u32);
 
         let mut runtime = Self {
@@ -668,6 +674,18 @@ impl ScriptRuntime {
             if (typeof globalThis.history !== "object" || globalThis.history === null) {
                 const entries = [{ state: null, url: globalThis.location.href }];
                 let index = 0;
+                const dispatchHistoryEvent = globalThis.__blitzDispatchHistoryEvent;
+                const resolveHistoryUrl = function (url) {
+                    if (url === undefined || url === null) return globalThis.location.href;
+                    const resolved = new URL(String(url), globalThis.location.href);
+                    const current = new URL(globalThis.location.href);
+                    if (resolved.origin !== current.origin) {
+                        const error = new Error("History URL must have the document's origin");
+                        error.name = "SecurityError";
+                        throw error;
+                    }
+                    return resolved.href;
+                };
                 const applyUrl = function (url) {
                     if (url === undefined || url === null) return;
                     const value = String(url);
@@ -711,26 +729,42 @@ impl ScriptRuntime {
                     get length() { return entries.length; },
                     get state() { return entries[index].state; },
                     pushState(state, _unused, url) {
-                        const entry = { state: structuredClone(state), url: url ?? globalThis.location.href };
+                        const entry = { state: structuredClone(state), url: resolveHistoryUrl(url) };
                         entries.splice(index + 1, entries.length, entry);
                         index += 1;
-                        applyUrl(url);
+                        applyUrl(entry.url);
                     },
                     replaceState(state, _unused, url) {
-                        entries[index] = { state: structuredClone(state), url: url ?? entries[index].url };
-                        applyUrl(url);
+                        const entry = { state: structuredClone(state), url: resolveHistoryUrl(url) };
+                        entries[index] = entry;
+                        applyUrl(entry.url);
                     },
                     go(delta) {
-                        const next = Math.max(0, Math.min(entries.length - 1, index + Number(delta || 0)));
-                        if (next === index) return;
-                        index = next;
-                        applyUrl(entries[index].url);
-                        // A traversal has to announce itself. Without this a
-                        // router's `navigate(-1)` changed the URL and nothing
-                        // redrew, so every route was one-way.
-                        const event = new Event("popstate");
-                        event.state = entries[index].state;
-                        globalThis.dispatchEvent(event);
+                        const number = Number(delta === undefined ? 0 : delta);
+                        const integer = Number.isFinite(number) ? Math.trunc(number) : 0;
+                        const distance = (integer >>> 0) | 0;
+                        if (distance === 0) {
+                            globalThis.location.reload();
+                            return;
+                        }
+                        setTimeout(function () {
+                            const next = index + distance;
+                            if (next < 0 || next >= entries.length) return;
+                            const oldURL = globalThis.location.href;
+                            const oldHash = globalThis.location.hash;
+                            index = next;
+                            applyUrl(entries[index].url);
+                            const newURL = globalThis.location.href;
+                            dispatchHistoryEvent(new PopStateEvent("popstate", {
+                                state: entries[index].state,
+                            }));
+                            if (oldHash !== globalThis.location.hash) {
+                                dispatchHistoryEvent(new HashChangeEvent("hashchange", {
+                                    oldURL: oldURL,
+                                    newURL: newURL,
+                                }));
+                            }
+                        }, 0);
                     },
                     back() { this.go(-1); },
                     forward() { this.go(1); },
@@ -801,6 +835,7 @@ impl ScriptRuntime {
             defineDomInterface("HTMLStyleElement", isTag("STYLE"));
             defineDomInterface("HTMLTemplateElement", isTag("TEMPLATE"));
             defineDomInterface("HTMLTextAreaElement", isTag("TEXTAREA"));
+            delete globalThis.__blitzDispatchHistoryEvent;
             delete globalThis.__blitzRandomU32;
             "##,
             "<blitz-bootstrap>",
@@ -1158,21 +1193,25 @@ impl ScriptRuntime {
         });
         let chain = captured_chain.as_deref().unwrap_or(chain);
 
+        if chain.is_empty() {
+            return false;
+        }
         let name = event.name().to_string();
+        // Touch and movement state must advance even without a listener.
+        let target: JsValue = node_wrapper(&self.ctx, chain[0], &mut self.context).into();
+        let event_object = create_event_for_dom_event(
+            &self.ctx,
+            &event.data,
+            event.bubbles,
+            event.cancelable,
+            &target,
+            &mut self.context,
+        );
         let mut any_called = self.dispatch_event_inner(
             chain,
             &name,
             event.bubbles,
-            |ctx, target, context| {
-                create_event_for_dom_event(
-                    ctx,
-                    &event.data,
-                    event.bubbles,
-                    event.cancelable,
-                    target,
-                    context,
-                )
-            },
+            |_, _, _| event_object,
             event_state,
         );
 
@@ -1309,6 +1348,9 @@ impl ScriptRuntime {
 
         let target: JsValue = node_wrapper(&ctx, chain[0], context).into();
         let event_obj = make_event(&ctx, &target, context);
+        let _dispatch = crate::dom::event::begin_dispatch(&event_obj, false, context)
+            .expect("fresh native event");
+        crate::dom::define_value(&event_obj, "eventPhase", JsValue::from(2), context);
         let mut event_path: Vec<JsObject> = chain
             .iter()
             .map(|&node_id| node_wrapper(&ctx, node_id, context))
@@ -1372,6 +1414,8 @@ impl ScriptRuntime {
             }
 
             let current_target: JsValue = node_wrapper(&ctx, node_id, context).into();
+            let phase = if node_id == chain[0] { 2 } else { 3 };
+            crate::dom::define_value(&event_obj, "eventPhase", JsValue::from(phase), context);
             crate::dom::define_value(&event_obj, "currentTarget", current_target.clone(), context);
 
             for callback in callbacks {
@@ -1412,6 +1456,7 @@ impl ScriptRuntime {
             };
             if !listeners.is_empty() {
                 let global: JsValue = context.global_object().into();
+                crate::dom::define_value(&event_obj, "eventPhase", JsValue::from(3), context);
                 crate::dom::define_value(&event_obj, "currentTarget", global.clone(), context);
                 for listener in listeners {
                     any_called = true;
@@ -2058,14 +2103,36 @@ fn window_dispatch_event(
     args: &[JsValue],
     context: &mut Context,
 ) -> JsResult<JsValue> {
+    dispatch_window_supplied_event(args, true, context)
+}
+
+fn window_dispatch_history_event(
+    _: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let event = args.first().and_then(JsValue::as_object)
+        .filter(|event| event.downcast_ref::<EventRef>().is_some())
+        .ok_or_else(|| JsNativeError::typ().with_message("History dispatch requires an Event"))?;
+    crate::dom::define_value(&event, "isTrusted", JsValue::from(true), context);
+    dispatch_window_supplied_event(args, false, context)
+}
+
+fn dispatch_window_supplied_event(
+    args: &[JsValue],
+    scripted: bool,
+    context: &mut Context,
+) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let event = args
         .first()
         .and_then(JsValue::as_object)
         .filter(|event| event.downcast_ref::<EventRef>().is_some())
         .ok_or_else(|| JsNativeError::typ().with_message("dispatchEvent requires an Event"))?;
+    let _dispatch = crate::dom::event::begin_dispatch(&event, scripted, context)?;
     let event_type = crate::dom::to_rust_string(&event.get(js_string!("type"), context)?, context)?;
 
+    set_event_path(&event, vec![context.global_object().clone()]);
     let global: JsValue = context.global_object().into();
     crate::dom::define_value(&event, "target", global.clone(), context);
     crate::dom::define_value(&event, "srcElement", global.clone(), context);
@@ -2098,7 +2165,10 @@ fn window_dispatch_event(
     // The `window.on<event>` form, which is how a page most often listens for
     // `popstate`.
     let on_name = JsString::from(format!("on{event_type}"));
-    if let Some(handler) = context.global_object().get(on_name, context)?.as_object()
+    if !event
+        .downcast_ref::<EventRef>()
+        .is_some_and(|event| event.stopped_immediate.get())
+        && let Some(handler) = context.global_object().get(on_name, context)?.as_object()
         && handler.is_callable()
     {
         handler.call(&global, &[event.clone().into()], context)?;
