@@ -604,9 +604,12 @@ impl BaseDocument {
 
                         self.net_provider.fetch(
                             doc_id,
-                            crate::net::stamped_request(
-                                (**new_url).clone(),
-                                self.abort_signal.as_ref(),
+                            crate::net::with_referrer(
+                                crate::net::stamped_request(
+                                    (**new_url).clone(),
+                                    self.abort_signal.as_ref(),
+                                ),
+                                &self.url,
                             ),
                             ResourceHandler::boxed(
                                 self.tx.clone(),
