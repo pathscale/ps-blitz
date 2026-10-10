@@ -438,6 +438,15 @@ pub struct BaseDocument {
     pub(crate) nodes_to_id: HashMap<String, SmallVec<[NodeId; 1]>>,
     /// Map of `<style>` and `<link>` node IDs to their associated stylesheet
     pub(crate) nodes_to_stylesheet: BTreeMap<NodeId, DocumentStyleSheet>,
+    /// `<style>`/`<link>` nodes whose sheet is in the document Stylist. Shadow
+    /// tree sheets live elsewhere, and Stylo panics on removing a sheet it
+    /// does not hold.
+    pub(crate) document_sheet_nodes: HashSet<NodeId>,
+    /// The shadow root each shadow-tree `<style>`/`<link>` sheet was installed
+    /// into. Unloading happens after the node is detached, when its root can
+    /// no longer be found by walking up, so the owner is remembered here.
+    #[cfg(feature = "shadow-dom")]
+    pub(crate) shadow_sheet_roots: HashMap<NodeId, NodeId>,
     /// Stylesheets added by the useragent
     /// where the key is the hashed CSS
     pub(crate) ua_stylesheets: HashMap<String, DocumentStyleSheet>,
@@ -682,6 +691,9 @@ impl BaseDocument {
             url: base_url,
             ua_stylesheets: HashMap::new(),
             nodes_to_stylesheet: BTreeMap::new(),
+            document_sheet_nodes: HashSet::new(),
+            #[cfg(feature = "shadow-dom")]
+            shadow_sheet_roots: HashMap::new(),
             font_ctx,
             #[cfg(feature = "parallel-construct")]
             thread_font_contexts: ThreadLocal::new(),
@@ -1896,15 +1908,25 @@ impl BaseDocument {
         self.platform_initial_sheet_media(&stylesheet, node_id);
         #[cfg(feature = "shadow-dom")]
         if let Some(root_id) = self.containing_shadow_root(node_id) {
+            // A sheet that moved from the document into a shadow tree leaves
+            // the document Stylist first.
+            if self.document_sheet_nodes.remove(&node_id)
+                && let Some(old) = self.nodes_to_stylesheet.get(&node_id).cloned()
+            {
+                self.stylist.remove_stylesheet(old, &self.guard.read());
+            }
             self.install_shadow_stylesheet(root_id, node_id, stylesheet);
             return;
         }
 
         let old = self.nodes_to_stylesheet.insert(node_id, stylesheet.clone());
 
-        if let Some(old) = old {
+        if let Some(old) = old
+            && self.document_sheet_nodes.contains(&node_id)
+        {
             self.stylist.remove_stylesheet(old, &self.guard.read())
         }
+        self.document_sheet_nodes.insert(node_id);
 
         // Fetch @font-face fonts
         crate::net::fetch_font_face(

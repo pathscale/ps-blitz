@@ -1862,7 +1862,11 @@ impl<'doc> DocumentMutator<'doc> {
 
     fn unload_stylesheet(&mut self, node_id: NodeId) {
         #[cfg(feature = "shadow-dom")]
-        let shadow_root = self.doc.containing_shadow_root(node_id);
+        let shadow_root = self
+            .doc
+            .shadow_sheet_roots
+            .remove(&node_id)
+            .or_else(|| self.doc.containing_shadow_root(node_id));
         let node = &mut self.doc.nodes[node_id];
         let Some(element) = node.element_data_mut() else {
             return;
@@ -1878,6 +1882,9 @@ impl<'doc> DocumentMutator<'doc> {
             return;
         }
 
+        if !self.doc.document_sheet_nodes.remove(&node_id) {
+            return;
+        }
         let guard = self.doc.guard.read();
         self.doc.stylist.remove_stylesheet(stylesheet, &guard);
         self.doc
