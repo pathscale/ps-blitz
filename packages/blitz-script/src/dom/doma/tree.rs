@@ -319,7 +319,7 @@ fn query_selector(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
         .doc
         .borrow()
         .query_selector_in(id, &selector)
-        .map_err(|_| crate::dom::element::invalid_selector(&selector))?;
+        .map_err(|_| crate::dom::element::invalid_selector(&selector, context))?;
     Ok(node_or_null(&ctx, found, context))
 }
 
@@ -335,7 +335,7 @@ fn query_selector_all(
         .doc
         .borrow()
         .query_selector_all_in(id, &selector)
-        .map_err(|_| crate::dom::element::invalid_selector(&selector))?;
+        .map_err(|_| crate::dom::element::invalid_selector(&selector, context))?;
     let wrappers: Vec<JsValue> = ids
         .into_iter()
         .map(|id| node_wrapper(&ctx, id, context).into())

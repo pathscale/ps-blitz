@@ -50,17 +50,7 @@ struct SheetRef {
 }
 
 pub(crate) fn exception(name: &str, message: &str, context: &mut Context) -> JsError {
-    let error: JsError = JsNativeError::error()
-        .with_message(message.to_owned())
-        .into();
-    let value = match error.into_opaque(context) {
-        Ok(value) => value,
-        Err(error) => return error,
-    };
-    if let Some(object) = value.as_object() {
-        let _ = object.set(js_string!("name"), js_str(name), false, context);
-    }
-    JsError::from_opaque(value)
+    crate::dom_exception::error(name, message, context)
 }
 
 pub(crate) fn style_details(this: &JsValue) -> JsResult<(NodeId, Option<String>)> {

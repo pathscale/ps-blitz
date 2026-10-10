@@ -25,6 +25,16 @@ struct RangeRef {
 }
 
 #[derive(Trace, Finalize, JsData)]
+struct StaticRangeRef {
+    start: JsObject,
+    end: JsObject,
+    #[unsafe_ignore_trace]
+    start_offset: u32,
+    #[unsafe_ignore_trace]
+    end_offset: u32,
+}
+
+#[derive(Trace, Finalize, JsData)]
 struct SelectionRef {
     range: GcRefCell<Option<JsObject>>,
 }
@@ -181,7 +191,85 @@ fn construct(new_target: &JsValue, _: &[JsValue], context: &mut Context) -> JsRe
     .into())
 }
 
+fn static_member(init: &JsObject, name: &str, context: &mut Context) -> JsResult<JsValue> {
+    let value = init.get(boa_engine::JsString::from(name), context)?;
+    if value.is_undefined() {
+        return Err(JsNativeError::typ()
+            .with_message(format!("Missing StaticRange member {name}"))
+            .into());
+    }
+    Ok(value)
+}
+
+fn static_node(value: &JsValue) -> JsResult<JsObject> {
+    if node_id_of_value(value).is_none() && super::doma::attr::attr_object(value).is_none() {
+        return Err(JsNativeError::typ()
+            .with_message("StaticRange requires Node containers")
+            .into());
+    }
+    Ok(value.as_object().expect("validated Node"))
+}
+
+fn construct_static(
+    new_target: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    if !new_target
+        .as_object()
+        .is_some_and(|target| target.is_constructor())
+    {
+        return Err(JsNativeError::typ()
+            .with_message("StaticRange requires 'new'")
+            .into());
+    }
+    let init = args
+        .first()
+        .and_then(JsValue::as_object)
+        .ok_or_else(|| JsNativeError::typ().with_message("StaticRange requires a dictionary"))?;
+    let end_value = static_member(&init, "endContainer", context)?;
+    let end = static_node(&end_value)?;
+    let end_offset = static_member(&init, "endOffset", context)?.to_u32(context)?;
+    let start_value = static_member(&init, "startContainer", context)?;
+    let start = static_node(&start_value)?;
+    let start_offset = static_member(&init, "startOffset", context)?.to_u32(context)?;
+    if super::doma::attr::attr_object(&start_value).is_some()
+        || super::doma::attr::attr_object(&end_value).is_some()
+    {
+        return Err(error("InvalidNodeTypeError", context));
+    }
+    let proto = interfaces::construction_prototype(new_target, "StaticRange", context)?;
+    Ok(JsObject::from_proto_and_data(
+        Some(proto),
+        StaticRangeRef {
+            start,
+            end,
+            start_offset,
+            end_offset,
+        },
+    )
+    .into())
+}
+
 fn endpoint(this: &JsValue, end: bool, node: bool, context: &mut Context) -> JsResult<JsValue> {
+    if let Some(object) = this.as_object()
+        && let Some(data) = object.downcast_ref::<StaticRangeRef>()
+    {
+        return Ok(if node {
+            if end {
+                data.end.clone()
+            } else {
+                data.start.clone()
+            }
+            .into()
+        } else {
+            JsValue::from(if end {
+                data.end_offset
+            } else {
+                data.start_offset
+            })
+        });
+    }
     let ctx = dom_ctx(context)?;
     let bounds = range(this)?.bounds();
     if let Some(object) = this.as_object() {
@@ -212,6 +300,13 @@ fn end_offset(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<
 }
 
 fn collapsed(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
+    if let Some(object) = this.as_object()
+        && let Some(data) = object.downcast_ref::<StaticRangeRef>()
+    {
+        return Ok(JsValue::from(
+            JsObject::equals(&data.start, &data.end) && data.start_offset == data.end_offset,
+        ));
+    }
     Ok(range(this)?.bounds().collapsed().into())
 }
 
@@ -1053,17 +1148,41 @@ fn selection_delete(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsR
 }
 
 pub(crate) fn init(context: &mut Context) {
-    let proto = JsObject::with_object_proto(context.intrinsics());
+    let abstract_proto = JsObject::with_object_proto(context.intrinsics());
     for (name, getter) in [
         ("startContainer", start_container as super::NativeFnPtr),
         ("endContainer", end_container),
         ("startOffset", start_offset),
         ("endOffset", end_offset),
         ("collapsed", collapsed),
-        ("commonAncestorContainer", common_ancestor),
     ] {
-        define_accessor(&proto, name, Some(getter), None, context);
+        define_accessor(&abstract_proto, name, Some(getter), None, context);
     }
+    interfaces::register(
+        "AbstractRange",
+        None,
+        abstract_proto,
+        0,
+        NativeFunction::from_fn_ptr(interfaces::illegal),
+        context,
+    );
+    let static_proto = JsObject::with_object_proto(context.intrinsics());
+    interfaces::register(
+        "StaticRange",
+        Some("AbstractRange"),
+        static_proto,
+        1,
+        NativeFunction::from_fn_ptr(construct_static),
+        context,
+    );
+    let proto = JsObject::with_object_proto(context.intrinsics());
+    define_accessor(
+        &proto,
+        "commonAncestorContainer",
+        Some(common_ancestor),
+        None,
+        context,
+    );
     for (name, length, method) in [
         ("setStart", 2, set_start as super::NativeFnPtr),
         ("setEnd", 2, set_end),
@@ -1090,7 +1209,7 @@ pub(crate) fn init(context: &mut Context) {
     }
     interfaces::register(
         "Range",
-        None,
+        Some("AbstractRange"),
         proto.clone(),
         0,
         NativeFunction::from_fn_ptr(construct),

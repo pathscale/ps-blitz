@@ -205,11 +205,11 @@ fn set_domain(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResu
                 && current[..current.len() - requested.len()].ends_with('.')
                 && requested.contains('.')));
     if !allowed {
-        return Err(boa_engine::JsNativeError::error()
-            .with_message(format!(
-                "SecurityError: '{requested}' is not a suffix of '{current}'"
-            ))
-            .into());
+        return Err(crate::dom_exception::error(
+            "SecurityError",
+            &format!("'{requested}' is not a suffix of '{current}'"),
+            context,
+        ));
     }
     Ok(JsValue::undefined())
 }
@@ -373,7 +373,7 @@ fn query_selector(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
         .doc
         .borrow()
         .query_selector(&selector)
-        .map_err(|_| super::element::invalid_selector(&selector))?;
+        .map_err(|_| super::element::invalid_selector(&selector, context))?;
     Ok(node_or_null(&ctx, node_id, context))
 }
 
@@ -390,7 +390,7 @@ fn query_selector_all(
         .borrow()
         .query_selector_all(&selector)
         .map(|matches| matches.into_iter().collect())
-        .map_err(|_| super::element::invalid_selector(&selector))?;
+        .map_err(|_| super::element::invalid_selector(&selector, context))?;
     let wrappers: Vec<JsValue> = matches
         .into_iter()
         .map(|match_id| node_wrapper(&ctx, match_id, context).into())

@@ -42,10 +42,12 @@
 mod debug_control;
 mod document;
 mod dom;
+pub mod dom_exception;
 mod domc;
 mod event_handler;
 mod fetch;
 mod job_budget;
+pub mod media;
 mod module;
 mod raster;
 mod runtime;
