@@ -389,6 +389,8 @@ impl ScriptRuntime {
             )
             .build();
         register_global(&mut context, "performance", performance.into());
+        register_global_fn(&mut context, "__blitzViewportScroll", 0, viewport_scroll);
+        register_global_fn(&mut context, "__blitzScrollViewport", 2, scroll_viewport);
 
         // The switch the prelude's `MutationObserver` flips: the document
         // records changes only while an observer is registered.
@@ -1811,6 +1813,38 @@ static TIME_ORIGIN: LazyLock<Instant> = LazyLock::new(Instant::now);
 
 fn performance_now(_: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
     Ok(JsValue::new(TIME_ORIGIN.elapsed().as_secs_f64() * 1000.0))
+}
+
+fn viewport_scroll(_: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let scroll = ctx.doc.borrow().viewport_scroll();
+    Ok(boa_engine::object::builtins::JsArray::from_iter(
+        [JsValue::new(scroll.x), JsValue::new(scroll.y)],
+        context,
+    )
+    .into())
+}
+
+fn scroll_viewport(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let x = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .to_number(context)?;
+    let y = args
+        .get(1)
+        .unwrap_or(&JsValue::undefined())
+        .to_number(context)?;
+    let x = if x.is_finite() { x } else { 0.0 };
+    let y = if y.is_finite() { y } else { 0.0 };
+    ctx.flush_layout();
+    let mut document = ctx.doc.borrow_mut();
+    let current = document.viewport_scroll();
+    let changed = document.scroll_viewport_by_has_changed(current.x - x, current.y - y);
+    if changed {
+        document.shell_provider.request_redraw();
+    }
+    Ok(JsValue::new(changed))
 }
 
 fn random_u32(_: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
