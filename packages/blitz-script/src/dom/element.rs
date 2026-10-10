@@ -347,8 +347,7 @@ fn tag_name(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<Js
     let doc = ctx.doc.borrow();
     let name = doc
         .get_node(node_id)
-        .and_then(|node| node.element_data())
-        .map(|element| element.name.local.to_uppercase())
+        .and_then(|node| node.qualified_element_name())
         .unwrap_or_default();
     Ok(js_str(&name))
 }

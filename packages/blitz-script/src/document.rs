@@ -502,6 +502,12 @@ impl ScriptDocument {
 
             if let Some(element) = node.element_data() {
                 if element.name.local == blitz_dom::local_name!("script") {
+                    if node
+                        .flags
+                        .contains(blitz_dom::node::NodeFlags::IS_PARSER_INERT_SCRIPT)
+                    {
+                        continue;
+                    }
                     // Skip non-JavaScript script types (e.g. JSON data blocks).
                     let script_type = element
                         .attr(blitz_dom::local_name!("type"))

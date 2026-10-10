@@ -324,10 +324,9 @@ impl BaseDocument {
     /// Owner changes cost one walk of the adopted subtree. Ordinary insertion
     /// into the same document only performs the owner comparison.
     pub fn adopt_script_subtree(&mut self, root: NodeId, new_document: NodeId) {
-        if self
-            .get_node(root)
-            .is_none_or(|node| node.owner_document == Some(new_document))
-        {
+        if self.get_node(root).is_none_or(|node| {
+            matches!(node.data, NodeData::Document(_)) || node.owner_document == Some(new_document)
+        }) {
             return;
         }
         let mut stack = vec![root];
@@ -336,11 +335,27 @@ impl BaseDocument {
                 continue;
             };
             let old_document = node.owner_document;
+            let attribute_id = node
+                .element_data()
+                .and_then(|element| element.id.as_ref())
+                .map(ToString::to_string);
             node.owner_document = Some(new_document);
             stack.extend(node.children.iter().rev().copied());
+            if let Some(contents) = node
+                .element_data()
+                .and_then(|element| element.template_contents)
+            {
+                stack.push(contents);
+            }
             #[cfg(feature = "shadow-dom")]
             if let Some(shadow_root) = node.shadow_root_id() {
                 stack.push(shadow_root);
+            }
+            if let Some(attribute_id) = attribute_id {
+                if let Some(old_document) = old_document {
+                    self.remove_from_document_id_map(old_document, &attribute_id, id);
+                }
+                self.add_to_document_id_map(new_document, &attribute_id, id);
             }
             if matches!(
                 self.script_custom_element_state(id),

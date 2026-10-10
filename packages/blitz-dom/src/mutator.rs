@@ -203,7 +203,7 @@ impl DocumentMutator<'_> {
     /// it never lays out or paints. That is what makes it cheap: no second
     /// `BaseDocument`, no second style engine, no second arena.
     pub fn create_html_document(&mut self, title: &str) -> NodeId {
-        let doc_id = self.doc.create_node(NodeData::Document(Box::default()));
+        let doc_id = self.create_document("text/html");
 
         let html = self.create_element(html_tag("html"), Vec::new());
         let head = self.create_element(html_tag("head"), Vec::new());
@@ -222,6 +222,18 @@ impl DocumentMutator<'_> {
         self.append_children(doc_id, &[html]);
 
         doc_id
+    }
+
+    /// An empty, detached document in the existing arena.
+    pub fn create_document(&mut self, content_type: &'static str) -> NodeId {
+        let mut data = crate::node::DocumentData::default();
+        data.content_type = content_type;
+        self.doc.create_node(NodeData::Document(Box::new(data)))
+    }
+
+    /// Use the native adoption path, including custom element reactions.
+    pub fn adopt_node(&mut self, node_id: NodeId, document_id: NodeId) {
+        self.doc.adopt_script_subtree(node_id, document_id);
     }
 
     pub fn create_element(&mut self, name: QualName, attrs: Vec<Attribute>) -> NodeId {
@@ -267,6 +279,12 @@ impl DocumentMutator<'_> {
     // Node mutation methods
 
     pub fn set_node_text(&mut self, node_id: NodeId, value: &str) {
+        if matches!(
+            self.doc.nodes[node_id].markup.as_deref(),
+            Some(crate::node::MarkupNode::Doctype { .. })
+        ) {
+            return;
+        }
         if !self.doc.live_ranges.is_empty()
             && let Some(length) = self
                 .doc
@@ -530,15 +548,28 @@ impl DocumentMutator<'_> {
             self.doc.nodes[node_id].mark_ancestors_dirty();
         }
 
-        if name.ns == ns!() && name.local == local_name!("id") && node_is_in_document {
-            if let Some(old_id) = self.doc.nodes[node_id]
-                .element_data()
-                .map(|element| element.id.clone())
-            {
+        if name.ns == ns!() && name.local == local_name!("id") {
+            if let Some(owner) = self.doc.nodes[node_id].owner_document {
+                let old_id = self.doc.nodes[node_id]
+                    .element_data()
+                    .and_then(|element| element.id.as_ref())
+                    .map(ToString::to_string);
                 if let Some(old_id) = old_id {
-                    self.doc.remove_from_id_map(&old_id, node_id);
+                    self.doc
+                        .remove_from_document_id_map(owner, &old_id, node_id);
                 }
-                self.doc.add_to_id_map(value, node_id);
+                self.doc.add_to_document_id_map(owner, value, node_id);
+            }
+            if node_is_in_document {
+                if let Some(old_id) = self.doc.nodes[node_id]
+                    .element_data()
+                    .map(|element| element.id.clone())
+                {
+                    if let Some(old_id) = old_id {
+                        self.doc.remove_from_id_map(&old_id, node_id);
+                    }
+                    self.doc.add_to_id_map(value, node_id);
+                }
             }
         }
 
@@ -730,12 +761,18 @@ impl DocumentMutator<'_> {
             }
         }
 
-        if name.ns == ns!() && name.local == local_name!("id") && node_is_in_document {
+        if name.ns == ns!() && name.local == local_name!("id") {
             if let Some(old_id) = self.doc.nodes[node_id]
                 .element_data()
                 .and_then(|element| element.id.clone())
             {
-                self.doc.remove_from_id_map(&old_id, node_id);
+                if let Some(owner) = self.doc.nodes[node_id].owner_document {
+                    self.doc
+                        .remove_from_document_id_map(owner, &old_id, node_id);
+                }
+                if node_is_in_document {
+                    self.doc.remove_from_id_map(&old_id, node_id);
+                }
             }
         }
 
@@ -1741,6 +1778,9 @@ impl<'doc> DocumentMutator<'doc> {
         let Some(node_id) = node_id.into() else {
             return;
         };
+        if self.doc.nodes[node_id].owner_document != Some(self.doc.root_node().id) {
+            return;
+        }
 
         #[cfg(feature = "shadow-dom")]
         self.doc.note_shadow_tree_change(node_id);

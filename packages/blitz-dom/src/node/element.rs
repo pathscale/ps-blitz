@@ -173,6 +173,10 @@ pub struct ElementData {
 /// carries the same style/layout fields that were previously stored directly on
 /// [`Node`](super::Node).
 pub struct DocumentData {
+    pub content_type: &'static str,
+    /// Ownership index for detached documents. The live document retains its
+    /// existing ID map. Lookup verifies ancestry and current tree order.
+    pub ids: std::collections::HashMap<String, Vec<NodeId>>,
     pub stylo_element_data: StyloData,
     /// Selector flags deposited here by `apply_selector_flags` when a
     /// `for_parent()` flag is applied while matching the root `<html>` element,
@@ -225,6 +229,8 @@ pub struct DocumentData {
 impl std::fmt::Debug for DocumentData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DocumentData")
+            .field("content_type", &self.content_type)
+            .field("ids", &self.ids)
             .field("stylo_element_data", &self.stylo_element_data)
             .field("guard", &self.guard)
             .field("dirty_descendants", &self.dirty_descendants)
@@ -265,6 +271,8 @@ impl DocumentData {
 
     pub fn new() -> Self {
         Self {
+            content_type: "text/html",
+            ids: Default::default(),
             stylo_element_data: Default::default(),
             selector_flags: Cell::new(ElementSelectorFlags::empty()),
             guard: None,
@@ -297,6 +305,7 @@ impl Clone for DocumentData {
         // Runtime style/layout state is reset (the document node is not
         // meaningfully cloneable), matching `ElementData`'s clone semantics.
         Self {
+            content_type: self.content_type,
             guard: self.guard.clone(),
             ..Self::new()
         }
