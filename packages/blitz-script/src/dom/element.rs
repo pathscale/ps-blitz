@@ -97,7 +97,13 @@ pub(crate) fn init_element_proto(proto: &JsObject, context: &mut Context) {
         context,
     );
     define_accessor(proto, "children", Some(children), None, context);
-    define_accessor(proto, "content", Some(get_template_content), None, context);
+    define_accessor(
+        proto,
+        "content",
+        Some(get_template_content),
+        Some(set_content),
+        context,
+    );
     define_accessor(
         proto,
         "scrollLeft",
@@ -1327,6 +1333,27 @@ fn set_style(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResul
 
 // === innerHTML / outerHTML ===
 
+/// `meta.content = text` reflects to the attribute; `template.content` is
+/// read-only, so assigning it changes nothing.
+fn set_content(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    if is_html_element_named(&ctx, node_id, "meta") {
+        return attr_setter("content", this, args, context);
+    }
+    Ok(JsValue::undefined())
+}
+
+fn is_html_element_named(ctx: &DomCtx, node_id: NodeId, local: &str) -> bool {
+    ctx.doc
+        .borrow()
+        .get_node(node_id)
+        .and_then(|node| node.element_data())
+        .is_some_and(|element| {
+            element.name.ns == markup5ever::ns!(html) && &*element.name.local == local
+        })
+}
+
 fn get_template_content(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
@@ -1337,6 +1364,10 @@ fn get_template_content(this: &JsValue, _: &[JsValue], context: &mut Context) ->
         .and_then(|node| node.element_data())
         .and_then(|element| element.template_contents);
     let Some(contents) = contents else {
+        // HTMLMetaElement.content reflects its attribute.
+        if is_html_element_named(&ctx, node_id, "meta") {
+            return attr_getter("content", this, context);
+        }
         return Ok(JsValue::undefined());
     };
     let fragment = node_wrapper(&ctx, contents, context);
