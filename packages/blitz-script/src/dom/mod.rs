@@ -18,6 +18,7 @@ mod geometry;
 mod html_element;
 pub(crate) mod interfaces;
 pub(crate) mod node;
+mod parsing;
 pub(crate) mod range;
 #[cfg(feature = "shadow-dom")]
 pub(crate) mod shadow;
@@ -81,13 +82,14 @@ pub(crate) fn node_wrapper(ctx: &DomCtx, node_id: NodeId, context: &mut Context)
     // whose wrapper nothing else kept has been collected and a fresh one is
     // built below. Identity still holds for every wrapper something is actually
     // holding, which is the only case identity can be observed in a program.
-    if let Some(wrapper) = ctx
+    let cached = ctx
         .state
         .borrow()
         .node_wrappers
         .get(&node_id)
-        .and_then(WeakJsObject::upgrade)
-    {
+        .and_then(WeakJsObject::upgrade);
+    if let Some(wrapper) = cached {
+        pin_detached_document(ctx, node_id, &wrapper, context);
         return wrapper;
     }
 
@@ -95,17 +97,29 @@ pub(crate) fn node_wrapper(ctx: &DomCtx, node_id: NodeId, context: &mut Context)
     let proto = {
         let doc = ctx.doc.borrow();
         let state = ctx.state.borrow();
-        let data = doc.get_node(node_id).map(|node| &node.data);
+        let node = doc.get_node(node_id);
+        let data = node.map(|node| &node.data);
         let is_element = matches!(
             data,
             Some(NodeData::Element(_)) | Some(NodeData::AnonymousBlock(_))
         );
-        match custom_prototype {
-            // A defined custom element takes its class's prototype.
-            Some(custom) if is_element => custom,
-            #[cfg(feature = "shadow-dom")]
-            _ if matches!(data, Some(NodeData::ShadowRoot(_))) => shadow::root_proto(context),
-            _ => interfaces::node_prototype(data, state.protos(), context),
+        match node.and_then(|node| node.markup.as_deref()) {
+            Some(blitz_dom::node::MarkupNode::Doctype { .. }) => {
+                interfaces::prototype("DocumentType", context)
+            }
+            Some(blitz_dom::node::MarkupNode::ProcessingInstruction { .. }) => {
+                interfaces::prototype("ProcessingInstruction", context)
+            }
+            None => match custom_prototype {
+                // A defined custom element takes its class's prototype.
+                Some(custom) if is_element => custom,
+                #[cfg(feature = "shadow-dom")]
+                _ if matches!(data, Some(NodeData::ShadowRoot(_))) => shadow::root_proto(context),
+                _ if matches!(data, Some(NodeData::Document(data)) if data.content_type != "text/html") => {
+                    interfaces::prototype("XMLDocument", context)
+                }
+                _ => interfaces::node_prototype(data, state.protos(), context),
+            },
         }
     };
 
@@ -120,7 +134,40 @@ pub(crate) fn node_wrapper(ctx: &DomCtx, node_id: NodeId, context: &mut Context)
     if connected {
         state.connected_wrappers.insert(node_id, wrapper.clone());
     }
+    drop(state);
+    pin_detached_document(ctx, node_id, &wrapper, context);
     wrapper
+}
+
+/// Only wrappers touched by script participate in these traced links. A
+/// detached document and its node wrappers can be collected together.
+fn pin_detached_document(ctx: &DomCtx, node_id: NodeId, wrapper: &JsObject, context: &mut Context) {
+    const OWNER_KEY: &str = "__blitz_internal_owner_document__";
+    let owner = {
+        let doc = ctx.doc.borrow();
+        doc.get_node(node_id)
+            .and_then(|node| node.owner_document)
+            .filter(|owner| *owner != doc.root_node().id)
+    };
+    let previous = wrapper
+        .get(JsString::from(OWNER_KEY), context)
+        .ok()
+        .and_then(|value| value.as_object());
+    let previous_id = previous
+        .as_ref()
+        .and_then(|object| object.downcast_ref::<NodeRef>().map(|node| node.node_id));
+    let owned_key = format!("__blitz_internal_owned_node_{}", node_id.as_u64());
+    if previous_id != owner {
+        if let Some(previous) = previous {
+            let _ = previous.delete_property_or_throw(JsString::from(owned_key.as_str()), context);
+        }
+        define_value(wrapper, OWNER_KEY, JsValue::null(), context);
+    }
+    if let Some(owner) = owner {
+        let document = node_wrapper(ctx, owner, context);
+        define_value(wrapper, OWNER_KEY, document.clone().into(), context);
+        define_value(&document, &owned_key, wrapper.clone().into(), context);
+    }
 }
 
 /// Detach a node, and free it when script can no longer reach it.
@@ -594,4 +641,5 @@ pub(crate) fn init_protos(ctx: &DomCtx, context: &mut Context) {
     #[cfg(feature = "shadow-dom")]
     shadow::init(ctx, context);
     range::init(context);
+    parsing::install(ctx, context);
 }

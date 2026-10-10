@@ -1332,11 +1332,86 @@ impl BaseDocument {
         id
     }
 
+    pub fn add_to_document_id_map(&mut self, document_id: NodeId, id: &str, node_id: NodeId) {
+        if document_id == self.root_node_id || id.is_empty() {
+            return;
+        }
+        let Some(node) = self.get_node_mut(document_id) else {
+            return;
+        };
+        let NodeData::Document(data) = &mut node.data else {
+            return;
+        };
+        let candidates = data.ids.entry(id.to_owned()).or_default();
+        if !candidates.contains(&node_id) {
+            candidates.push(node_id);
+        }
+    }
+
+    pub fn remove_from_document_id_map(&mut self, document_id: NodeId, id: &str, node_id: NodeId) {
+        if document_id == self.root_node_id {
+            return;
+        }
+        let Some(node) = self.get_node_mut(document_id) else {
+            return;
+        };
+        let NodeData::Document(data) = &mut node.data else {
+            return;
+        };
+        if let Some(candidates) = data.ids.get_mut(id) {
+            candidates.retain(|candidate| *candidate != node_id);
+            if candidates.is_empty() {
+                data.ids.remove(id);
+            }
+        }
+    }
+
+    /// Indexed lookup scoped to one document. Parent child-list membership
+    /// excludes removed nodes, template contents, and shadow trees.
+    pub fn get_element_by_id_in(&self, document_id: NodeId, id: &str) -> Option<NodeId> {
+        if document_id == self.root_node_id {
+            return self.get_element_by_id(id);
+        }
+        if id.is_empty() {
+            return None;
+        }
+        let NodeData::Document(data) = &self.get_node(document_id)?.data else {
+            return None;
+        };
+        data.ids
+            .get(id)?
+            .iter()
+            .filter_map(|candidate| {
+                let mut current = *candidate;
+                let mut path = Vec::new();
+                while current != document_id {
+                    let node = self.get_node(current)?;
+                    let parent_id = node.parent?;
+                    let parent = self.get_node(parent_id)?;
+                    path.push(parent.index_of_child(current)?);
+                    current = parent_id;
+                }
+                path.reverse();
+                Some((path, *candidate))
+            })
+            .min_by(|left, right| left.0.cmp(&right.0))
+            .map(|(_, node_id)| node_id)
+    }
+
     /// Remove a node from the node tree, clearing any interaction state
     /// (hover/active/focus/mousedown/selection/drag/scrollbar) that references
     /// it so that stale NodeIds are never dereferenced after the slot is freed.
     pub(crate) fn remove_node_from_tree(&mut self, node_id: NodeId) -> Option<Node> {
         self.clear_interaction_state_for_removed_node(node_id);
+        let indexed = self.get_node(node_id).and_then(|node| {
+            Some((
+                node.owner_document?,
+                node.element_data()?.id.as_ref()?.to_string(),
+            ))
+        });
+        if let Some((document_id, id)) = indexed {
+            self.remove_from_document_id_map(document_id, &id, node_id);
+        }
         self.forget_script_custom_element(node_id);
         self.nodes.remove(node_id)
     }
@@ -1523,10 +1598,27 @@ impl BaseDocument {
             .element_data()
             .and_then(|element| element.template_contents);
         let owner_document = node.owner_document;
+        let markup = node.markup.clone();
+        let inert_script = node
+            .flags
+            .contains(crate::node::NodeFlags::IS_PARSER_INERT_SCRIPT);
 
         // Create new node
         let new_node_id = self.create_node(data);
         self.nodes[new_node_id].owner_document = owner_document;
+        self.nodes[new_node_id].markup = markup;
+        self.nodes[new_node_id]
+            .flags
+            .set(crate::node::NodeFlags::IS_PARSER_INERT_SCRIPT, inert_script);
+        if let Some(document_id) = owner_document {
+            let id = self.nodes[new_node_id]
+                .element_data()
+                .and_then(|element| element.id.as_ref())
+                .map(ToString::to_string);
+            if let Some(id) = id {
+                self.add_to_document_id_map(document_id, &id, new_node_id);
+            }
+        }
         if let Some(contents) = template_contents {
             let cloned_contents = self.deep_clone_node(contents);
             self.nodes[new_node_id]

@@ -200,7 +200,7 @@ impl<'a> TDocument for BlitzNode<'a> {
     }
 
     fn is_html_document(&self) -> bool {
-        true
+        Node::is_html_document(self)
     }
 
     fn quirks_mode(&self) -> QuirksMode {
@@ -279,7 +279,10 @@ impl<'a> TNode for BlitzNode<'a> {
     }
 
     fn owner_doc(&self) -> Self::ConcreteDocument {
-        // Walk up the (layout-)parent chain to the root Document node.
+        if let Some(owner) = self.owner_document {
+            return self.with(owner);
+        }
+        // Document nodes have no owner.
         let mut node = *self;
         while let Some(parent_id) = node.parent {
             node = node.with(parent_id);
@@ -399,7 +402,10 @@ impl selectors::Element for BlitzNode<'_> {
     }
 
     fn is_html_element_in_html_document(&self) -> bool {
-        true // self.has_namespace(ns!(html))
+        Node::is_html_document(self)
+            && self
+                .element_data()
+                .is_some_and(|element| element.name.ns == markup5ever::ns!(html))
     }
 
     fn has_local_name(&self, local_name: &LocalName) -> bool {

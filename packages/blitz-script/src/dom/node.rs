@@ -266,6 +266,15 @@ fn node_type(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<J
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
     let doc = ctx.doc.borrow();
+    if let Some(markup) = doc
+        .get_node(node_id)
+        .and_then(|node| node.markup.as_deref())
+    {
+        return Ok(JsValue::from(match markup {
+            blitz_dom::node::MarkupNode::ProcessingInstruction { .. } => 7,
+            blitz_dom::node::MarkupNode::Doctype { .. } => 10,
+        }));
+    }
     let node_type = match doc.get_node(node_id).map(|node| &node.data) {
         Some(NodeData::Document(_)) => 9,
         Some(NodeData::Element(_)) | Some(NodeData::AnonymousBlock(_)) => 1,
@@ -283,11 +292,21 @@ fn node_name(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<J
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
     let doc = ctx.doc.borrow();
+    if let Some(markup) = doc
+        .get_node(node_id)
+        .and_then(|node| node.markup.as_deref())
+    {
+        return Ok(js_str(match markup {
+            blitz_dom::node::MarkupNode::ProcessingInstruction { target } => target,
+            blitz_dom::node::MarkupNode::Doctype { name, .. } => name,
+        }));
+    }
     let name = match doc.get_node(node_id).map(|node| &node.data) {
         Some(NodeData::Document(_)) => "#document".to_string(),
-        Some(NodeData::Element(data)) | Some(NodeData::AnonymousBlock(data)) => {
-            data.name.local.to_uppercase()
-        }
+        Some(NodeData::Element(_)) | Some(NodeData::AnonymousBlock(_)) => doc
+            .get_node(node_id)
+            .and_then(|node| node.qualified_element_name())
+            .unwrap_or_default(),
         Some(NodeData::Text(_)) => "#text".to_string(),
         Some(NodeData::Comment { .. }) => "#comment".to_string(),
         Some(NodeData::ShadowRoot(_)) | Some(NodeData::DocumentFragment) => {
@@ -399,6 +418,13 @@ fn text_content(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResul
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
     let doc = ctx.doc.borrow();
+    if matches!(
+        doc.get_node(node_id)
+            .and_then(|node| node.markup.as_deref()),
+        Some(blitz_dom::node::MarkupNode::Doctype { .. })
+    ) {
+        return Ok(JsValue::null());
+    }
     let text = match doc.get_node(node_id).map(|node| &node.data) {
         Some(NodeData::Document(_)) => return Ok(JsValue::null()),
         Some(NodeData::Comment { contents }) => contents.clone(),
@@ -454,6 +480,13 @@ fn node_value(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
     let doc = ctx.doc.borrow();
+    if matches!(
+        doc.get_node(node_id)
+            .and_then(|node| node.markup.as_deref()),
+        Some(blitz_dom::node::MarkupNode::Doctype { .. })
+    ) {
+        return Ok(JsValue::null());
+    }
     match doc.get_node(node_id).map(|node| &node.data) {
         Some(NodeData::Text(data)) => Ok(js_str(&data.content)),
         // A comment is CharacterData, so `comment.data` and `comment.nodeValue`
@@ -853,6 +886,28 @@ pub(super) fn clone_node(
         }
     };
 
+    if !deep {
+        let mut doc = ctx.doc.borrow_mut();
+        let (owner, markup, inert) = {
+            let source = doc.get_node(node_id).expect("clone source missing");
+            (
+                source.owner_document,
+                source.markup.clone(),
+                source
+                    .flags
+                    .contains(blitz_dom::node::NodeFlags::IS_PARSER_INERT_SCRIPT),
+            )
+        };
+        if let Some(owner) = owner {
+            doc.mutate().adopt_node(new_node_id, owner);
+        }
+        let cloned = doc.get_node_mut(new_node_id).expect("clone missing");
+        cloned.markup = markup;
+        cloned
+            .flags
+            .set(blitz_dom::node::NodeFlags::IS_PARSER_INERT_SCRIPT, inert);
+    }
+    ctx.state.borrow_mut().detached_nodes.push(new_node_id);
     Ok(node_wrapper(&ctx, new_node_id, context).into())
 }
 

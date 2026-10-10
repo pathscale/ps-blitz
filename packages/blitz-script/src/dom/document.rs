@@ -131,38 +131,73 @@ fn document_element(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsR
 fn body(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let this_id = this_node_id(this)?;
-    let body_id = find_tag_within(&ctx, this_id, local_name!("body"));
+    let body_id = if ctx
+        .doc
+        .borrow()
+        .get_node(this_id)
+        .is_some_and(|node| node.is_html_document())
+    {
+        find_tag_within(&ctx, this_id, local_name!("body"))
+    } else {
+        None
+    };
     Ok(node_or_null(&ctx, body_id, context))
 }
 
 fn head(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let this_id = this_node_id(this)?;
-    let head_id = find_tag_within(&ctx, this_id, local_name!("head"));
+    let head_id = if ctx
+        .doc
+        .borrow()
+        .get_node(this_id)
+        .is_some_and(|node| node.is_html_document())
+    {
+        find_tag_within(&ctx, this_id, local_name!("head"))
+    } else {
+        None
+    };
     Ok(node_or_null(&ctx, head_id, context))
 }
 
 fn active_element(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
-    let _ = this_node_id(this)?;
-    let focus_id = ctx.doc.borrow().get_focussed_node_id();
+    let this_id = this_node_id(this)?;
+    let focus_id = if this_id == ctx.doc.borrow().root_node().id {
+        ctx.doc.borrow().get_focussed_node_id()
+    } else {
+        None
+    };
     Ok(node_or_null(&ctx, focus_id, context))
 }
 
 fn default_view(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let _ = this_node_id(this)?;
-    Ok(context.global_object().into())
+    let ctx = dom_ctx(context)?;
+    let this_id = this_node_id(this)?;
+    if this_id == ctx.doc.borrow().root_node().id {
+        Ok(context.global_object().into())
+    } else {
+        Ok(JsValue::null())
+    }
 }
 
 /// `document.location`: the window's `Location`, the same object.
 fn get_location(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let _ = this_node_id(this)?;
+    let ctx = dom_ctx(context)?;
+    let this_id = this_node_id(this)?;
+    if this_id != ctx.doc.borrow().root_node().id {
+        return Ok(JsValue::null());
+    }
     context.global_object().get(js_string!("location"), context)
 }
 
 /// `document.location = url` navigates, as `location.href = url` does.
 fn set_location(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let _ = this_node_id(this)?;
+    let ctx = dom_ctx(context)?;
+    let this_id = this_node_id(this)?;
+    if this_id != ctx.doc.borrow().root_node().id {
+        return Ok(JsValue::undefined());
+    }
     let location = context
         .global_object()
         .get(js_string!("location"), context)?;
@@ -219,51 +254,97 @@ fn set_domain(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResu
 fn create_element(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let _t = crate::script_stats::Timed::new(&ctx, "dom:createElement");
-    let _ = this_node_id(this)?;
-    let tag = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?
-        .to_ascii_lowercase();
+    let document_id = this_node_id(this)?;
+    let html = ctx
+        .doc
+        .borrow()
+        .get_node(document_id)
+        .is_some_and(|node| node.is_html_document());
+    let tag = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
+    let tag = if html { tag.to_ascii_lowercase() } else { tag };
     let node_id = {
         let mut doc = ctx.doc.borrow_mut();
-        doc.mutate().create_element(qual_name(&tag), Vec::new())
+        let mut mutr = doc.mutate();
+        let name = if html {
+            qual_name(&tag)
+        } else {
+            qual_name_ns(&tag, "")
+        };
+        let id = mutr.create_element(name, Vec::new());
+        mutr.adopt_node(id, document_id);
+        id
     };
     Ok(node_wrapper(&ctx, node_id, context).into())
 }
 
 fn create_element_ns(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
-    let _ = this_node_id(this)?;
-    let ns = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
+    let document_id = this_node_id(this)?;
+    let ns_value = &args.first().cloned().unwrap_or_default();
+    let ns = if ns_value.is_null_or_undefined() {
+        String::new()
+    } else {
+        to_rust_string(ns_value, context)?
+    };
     let tag = to_rust_string(args.get(1).unwrap_or(&JsValue::undefined()), context)?;
+    let (prefix, local) = match tag.split_once(':') {
+        Some((prefix, local)) => (Some(markup5ever::Prefix::from(prefix)), local),
+        None => (None, tag.as_str()),
+    };
     let node_id = {
         let mut doc = ctx.doc.borrow_mut();
-        doc.mutate()
-            .create_element(qual_name_ns(&tag, &ns), Vec::new())
+        let mut mutr = doc.mutate();
+        let name = blitz_dom::QualName::new(
+            prefix,
+            blitz_dom::Namespace::from(ns.as_str()),
+            blitz_dom::LocalName::from(local),
+        );
+        let id = mutr.create_element(name, Vec::new());
+        mutr.adopt_node(id, document_id);
+        id
     };
     Ok(node_wrapper(&ctx, node_id, context).into())
 }
 
 /// Clone a node for insertion into this document.
 ///
-/// Every script-visible node currently belongs to the document represented by
-/// this Boa realm, so importing is the same structural operation as
-/// `cloneNode`. Keeping it on `Document` still matters: Solid deliberately
-/// takes this path for custom-element template roots such as Chuzz's
-/// `<web-view>` page host.
+/// Import clones first, then uses native adoption so ownership, ID indexes,
+/// and custom element reactions remain consistent across document boundaries.
 fn import_node(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let _ = this_node_id(this)?;
+    let ctx = dom_ctx(context)?;
+    let document_id = this_node_id(this)?;
     let node = args.first().cloned().unwrap_or_else(JsValue::undefined);
+    let source_id = this_node_id(&node)?;
+    if ctx.doc.borrow().get_node(source_id).is_some_and(|node| {
+        matches!(
+            node.data,
+            blitz_dom::node::NodeData::Document(_) | blitz_dom::node::NodeData::ShadowRoot(_)
+        )
+    }) {
+        return Err(super::doma::dom_error(
+            "NotSupportedError",
+            "Cannot import this node",
+            context,
+        ));
+    }
     let deep = args.get(1).cloned().unwrap_or_else(JsValue::undefined);
-    super::node::clone_node(&node, &[deep], context)
+    let cloned = super::node::clone_node(&node, &[deep], context)?;
+    let id = this_node_id(&cloned)?;
+    ctx.doc.borrow_mut().mutate().adopt_node(id, document_id);
+    Ok(node_wrapper(&ctx, id, context).into())
 }
 
 fn create_text_node(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let _t = crate::script_stats::Timed::new(&ctx, "dom:createTextNode");
-    let _ = this_node_id(this)?;
+    let document_id = this_node_id(this)?;
     let text = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
     let node_id = {
         let mut doc = ctx.doc.borrow_mut();
-        doc.mutate().create_text_node(&text)
+        let mut mutr = doc.mutate();
+        let id = mutr.create_text_node(&text);
+        mutr.adopt_node(id, document_id);
+        id
     };
     Ok(node_wrapper(&ctx, node_id, context).into())
 }
@@ -319,11 +400,14 @@ fn text_constructor(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
 
 fn create_comment(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
-    let _ = this_node_id(this)?;
+    let document_id = this_node_id(this)?;
     let text = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
     let node_id = {
         let mut doc = ctx.doc.borrow_mut();
-        doc.mutate().create_comment_node(&text)
+        let mut mutr = doc.mutate();
+        let id = mutr.create_comment_node(&text);
+        mutr.adopt_node(id, document_id);
+        id
     };
     Ok(node_wrapper(&ctx, node_id, context).into())
 }
@@ -347,10 +431,13 @@ fn create_document_fragment(
     context: &mut Context,
 ) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
-    let _ = this_node_id(this)?;
+    let document_id = this_node_id(this)?;
     let node_id = {
         let mut doc = ctx.doc.borrow_mut();
-        doc.mutate().create_document_fragment()
+        let mut mutr = doc.mutate();
+        let id = mutr.create_document_fragment();
+        mutr.adopt_node(id, document_id);
+        id
     };
     Ok(node_wrapper(&ctx, node_id, context).into())
 }
@@ -359,20 +446,20 @@ fn create_document_fragment(
 
 fn get_element_by_id(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
-    let _ = this_node_id(this)?;
+    let document_id = this_node_id(this)?;
     let id = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
-    let node_id = ctx.doc.borrow().get_element_by_id(&id);
+    let node_id = ctx.doc.borrow().get_element_by_id_in(document_id, &id);
     Ok(node_or_null(&ctx, node_id, context))
 }
 
 fn query_selector(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
-    let _ = this_node_id(this)?;
+    let document_id = this_node_id(this)?;
     let selector = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
     let node_id = ctx
         .doc
         .borrow()
-        .query_selector(&selector)
+        .query_selector_in(document_id, &selector)
         .map_err(|_| super::element::invalid_selector(&selector, context))?;
     Ok(node_or_null(&ctx, node_id, context))
 }
@@ -383,12 +470,12 @@ fn query_selector_all(
     context: &mut Context,
 ) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
-    let _ = this_node_id(this)?;
+    let document_id = this_node_id(this)?;
     let selector = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
     let matches: Vec<NodeId> = ctx
         .doc
         .borrow()
-        .query_selector_all(&selector)
+        .query_selector_all_in(document_id, &selector)
         .map(|matches| matches.into_iter().collect())
         .map_err(|_| super::element::invalid_selector(&selector, context))?;
     let wrappers: Vec<JsValue> = matches
@@ -458,5 +545,6 @@ fn create_html_document(
         let mut doc = ctx.doc.borrow_mut();
         doc.mutate().create_html_document(&title)
     };
+    ctx.state.borrow_mut().detached_nodes.push(node_id);
     Ok(node_wrapper(&ctx, node_id, context).into())
 }

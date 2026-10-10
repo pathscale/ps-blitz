@@ -1045,9 +1045,18 @@ fn create_element(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
     let ctx = dom_ctx(context)?;
     let _t = crate::script_stats::Timed::new(&ctx, "dom:createElement");
     let owner = this_node_id(this)?;
-    let tag = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?
-        .to_ascii_lowercase();
-    created_element(&ctx, owner, qual_name(&tag), args.get(1), context)
+    let html = ctx
+        .doc
+        .borrow()
+        .get_node(owner)
+        .is_some_and(|node| node.is_html_document());
+    let tag = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
+    let name = if html {
+        qual_name(&tag.to_ascii_lowercase())
+    } else {
+        qual_name_ns(&tag, "")
+    };
+    created_element(&ctx, owner, name, args.get(1), context)
 }
 
 fn create_element_ns(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
@@ -1060,13 +1069,16 @@ fn create_element_ns(this: &JsValue, args: &[JsValue], context: &mut Context) ->
         to_rust_string(namespace, context)?
     };
     let tag = to_rust_string(args.get(1).unwrap_or(&JsValue::undefined()), context)?;
-    created_element(
-        &ctx,
-        owner,
-        qual_name_ns(&tag, &namespace),
-        args.get(2),
-        context,
-    )
+    let (prefix, local) = match tag.split_once(':') {
+        Some((prefix, local)) => (Some(markup5ever::Prefix::from(prefix)), local),
+        None => (None, tag.as_str()),
+    };
+    let name = blitz_dom::QualName::new(
+        prefix,
+        blitz_dom::Namespace::from(namespace.as_str()),
+        blitz_dom::LocalName::from(local),
+    );
+    created_element(&ctx, owner, name, args.get(2), context)
 }
 
 fn create_text(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {

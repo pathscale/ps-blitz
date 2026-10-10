@@ -65,6 +65,8 @@ bitflags! {
         const IS_TABLE_ROOT = 0b00000010;
         /// Whether the node is "in the document" (~= has a parent and isn't a template node)
         const IS_IN_DOCUMENT = 0b00000100;
+        /// Parser-created scripts remain inert after cloning or adoption.
+        const IS_PARSER_INERT_SCRIPT = 0b00001000;
     }
 }
 
@@ -108,6 +110,8 @@ pub struct Node {
     /// The owning document, including when this node is detached.
     /// Document nodes themselves have no owner.
     pub owner_document: Option<NodeId>,
+    /// Non-rendering document syntax, stored independently of layout data.
+    pub markup: Option<Arc<MarkupNode>>,
     /// Script custom element candidates in this shadow-including subtree.
     pub custom_element_subtree_count: usize,
     // What are our children?
@@ -379,6 +383,7 @@ impl Node {
             parent: None,
             child_index_hint: Cell::new(0),
             owner_document: None,
+            markup: None,
             custom_element_subtree_count: 0,
             children: ThinVec::new(),
             layout_parent: Cell::new(None),
@@ -966,6 +971,19 @@ impl ShadowRootData {
     }
 }
 
+/// Document syntax that generates no layout box.
+#[derive(Debug, PartialEq, Eq)]
+pub enum MarkupNode {
+    ProcessingInstruction {
+        target: String,
+    },
+    Doctype {
+        name: String,
+        public_id: String,
+        system_id: String,
+    },
+}
+
 /// The different kinds of nodes in the DOM.
 #[derive(Debug, Clone)]
 pub enum NodeData {
@@ -1104,6 +1122,32 @@ impl TextNodeData {
 impl Node {
     pub fn tree(&self) -> &crate::NodeTree {
         unsafe { &*self.tree }
+    }
+
+    pub fn is_html_document(&self) -> bool {
+        let document = match &self.data {
+            NodeData::Document(data) => return data.content_type == "text/html",
+            _ => self.owner_document.and_then(|id| self.tree().get(id)),
+        };
+        match document.map(|node| &node.data) {
+            Some(NodeData::Document(data)) => data.content_type == "text/html",
+            _ => true,
+        }
+    }
+
+    pub fn qualified_element_name(&self) -> Option<String> {
+        let element = self.element_data()?;
+        let name = match &element.name.prefix {
+            Some(prefix) => format!("{prefix}:{}", element.name.local),
+            None => element.name.local.to_string(),
+        };
+        Some(
+            if self.is_html_document() && element.name.ns == markup5ever::ns!(html) {
+                name.to_ascii_uppercase()
+            } else {
+                name
+            },
+        )
     }
 
     #[track_caller]

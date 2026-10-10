@@ -5,8 +5,9 @@ use html5ever::tokenizer::TokenizerOpts;
 use html5ever::tree_builder::TreeBuilderOpts;
 use std::borrow::Cow;
 use std::cell::{Cell, Ref, RefCell, RefMut};
+use std::sync::Arc;
 
-use blitz_dom::node::Attribute;
+use blitz_dom::node::{Attribute, MarkupNode, NodeFlags};
 use blitz_dom::{DocumentMutator, HtmlParserProvider, NodeId};
 use html5ever::{
     QualName,
@@ -59,6 +60,7 @@ pub struct DocumentHtmlParser<'m, 'doc> {
     /// The document's quirks mode.
     pub quirks_mode: Cell<QuirksMode>,
     pub is_xml: bool,
+    document_id: Option<NodeId>,
 }
 
 impl<'m, 'doc> DocumentHtmlParser<'m, 'doc> {
@@ -66,6 +68,12 @@ impl<'m, 'doc> DocumentHtmlParser<'m, 'doc> {
     /// Get a mutable borrow of the DocumentMutator
     fn mutr(&self) -> RefMut<'_, &'m mut DocumentMutator<'doc>> {
         self.document_mutator.borrow_mut()
+    }
+
+    fn adopt_created(&self, node_id: NodeId) {
+        if let Some(document_id) = self.document_id {
+            self.mutr().adopt_node(node_id, document_id);
+        }
     }
 }
 
@@ -76,6 +84,88 @@ impl<'m, 'doc> DocumentHtmlParser<'m, 'doc> {
             errors: RefCell::new(Vec::new()),
             quirks_mode: Cell::new(QuirksMode::NoQuirks),
             is_xml: false,
+            document_id: None,
+        }
+    }
+
+    /// Parse into a detached document. The caller's MIME type selects the
+    /// parser independently of declarations in the source.
+    pub fn parse_inert_into_mutator(
+        mutr: &mut DocumentMutator<'_>,
+        document_id: NodeId,
+        source: &str,
+        is_xml: bool,
+    ) -> Vec<Cow<'static, str>> {
+        let mut sink = DocumentHtmlParser::new(mutr);
+        sink.document_id = Some(document_id);
+        sink.is_xml = is_xml;
+        if is_xml {
+            let errors = xml5ever::driver::parse_document(sink, Default::default()).one(source);
+            Self::repair_xml_prolog(mutr, document_id, source);
+            errors
+        } else {
+            let opts = ParseOpts {
+                tokenizer: TokenizerOpts::default(),
+                tree_builder: TreeBuilderOpts {
+                    exact_errors: false,
+                    scripting_enabled: false,
+                    iframe_srcdoc: false,
+                    drop_doctype: false,
+                    quirks_mode: QuirksMode::NoQuirks,
+                },
+            };
+            html5ever::parse_document(sink, opts).one(source)
+        }
+    }
+
+    /// Undo two xml5ever tokenizer habits that XML documents must not show:
+    /// the XML declaration surfaces as a `<?xml ...?>` processing instruction,
+    /// and DOCTYPE names are ASCII-lowercased (HTML's rule, not XML's). The
+    /// declaration is dropped and the name restored from the source.
+    fn repair_xml_prolog(mutr: &mut DocumentMutator<'_>, document_id: NodeId, source: &str) {
+        let children: Vec<NodeId> = mutr
+            .doc
+            .get_node(document_id)
+            .map(|node| node.children.to_vec())
+            .unwrap_or_default();
+        let name = source.find("<!DOCTYPE").map(|start| {
+            source[start + "<!DOCTYPE".len()..]
+                .trim_start()
+                .split(|c: char| c.is_whitespace() || c == '[' || c == '>')
+                .next()
+                .unwrap_or_default()
+                .to_owned()
+        });
+        for child in children {
+            let markup = mutr
+                .doc
+                .get_node(child)
+                .and_then(|node| node.markup.clone());
+            match markup.as_deref() {
+                Some(MarkupNode::ProcessingInstruction { target }) if target == "xml" => {
+                    mutr.remove_node(child);
+                }
+                Some(MarkupNode::Doctype {
+                    name: parsed,
+                    public_id,
+                    system_id,
+                }) => {
+                    if let Some(original) = &name
+                        && original.eq_ignore_ascii_case(parsed)
+                        && original != parsed
+                    {
+                        let repaired = MarkupNode::Doctype {
+                            name: original.clone(),
+                            public_id: public_id.clone(),
+                            system_id: system_id.clone(),
+                        };
+                        if let Some(node) = mutr.doc.get_node_mut(child) {
+                            node.markup = Some(Arc::new(repaired));
+                        }
+                    }
+                }
+                _ => {}
+            }
         }
     }
 
@@ -169,7 +259,7 @@ impl<'m, 'doc> DocumentHtmlParser<'m, 'doc> {
 }
 
 impl<'m, 'doc> TreeSink for DocumentHtmlParser<'m, 'doc> {
-    type Output = ();
+    type Output = Vec<Cow<'static, str>>;
 
     // we use the ID of the nodes in the tree as the handle
     type Handle = NodeId;
@@ -184,6 +274,7 @@ impl<'m, 'doc> TreeSink for DocumentHtmlParser<'m, 'doc> {
         for error in self.errors.borrow().iter() {
             tracing::error!("{error}");
         }
+        self.errors.into_inner()
     }
 
     fn parse_error(&self, msg: Cow<'static, str>) {
@@ -191,7 +282,8 @@ impl<'m, 'doc> TreeSink for DocumentHtmlParser<'m, 'doc> {
     }
 
     fn get_document(&self) -> Self::Handle {
-        self.document_mutator.borrow().doc.root_node().id
+        self.document_id
+            .unwrap_or_else(|| self.document_mutator.borrow().doc.root_node().id)
     }
 
     fn elem_name<'a>(&'a self, target: &'a Self::Handle) -> Self::ElemName<'a> {
@@ -207,16 +299,41 @@ impl<'m, 'doc> TreeSink for DocumentHtmlParser<'m, 'doc> {
         attrs: Vec<html5ever::Attribute>,
         _flags: ElementFlags,
     ) -> Self::Handle {
+        let inert_script = self.document_id.is_some() && name.local.as_ref() == "script";
         let attrs = attrs.into_iter().map(html5ever_to_blitz_attr).collect();
-        self.mutr().create_element(name, attrs)
+        let id = self.mutr().create_element(name, attrs);
+        self.adopt_created(id);
+        if inert_script {
+            self.mutr()
+                .doc
+                .get_node_mut(id)
+                .expect("new parser element missing")
+                .flags
+                .insert(NodeFlags::IS_PARSER_INERT_SCRIPT);
+        }
+        id
     }
 
     fn create_comment(&self, text: StrTendril) -> Self::Handle {
-        self.mutr().create_comment_node(&text)
+        let id = self.mutr().create_comment_node(&text);
+        self.adopt_created(id);
+        id
     }
 
-    fn create_pi(&self, _target: StrTendril, _data: StrTendril) -> Self::Handle {
-        self.mutr().create_comment_node("")
+    fn create_pi(&self, target: StrTendril, data: StrTendril) -> Self::Handle {
+        if self.document_id.is_none() {
+            return self.mutr().create_comment_node("");
+        }
+        let id = self.mutr().create_comment_node(&data);
+        self.adopt_created(id);
+        self.mutr()
+            .doc
+            .get_node_mut(id)
+            .expect("new processing instruction missing")
+            .markup = Some(Arc::new(MarkupNode::ProcessingInstruction {
+            target: target.to_string(),
+        }));
+        id
     }
 
     fn append(&self, parent_id: &Self::Handle, child: NodeOrText<Self::Handle>) {
@@ -233,6 +350,7 @@ impl<'m, 'doc> TreeSink for DocumentHtmlParser<'m, 'doc> {
                 };
                 if !has_appended {
                     let new_child_id = self.mutr().create_text_node(&text);
+                    self.adopt_created(new_child_id);
                     self.mutr().append_children(*parent_id, &[new_child_id]);
                 }
             }
@@ -255,6 +373,7 @@ impl<'m, 'doc> TreeSink for DocumentHtmlParser<'m, 'doc> {
                 };
                 if !has_appended {
                     let new_child_id = self.mutr().create_text_node(&text);
+                    self.adopt_created(new_child_id);
                     self.mutr()
                         .insert_nodes_before(*sibling_id, &[new_child_id]);
                 }
@@ -277,11 +396,26 @@ impl<'m, 'doc> TreeSink for DocumentHtmlParser<'m, 'doc> {
 
     fn append_doctype_to_document(
         &self,
-        _name: StrTendril,
-        _public_id: StrTendril,
-        _system_id: StrTendril,
+        name: StrTendril,
+        public_id: StrTendril,
+        system_id: StrTendril,
     ) {
-        // Ignore. We don't care about the DOCTYPE for now.
+        let Some(document_id) = self.document_id else {
+            // Preserve the live-document parser's doctype policy.
+            return;
+        };
+        let mut mutr = self.mutr();
+        let id = mutr.create_comment_node("");
+        mutr.adopt_node(id, document_id);
+        mutr.doc
+            .get_node_mut(id)
+            .expect("new doctype missing")
+            .markup = Some(Arc::new(MarkupNode::Doctype {
+            name: name.to_string(),
+            public_id: public_id.to_string(),
+            system_id: system_id.to_string(),
+        }));
+        mutr.append_children(document_id, &[id]);
     }
 
     fn get_template_contents(&self, target: &Self::Handle) -> Self::Handle {
@@ -330,4 +464,3 @@ fn parses_some_html() {
 
     // Now our tree should have some nodes in it
 }
-

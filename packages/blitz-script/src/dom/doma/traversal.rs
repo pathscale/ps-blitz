@@ -373,13 +373,18 @@ fn accept(object: &JsObject, node: NodeId, ctx: &DomCtx, context: &mut Context) 
     }
     let bit = {
         let doc = ctx.doc.borrow();
-        match doc.get_node(node).map(|node| &node.data) {
-            Some(NodeData::Element(_)) | Some(NodeData::AnonymousBlock(_)) => 0x1,
-            Some(NodeData::Text(_)) => 0x4,
-            Some(NodeData::Comment { .. }) => 0x80,
-            Some(NodeData::Document(_)) => 0x100,
-            Some(NodeData::DocumentFragment) | Some(NodeData::ShadowRoot(_)) => 0x400,
-            None => 0,
+        let native = doc.get_node(node);
+        match native.and_then(|node| node.markup.as_deref()) {
+            Some(blitz_dom::node::MarkupNode::ProcessingInstruction { .. }) => 0x40,
+            Some(blitz_dom::node::MarkupNode::Doctype { .. }) => 0x200,
+            None => match native.map(|node| &node.data) {
+                Some(NodeData::Element(_)) | Some(NodeData::AnonymousBlock(_)) => 0x1,
+                Some(NodeData::Text(_)) => 0x4,
+                Some(NodeData::Comment { .. }) => 0x80,
+                Some(NodeData::Document(_)) => 0x100,
+                Some(NodeData::DocumentFragment) | Some(NodeData::ShadowRoot(_)) => 0x400,
+                None => 0,
+            },
         }
     };
     if mask & bit == 0 {
