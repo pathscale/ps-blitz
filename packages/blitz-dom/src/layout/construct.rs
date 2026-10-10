@@ -282,6 +282,33 @@ fn serialize_inline_svg(doc: &BaseDocument, svg_node_id: NodeId) -> String {
         .primary_styles()
         .map(|style| crate::util::absolute_color_to_svg_css(&style.clone_color()))
         .unwrap_or_else(|| "black".to_owned());
+
+    // usvg only sees the markup, so fill and stroke that the root inherits from
+    // CSS (an icon host's `fill: currentColor`, say) would be lost and paint
+    // black. Write the root's computed values as presentation attributes so
+    // its descendants inherit them; the root's own attributes still win.
+    if let Some(style) = doc.nodes[svg_node_id].primary_styles()
+        && let Some(root_open_end) = outer_html.find('>')
+    {
+        let color = style.clone_color();
+        let paint = |paint: &style::values::computed::SVGPaint| match &paint.kind {
+            style::values::generics::svg::SVGPaintKind::None => Some("none".to_owned()),
+            style::values::generics::svg::SVGPaintKind::Color(value) => Some(
+                crate::util::absolute_color_to_svg_css(&value.resolve_to_absolute(&color)),
+            ),
+            _ => None,
+        };
+        let svg = style.get_inherited_svg();
+        let mut inherited = String::new();
+        for (name, value) in [("fill", paint(&svg.fill)), ("stroke", paint(&svg.stroke))] {
+            if let Some(value) = value
+                && !outer_html[..root_open_end].contains(&format!(" {name}=\""))
+            {
+                inherited.push_str(&format!(" {name}=\"{value}\""));
+            }
+        }
+        outer_html.insert_str("<svg".len(), &inherited);
+    }
     let mut pending = VecDeque::new();
     let mut imported = HashSet::new();
     let mut definitions = String::new();
