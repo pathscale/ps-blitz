@@ -12,7 +12,7 @@ mod select;
 mod stylo_data;
 mod text;
 
-pub use attributes::{AttrAtom, Attribute, Attributes};
+pub use attributes::{AttrAtom, Attribute, AttributeNode, Attributes};
 #[cfg(feature = "shadow-dom")]
 pub use custom_element::{
     CustomElement, CustomElementCtx, CustomElementData, CustomElementDefinition,
@@ -33,3 +33,4 @@ pub use node::*;
 pub use scrollbar::{ScrollbarColor, ScrollbarRef, ScrollbarWidth};
 pub use select::SelectData;
 pub use text::{GeneratedTextInputEvent, TextBrush, TextInputData, TextLayout};
+

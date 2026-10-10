@@ -225,8 +225,12 @@ impl DocumentMutator<'_> {
     }
 
     pub fn create_element(&mut self, name: QualName, attrs: Vec<Attribute>) -> NodeId {
+        let is_template = name.ns == ns!(html) && name.local == local_name!("template");
         let mut data = ElementData::new(name, attrs);
         data.flush_style_attribute(self.doc.guard(), &self.doc.url.url_extra_data());
+        if is_template {
+            data.template_contents = Some(self.create_document_fragment());
+        }
 
         let id = self.doc.create_node(NodeData::Element(Box::new(data)));
         let node = self.doc.get_node_mut(id).unwrap();
@@ -242,6 +246,22 @@ impl DocumentMutator<'_> {
 
     pub fn deep_clone_node(&mut self, node_id: NodeId) -> NodeId {
         self.doc.deep_clone_node(node_id)
+    }
+
+    /// The independently owned contents fragment of an HTML template.
+    pub fn template_contents(&mut self, node_id: NodeId) -> NodeId {
+        if let Some(contents) = self.doc.nodes[node_id]
+            .element_data()
+            .and_then(|element| element.template_contents)
+        {
+            return contents;
+        }
+        let contents = self.create_document_fragment();
+        self.doc.nodes[node_id]
+            .element_data_mut()
+            .expect("template contents require an element")
+            .template_contents = Some(contents);
+        contents
     }
 
     // Node mutation methods
@@ -442,7 +462,7 @@ impl DocumentMutator<'_> {
             self.doc.nodes[node_id].mark_ancestors_dirty();
         }
 
-        if name.local == local_name!("id") && node_is_in_document {
+        if name.ns == ns!() && name.local == local_name!("id") && node_is_in_document {
             if let Some(old_id) = self.doc.nodes[node_id]
                 .element_data()
                 .map(|element| element.id.clone())
@@ -488,6 +508,9 @@ impl DocumentMutator<'_> {
         }
 
         element.attrs.set(name.clone(), value);
+        if name.ns != ns!() {
+            return;
+        }
 
         // Focusability is cached on the element and comes from these
         // attributes, so it has to follow a change to one of them: a widget
@@ -633,7 +656,7 @@ impl DocumentMutator<'_> {
             }
         }
 
-        if name.local == local_name!("id") && node_is_in_document {
+        if name.ns == ns!() && name.local == local_name!("id") && node_is_in_document {
             if let Some(old_id) = self.doc.nodes[node_id]
                 .element_data()
                 .and_then(|element| element.id.clone())
@@ -672,6 +695,9 @@ impl DocumentMutator<'_> {
                 .push((node_id, name.clone(), old_value, None));
         }
 
+        if name.ns != ns!() {
+            return;
+        }
         if name.local == local_name!("id") {
             element.id = None;
         }
@@ -1376,7 +1402,11 @@ impl<'doc> DocumentMutator<'doc> {
     }
 
     pub fn set_inner_html(&mut self, node_id: NodeId, html: &str) {
-        self.remove_and_drop_all_children(node_id);
+        let target = self.doc.nodes[node_id]
+            .element_data()
+            .and_then(|element| element.template_contents)
+            .unwrap_or(node_id);
+        self.remove_and_drop_all_children(target);
         self.doc
             .html_parser_provider
             .clone()

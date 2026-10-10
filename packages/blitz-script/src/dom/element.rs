@@ -88,7 +88,13 @@ pub(crate) fn init_element_proto(proto: &JsObject, context: &mut Context) {
         Some(set_inner_html),
         context,
     );
-    define_accessor(proto, "outerHTML", Some(get_outer_html), None, context);
+    define_accessor(
+        proto,
+        "outerHTML",
+        Some(get_outer_html),
+        Some(super::doma::tree::set_outer_html),
+        context,
+    );
     define_accessor(proto, "children", Some(children), None, context);
     define_accessor(proto, "content", Some(get_template_content), None, context);
     define_accessor(
@@ -149,6 +155,21 @@ pub(crate) fn init_element_proto(proto: &JsObject, context: &mut Context) {
     define_method(proto, "querySelector", 1, query_selector, context);
     define_method(proto, "querySelectorAll", 1, query_selector_all, context);
     define_method(proto, "matches", 1, matches_selector, context);
+    define_method(proto, "webkitMatchesSelector", 1, matches_selector, context);
+    define_method(
+        proto,
+        "insertAdjacentElement",
+        2,
+        super::doma::tree::insert_adjacent_element,
+        context,
+    );
+    define_method(
+        proto,
+        "insertAdjacentText",
+        2,
+        super::doma::tree::insert_adjacent_text,
+        context,
+    );
     define_method(proto, "closest", 1, closest, context);
     define_method(proto, "setPointerCapture", 1, set_pointer_capture, context);
     define_method(
@@ -1286,21 +1307,27 @@ fn get_style(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<J
 fn get_template_content(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
-    let is_template = ctx
+    let contents = ctx
         .doc
         .borrow()
         .get_node(node_id)
         .and_then(|node| node.element_data())
-        .is_some_and(|element| element.name.local == markup5ever::local_name!("template"));
-
-    // Blitz currently stores parsed template children on the template node
-    // itself. Expose that node as the content container until blitz-dom grows a
-    // distinct DocumentFragment node type.
-    Ok(if is_template {
-        this.clone()
-    } else {
-        JsValue::undefined()
-    })
+        .and_then(|element| element.template_contents);
+    let Some(contents) = contents else {
+        return Ok(JsValue::undefined());
+    };
+    let fragment = node_wrapper(&ctx, contents, context);
+    // Template ownership belongs in the collectable wrapper graph, so a
+    // retained template keeps its content wrapper's expandos and listeners.
+    if let Some(template) = this.as_object() {
+        super::define_value(
+            &template,
+            "__blitz_internal_template_content__",
+            fragment.clone().into(),
+            context,
+        );
+    }
+    Ok(fragment.into())
 }
 
 fn get_inner_html(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
@@ -1319,14 +1346,23 @@ fn set_inner_html(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
     let node_id = this_node_id(this)?;
     let html = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
 
-    let mut doc = ctx.mutate_doc();
-    let mut mutr = doc.mutate();
-    // Detach (rather than drop) any existing children so that JS wrappers
-    // referencing them remain valid.
-    for child_id in mutr.child_ids(node_id) {
-        mutr.remove_node(child_id);
+    let target = ctx
+        .doc
+        .borrow()
+        .get_node(node_id)
+        .and_then(|node| node.element_data())
+        .and_then(|element| element.template_contents)
+        .unwrap_or(node_id);
+    let children = ctx
+        .doc
+        .borrow()
+        .get_node(target)
+        .map(|node| node.children.to_vec())
+        .unwrap_or_default();
+    for child_id in children {
+        super::remove_and_free_node(&ctx, child_id, context);
     }
-    mutr.set_inner_html(node_id, &html);
+    ctx.mutate_doc().mutate().set_inner_html(node_id, &html);
     Ok(JsValue::undefined())
 }
 

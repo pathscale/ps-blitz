@@ -153,11 +153,17 @@ impl<'m, 'doc> DocumentHtmlParser<'m, 'doc> {
             .unwrap();
 
         // html5ever creates a new fragment root node under the document node and parses the nodes into that fragment root.
-        // So here we move the children of the fragment root to element_id and then drop the fragment root.
+        // So here we move the children of the fragment root to the context's insertion target and then drop the fragment root.
         let document_id = mutr.doc.root_node().id;
         let fragment_root_id = mutr.last_child_id(document_id).unwrap();
         let child_ids = mutr.child_ids(fragment_root_id);
-        mutr.append_children(element_id, &child_ids);
+        let target_id = mutr
+            .doc
+            .get_node(element_id)
+            .and_then(|node| node.element_data())
+            .and_then(|element| element.template_contents)
+            .unwrap_or(element_id);
+        mutr.append_children(target_id, &child_ids);
         mutr.remove_and_drop_node(fragment_root_id);
     }
 }
@@ -234,7 +240,7 @@ impl<'m, 'doc> TreeSink for DocumentHtmlParser<'m, 'doc> {
     }
 
     // Note: The tree builder promises we won't have a text node after the insertion point.
-    // https://github.com/servo/html5ever/blob/main/rcdom/lib.rs#L338
+    // https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_positioned_layout/Stacking_contexts
     fn append_before_sibling(&self, sibling_id: &Self::Handle, new_node: NodeOrText<Self::Handle>) {
         match new_node {
             NodeOrText::AppendNode(id) => self.mutr().insert_nodes_before(*sibling_id, &[id]),
@@ -279,8 +285,7 @@ impl<'m, 'doc> TreeSink for DocumentHtmlParser<'m, 'doc> {
     }
 
     fn get_template_contents(&self, target: &Self::Handle) -> Self::Handle {
-        // TODO: implement templates properly. This should allow to function like regular elements.
-        *target
+        self.mutr().template_contents(*target)
     }
 
     fn same_node(&self, x: &Self::Handle, y: &Self::Handle) -> bool {
@@ -325,3 +330,4 @@ fn parses_some_html() {
 
     // Now our tree should have some nodes in it
 }
+
