@@ -82,7 +82,9 @@ pub(crate) fn prepare(
     parser: Option<StreamingParser>,
 ) {
     let input = state(context);
-    input.is_xml.set(DocumentHtmlParser::is_xhtml_document(html));
+    input
+        .is_xml
+        .set(DocumentHtmlParser::is_xhtml_document(html));
     input.boundary_pending.set(parser.is_some());
     // Only an unfinished navigation needs a source scan for prefetch. At EOF
     // the live tree is complete, including on pages without scripts.
