@@ -261,14 +261,19 @@ fn is_in_subtree(doc: &BaseDocument, node_id: NodeId, root_node_id: NodeId) -> b
 /// `<use href="#icon">`. Importing those nodes into a generated `<defs>` makes
 /// the source self-contained while leaving the live DOM untouched.
 #[cfg(feature = "svg")]
-fn serialize_inline_svg(doc: &BaseDocument, svg_node_id: NodeId) -> String {
+fn serialize_inline_svg(
+    doc: &BaseDocument,
+    svg_node_id: NodeId,
+) -> (String, std::collections::HashMap<NodeId, String>) {
     // `outer_html` lowercases attribute names, which is right for HTML and
     // wrong here: SVG attributes are case sensitive, so `viewBox` serialised as
     // `viewbox` is ignored and usvg falls back to the bounding box of the path
     // geometry. The intrinsic aspect ratio is then wrong, and `width: auto`
     // resolves against it.
-    let mut outer_html =
-        crate::util::restore_svg_attribute_case(&doc.nodes[svg_node_id].outer_html());
+    let svg_ids = super::svg_geometry::serialization_ids(doc, svg_node_id);
+    let mut outer_html = String::new();
+    doc.nodes[svg_node_id].write_outer_html_with_svg_ids(&mut outer_html, &svg_ids);
+    outer_html = crate::util::restore_svg_attribute_case(&outer_html);
     // Checked within the root's open tag rather than across the whole string:
     // a descendant carrying an xmlns would otherwise suppress the one usvg
     // needs on the root, and usvg refuses to parse without it.
@@ -351,7 +356,7 @@ fn serialize_inline_svg(doc: &BaseDocument, svg_node_id: NodeId) -> String {
         );
     }
 
-    outer_html
+    (outer_html, svg_ids)
 }
 
 #[cfg(feature = "svg")]
@@ -364,7 +369,8 @@ impl BaseDocument {
     pub fn debug_inline_svg_source(&self, svg_node_id: NodeId) -> Option<String> {
         let node = self.get_node(svg_node_id)?;
         let element = node.element_data()?;
-        (element.name.local == local_name!("svg")).then(|| serialize_inline_svg(self, svg_node_id))
+        (element.name.local == local_name!("svg"))
+            .then(|| serialize_inline_svg(self, svg_node_id).0)
     }
 }
 
@@ -590,23 +596,33 @@ pub(crate) fn collect_layout_children(
             // through `<use href="#id">` from elsewhere in the document travel
             // with it. usvg only sees this string, so a reference it cannot
             // resolve is simply not drawn.
-            let outer_html = serialize_inline_svg(doc, container_node_id);
-
-            // Remove contruction damage from subtree
-            doc.iter_subtree_mut(container_node_id, |id: NodeId, doc: &mut BaseDocument| {
-                doc.nodes[id].remove_damage(CONSTRUCT_BOX | CONSTRUCT_DESCENDENT | CONSTRUCT_FC);
-            });
+            let (outer_html, svg_ids) = serialize_inline_svg(doc, container_node_id);
 
             match crate::util::parse_svg_image(outer_html.as_bytes()) {
                 Ok(svg) => {
-                    doc.get_node_mut(container_node_id)
+                    let geometry = Arc::new(super::svg_geometry::SvgGeometry::build(
+                        doc,
+                        container_node_id,
+                        &svg.tree,
+                        &svg_ids,
+                    ));
+                    let element = doc
+                        .get_node_mut(container_node_id)
                         .unwrap()
                         .element_data_mut()
-                        .unwrap()
-                        .special_data =
+                        .unwrap();
+                    element.svg_geometry = Some(geometry);
+                    element.special_data =
                         SpecialElementData::Image(Box::new(crate::node::ImageData::Svg(svg)));
                 }
                 Err(err) => {
+                    let element = doc
+                        .get_node_mut(container_node_id)
+                        .unwrap()
+                        .element_data_mut()
+                        .unwrap();
+                    element.svg_geometry = None;
+                    element.special_data = SpecialElementData::None;
                     #[cfg(feature = "tracing")]
                     tracing::warn!(
                         node_id = ?container_node_id,
@@ -618,6 +634,17 @@ pub(crate) fn collect_layout_children(
                     let _ = err;
                 }
             };
+
+            // Descendants are consumed by the image parser, rather than by
+            // taffy. Retain their style source and clear consumed damage so
+            // later style changes rebuild this cache once.
+            doc.iter_subtree_mut(container_node_id, |id: NodeId, doc: &mut BaseDocument| {
+                let style = doc.nodes[id].primary_styles().map(|style| (*style).clone());
+                if let Some(element) = doc.nodes[id].element_data_mut() {
+                    element.style_source = style;
+                }
+                doc.nodes[id].remove_damage(ALL_DAMAGE);
+            });
             return;
         }
 

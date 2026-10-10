@@ -1217,6 +1217,21 @@ impl ElementCx<'_, '_> {
             return;
         };
 
+        // Inline SVG uses the current CSS viewport and its own viewBox
+        // mapping. DOM geometry and hit testing use the same transform.
+        if self.element.name.ns.as_ref() == "http://www.w3.org/2000/svg"
+            && self.element.name.local.as_ref() == "svg"
+        {
+            if let Some(transform) = self.node.svg_content_transform() {
+                anyrender_svg::render_svg_tree(
+                    scene,
+                    svg,
+                    self.transform * Affine::scale(self.scale) * transform,
+                );
+            }
+            return;
+        }
+
         let width = self.frame.content_box.width() as u32;
         let height = self.frame.content_box.height() as u32;
         let svg_size = svg.size();
