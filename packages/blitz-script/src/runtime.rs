@@ -1036,8 +1036,11 @@ impl ScriptRuntime {
             .collect()
     }
 
-    fn eval_internal(&mut self, code: &str, description: &str) {
-        if let Err(error) = self.context.eval(Source::from_bytes(code)) {
+    pub(crate) fn eval_internal(&mut self, code: &str, description: &str) {
+        // The description doubles as the source path, so stack traces and
+        // profiles name the prelude (`<blitz-domc>:500`) instead of a bare line.
+        let source = Source::from_bytes(code).with_path(Path::new(description));
+        if let Err(error) = self.context.eval(source) {
             report_js_error(&self.diagnostics, description, &error);
         }
     }
