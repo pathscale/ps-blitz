@@ -21,7 +21,6 @@ use crate::state::DomCtx;
 pub(crate) struct DomaState {
     pub attr_proto: JsObject,
     pub map_proto: JsObject,
-    pub fragment_proto: JsObject,
     #[unsafe_ignore_trace]
     pub attrs: RefCell<Vec<(Weak<RwLock<AttributeNode>>, WeakJsObject)>>,
 }
@@ -45,7 +44,6 @@ pub(crate) fn install(ctx: &DomCtx, context: &mut Context) {
     context.insert_data(DomaState {
         attr_proto: attr_proto.clone(),
         map_proto: map_proto.clone(),
-        fragment_proto: fragment_proto.clone(),
         attrs: RefCell::new(Vec::new()),
     });
     tree::install_node(&node, context);
@@ -58,14 +56,6 @@ pub(crate) fn install(ctx: &DomCtx, context: &mut Context) {
     attr::install(&attr_proto, &map_proto, &element, &document, context);
     interface("Attr", &attr_proto, context);
     interface("NamedNodeMap", &map_proto, context);
-}
-
-pub(crate) fn fragment_proto(context: &Context) -> JsObject {
-    context
-        .get_data::<DomaState>()
-        .expect("DOMA prototypes not initialised")
-        .fragment_proto
-        .clone()
 }
 
 fn illegal_constructor(_: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {

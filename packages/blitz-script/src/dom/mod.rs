@@ -13,6 +13,12 @@ pub(crate) mod element;
 pub(crate) mod event;
 pub(crate) mod event_interfaces;
 pub(crate) mod node;
+#[cfg(feature = "shadow-dom")]
+pub(crate) mod shadow;
+#[cfg(feature = "shadow-dom")]
+pub(crate) mod shadow_event;
+#[cfg(feature = "shadow-dom")]
+pub(crate) mod sheets;
 pub(crate) mod style;
 pub(crate) mod interfaces;
 mod collections;
@@ -86,12 +92,18 @@ pub(crate) fn node_wrapper(ctx: &DomCtx, node_id: NodeId, context: &mut Context)
     let proto = {
         let doc = ctx.doc.borrow();
         let state = ctx.state.borrow();
-        interfaces::node_prototype(
-            doc.get_node(node_id).map(|node| &node.data),
-            state.protos(),
-            context,
-        )
+        let data = doc.get_node(node_id).map(|node| &node.data);
+        #[cfg(feature = "shadow-dom")]
+        if matches!(data, Some(blitz_dom::node::NodeData::ShadowRoot(_))) {
+            shadow::root_proto(context)
+        } else {
+            interfaces::node_prototype(data, state.protos(), context)
+        }
+        #[cfg(not(feature = "shadow-dom"))]
+        interfaces::node_prototype(data, state.protos(), context)
     };
+    #[cfg(not(feature = "shadow-dom"))]
+    let _ = context;
 
     let wrapper = JsObject::from_proto_and_data(Some(proto), NodeRef { node_id });
     let connected = ctx
@@ -147,6 +159,10 @@ pub(crate) fn mark_node_reattached(ctx: &DomCtx, node_id: NodeId) {
                     .and_then(|element| element.template_contents)
                 {
                     stack.push(contents);
+                }
+                #[cfg(feature = "shadow-dom")]
+                if let Some(root_id) = node.shadow_root_id() {
+                    stack.push(root_id);
                 }
             }
         }
@@ -233,6 +249,10 @@ pub(crate) fn sweep_detached_nodes(ctx: &DomCtx) {
                         .and_then(|element| element.template_contents)
                     {
                         stack.push(contents);
+                    }
+                    #[cfg(feature = "shadow-dom")]
+                    if let Some(root_id) = node.shadow_root_id() {
+                        stack.push(root_id);
                     }
                 }
             }
@@ -427,6 +447,7 @@ pub(crate) const ON_EVENT_TYPES: &[&str] = &[
     "wheel",
     "error",
     "load",
+    "slotchange",
 ];
 
 /// Where an `on<event>` handler is actually stored on the instance.
@@ -556,5 +577,7 @@ pub(crate) fn init_protos(ctx: &DomCtx, context: &mut Context) {
     document::register_text_constructor(&character_data_proto, context);
     interfaces::init(context);
     doma::install(ctx, context);
+    #[cfg(feature = "shadow-dom")]
+    shadow::init(ctx, context);
 }
 

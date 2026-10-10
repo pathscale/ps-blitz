@@ -38,6 +38,10 @@ impl BaseDocument {
         if id.is_empty() {
             return;
         }
+        #[cfg(feature = "shadow-dom")]
+        if self.containing_shadow_root(node_id).is_some() {
+            return;
+        }
         let node_ids = self.nodes_to_id.entry(id.to_string()).or_default();
         if !node_ids.contains(&node_id) {
             node_ids.push(node_id);

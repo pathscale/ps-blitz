@@ -8,10 +8,13 @@ use boa_engine::object::builtins::JsArray;
 use boa_engine::value::JsValue;
 use boa_engine::{Context, JsNativeError, JsResult};
 
+#[cfg(not(feature = "shadow-dom"))]
+use super::define_value;
 use super::{
-    define_accessor, define_method, define_value, dom_ctx, js_str, node_id_of_value, node_or_null,
+    define_accessor, define_method, dom_ctx, js_str, node_id_of_value, node_or_null,
     node_wrapper, this_node_id, to_rust_string,
 };
+#[cfg(not(feature = "shadow-dom"))]
 use crate::dom::event::{EventRef, set_event_path};
 use crate::state::NodeListener;
 
@@ -140,6 +143,10 @@ pub(crate) fn unroot_detached_listener_subtree(
                     .and_then(|element| element.template_contents)
                 {
                     stack.push(contents);
+                }
+                #[cfg(feature = "shadow-dom")]
+                if let Some(root_id) = node.shadow_root_id() {
+                    stack.push(root_id);
                 }
             }
         }
@@ -297,7 +304,7 @@ fn parent_node(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult
         .doc
         .borrow()
         .get_node(node_id)
-        .and_then(|node| node.parent);
+        .and_then(|node| if node.is_shadow_root() { None } else { node.parent });
     Ok(node_or_null(&ctx, parent_id, context))
 }
 
@@ -700,7 +707,9 @@ fn contains(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult
         if current == node_id {
             return Ok(JsValue::from(true));
         }
-        match doc.get_node(current).and_then(|node| node.parent) {
+        match doc.get_node(current)
+            .and_then(|node| if node.is_shadow_root() { None } else { node.parent })
+        {
             Some(parent_id) => current = parent_id,
             None => return Ok(JsValue::from(false)),
         }
@@ -947,6 +956,17 @@ fn remove_event_listener(
     Ok(JsValue::undefined())
 }
 
+#[cfg(feature = "shadow-dom")]
+fn dispatch_event(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let target_id = this_node_id(this)?;
+    let event = args.first().and_then(JsValue::as_object)
+        .ok_or_else(|| JsNativeError::typ().with_message("dispatchEvent requires an Event"))?;
+    let result = super::shadow_event::dispatch(&ctx, target_id, &event, context)?;
+    Ok(JsValue::from(!result.prevented))
+}
+
+#[cfg(not(feature = "shadow-dom"))]
 fn dispatch_event(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let target_id = this_node_id(this)?;
@@ -965,7 +985,7 @@ fn dispatch_event(this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
         .to_boolean();
     let chain = ctx.doc.borrow().node_chain(target_id);
     let target: JsValue = node_wrapper(&ctx, target_id, context).into();
-    define_value(&event, "target", target.clone(), context);
+    super::define_value(&event, "target", target.clone(), context);
     define_value(&event, "srcElement", target, context);
     define_value(&event, "eventPhase", JsValue::from(2), context);
     let mut event_path: Vec<JsObject> = chain
