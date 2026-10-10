@@ -355,30 +355,7 @@ impl ScriptRuntime {
             .build();
         register_global(&mut context, "navigator", navigator.into());
 
-        // `customElements`
-        //
-        // Absent entirely before this, so `customElements.define(...)` threw a
-        // ReferenceError out of whatever module ran it. A framework that
-        // registers its components at import time loses that whole module, and
-        // the page renders as unstyled markup or not at all.
-        let custom_elements = ObjectInitializer::new(&mut context)
-            .function(
-                NativeFunction::from_fn_ptr(crate::dom::custom_elements::define),
-                js_string!("define"),
-                2,
-            )
-            .function(
-                NativeFunction::from_fn_ptr(crate::dom::custom_elements::get),
-                js_string!("get"),
-                1,
-            )
-            .function(
-                NativeFunction::from_fn_ptr(crate::dom::custom_elements::get_name),
-                js_string!("getName"),
-                1,
-            )
-            .build();
-        register_global(&mut context, "customElements", custom_elements.into());
+        crate::dom::custom_elements::install(&ctx, &mut context);
 
         // `performance`
         let performance = ObjectInitializer::new(&mut context)
@@ -778,14 +755,36 @@ impl ScriptRuntime {
                     configurable: true,
                 });
             }
+            const htmlConstructor = globalThis.__blitzHTMLConstructor;
+            const domPrototype = globalThis.__blitzDOMPrototype;
+            const sequenceFrom = Array.from;
+            const sequenceString = String;
+            globalThis.__blitzCEInitialize(function (value) {
+                return sequenceFrom(value, sequenceString);
+            });
+            delete globalThis.__blitzCEInitialize;
             const defineDomInterface = function (name, matches) {
                 if (typeof globalThis[name] === "function") return;
-                const Interface = function () {
+                const html = name === "HTMLElement"
+                    || (name.startsWith("HTML") && name.endsWith("Element"));
+                const Interface = html ? function () {
+                    return htmlConstructor(new.target, name);
+                } : function () {
                     throw new TypeError("Illegal constructor");
                 };
                 Object.defineProperty(Interface, "name", { value: name, configurable: true });
+                Interface.prototype = domPrototype(name);
+                Object.defineProperty(Interface.prototype, "constructor", {
+                    value: Interface,
+                    writable: true,
+                    configurable: true,
+                });
+                if (html) {
+                    Object.setPrototypeOf(Interface,
+                        name === "HTMLElement" ? globalThis.Element : globalThis.HTMLElement);
+                }
                 Object.defineProperty(Interface, Symbol.hasInstance, {
-                    value: matches,
+                    value: html ? Function.prototype[Symbol.hasInstance] : matches,
                     configurable: true,
                 });
                 Object.defineProperty(globalThis, name, {
@@ -838,6 +837,14 @@ impl ScriptRuntime {
             defineDomInterface("HTMLTemplateElement", isTag("TEMPLATE"));
             defineDomInterface("HTMLTextAreaElement", isTag("TEXTAREA"));
             delete globalThis.__blitzDispatchHistoryEvent;
+            defineDomInterface("HTMLDivElement", isTag("DIV"));
+            defineDomInterface("HTMLSpanElement", isTag("SPAN"));
+            defineDomInterface("HTMLParagraphElement", isTag("P"));
+            defineDomInterface("HTMLLIElement", isTag("LI"));
+            defineDomInterface("HTMLUListElement", isTag("UL"));
+            defineDomInterface("HTMLOListElement", isTag("OL"));
+            delete globalThis.__blitzHTMLConstructor;
+            delete globalThis.__blitzDOMPrototype;
             delete globalThis.__blitzRandomU32;
             "##,
             "<blitz-bootstrap>",
@@ -1077,6 +1084,7 @@ impl ScriptRuntime {
         const MUTATION_DELIVERY_ROUNDS: usize = 32;
         let mut delivered = false;
         for _ in 0..MUTATION_DELIVERY_ROUNDS {
+            crate::dom::custom_elements::checkpoint(&self.ctx, &mut self.context);
             if let Err(error) = Rc::clone(&self.job_executor)
                 .run_jobs_with_budget(&mut self.context, self.job_budget.remaining())
             {

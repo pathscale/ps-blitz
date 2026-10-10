@@ -376,19 +376,15 @@ fn next_sibling(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResul
 fn is_connected(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
-    let connected = ctx
-        .doc
-        .borrow()
-        .get_node(node_id)
-        .is_some_and(|node| node.flags.is_in_document());
+    let connected = ctx.doc.borrow().script_node_is_connected(node_id);
     Ok(JsValue::from(connected))
 }
 
 fn owner_document(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
-    let _ = this_node_id(this)?;
-    let root_id = ctx.doc.borrow().root_node().id;
-    Ok(node_or_null(&ctx, Some(root_id), context))
+    let node = this_node_id(this)?;
+    let owner = ctx.doc.borrow().get_node(node).and_then(|node| node.owner_document);
+    Ok(node_or_null(&ctx, owner, context))
 }
 
 // === Text content ===
@@ -501,10 +497,6 @@ fn append_child(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsRe
     super::mark_node_reattached(&ctx, child_id);
     root_inline_event_handlers(&ctx, child_id, context);
 
-    // An element created after its class was defined is upgraded on insertion,
-    // which is also when `connectedCallback` is due. Without this only the
-    // elements present when `define` ran would ever get the class.
-    super::custom_elements::upgrade_if_defined(&ctx, child_id, context)?;
 
     Ok(args[0].clone())
 }
@@ -546,7 +538,6 @@ fn append(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<J
         drop(doc);
         super::mark_node_reattached(&ctx, child_id);
         root_inline_event_handlers(&ctx, child_id, context);
-        super::custom_elements::upgrade_if_defined(&ctx, child_id, context)?;
     }
     Ok(JsValue::undefined())
 }
