@@ -1471,6 +1471,10 @@ impl Node {
 
                 for attr in data.attrs() {
                     writer.push(' ');
+                    if let Some(prefix) = &attr.name.prefix {
+                        writer.push_str(prefix);
+                        writer.push(':');
+                    }
                     writer.push_str(&attr.name.local);
                     writer.push_str("=\"");
                     #[allow(clippy::unnecessary_unwrap)] // Convert to if-let chain once stabilised
