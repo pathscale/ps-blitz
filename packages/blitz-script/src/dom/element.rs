@@ -26,6 +26,7 @@ pub(crate) fn init_element_proto(proto: &JsObject, context: &mut Context) {
     define_accessor(proto, "src", Some(get_src), Some(set_src), context);
     define_accessor(proto, "href", Some(get_href), Some(set_href), context);
     define_accessor(proto, "target", Some(get_target), Some(set_target), context);
+    init_hyperlink_utils(proto, context);
     define_accessor(
         proto,
         "className",
@@ -1770,4 +1771,160 @@ fn closest(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<
         .closest(node_id, &selector)
         .map_err(|_| invalid_selector(&selector))?;
     Ok(super::node_or_null(&ctx, result, context))
+}
+
+/// HTMLHyperlinkElementUtils on `a` and `area`: the URL parts of the resolved
+/// `href`. Other elements share this prototype and read `undefined`, as with
+/// `href` itself. Setters rewrite the `href` content attribute.
+#[derive(Clone, Copy)]
+enum UrlPart {
+    Protocol,
+    Username,
+    Password,
+    Host,
+    Hostname,
+    Port,
+    Pathname,
+    Search,
+    Hash,
+    Origin,
+}
+
+macro_rules! url_part_accessors {
+    ($($get:ident, $set:ident, $name:literal, $part:expr;)*) => {
+        fn init_hyperlink_utils(proto: &JsObject, context: &mut Context) {
+            $(define_accessor(proto, $name, Some($get), Some($set), context);)*
+            define_accessor(proto, "origin", Some(get_url_origin), None, context);
+        }
+        $(
+            fn $get(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+                url_part_get(this, $part, context)
+            }
+            fn $set(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+                url_part_set(this, args, $part, context)
+            }
+        )*
+    };
+}
+
+url_part_accessors! {
+    get_url_protocol, set_url_protocol, "protocol", UrlPart::Protocol;
+    get_url_username, set_url_username, "username", UrlPart::Username;
+    get_url_password, set_url_password, "password", UrlPart::Password;
+    get_url_host, set_url_host, "host", UrlPart::Host;
+    get_url_hostname, set_url_hostname, "hostname", UrlPart::Hostname;
+    get_url_port, set_url_port, "port", UrlPart::Port;
+    get_url_pathname, set_url_pathname, "pathname", UrlPart::Pathname;
+    get_url_search, set_url_search, "search", UrlPart::Search;
+    get_url_hash, set_url_hash, "hash", UrlPart::Hash;
+}
+
+fn get_url_origin(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    url_part_get(this, UrlPart::Origin, context)
+}
+
+fn is_hyperlink(ctx: &DomCtx, node_id: NodeId) -> bool {
+    ctx.doc
+        .borrow()
+        .get_node(node_id)
+        .and_then(|node| node.element_data())
+        .is_some_and(|element| {
+            element.name.ns == markup5ever::ns!(html)
+                && matches!(&*element.name.local, "a" | "area")
+        })
+}
+
+/// The resolved `href`, or `None` when it is absent or does not parse.
+fn hyperlink_url(ctx: &DomCtx, node_id: NodeId) -> Option<url::Url> {
+    let href = read_attr(ctx, node_id, "href")?;
+    ctx.doc.borrow().url().join(&href).ok()
+}
+
+fn url_part_get(this: &JsValue, part: UrlPart, context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    if !is_hyperlink(&ctx, node_id) {
+        return Ok(JsValue::undefined());
+    }
+    let Some(url) = hyperlink_url(&ctx, node_id) else {
+        return Ok(js_str(""));
+    };
+    let value = match part {
+        UrlPart::Protocol => format!("{}:", url.scheme()),
+        UrlPart::Username => url.username().to_string(),
+        UrlPart::Password => url.password().unwrap_or_default().to_string(),
+        UrlPart::Host => match (url.host_str(), url.port()) {
+            (Some(host), Some(port)) => format!("{host}:{port}"),
+            (Some(host), None) => host.to_string(),
+            _ => String::new(),
+        },
+        UrlPart::Hostname => url.host_str().unwrap_or_default().to_string(),
+        UrlPart::Port => url.port().map(|p| p.to_string()).unwrap_or_default(),
+        UrlPart::Pathname => url.path().to_string(),
+        UrlPart::Search => url
+            .query()
+            .filter(|q| !q.is_empty())
+            .map(|q| format!("?{q}"))
+            .unwrap_or_default(),
+        UrlPart::Hash => url
+            .fragment()
+            .filter(|f| !f.is_empty())
+            .map(|f| format!("#{f}"))
+            .unwrap_or_default(),
+        UrlPart::Origin => url.origin().ascii_serialization(),
+    };
+    Ok(js_str(&value))
+}
+
+fn url_part_set(
+    this: &JsValue,
+    args: &[JsValue],
+    part: UrlPart,
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    let value = to_rust_string(&args.first().cloned().unwrap_or_default(), context)?;
+    if !is_hyperlink(&ctx, node_id) {
+        return Ok(JsValue::undefined());
+    }
+    let Some(mut url) = hyperlink_url(&ctx, node_id) else {
+        return Ok(JsValue::undefined());
+    };
+    // The url crate refuses the inputs a browser also ignores; a refused part
+    // leaves the attribute as it was.
+    let applied = match part {
+        UrlPart::Protocol => url.set_scheme(value.trim_end_matches(':')).is_ok(),
+        UrlPart::Username => url.set_username(&value).is_ok(),
+        UrlPart::Password => url
+            .set_password(Some(value.as_str()).filter(|v| !v.is_empty()))
+            .is_ok(),
+        UrlPart::Host => match value.rsplit_once(':') {
+            Some((host, port)) if port.parse::<u16>().is_ok() => {
+                url.set_host(Some(host)).is_ok() && url.set_port(port.parse().ok()).is_ok()
+            }
+            _ => url.set_host(Some(&value)).is_ok(),
+        },
+        UrlPart::Hostname => url.set_host(Some(&value)).is_ok(),
+        UrlPart::Port => url.set_port(value.parse().ok()).is_ok(),
+        UrlPart::Pathname => {
+            url.set_path(&value);
+            true
+        }
+        UrlPart::Search => {
+            let query = value.strip_prefix('?').unwrap_or(&value);
+            url.set_query(Some(query).filter(|q| !q.is_empty()));
+            true
+        }
+        UrlPart::Hash => {
+            let fragment = value.strip_prefix('#').unwrap_or(&value);
+            url.set_fragment(Some(fragment).filter(|f| !f.is_empty()));
+            true
+        }
+        UrlPart::Origin => false,
+    };
+    if applied {
+        write_attr(&ctx, node_id, "href", url.as_str());
+    }
+    Ok(JsValue::undefined())
 }
