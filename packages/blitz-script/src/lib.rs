@@ -42,6 +42,7 @@
 mod debug_control;
 mod document;
 mod dom;
+mod domc;
 mod event_handler;
 mod fetch;
 mod job_budget;
