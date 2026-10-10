@@ -104,6 +104,9 @@ pub(crate) struct RuntimeState {
     /// Measured on a real application: 98,646 nodes where a fresh window holds
     /// 635, one abandoned subtree per list row that scrolled out of view.
     pub detached_nodes: Vec<NodeId>,
+    /// How many of `detached_nodes` the last sweep kept because script still
+    /// holds them. Only nodes detached since then count toward a forced GC.
+    pub detached_kept: usize,
     /// Event listeners registered on `window`.
     pub window_listeners: ListenerMap,
     /// Active Pointer Events capture target, keyed by the web-facing pointer id.

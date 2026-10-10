@@ -254,8 +254,17 @@ pub(crate) fn sweep_detached_nodes(ctx: &DomCtx) {
     // Do not collect on every removal. Small detached sets are normal DOM
     // behavior and Boa may collect them naturally. Crossing this threshold is
     // the signal that delayed collection is now more expensive than one GC.
+    //
+    // Count only nodes detached since the last sweep. Nodes the last sweep kept
+    // are still held by script; a forced collection cannot free them, and
+    // counting them made a page holding 256 detached wrappers run a full GC on
+    // every poll.
     const DETACHED_NODE_GC_THRESHOLD: usize = 256;
-    if ctx.state.borrow().detached_nodes.len() >= DETACHED_NODE_GC_THRESHOLD {
+    let fresh = {
+        let state = ctx.state.borrow();
+        state.detached_nodes.len().saturating_sub(state.detached_kept)
+    };
+    if fresh >= DETACHED_NODE_GC_THRESHOLD {
         boa_gc::force_collect();
     }
 
@@ -326,6 +335,7 @@ pub(crate) fn sweep_detached_nodes(ctx: &DomCtx) {
     // be reused, and a stale entry would hand out a wrapper for a different
     // node entirely.
     let mut state = ctx.state.borrow_mut();
+    state.detached_kept = keep.len();
     state.detached_nodes = keep;
     for id in freed {
         state.node_wrappers.remove(&id);
