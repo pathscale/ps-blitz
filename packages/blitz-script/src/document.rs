@@ -270,6 +270,16 @@ impl ScriptDocument {
         self.arm_timer_thread();
     }
 
+    /// Evaluate an embedder prelude under a name, which becomes its source path
+    /// in stack traces and profiles (for example `<chuzz-webgpu>`).
+    pub fn eval_named(&mut self, code: &str, name: &str) {
+        let _profiling = self.runtime.ctx.enter_profiling_boundary();
+        self.runtime.eval_internal(code, name);
+        self.runtime.run_jobs(name);
+        self.request_redraw();
+        self.arm_timer_thread();
+    }
+
     /// Evaluate JavaScript and convert its result to JSON.
     ///
     /// Embedders use this for APIs that return an evaluation result, such as Tauri's
