@@ -418,10 +418,22 @@ impl DocumentMutator<'_> {
         let node = &mut self.doc.nodes[node_id];
         node.insert_damage(ALL_DAMAGE);
         node.mark_ancestors_dirty();
+        let parent = node.parent;
         match node.text_data_mut() {
             Some(data) => {
                 data.content += text;
                 self.mutations_occurred |= node_is_in_document;
+                // A streaming parser appends a <style>'s text in several
+                // chunks, possibly across mutator sessions. Each chunk must
+                // reprocess the sheet, or it keeps only the first chunk.
+                if let Some(parent) = parent
+                    && self.doc.nodes[parent]
+                        .data
+                        .downcast_element()
+                        .is_some_and(|element| element.name.local.as_ref() == "style")
+                {
+                    self.style_nodes.insert(parent);
+                }
                 Ok(())
             }
             None => Err(AppendTextErr::NotTextNode),
