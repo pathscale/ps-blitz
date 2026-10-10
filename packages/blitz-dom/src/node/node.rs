@@ -1442,6 +1442,196 @@ impl Node {
         out
     }
 
+    /// HTML's rendered-text getter. Text comes from the inline layout's
+    /// processed buffer, rather than reconstructing whitespace from source.
+    /// Callers must flush layout before invoking this.
+    pub fn rendered_inner_text(&self) -> String {
+        use style::computed_values::visibility::T as Visibility;
+
+        enum Piece {
+            Text(String),
+            RequiredBreak(usize),
+        }
+
+        fn text(node: &Node) -> String {
+            let NodeData::Text(data) = &node.data else {
+                return String::new();
+            };
+            // Text that never reached an inline layout is not rendered.
+            if node.inline_root_ancestor().is_none() {
+                return String::new();
+            }
+            let preserves = node
+                .parent
+                .map(|id| node.with(id))
+                .and_then(Node::primary_styles)
+                .is_some_and(|style| {
+                    style.get_inherited_text().white_space_collapse
+                        != style::computed_values::white_space_collapse::T::Collapse
+                });
+            if preserves {
+                return data.content.to_string();
+            }
+            // Collapsing white space: every run of spaces, tabs and newlines
+            // is one space, as the line layout rendered it.
+            let mut result = String::with_capacity(data.content.len());
+            let mut space = false;
+            for ch in data.content.chars() {
+                if matches!(ch, ' ' | '\t' | '\n' | '\r' | '\u{c}') {
+                    space = true;
+                } else {
+                    if space {
+                        result.push(' ');
+                        space = false;
+                    }
+                    result.push(ch);
+                }
+            }
+            if space {
+                result.push(' ');
+            }
+            result
+        }
+        fn collect(node: &Node, pieces: &mut Vec<Piece>) {
+            if node.is_element() && node.is_display_none() {
+                return;
+            }
+            let visible = node.primary_styles()
+                .is_none_or(|style| style.clone_visibility() == Visibility::Visible);
+            if node.is_text_node() {
+                let visible = node.parent.map(|id| node.with(id))
+                    .and_then(Node::primary_styles)
+                    .is_none_or(|style| style.clone_visibility() == Visibility::Visible);
+                if visible {
+                    let value = text(node);
+                    if !value.is_empty() {
+                        pieces.push(Piece::Text(value));
+                    }
+                }
+                return;
+            }
+            if !node.is_element() {
+                return;
+            }
+            let tag = node.element_data().expect("element").name.local.as_ref();
+            if tag == "br" {
+                if visible {
+                    pieces.push(Piece::Text("\n".to_owned()));
+                }
+                return;
+            }
+            let display = node.primary_styles().map(|style| style.clone_display());
+            let block = display.is_some_and(|display| {
+                display.outside() == DisplayOutside::Block
+                    && !display.is_contents()
+            });
+            let breaks = if tag == "p" { 2 } else { usize::from(block) };
+            if breaks != 0 {
+                pieces.push(Piece::RequiredBreak(breaks));
+            }
+            for child in &node.children {
+                collect(node.with(*child), pieces);
+            }
+            if visible {
+                if matches!(tag, "td" | "th") {
+                    let next_cell = node.parent.map(|parent| node.with(parent))
+                        .and_then(|parent| parent.index_of_child(node.id).map(|index| (parent, index)))
+                        .is_some_and(|(parent, index)| {
+                            parent.children[index + 1..].iter().any(|id| {
+                                let child = parent.with(*id);
+                                child.data.is_element_with_tag_name(&local_name!("td"))
+                                    || child.data.is_element_with_tag_name(&local_name!("th"))
+                            })
+                        });
+                    if next_cell {
+                        pieces.push(Piece::Text("\t".to_owned()));
+                    }
+                } else if tag == "tr" {
+                    pieces.push(Piece::RequiredBreak(1));
+                }
+            }
+            if breaks != 0 {
+                pieces.push(Piece::RequiredBreak(breaks));
+            }
+        }
+
+        let mut current = Some(self);
+        while let Some(node) = current {
+            if !self.flags.is_in_document() || node.is_display_none() {
+                return self.text_content();
+            }
+            current = node.parent.map(|id| node.with(id));
+        }
+        if self.primary_styles().is_none() {
+            return self.text_content();
+        }
+        let mut pieces = Vec::new();
+        collect(self, &mut pieces);
+        let mut result = String::new();
+        let mut pending = 0;
+        for piece in pieces {
+            match piece {
+                Piece::RequiredBreak(count) => pending = pending.max(count),
+                Piece::Text(value) => {
+                    if !result.is_empty() && pending != 0 {
+                        result.truncate(result.trim_end_matches(' ').len());
+                        for _ in 0..pending {
+                            result.push('\n');
+                        }
+                    }
+                    pending = 0;
+                    if result.is_empty() || result.ends_with('\n') || result.ends_with(' ') {
+                        result.push_str(value.trim_start_matches(' '));
+                    } else {
+                        result.push_str(&value);
+                    }
+                }
+            }
+        }
+        result.truncate(result.trim_end_matches(' ').len());
+        result
+    }
+
+    /// CSSOM View's offset parent, excluding nodes without CSS boxes and
+    /// viewport-fixed elements.
+    pub fn cssom_offset_parent(&self) -> Option<&Node> {
+        if !self.flags.is_in_document()
+            || self.data.is_element_with_tag_name(&local_name!("body"))
+            || self.data.is_element_with_tag_name(&local_name!("html"))
+        {
+            return None;
+        }
+        let style = self.primary_styles()?;
+        if style.clone_position() == Position::Fixed
+            || style.clone_display().is_contents()
+        {
+            return None;
+        }
+        let mut current = Some(self);
+        while let Some(node) = current {
+            if node.is_display_none() {
+                return None;
+            }
+            current = node.parent.map(|id| node.with(id));
+        }
+        let static_position = style.clone_position() == Position::Static;
+        let zoom = style.effective_zoom.zoom(1.0);
+        let mut parent = self.parent.map(|id| self.with(id));
+        while let Some(node) = parent {
+            if let Some(style) = node.primary_styles()
+                && !style.clone_display().is_contents()
+                && (node.is_offset_parent()
+                    || style.effective_zoom.zoom(1.0) != zoom
+                    || (static_position
+                        && node.data.is_element_with_tag_name(&local_name!("table"))))
+            {
+                return Some(node);
+            }
+            parent = node.parent.map(|id| node.with(id));
+        }
+        None
+    }
+
     /// Write this subtree's text content into any [`std::fmt::Write`] sink.
     ///
     /// Public and generic so that a caller which does not want a `String` does
