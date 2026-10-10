@@ -100,6 +100,29 @@ impl BaseDocument {
     /// path, and a batch of insertions distributes once.
     pub fn compute_flattened_trees(&mut self) {
         let hosts = std::mem::take(&mut self.dirty_shadow_hosts);
+
+        // Clear the previous reverse edges for the whole batch before
+        // assigning any host. A slottable may have moved between dirty hosts;
+        // its old host must not erase the new host's assignment later.
+        for &host_id in &hosts {
+            let Some(root_id) = self.shadow_root_id(host_id) else {
+                continue;
+            };
+            let old_slottables = self.nodes[root_id]
+                .shadow_root_data()
+                .unwrap()
+                .slottables
+                .clone();
+            for id in old_slottables {
+                if let Some(node) = self.nodes.get_mut(id) {
+                    node.assigned_slot = None;
+                    if let Some(element) = node.element_data_mut() {
+                        element.assigned_slot = None;
+                    }
+                }
+            }
+        }
+
         for host_id in hosts {
             if self.get_node(host_id).is_some() {
                 self.compute_flattened_tree_for_host(host_id);
@@ -116,20 +139,6 @@ impl BaseDocument {
             .unwrap()
             .slots
             .clone();
-        let old_slottables = self.nodes[root_id]
-            .shadow_root_data()
-            .unwrap()
-            .slottables
-            .clone();
-
-        for id in old_slottables {
-            if let Some(node) = self.nodes.get_mut(id) {
-                node.assigned_slot = None;
-                if let Some(element) = node.element_data_mut() {
-                    element.assigned_slot = None;
-                }
-            }
-        }
 
         let mut slots = Vec::new();
         let mut stack: Vec<_> = self.nodes[root_id].children.iter().rev().copied().collect();
@@ -179,7 +188,14 @@ impl BaseDocument {
         }
 
         for &id in &old_slots {
-            if !assignments.contains_key(&id) {
+            // A moved slot now belongs to its destination root. That root
+            // recomputes its forward edges; cleanup by the previous owner
+            // would otherwise erase the destination's composed children.
+            if !assignments.contains_key(&id)
+                && self
+                    .containing_shadow_root(id)
+                    .is_none_or(|owner| owner == root_id)
+            {
                 if let Some(node) = self.nodes.get_mut(id) {
                     let changed = node
                         .assigned_nodes
@@ -292,6 +308,7 @@ impl BaseDocument {
             self.font_epoch,
         );
         self.nodes_to_stylesheet.insert(node_id, sheet.clone());
+        self.shadow_sheet_roots.insert(node_id, root_id);
         self.nodes[node_id].element_data_mut().unwrap().special_data =
             SpecialElementData::Stylesheet(sheet);
         self.invalidate_shadow_styles(root_id);
