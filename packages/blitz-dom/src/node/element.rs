@@ -341,7 +341,7 @@ impl Clone for ElementData {
             mask_images: self.mask_images.clone(),
             inline_layout_data: self.inline_layout_data.clone(),
             list_item_data: self.list_item_data.clone(),
-            template_contents: self.template_contents,
+            template_contents: None,
 
             // Runtime state: reset to defaults.
             //
@@ -551,18 +551,26 @@ impl ElementData {
     }
 
     pub fn attr(&self, name: impl PartialEq<LocalName>) -> Option<&str> {
-        let attr = self.attrs.iter().find(|attr| name == attr.name.local)?;
+        let attr = self
+            .attrs
+            .iter()
+            .find(|attr| attr.name.ns == markup5ever::ns!() && name == attr.name.local)?;
         Some(&attr.value)
     }
 
     pub fn attr_parsed<T: FromStr>(&self, name: impl PartialEq<LocalName>) -> Option<T> {
-        let attr = self.attrs.iter().find(|attr| name == attr.name.local)?;
+        let attr = self
+            .attrs
+            .iter()
+            .find(|attr| attr.name.ns == markup5ever::ns!() && name == attr.name.local)?;
         attr.value.parse::<T>().ok()
     }
 
     /// Detects the presence of the attribute, treating *any* value as truthy.
     pub fn has_attr(&self, name: impl PartialEq<LocalName>) -> bool {
-        self.attrs.iter().any(|attr| name == attr.name.local)
+        self.attrs
+            .iter()
+            .any(|attr| attr.name.ns == markup5ever::ns!() && name == attr.name.local)
     }
 
     pub fn can_be_disabled(&self) -> bool {

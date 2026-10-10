@@ -1413,6 +1413,12 @@ impl BaseDocument {
             for &child in &node.children {
                 self.drop_node_ignoring_parent_with(child, on_drop);
             }
+            if let Some(contents) = node
+                .element_data()
+                .and_then(|element| element.template_contents)
+            {
+                self.drop_node_ignoring_parent_with(contents, on_drop);
+            }
 
             // Anonymous blocks live only in the slab, so deallocate the ones this
             // node owns rather than leaking them.
@@ -1473,9 +1479,19 @@ impl BaseDocument {
         }
 
         let children = node.children.clone();
+        let template_contents = node
+            .element_data()
+            .and_then(|element| element.template_contents);
 
         // Create new node
         let new_node_id = self.create_node(data);
+        if let Some(contents) = template_contents {
+            let cloned_contents = self.deep_clone_node(contents);
+            self.nodes[new_node_id]
+                .element_data_mut()
+                .expect("template clone must be an element")
+                .template_contents = Some(cloned_contents);
+        }
 
         // Recursively clone children
         let new_children: ThinVec<NodeId> = children

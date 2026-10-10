@@ -1417,6 +1417,13 @@ impl Node {
 
     /// Serialise this node's children, as `innerHTML` returns them.
     pub fn write_children_html(&self, writer: &mut String) {
+        if let Some(contents) = self
+            .element_data()
+            .and_then(|element| element.template_contents)
+        {
+            self.tree()[contents].write_children_html(writer);
+            return;
+        }
         for &child_id in &self.children {
             self.tree()[child_id].write_html(writer);
         }
@@ -1427,7 +1434,10 @@ impl Node {
     }
 
     pub fn attr(&self, name: LocalName) -> Option<&str> {
-        let attr = self.attrs()?.iter().find(|id| id.name.local == name)?;
+        let attr = self
+            .attrs()?
+            .iter()
+            .find(|attr| attr.name.ns == markup5ever::ns!() && attr.name.local == name)?;
         Some(&attr.value)
     }
 
@@ -1649,7 +1659,11 @@ impl Node {
             NodeData::Text(data) => {
                 let _ = out.write_str(&data.content);
             }
-            NodeData::Element(..) | NodeData::AnonymousBlock(..) => {
+            NodeData::Element(..)
+            | NodeData::AnonymousBlock(..)
+            | NodeData::Document(..)
+            | NodeData::DocumentFragment
+            | NodeData::ShadowRoot(..) => {
                 for child_id in self.children.iter() {
                     self.with(*child_id).write_text_content(out);
                 }

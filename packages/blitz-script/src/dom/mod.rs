@@ -8,6 +8,7 @@
 
 pub(crate) mod custom_elements;
 pub(crate) mod document;
+pub(crate) mod doma;
 pub(crate) mod element;
 pub(crate) mod event;
 pub(crate) mod node;
@@ -135,9 +136,17 @@ pub(crate) fn mark_node_reattached(ctx: &DomCtx, node_id: NodeId) {
         let mut ids = Vec::new();
         let mut stack = vec![node_id];
         while let Some(id) = stack.pop() {
-            ids.push(id);
             if let Some(node) = doc.get_node(id) {
+                if node.flags.is_in_document() {
+                    ids.push(id);
+                }
                 stack.extend(node.children.iter().copied());
+                if let Some(contents) = node
+                    .element_data()
+                    .and_then(|element| element.template_contents)
+                {
+                    stack.push(contents);
+                }
             }
         }
         ids
@@ -160,10 +169,10 @@ pub(crate) fn mark_node_reattached(ctx: &DomCtx, node_id: NodeId) {
 /// Free detached nodes whose wrappers the collector has taken.
 ///
 /// This is the half that could not be written before wrappers were weak. A node
-/// is removed while script may still hold it, and that cannot be judged at the
-/// moment of removal; it can be judged later, and "later" is any point after a
-/// collection. An entry that still upgrades is a node something is holding on
-/// to, so it stays detached exactly as before.
+/// is removed while script may still hold its wrapper, and that cannot be judged
+/// at the moment of removal; it can be judged later, and "later" is any point
+/// after a collection. An entry that still upgrades is a node something is
+/// holding on to, so it stays detached exactly as before.
 ///
 /// Called from the poll loop, so the cost is bounded by how much was removed
 /// rather than by the size of the document.
@@ -218,6 +227,12 @@ pub(crate) fn sweep_detached_nodes(ctx: &DomCtx) {
                 }
                 if let Some(node) = doc.get_node(id) {
                     stack.extend(node.children.iter().copied());
+                    if let Some(contents) = node
+                        .element_data()
+                        .and_then(|element| element.template_contents)
+                    {
+                        stack.push(contents);
+                    }
                 }
             }
             held
@@ -537,5 +552,6 @@ pub(crate) fn init_protos(ctx: &DomCtx, context: &mut Context) {
     event::register_custom_event_constructor(&event_proto, context);
     document::register_text_constructor(&character_data_proto, context);
     interfaces::init(context);
+    doma::install(ctx, context);
 }
 

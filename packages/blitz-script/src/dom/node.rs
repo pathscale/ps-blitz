@@ -135,6 +135,12 @@ pub(crate) fn unroot_detached_listener_subtree(
             ids.push(id);
             if let Some(node) = doc.get_node(id) {
                 stack.extend(node.children.iter().copied());
+                if let Some(contents) = node
+                    .element_data()
+                    .and_then(|element| element.template_contents)
+                {
+                    stack.push(contents);
+                }
             }
         }
         ids
@@ -383,10 +389,14 @@ fn text_content(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResul
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
     let doc = ctx.doc.borrow();
-    let text = doc
-        .get_node(node_id)
-        .map(|node| node.text_content())
-        .unwrap_or_default();
+    let text = match doc.get_node(node_id).map(|node| &node.data) {
+        Some(NodeData::Document(_)) => return Ok(JsValue::null()),
+        Some(NodeData::Comment { contents }) => contents.clone(),
+        _ => doc
+            .get_node(node_id)
+            .map(|node| node.text_content())
+            .unwrap_or_default(),
+    };
     Ok(js_str(&text))
 }
 
@@ -792,6 +802,7 @@ pub(super) fn clone_node(
         /// Comments carry their contents upstream, so a clone copies them
         /// rather than producing an empty comment.
         Comment(String),
+        Fragment,
         Other,
     }
 
@@ -806,6 +817,7 @@ pub(super) fn clone_node(
                 }
                 Some(NodeData::Text(data)) => CloneSrc::Text(data.content.clone()),
                 Some(NodeData::Comment { contents }) => CloneSrc::Comment(contents.clone()),
+                Some(NodeData::DocumentFragment) => CloneSrc::Fragment,
                 _ => CloneSrc::Other,
             };
             let mut mutr = doc.mutate();
@@ -813,6 +825,7 @@ pub(super) fn clone_node(
                 CloneSrc::Element(name, attrs) => mutr.create_element(name, attrs),
                 CloneSrc::Text(content) => mutr.create_text_node(&content),
                 CloneSrc::Comment(contents) => mutr.create_comment_node(&contents),
+                CloneSrc::Fragment => mutr.create_document_fragment(),
                 CloneSrc::Other => mutr.create_comment_node(""),
             }
         }
