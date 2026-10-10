@@ -27,6 +27,8 @@ struct InputState {
     #[unsafe_ignore_trace]
     parser: RefCell<Option<Rc<RefCell<StreamingParser>>>>,
     #[unsafe_ignore_trace]
+    boundary_pending: Cell<bool>,
+    #[unsafe_ignore_trace]
     script_created: Cell<bool>,
     #[unsafe_ignore_trace]
     restart: Cell<bool>,
@@ -52,6 +54,7 @@ pub(crate) fn install(context: &mut Context, loader: Rc<BlitzModuleLoader>) {
     context.insert_data(InputState {
         original: RefCell::new(None),
         parser: RefCell::new(None),
+        boundary_pending: Cell::new(false),
         script_created: Cell::new(false),
         restart: Cell::new(false),
         generation: Cell::new(0),
@@ -72,11 +75,24 @@ pub(crate) fn install(context: &mut Context, loader: Rc<BlitzModuleLoader>) {
     define_accessor(&prototype, "compatMode", Some(compat_mode), None, context);
 }
 
-pub(crate) fn prepare(context: &Context, html: &str, fetcher: SharedFetcher) {
-    let xml = DocumentHtmlParser::is_xhtml_document(html);
-    state(context).is_xml.set(xml);
-    *state(context).original.borrow_mut() = if xml { None } else { Some(Arc::from(html)) };
-    *state(context).fetcher.borrow_mut() = Some(fetcher);
+pub(crate) fn prepare(
+    context: &Context,
+    html: &str,
+    fetcher: SharedFetcher,
+    parser: Option<StreamingParser>,
+) {
+    let input = state(context);
+    input.is_xml.set(DocumentHtmlParser::is_xhtml_document(html));
+    input.boundary_pending.set(parser.is_some());
+    // Only an unfinished navigation needs a source scan for prefetch. At EOF
+    // the live tree is complete, including on pages without scripts.
+    *input.original.borrow_mut() = parser.as_ref().map(|_| Arc::from(html));
+    *input.parser.borrow_mut() = parser.map(|parser| Rc::new(RefCell::new(parser)));
+    *input.fetcher.borrow_mut() = Some(fetcher);
+}
+
+pub(crate) fn original(context: &Context) -> Option<Arc<str>> {
+    state(context).original.borrow().clone()
 }
 
 fn document_receiver(this: &JsValue, context: &mut Context) -> JsResult<(DomCtx, bool)> {
@@ -130,6 +146,7 @@ fn reset(context: &mut Context, clear_listeners: bool) -> DomCtx {
         runtime.pointer_capture.clear();
     }
     state(context).executed.borrow_mut().clear();
+    state(context).boundary_pending.set(false);
     let next = state(context).generation.get().wrapping_add(1);
     state(context).generation.set(next);
     crate::domc::set_current_script(context, None);
@@ -138,14 +155,10 @@ fn reset(context: &mut Context, clear_listeners: bool) -> DomCtx {
 }
 
 pub(crate) fn begin(context: &mut Context) {
-    let original = state(context).original.borrow_mut().take();
-    let Some(original) = original else {
-        return;
-    };
-    let ctx = reset(context, false);
-    let parser = StreamingParser::new(Rc::clone(&ctx.doc), &original);
-    *state(context).parser.borrow_mut() = Some(Rc::new(RefCell::new(parser)));
-    state(context).script_created.set(false);
+    // Construction already positioned the live parser at its first boundary.
+    // Keep its nodes, resources and shim attachments. document.open() remains
+    // the operation that replaces a document and resets its input stream.
+    state(context).original.borrow_mut().take();
 }
 
 pub(crate) fn active(context: &Context) -> bool {
@@ -176,6 +189,11 @@ fn is_current_parser(context: &Context, parser: &Rc<RefCell<StreamingParser>>) -
 pub(crate) fn advance(context: &mut Context) -> bool {
     if state(context).script_created.get() {
         return false;
+    }
+    // Execute the boundary reached during construction before feeding more
+    // navigation input, even when that first script is deferred or inert.
+    if state(context).boundary_pending.replace(false) {
+        return true;
     }
     let parser = state(context).parser.borrow().clone();
     let Some(parser) = parser else {
