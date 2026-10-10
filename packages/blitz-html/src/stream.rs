@@ -36,7 +36,7 @@ impl StreamingParser {
             StreamSink { document },
             TreeBuilderOpts {
                 scripting_enabled: true,
-                drop_doctype: true,
+                drop_doctype: false,
                 ..Default::default()
             },
         );

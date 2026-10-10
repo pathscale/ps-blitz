@@ -215,7 +215,7 @@ impl<'m, 'doc> DocumentHtmlParser<'m, 'doc> {
                     exact_errors: false,
                     scripting_enabled: false, // Enables parsing of <noscript> tags
                     iframe_srcdoc: false,
-                    drop_doctype: true,
+                    drop_doctype: false,
                     quirks_mode: QuirksMode::NoQuirks,
                 },
             };
@@ -407,10 +407,7 @@ impl<'m, 'doc> TreeSink for DocumentHtmlParser<'m, 'doc> {
         public_id: StrTendril,
         system_id: StrTendril,
     ) {
-        let Some(document_id) = self.document_id else {
-            // Preserve the live-document parser's doctype policy.
-            return;
-        };
+        let document_id = self.get_document();
         let mut mutr = self.mutr();
         let id = mutr.create_comment_node("");
         mutr.adopt_node(id, document_id);
