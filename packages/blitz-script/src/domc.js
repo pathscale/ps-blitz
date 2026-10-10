@@ -338,7 +338,6 @@
     });
 
     const mediaState = new WeakMap();
-    const watched = [];
     const active = new Set();
     const token = {};
     function stateOf(target) {
@@ -349,6 +348,8 @@
     function updateRetention(target) {
         const state = stateOf(target);
         if (state.onchange || state.listeners.some(listener => listener.type === "change")) {
+            // Changes are reported from the first listener on; measure from now.
+            if (!active.has(target)) state.previous = matchesMedia(state.handle);
             active.add(target);
         } else {
             active.delete(target);
@@ -372,7 +373,6 @@
                 onchange: null,
                 listeners: []
             });
-            watched.push(new WeakRef(this));
         }
         get media() { return stateOf(this).media; }
         get matches() { return matchesMedia(stateOf(this).handle); }
@@ -498,13 +498,11 @@
     });
     define(globalThis, "__blitzDOMCPoll", {
         value: function () {
+            // Only a list with a change listener can observe a change. Polling
+            // every list ever created made a page that calls matchMedia per
+            // render re-evaluate thousands of queries on every poll.
             const changes = [];
-            let write = 0;
-            for (let index = 0; index < watched.length; index++) {
-                const weak = watched[index];
-                const target = weak.deref();
-                if (!target) continue;
-                watched[write++] = weak;
+            for (const target of active) {
                 const state = stateOf(target);
                 const matches = matchesMedia(state.handle);
                 if (matches !== state.previous) {
@@ -512,7 +510,6 @@
                     changes.push([target, matches, state.media]);
                 }
             }
-            watched.length = write;
             for (const [target, matches, media] of changes) {
                 const event = new MediaQueryListEvent("change", { matches, media });
                 globalThis.__blitzMarkTrusted(event);
