@@ -62,7 +62,12 @@ impl crate::document::BaseDocument {
         style::thread_state::enter(ThreadState::LAYOUT);
 
         #[cfg(feature = "shadow-dom")]
-        self.flush_shadow_styles();
+        {
+            // Keep this entry point safe for callers that resolve styles
+            // without going through BaseDocument::resolve.
+            self.compute_flattened_trees();
+            self.flush_shadow_styles();
+        }
 
         let guard = &self.guard;
         let guards = StylesheetGuards {
@@ -252,19 +257,25 @@ impl<'a> TNode for BlitzNode<'a> {
     }
 
     fn first_child(&self) -> Option<Self> {
-        self.children.first().map(|id| self.with(*id))
+        self.layout_dom_children().first().map(|id| self.with(*id))
     }
 
     fn last_child(&self) -> Option<Self> {
-        self.children.last().map(|id| self.with(*id))
+        self.layout_dom_children().last().map(|id| self.with(*id))
     }
 
     fn prev_sibling(&self) -> Option<Self> {
-        self.backward(1)
+        let parent = self.flattened_parent()?;
+        let children = parent.layout_dom_children();
+        let index = children.iter().position(|id| *id == self.id)?;
+        children.get(index.checked_sub(1)?).map(|id| self.with(*id))
     }
 
     fn next_sibling(&self) -> Option<Self> {
-        self.forward(1)
+        let parent = self.flattened_parent()?;
+        let children = parent.layout_dom_children();
+        let index = children.iter().position(|id| *id == self.id)?;
+        children.get(index + 1).map(|id| self.with(*id))
     }
 
     fn owner_doc(&self) -> Self::ConcreteDocument {
@@ -280,27 +291,8 @@ impl<'a> TNode for BlitzNode<'a> {
         true
     }
 
-    // I think this is the same as parent_node only in the cases when the direct parent is not a real element, forcing us
-    // to travel upwards
-    //
-    // For the sake of this demo, we're just going to return the parent node ann
     fn traversal_parent(&self) -> Option<Self::ConcreteElement> {
-        // The flattened-tree parent. For style inheritance and selector
-        // matching, slotted nodes parent to their slot, and shadow-tree nodes
-        // parent to the shadow host (the shadow root itself is transparent).
-        #[cfg(feature = "shadow-dom")]
-        {
-            if let Some(slot_id) = self.assigned_slot {
-                return Some(self.with(slot_id));
-            }
-            let parent = self.parent_node()?;
-            if let Some(shadow_data) = parent.shadow_root_data() {
-                return Some(self.with(shadow_data.host));
-            }
-            parent.as_element()
-        }
-        #[cfg(not(feature = "shadow-dom"))]
-        self.parent_node().and_then(|node| node.as_element())
+        self.flattened_parent().and_then(|node| node.as_element())
     }
 
     fn opaque(&self) -> OpaqueNode {
@@ -399,8 +391,11 @@ impl selectors::Element for BlitzNode<'_> {
     }
 
     fn first_element_child(&self) -> Option<Self> {
-        let mut children = self.dom_children();
-        children.find(|child| child.is_element())
+        // Selector relationships use DOM children, independently of Stylo's
+        // flattened traversal links.
+        self.children
+            .iter()
+            .find_map(|id| self.with(*id).as_element())
     }
 
     fn is_html_element_in_html_document(&self) -> bool {
@@ -614,7 +609,7 @@ impl selectors::Element for BlitzNode<'_> {
     }
 
     fn is_empty(&self) -> bool {
-        self.dom_children().next().is_none()
+        self.children.is_empty()
     }
 
     fn is_root(&self) -> bool {
@@ -659,6 +654,12 @@ impl<'a> TElement for BlitzNode<'a> {
             parent: self,
             child_index: 0,
         })
+    }
+
+    fn inheritance_parent(&self) -> Option<Self> {
+        // Style sharing and cascading must use the same parent whose
+        // traversal_children scheduled this element.
+        TNode::traversal_parent(self)
     }
 
     fn is_html_element(&self) -> bool {

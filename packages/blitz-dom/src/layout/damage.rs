@@ -90,15 +90,25 @@ impl BaseDocument {
 
         let damage_for_children = RestyleDamage::empty();
         let children = std::mem::take(&mut self.nodes[node_id].children);
+        #[cfg(feature = "shadow-dom")]
+        let flattened_children = self.nodes[node_id].flattened_children.clone();
         let layout_children = std::mem::take(self.nodes[node_id].layout_children.get_mut());
         let use_layout_children = self.nodes[node_id].should_traverse_layout_children();
+        // A host or assigned slot must follow its current composition. Its
+        // retained box children may still describe the previous assignment.
+        #[cfg(feature = "shadow-dom")]
+        let use_layout_children = use_layout_children && flattened_children.is_none();
         if use_layout_children {
             let layout_children = layout_children.as_ref().unwrap();
             for child in layout_children.iter() {
                 damage |= self.propagate_damage_flags(*child, damage_for_children);
             }
         } else {
-            for child in children.iter() {
+            #[cfg(feature = "shadow-dom")]
+            let traversal_children = flattened_children.as_deref().unwrap_or(&children);
+            #[cfg(not(feature = "shadow-dom"))]
+            let traversal_children = &children;
+            for child in traversal_children.iter() {
                 damage |= self.propagate_damage_flags(*child, damage_for_children);
             }
             if let Some(before_id) = self.nodes[node_id].before() {
