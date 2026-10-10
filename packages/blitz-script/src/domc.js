@@ -339,6 +339,8 @@
 
     const mediaState = new WeakMap();
     const active = new Set();
+    let lastSignature = "";
+    let schemeHandle;
     const token = {};
     function stateOf(target) {
         const state = mediaState.get(target);
@@ -501,6 +503,17 @@
             // Only a list with a change listener can observe a change. Polling
             // every list ever created made a page that calls matchMedia per
             // render re-evaluate thousands of queries on every poll.
+            // Media results only move when the viewport, the pixel ratio or the
+            // colour scheme does. Compare that signature first: re-evaluating
+            // every listened list on every poll was most of an idle page's
+            // script time. A list gaining its first listener takes its own
+            // baseline in updateRetention, so skipping here misses nothing.
+            if (active.size === 0) return false;
+            if (schemeHandle === undefined) schemeHandle = parseMedia("(prefers-color-scheme: dark)")[0];
+            const signature = globalThis.innerWidth + "x" + globalThis.innerHeight + "@" +
+                globalThis.devicePixelRatio + (matchesMedia(schemeHandle) ? "d" : "l");
+            if (signature === lastSignature) return false;
+            lastSignature = signature;
             const changes = [];
             for (const target of active) {
                 const state = stateOf(target);
