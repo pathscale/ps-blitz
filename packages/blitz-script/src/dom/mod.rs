@@ -12,9 +12,13 @@ pub(crate) mod element;
 pub(crate) mod event;
 pub(crate) mod node;
 pub(crate) mod style;
+pub(crate) mod interfaces;
+mod collections;
+mod event_target;
+mod geometry;
+mod html_element;
 
 use blitz_dom::NodeId;
-use blitz_dom::node::NodeData;
 use blitz_dom::{LocalName, Namespace, QualName};
 use boa_engine::object::{FunctionObjectBuilder, JsObject, WeakJsObject};
 use boa_engine::property::{PropertyDescriptor, PropertyKey};
@@ -62,7 +66,7 @@ pub(crate) fn this_node_id(this: &JsValue) -> JsResult<NodeId> {
 ///
 /// Wrappers are cached in [`RuntimeState::node_wrappers`](crate::state::RuntimeState::node_wrappers)
 /// so that object identity (`===`) and expando properties behave as scripts expect.
-pub(crate) fn node_wrapper(ctx: &DomCtx, node_id: NodeId, _context: &mut Context) -> JsObject {
+pub(crate) fn node_wrapper(ctx: &DomCtx, node_id: NodeId, context: &mut Context) -> JsObject {
     // Upgraded rather than cloned: the cache holds weak handles, so an entry
     // whose wrapper nothing else kept has been collected and a fresh one is
     // built below. Identity still holds for every wrapper something is actually
@@ -80,24 +84,11 @@ pub(crate) fn node_wrapper(ctx: &DomCtx, node_id: NodeId, _context: &mut Context
     let proto = {
         let doc = ctx.doc.borrow();
         let state = ctx.state.borrow();
-        let protos = state.protos();
-        match doc.get_node(node_id).map(|node| &node.data) {
-            Some(NodeData::Document(_)) => protos.document.clone(),
-            Some(NodeData::Element(_)) | Some(NodeData::AnonymousBlock(_)) => {
-                protos.element.clone()
-            }
-            Some(NodeData::Text(_)) | Some(NodeData::Comment { .. }) => {
-                protos.character_data.clone()
-            }
-            // A shadow root is not exposed through any of the specific
-            // prototypes: script reaches it only via `element.shadowRoot`,
-            // which is not implemented, so the plain Node prototype is right.
-            // A fragment is reached only through the reference the page kept
-            // from `createDocumentFragment`, and needs nothing beyond the node
-            // methods, so it takes the same plain prototype.
-            Some(NodeData::ShadowRoot(_)) | Some(NodeData::DocumentFragment) => protos.node.clone(),
-            None => protos.node.clone(),
-        }
+        interfaces::node_prototype(
+            doc.get_node(node_id).map(|node| &node.data),
+            state.protos(),
+            context,
+        )
     };
 
     let wrapper = JsObject::from_proto_and_data(Some(proto), NodeRef { node_id });
@@ -545,4 +536,6 @@ pub(crate) fn init_protos(ctx: &DomCtx, context: &mut Context) {
     event::register_event_constructor(&event_proto, context);
     event::register_custom_event_constructor(&event_proto, context);
     document::register_text_constructor(&character_data_proto, context);
+    interfaces::init(context);
 }
+
