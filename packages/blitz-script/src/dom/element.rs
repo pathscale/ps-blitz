@@ -1309,11 +1309,7 @@ fn get_inner_html(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsRes
     let doc = ctx.doc.borrow();
     let mut html = String::new();
     if let Some(node) = doc.get_node(node_id) {
-        for child_id in &node.children {
-            if let Some(child) = doc.get_node(*child_id) {
-                child.write_outer_html(&mut html);
-            }
-        }
+        node.write_children_html(&mut html);
     }
     Ok(js_str(&html))
 }
@@ -1338,10 +1334,10 @@ fn get_outer_html(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsRes
     let ctx = dom_ctx(context)?;
     let node_id = this_node_id(this)?;
     let doc = ctx.doc.borrow();
-    let html = doc
-        .get_node(node_id)
-        .map(|node| node.outer_html())
-        .unwrap_or_default();
+    let mut html = String::new();
+    if let Some(node) = doc.get_node(node_id) {
+        node.write_html(&mut html);
+    }
     Ok(js_str(&html))
 }
 

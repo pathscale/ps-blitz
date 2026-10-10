@@ -1360,6 +1360,68 @@ impl Node {
         }
     }
 
+    /// Serialise this node as the HTML fragment serialisation algorithm does
+    /// for `outerHTML`: void elements have no end tag, every other element
+    /// has one, text and attribute values are escaped, comments are kept.
+    ///
+    /// Unlike [`Self::outer_html`], which is a debug rendering (`<div />`),
+    /// this output parses back to the same tree, which `innerHTML +=` and
+    /// templating code depend on.
+    pub fn write_html(&self, writer: &mut String) {
+        match &self.data {
+            NodeData::Text(data) => {
+                let raw = self
+                    .parent
+                    .and_then(|parent| self.tree()[parent].element_data())
+                    .is_some_and(|parent| is_raw_text_element(&parent.name.local));
+                if raw {
+                    writer.push_str(&data.content);
+                } else {
+                    escape_html(&data.content, false, writer);
+                }
+            }
+            NodeData::Comment { contents } => {
+                writer.push_str("<!--");
+                writer.push_str(contents);
+                writer.push_str("-->");
+            }
+            NodeData::Element(data) => {
+                writer.push('<');
+                writer.push_str(&data.name.local);
+                for attr in data.attrs() {
+                    writer.push(' ');
+                    if let Some(prefix) = &attr.name.prefix {
+                        writer.push_str(prefix);
+                        writer.push(':');
+                    }
+                    writer.push_str(&attr.name.local);
+                    writer.push_str("=\"");
+                    escape_html(&attr.value, true, writer);
+                    writer.push('"');
+                }
+                writer.push('>');
+                if is_void_element(&data.name.local) {
+                    return;
+                }
+                self.write_children_html(writer);
+                writer.push_str("</");
+                writer.push_str(&data.name.local);
+                writer.push('>');
+            }
+            NodeData::Document(_)
+            | NodeData::DocumentFragment
+            | NodeData::ShadowRoot(_)
+            | NodeData::AnonymousBlock(_) => self.write_children_html(writer),
+        }
+    }
+
+    /// Serialise this node's children, as `innerHTML` returns them.
+    pub fn write_children_html(&self, writer: &mut String) {
+        for &child_id in &self.children {
+            self.tree()[child_id].write_html(writer);
+        }
+    }
+
     pub fn attrs(&self) -> Option<&[Attribute]> {
         Some(&self.element_data()?.attrs)
     }
@@ -1919,6 +1981,55 @@ impl std::fmt::Debug for Node {
             // .field("unrounded_layout", &self.unrounded_layout)
             // .field("final_layout", &self.final_layout)
             .finish()
+    }
+}
+
+/// Elements whose text children serialise verbatim (HTML fragment
+/// serialisation, with scripting enabled).
+fn is_raw_text_element(name: &LocalName) -> bool {
+    matches!(
+        name.as_ref(),
+        "style" | "script" | "xmp" | "iframe" | "noembed" | "noframes" | "plaintext" | "noscript"
+    )
+}
+
+/// Elements that serialise with no end tag.
+fn is_void_element(name: &LocalName) -> bool {
+    matches!(
+        name.as_ref(),
+        "area"
+            | "base"
+            | "basefont"
+            | "bgsound"
+            | "br"
+            | "col"
+            | "embed"
+            | "frame"
+            | "hr"
+            | "img"
+            | "input"
+            | "keygen"
+            | "link"
+            | "meta"
+            | "param"
+            | "source"
+            | "track"
+            | "wbr"
+    )
+}
+
+/// Escape a string as the HTML serialiser does: `&` and no-break space
+/// always, `"` in attribute mode, `<` and `>` otherwise.
+fn escape_html(text: &str, attribute: bool, writer: &mut String) {
+    for ch in text.chars() {
+        match ch {
+            '&' => writer.push_str("&amp;"),
+            '\u{a0}' => writer.push_str("&nbsp;"),
+            '"' if attribute => writer.push_str("&quot;"),
+            '<' if !attribute => writer.push_str("&lt;"),
+            '>' if !attribute => writer.push_str("&gt;"),
+            _ => writer.push(ch),
+        }
     }
 }
 
