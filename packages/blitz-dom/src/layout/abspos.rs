@@ -351,7 +351,7 @@ impl BaseDocument {
                 (depth, id)
             })
             .collect();
-        changed.sort_unstable_by(|left, right| right.0.cmp(&left.0));
+        changed.sort_unstable_by_key(|entry| std::cmp::Reverse(entry.0));
         for (_, id) in changed {
             self.rebuild_abspos_content_size(id);
             self.nodes[id].insert_damage(RestyleDamage::RECALCULATE_OVERFLOW);

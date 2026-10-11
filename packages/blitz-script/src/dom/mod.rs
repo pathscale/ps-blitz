@@ -264,7 +264,10 @@ pub(crate) fn sweep_detached_nodes(ctx: &DomCtx) {
     const DETACHED_NODE_GC_THRESHOLD: usize = 256;
     let fresh = {
         let state = ctx.state.borrow();
-        state.detached_nodes.len().saturating_sub(state.detached_kept)
+        state
+            .detached_nodes
+            .len()
+            .saturating_sub(state.detached_kept)
     };
     if fresh >= DETACHED_NODE_GC_THRESHOLD {
         boa_gc::force_collect();

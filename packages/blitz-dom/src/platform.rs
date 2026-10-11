@@ -112,16 +112,16 @@ impl BaseDocument {
     /// Test a supports condition through Stylo.
     pub fn platform_supports(&self, condition: &str) -> bool {
         let url_data = self.url.url_extra_data();
-        let mut context = self.platform_parser_context(&url_data);
+        let context = self.platform_parser_context(&url_data);
         let mut input = ParserInput::new(condition);
         if let Ok(condition) = Parser::new(&mut input).parse_entirely(SupportsCondition::parse) {
-            return condition.eval(&mut context);
+            return condition.eval(&context);
         }
         // CSS.supports also accepts a declaration with implicit parentheses.
         let mut input = ParserInput::new(condition);
         Parser::new(&mut input)
             .parse_entirely(Declaration::parse)
-            .is_ok_and(|declaration| declaration.eval(&mut context))
+            .is_ok_and(|declaration| declaration.eval(&context))
     }
 
     /// Test a property and value without allowing the property string to inject syntax.

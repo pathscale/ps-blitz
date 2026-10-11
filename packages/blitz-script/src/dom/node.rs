@@ -1115,7 +1115,8 @@ pub(crate) fn dispatch_event(
         }
     }
 
-    if reaches_window && bubbles
+    if reaches_window
+        && bubbles
         && !event
             .downcast_ref::<EventRef>()
             .is_some_and(|event| event.stopped.get())

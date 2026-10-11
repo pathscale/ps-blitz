@@ -72,8 +72,8 @@ pub(super) async fn open(
 
     let name = ServerName::try_from(origin.host.to_string())
         .map_err(|_| Error::InvalidRequest("invalid TLS server name"))?;
-    let session = ClientConnection::new(config, name)
-        .map_err(|error| Error::Tls(error.to_string()))?;
+    let session =
+        ClientConnection::new(config, name).map_err(|error| Error::Tls(error.to_string()))?;
     let mut tls = TlsSession::client(stream, session);
     tls.handshake()
         .await
@@ -82,7 +82,9 @@ pub(super) async fn open(
         .alpn_protocol()
         .is_some_and(|protocol| protocol != b"http/1.1")
     {
-        return Err(Error::Tls("peer negotiated an unsupported ALPN protocol".to_owned()));
+        return Err(Error::Tls(
+            "peer negotiated an unsupported ALPN protocol".to_owned(),
+        ));
     }
     Ok(Transport::Tls(Box::new(tls)))
 }
@@ -135,4 +137,3 @@ impl Transport {
         }
     }
 }
-

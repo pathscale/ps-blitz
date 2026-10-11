@@ -3706,7 +3706,7 @@ impl BaseDocument {
             self.abspos_layout_dirty = true;
             let invalidated = self
                 .try_root_element()
-                .is_some_and(|root| style::invalidation::viewport_units::invalidate(root));
+                .is_some_and(style::invalidation::viewport_units::invalidate);
             if invalidated {
                 self.shell_provider.request_redraw();
             }

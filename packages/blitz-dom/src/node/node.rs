@@ -950,6 +950,7 @@ pub struct ShadowRootData {
     pub(crate) cascade_data: Option<ServoArc<style::stylist::CascadeData>>,
     pub(crate) cascade_dirty: bool,
     pub(crate) slots: Vec<NodeId>,
+    #[cfg(feature = "shadow-dom")]
     pub(crate) slottables: Vec<NodeId>,
     pub(crate) selector_flags: Cell<ElementSelectorFlags>,
 }
@@ -984,6 +985,7 @@ impl ShadowRootData {
             cascade_data: None,
             cascade_dirty: true,
             slots: Vec::new(),
+            #[cfg(feature = "shadow-dom")]
             slottables: Vec::new(),
             selector_flags: Cell::new(ElementSelectorFlags::empty()),
         }

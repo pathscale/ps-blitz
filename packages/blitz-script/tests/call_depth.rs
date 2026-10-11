@@ -68,4 +68,3 @@ fn runaway_recursion_still_stops() {
         "recursion reached {depth} frames, so nothing is bounding it any more"
     );
 }
-

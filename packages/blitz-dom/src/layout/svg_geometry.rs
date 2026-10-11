@@ -121,6 +121,12 @@ pub(crate) struct SvgGeometry {
     user_to_tree: Affine,
 }
 
+#[derive(Clone, Copy, Default)]
+struct SvgOwnership {
+    owner: Option<NodeId>,
+    in_use: bool,
+}
+
 impl SvgGeometry {
     pub(crate) fn build(
         doc: &BaseDocument,
@@ -164,7 +170,14 @@ impl SvgGeometry {
         let mut hit_bounds = HashMap::new();
 
         for child in tree.root().children() {
-            geometry.collect(doc, root, child, &by_id, None, false, &mut hit_bounds);
+            geometry.collect(
+                doc,
+                root,
+                child,
+                &by_id,
+                SvgOwnership::default(),
+                &mut hit_bounds,
+            );
         }
         geometry.bboxes.insert(
             root,
@@ -212,12 +225,13 @@ impl SvgGeometry {
         root: NodeId,
         node: &usvg::Node,
         ids: &HashMap<&str, NodeId>,
-        inherited_owner: Option<NodeId>,
-        in_use: bool,
+        ownership: SvgOwnership,
         hit_bounds: &mut HashMap<NodeId, Rect>,
     ) {
-        let mapped = (!in_use).then(|| ids.get(node.id()).copied()).flatten();
-        let owner = mapped.or(inherited_owner);
+        let mapped = (!ownership.in_use)
+            .then(|| ids.get(node.id()).copied())
+            .flatten();
+        let owner = mapped.or(ownership.owner);
 
         if let Some(id) = mapped {
             union(&mut self.bboxes, id, rect(node.bounding_box()));
@@ -228,14 +242,17 @@ impl SvgGeometry {
                 if group.opacity().get() == 0.0 {
                     return;
                 }
-                let in_use = in_use
-                    || mapped.is_some_and(|id| {
-                        doc.nodes[id]
-                            .element_data()
-                            .is_some_and(|element| element.name.local == local_name!("use"))
-                    });
+                let ownership = SvgOwnership {
+                    owner,
+                    in_use: ownership.in_use
+                        || mapped.is_some_and(|id| {
+                            doc.nodes[id]
+                                .element_data()
+                                .is_some_and(|element| element.name.local == local_name!("use"))
+                        }),
+                };
                 for child in group.children() {
-                    self.collect(doc, root, child, ids, owner, in_use, hit_bounds);
+                    self.collect(doc, root, child, ids, ownership, hit_bounds);
                 }
             }
             usvg::Node::Path(path) if !path.is_visible() => {}
