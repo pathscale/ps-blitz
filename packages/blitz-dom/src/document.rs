@@ -23,7 +23,7 @@ use crate::{
 use blitz_traits::devtools::DevtoolSettings;
 use blitz_traits::events::{BlitzScrollEvent, DomEvent, DomEventData, HitResult, UiEvent};
 use blitz_traits::navigation::{DummyNavigationProvider, NavigationProvider};
-use blitz_traits::net::{AbortSignal, DummyNetProvider, NetProvider, Request};
+use blitz_traits::net::{AbortSignal, DummyNetProvider, NetProvider, Request, RequestDestination};
 use blitz_traits::node_id::NodeId;
 use blitz_traits::shell::{ColorScheme, DummyShellProvider, ShellProvider, Viewport};
 use cursor_icon::CursorIcon;
@@ -2564,7 +2564,8 @@ impl BaseDocument {
                         let resolved_href = self.resolve_url(href);
                         self.net_provider.fetch(
                             self.id(),
-                            self.build_request(resolved_href.clone()),
+                            self.build_request(resolved_href.clone())
+                                .destination(RequestDestination::Style),
                             ResourceHandler::boxed(
                                 self.tx.clone(),
                                 self.id,

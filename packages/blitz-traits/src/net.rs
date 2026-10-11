@@ -57,6 +57,41 @@ impl<F: Fn(usize) + Send + Sync + 'static> NetWaker for F {
     }
 }
 
+/// The destination of a request, as a Fetch metadata token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RequestDestination {
+    #[default]
+    Empty,
+    Document,
+    Iframe,
+    Style,
+    Script,
+    Image,
+    Font,
+    Audio,
+    Video,
+    Track,
+    Manifest,
+}
+
+impl RequestDestination {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Empty => "empty",
+            Self::Document => "document",
+            Self::Iframe => "iframe",
+            Self::Style => "style",
+            Self::Script => "script",
+            Self::Image => "image",
+            Self::Font => "font",
+            Self::Audio => "audio",
+            Self::Video => "video",
+            Self::Track => "track",
+            Self::Manifest => "manifest",
+        }
+    }
+}
+
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 /// A request type loosely representing <https://fetch.spec.whatwg.org/#requests>
@@ -67,6 +102,7 @@ pub struct Request {
     pub headers: HeaderMap,
     pub body: Body,
     pub signal: Option<AbortSignal>,
+    pub destination: RequestDestination,
 }
 impl Request {
     /// A get request to the specified Url and an empty body
@@ -78,7 +114,13 @@ impl Request {
             headers: HeaderMap::new(),
             body: Body::Empty,
             signal: None,
+            destination: RequestDestination::default(),
         }
+    }
+
+    pub fn destination(mut self, d: RequestDestination) -> Self {
+        self.destination = d;
+        self
     }
 
     pub fn signal(mut self, signal: AbortSignal) -> Self {
@@ -217,4 +259,3 @@ impl AbortSignal {
         self.0.load(Ordering::SeqCst)
     }
 }
-

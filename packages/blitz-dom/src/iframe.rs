@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::mpsc::Sender;
 
 use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
-use blitz_traits::net::{AbortController, AbortSignal, Url};
+use blitz_traits::net::{AbortController, AbortSignal, RequestDestination, Url};
 use blitz_traits::node_id::NodeId;
 use blitz_traits::shell::ShellProvider;
 
@@ -136,7 +136,7 @@ impl BaseDocument {
         let signal = self.new_iframe_generation(node_id, Some(handler.request_id()));
         self.net_provider.fetch(
             self.id(),
-            stamped_request(url, Some(&signal)),
+            stamped_request(url, Some(&signal)).destination(RequestDestination::Iframe),
             Box::new(handler),
         );
     }

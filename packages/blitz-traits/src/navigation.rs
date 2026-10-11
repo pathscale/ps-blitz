@@ -3,7 +3,7 @@
 use http::{HeaderMap, Method};
 use url::Url;
 
-use crate::net::{Body, Request};
+use crate::net::{Body, Request, RequestDestination};
 
 /// An abstraction to allow embedders to hook into "navigation events" such as clicking a link
 /// or submitting a form.
@@ -63,6 +63,7 @@ impl NavigationOptions {
             headers: HeaderMap::new(),
             body: self.document_resource,
             signal: None,
+            destination: RequestDestination::Document,
         }
     }
 }

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::{Arc, LazyLock, RwLock};
 
-use blitz_traits::net::{Request, Url};
+use blitz_traits::net::{Request, RequestDestination, Url};
 
 use crate::StdNetProvider;
 
@@ -47,7 +47,7 @@ async fn probe_favicon(url: &Url, net_provider: &Arc<StdNetProvider>) -> Option<
     // this, sites missing /favicon.ico would render a broken <img> in the
     // tab strip.
     let (_, bytes) = net_provider
-        .fetch_async(Request::get(url.clone()))
+        .fetch_async(Request::get(url.clone()).destination(RequestDestination::Image))
         .await
         .ok()?;
     if bytes.is_empty() || !is_decodable_image(&bytes) {

@@ -217,6 +217,7 @@ async fn build_page_document(
 ) -> (SubDocumentAttr, String, Option<String>) {
     use blitz_dom::Document as _;
     use blitz_script::ScriptDocument;
+    use blitz_traits::net::RequestDestination;
     use std::collections::HashMap;
 
     let document = ScriptDocument::from_html(html, config);
@@ -228,7 +229,9 @@ async fn build_page_document(
         if scripts.contains_key(&url) {
             continue;
         }
-        let request = Request::get(url.clone()).signal(signal.clone());
+        let request = Request::get(url.clone())
+            .destination(RequestDestination::Script)
+            .signal(signal.clone());
         match net_provider.fetch_async(request).await {
             Ok((_, bytes)) => {
                 scripts.insert(url, String::from_utf8_lossy(&bytes).into_owned());

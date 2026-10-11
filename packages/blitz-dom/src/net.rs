@@ -26,7 +26,7 @@ use style::{
     values::{CssUrl, SourceLocation},
 };
 
-use blitz_traits::net::{AbortSignal, Bytes, NetHandler, NetProvider, Request};
+use blitz_traits::net::{AbortSignal, Bytes, NetHandler, NetProvider, Request, RequestDestination};
 use blitz_traits::shell::ShellProvider;
 
 use url::Url;
@@ -280,7 +280,8 @@ impl ServoStylesheetLoader for StylesheetLoader {
         let import = ServoArc::new(lock.wrap(import));
         self.net_provider.fetch(
             self.doc_id,
-            stamped_request(url.as_ref().clone(), self.abort_signal.as_ref()),
+            stamped_request(url.as_ref().clone(), self.abort_signal.as_ref())
+                .destination(RequestDestination::Style),
             ResourceHandler::boxed(
                 self.tx.clone(),
                 self.doc_id,
@@ -555,7 +556,7 @@ pub(crate) fn fetch_font_face(
                 fonts.push(Arc::clone(&ticket));
                 network_provider.fetch(
                     doc_id,
-                    stamped_request(url, abort_signal),
+                    stamped_request(url, abort_signal).destination(RequestDestination::Font),
                     ResourceHandler::boxed(
                         tx.clone(),
                         doc_id,
@@ -604,7 +605,8 @@ fn load_script_font(doc: &mut crate::BaseDocument, face: &Arc<web_fonts::WebFont
     } else if let Some(url) = &face.source {
         doc.net_provider.fetch(
             crate::Document::id(doc),
-            stamped_request(url.clone(), doc.abort_signal.as_ref()),
+            stamped_request(url.clone(), doc.abort_signal.as_ref())
+                .destination(RequestDestination::Font),
             ResourceHandler::boxed(
                 doc.tx.clone(),
                 crate::Document::id(doc),
