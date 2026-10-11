@@ -289,6 +289,9 @@ pub struct BaseDocument {
     /// runtime last took them, each with whether it was open before its first change. The
     /// HTML toggle task coalesces per element, so an element is listed once.
     details_toggles: Vec<(NodeId, bool)>,
+    /// Bumped whenever the stylist device changes (viewport size, scale or colour scheme),
+    /// so script can skip re-evaluating media queries while it stays the same.
+    viewport_generation: u64,
     dropped_node_ids: FxHashSet<NodeId>,
     dropped_node_parents: FxHashSet<NodeId>,
     /// Survivors that can still point at an id freed by this batch.
@@ -676,6 +679,7 @@ impl BaseDocument {
         let mut doc = Self {
             node_drop_depth: 0,
             details_toggles: Vec::new(),
+            viewport_generation: 0,
             dropped_node_ids: FxHashSet::default(),
             dropped_node_parents: FxHashSet::default(),
             dropped_reference_owners: FxHashSet::default(),
@@ -3641,6 +3645,7 @@ impl BaseDocument {
 
     /// Update the device and reset the stylist to process the new size
     pub fn set_stylist_device(&mut self, device: Device) {
+        self.viewport_generation = self.viewport_generation.wrapping_add(1);
         // Viewport units become pixels at cascade time, from this device.
         // Compare before `device` is moved into the stylist.
         let previous_viewport = self.stylist.device().au_viewport_size();
@@ -5105,6 +5110,11 @@ impl BaseDocument {
         if was_open != present && !self.details_toggles.iter().any(|(id, _)| *id == node_id) {
             self.details_toggles.push((node_id, was_open));
         }
+    }
+
+    /// Changes whenever the device media queries are evaluated against changes.
+    pub fn viewport_generation(&self) -> u64 {
+        self.viewport_generation
     }
 
     /// The `<details>` toggles recorded since the last call, each with its old open state.
