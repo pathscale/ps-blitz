@@ -34,20 +34,9 @@ fn config_with_base(base_url: &str) -> DocumentConfig {
 }
 
 fn eval_string(doc: &mut ScriptDocument, expression: &str) -> String {
-    use blitz_dom::Document as _;
-
-    // Module loading shares the 16 ms startup budget with parsing and fetches.
-    // A yielded graph needs later host polls before its result can be read.
-    let deadline = Instant::now() + SERVE_TIMEOUT;
-    loop {
-        match doc.eval_json(expression) {
-            Ok(serde_json::Value::String(value)) => return value,
-            Ok(serde_json::Value::Null) if Instant::now() < deadline => {
-                doc.poll(None);
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            other => panic!("expected {expression} to be a string, got {other:?}"),
-        }
+    match doc.eval_json(expression) {
+        Ok(serde_json::Value::String(value)) => value,
+        other => panic!("expected {expression} to be a string, got {other:?}"),
     }
 }
 
@@ -211,7 +200,7 @@ fn an_inline_module_is_parsed_in_module_goal() {
            </script>"#,
         DocumentConfig::default(),
     );
-    doc.execute_scripts();
+    doc.run_until_idle().expect("script startup completes");
 
     assert_eq!(eval_string(&mut doc, "globalThis.result"), "module ran");
 }
@@ -233,7 +222,7 @@ fn a_classic_script_still_runs_unchanged() {
            </script>"#,
         DocumentConfig::default(),
     );
-    doc.execute_scripts();
+    doc.run_until_idle().expect("script startup completes");
 
     assert_eq!(eval_string(&mut doc, "globalThis.classicRan"), "yes");
     assert_eq!(
@@ -253,7 +242,7 @@ fn import_meta_url_is_the_module_url() {
         r#"<script type="module">globalThis.metaUrl = import.meta.url;</script>"#,
         config_with_base("https://example.invalid/page/index.html"),
     );
-    doc.execute_scripts();
+    doc.run_until_idle().expect("script startup completes");
 
     assert_eq!(
         eval_string(&mut doc, "globalThis.metaUrl"),
@@ -283,7 +272,7 @@ fn a_module_imports_a_relative_module_over_the_fetcher() {
         config_with_base(&format!("{origin}/index.html")),
     )
     .with_fetcher(LoopbackFetcher);
-    doc.execute_scripts();
+    doc.run_until_idle().expect("script startup completes");
 
     assert_eq!(
         eval_string(&mut doc, "globalThis.result"),
@@ -333,7 +322,7 @@ fn a_module_imported_twice_is_one_instance() {
         config_with_base(&format!("{origin}/index.html")),
     )
     .with_fetcher(LoopbackFetcher);
-    doc.execute_scripts();
+    doc.run_until_idle().expect("script startup completes");
 
     assert_eq!(eval_string(&mut doc, "globalThis.result"), "2");
 
@@ -360,7 +349,7 @@ fn a_nomodule_fallback_is_skipped() {
            <script nomodule>globalThis.ran = "fallback";</script>"#,
         DocumentConfig::default(),
     );
-    doc.execute_scripts();
+    doc.run_until_idle().expect("script startup completes");
 
     assert_eq!(eval_string(&mut doc, "globalThis.ran"), "module");
 }
@@ -393,7 +382,7 @@ fn an_import_map_resolves_a_bare_specifier() {
         config_with_base(&format!("{origin}/index.html")),
     )
     .with_fetcher(LoopbackFetcher);
-    doc.execute_scripts();
+    doc.run_until_idle().expect("script startup completes");
 
     assert_eq!(eval_string(&mut doc, "globalThis.result"), "mapped");
 
@@ -430,7 +419,7 @@ fn dynamic_import_from_a_classic_script_resolves_against_the_script() {
         config_with_base(&format!("{origin}/index.html")),
     )
     .with_fetcher(LoopbackFetcher);
-    doc.execute_scripts();
+    doc.run_until_idle().expect("script startup completes");
 
     assert_eq!(eval_string(&mut doc, "globalThis.result"), "dynamic");
 
@@ -459,7 +448,7 @@ fn an_unmapped_bare_specifier_reports_what_is_wrong() {
            </script>"#,
         config_with_base("https://example.invalid/index.html"),
     );
-    doc.execute_scripts();
+    doc.run_until_idle().expect("script startup completes");
 
     let error = eval_string(&mut doc, "globalThis.error");
     assert!(
@@ -489,7 +478,7 @@ fn a_json_module_exports_its_document_as_the_default() {
         config_with_base(&format!("{origin}/index.html")),
     )
     .with_fetcher(LoopbackFetcher);
-    doc.execute_scripts();
+    doc.run_until_idle().expect("script startup completes");
 
     assert_eq!(eval_string(&mut doc, "globalThis.result"), "from json");
     let _ = server.join();
@@ -503,8 +492,6 @@ fn a_json_module_exports_its_document_as_the_default() {
 /// that waits for anything.
 #[test]
 fn a_module_awaiting_a_timer_settles_on_a_later_poll() {
-    use blitz_dom::Document as _;
-
     let mut doc = ScriptDocument::from_html(
         r#"<script type="module">
              await new Promise((resolve) => setTimeout(resolve, 1));
@@ -512,19 +499,7 @@ fn a_module_awaiting_a_timer_settles_on_a_later_poll() {
            </script>"#,
         DocumentConfig::default(),
     );
-    doc.execute_scripts();
-
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while Instant::now() < deadline {
-        doc.poll(None);
-        if matches!(
-            doc.eval_json("globalThis.result"),
-            Ok(serde_json::Value::String(_))
-        ) {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    doc.run_until_idle().expect("script startup completes");
 
     assert_eq!(eval_string(&mut doc, "globalThis.result"), "settled");
 }
@@ -536,9 +511,9 @@ fn a_module_awaiting_a_timer_settles_on_a_later_poll() {
 /// module tag runs *before* that module in a real engine, and the module reads
 /// the config it expects.
 ///
-/// The expected sequence below is not transcribed from the spec text. This
-/// exact markup was served to a stock engine over loopback and the order
-/// recorded is what it produced.
+/// The expected script sequence below was recorded from this mixture of
+/// script forms served to a stock engine over loopback. DOMContentLoaded
+/// must follow the completed sequence.
 #[test]
 fn deferred_scripts_run_after_the_parser_blocking_ones() {
     let (origin, server) = serve_modules(vec![
@@ -557,7 +532,12 @@ fn deferred_scripts_run_after_the_parser_blocking_ones() {
     ]);
 
     let mut doc = ScriptDocument::from_html(
-        r#"<script>globalThis.order = [];</script>
+        r#"<script>
+             globalThis.order = [];
+             document.addEventListener("DOMContentLoaded", () => {
+               globalThis.order.push("DOMContentLoaded");
+             });
+           </script>
            <script type="module">globalThis.order.push("A inline module");</script>
            <script>globalThis.order.push("B inline classic");</script>
            <script type="module" src="/m.js"></script>
@@ -568,7 +548,7 @@ fn deferred_scripts_run_after_the_parser_blocking_ones() {
         config_with_base(&format!("{origin}/index.html")),
     )
     .with_fetcher(LoopbackFetcher);
-    doc.execute_scripts();
+    doc.run_until_idle().expect("script startup completes");
 
     assert_eq!(
         eval_string(&mut doc, "globalThis.order.join('|')"),
@@ -580,6 +560,7 @@ fn deferred_scripts_run_after_the_parser_blocking_ones() {
             "m.js external module",
             "d.js external classic defer",
             "D inline module last",
+            "DOMContentLoaded",
         ]
         .join("|")
     );

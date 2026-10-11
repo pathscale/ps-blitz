@@ -198,8 +198,7 @@ fn history_tracks_state_and_same_origin_urls() {
             ..DocumentConfig::default()
         },
     );
-    doc.execute_scripts();
-    doc.poll(None);
+    doc.run_until_idle().expect("script startup completes");
     assert_eq!(
         text_of_selector(&doc, "#out"),
         "true|2|1|/components|?group=forms|#input|0|/||"
@@ -1763,9 +1762,8 @@ fn a_script_element_appended_by_script_runs() {
         </body></html>
         "#,
     );
-    // The append happens while the first pass is still running, so the new
-    // script is picked up on the next turn of the loop rather than inline.
-    doc.poll(None);
+    // Drain the additional script appended during startup.
+    doc.run_until_idle().expect("script startup completes");
 
     assert_eq!(text_of_selector(&doc, "#out"), "ran");
 }
@@ -1810,8 +1808,7 @@ fn an_appended_script_with_a_src_is_fetched_and_reports_load() {
         },
     )
     .with_fetcher(CannedScripts);
-    doc.execute_scripts();
-    doc.poll(None);
+    doc.run_until_idle().expect("script startup completes");
 
     assert_eq!(text_of_selector(&doc, "#out"), "bundle");
     assert_eq!(

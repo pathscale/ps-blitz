@@ -24,7 +24,7 @@ fn document(script: &str) -> ScriptDocument {
            </body></html>"#
     );
     let mut doc = ScriptDocument::from_html(&html, Default::default());
-    doc.poll(None);
+    doc.run_until_idle().expect("script startup completes");
     doc.inner_mut().resolve(0.0);
     doc
 }

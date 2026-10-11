@@ -56,9 +56,8 @@ fn history_back_dispatches_popstate() {
         "#,
     );
 
-    // Each traversal is queued, and forward is queued by the back callback.
-    doc.poll(None);
-    doc.poll(None);
+    // Drain both the startup traversal and the traversal its callback queues.
+    doc.run_until_idle().expect("script startup completes");
 
     assert_eq!(
         text_of_selector(&doc, "#out"),
