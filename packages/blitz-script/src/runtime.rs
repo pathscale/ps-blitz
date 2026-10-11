@@ -180,6 +180,10 @@ pub(crate) struct ScriptRuntime {
     /// focus can tell an edited field from an untouched one. `change` is a
     /// commit event, not a blur notification.
     focussed_text_value: Option<(NodeId, String)>,
+    /// The page's platform poll functions, looked up on first use.
+    domc_polls: Option<[Option<JsObject>; 2]>,
+    /// The viewport generation the media-query poll last saw.
+    domc_generation: Option<u64>,
 }
 
 impl ScriptRuntime {
@@ -445,6 +449,8 @@ impl ScriptRuntime {
             job_budget: Rc::new(JobBudget::default()),
             pending_modules: Vec::new(),
             focussed_text_value: None,
+            domc_polls: None,
+            domc_generation: None,
         };
 
         // Small JS bootstrap for APIs that are easiest to define in JS
@@ -1131,17 +1137,35 @@ impl ScriptRuntime {
     }
 
     pub(crate) fn poll_domc(&mut self) -> bool {
-        let global = self.context.global_object().clone();
-        let mut changed = false;
-        for name in ["__blitzDOMCPoll", "__blitzDocwritePoll"] {
-            let result = global
-                .get(boa_engine::JsString::from(name), &mut self.context)
-                .and_then(|value| {
-                    let Some(function) = value.as_object() else {
-                        return Ok(JsValue::from(false));
-                    };
-                    function.call(&JsValue::undefined(), &[], &mut self.context)
+        let polls = match &self.domc_polls {
+            Some(polls) => polls.clone(),
+            None => {
+                let global = self.context.global_object().clone();
+                let polls = ["__blitzDOMCPoll", "__blitzDocwritePoll"].map(|name| {
+                    global
+                        .get(boa_engine::JsString::from(name), &mut self.context)
+                        .ok()
+                        .and_then(|value| value.as_callable())
                 });
+                self.domc_polls = Some(polls.clone());
+                polls
+            }
+        };
+        // Media query results only move with the device, so the media-query poll runs only
+        // after the viewport generation changes. A list gaining its first listener takes its
+        // own baseline, so skipping a poll misses nothing.
+        let generation = self.ctx.doc.borrow().viewport_generation();
+        let device_changed = self.domc_generation != Some(generation);
+        self.domc_generation = Some(generation);
+        let mut changed = false;
+        for (index, function) in polls.into_iter().enumerate() {
+            let Some(function) = function else {
+                continue;
+            };
+            if index == 0 && !device_changed {
+                continue;
+            }
+            let result = function.call(&JsValue::undefined(), &[], &mut self.context);
             match result {
                 Ok(value) => changed |= value.to_boolean(),
                 Err(error) => {
