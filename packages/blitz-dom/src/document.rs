@@ -3637,6 +3637,11 @@ impl BaseDocument {
 
     /// Update the device and reset the stylist to process the new size
     pub fn set_stylist_device(&mut self, device: Device) {
+        // Viewport units become pixels at cascade time, from this device.
+        // Compare before `device` is moved into the stylist.
+        let previous_viewport = self.stylist.device().au_viewport_size();
+        let next_viewport = device.au_viewport_size();
+
         // Seed the new device with the root element's current style and font-relative
         // unit state (used to resolve rem/rlh/rex/rch/rcap/ric units). Stylo only
         // updates this state when the root element's style *changes* during a restyle,
@@ -3672,6 +3677,22 @@ impl BaseDocument {
         for host_id in self.shadow_host_node_ids() {
             if let Some(root_id) = self.shadow_root_id(host_id) {
                 self.invalidate_shadow_styles(root_id);
+            }
+        }
+
+        // `Stylist::set_device` reports media-query changes only. A CSS-pixel
+        // change still has to recascade `vh`/`vw` (including on `::before`)
+        // and lay out again: the initial containing block changed, and
+        // incremental layout otherwise keeps the boxes from the previous
+        // viewport. Capture builds the document at 0x0 and installs the real
+        // viewport here, on the way into the next `resolve`.
+        if previous_viewport != next_viewport {
+            self.abspos_layout_dirty = true;
+            let invalidated = self.try_root_element().is_some_and(|root| {
+                style::invalidation::viewport_units::invalidate(root)
+            });
+            if invalidated {
+                self.shell_provider.request_redraw();
             }
         }
     }
