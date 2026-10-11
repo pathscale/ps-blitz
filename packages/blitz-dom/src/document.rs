@@ -1678,7 +1678,6 @@ impl BaseDocument {
                 continue;
             };
             let anons: SmallVec<[NodeId; 4]> = parent.anonymous_blocks.iter().copied().collect();
-            drop(parent);
             for anon in anons {
                 let Some(anon_node) = nodes.get(anon) else {
                     continue;
