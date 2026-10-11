@@ -40,7 +40,7 @@ fn build_config() -> Result<Arc<ClientConfig>, String> {
         );
     }
     // Explicit even when an embedder installed another process default.
-    let provider = Arc::new(ps_rustls_rustcrypto::provider());
+    let provider = Arc::new(ps_rustcrypto::provider());
     let mut config = ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .map_err(|error| error.to_string())?
