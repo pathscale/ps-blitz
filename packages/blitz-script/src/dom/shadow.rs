@@ -1,7 +1,9 @@
 //! ShadowRoot and slot bindings. Distribution remains in blitz-dom.
 
-use blitz_dom::BaseDocument;
+use std::collections::HashSet;
+
 use blitz_dom::node::ShadowRootMode;
+use blitz_dom::{BaseDocument, NodeId};
 use blitz_html::DocumentHtmlParser;
 use boa_engine::object::{JsObject, builtins::JsArray};
 use boa_engine::{
@@ -47,7 +49,13 @@ pub(crate) fn init(ctx: &DomCtx, context: &mut Context) {
     define_accessor(&root, "mode", Some(mode), None, context);
     define_accessor(&root, "clonable", Some(clonable), None, context);
     define_accessor(&root, "serializable", Some(serializable), None, context);
-    define_accessor(&root, "delegatesFocus", Some(delegates_focus), None, context);
+    define_accessor(
+        &root,
+        "delegatesFocus",
+        Some(delegates_focus),
+        None,
+        context,
+    );
     define_method(&root, "setHTMLUnsafe", 1, set_html_unsafe, context);
     define_accessor(
         &root,
@@ -65,6 +73,48 @@ pub(crate) fn init(ctx: &DomCtx, context: &mut Context) {
         context,
     );
     define_method(&root, "getElementById", 1, get_element_by_id, context);
+    define_accessor(&root, "activeElement", Some(active_element), None, context);
+    define_accessor(
+        &root,
+        "slotAssignment",
+        Some(slot_assignment),
+        None,
+        context,
+    );
+    define_accessor(&root, "styleSheets", Some(style_sheets), None, context);
+    define_accessor(
+        &root,
+        "fullscreenElement",
+        Some(null_element),
+        None,
+        context,
+    );
+    define_accessor(
+        &root,
+        "pointerLockElement",
+        Some(null_element),
+        None,
+        context,
+    );
+    define_accessor(
+        &root,
+        "pictureInPictureElement",
+        Some(null_element),
+        None,
+        context,
+    );
+    define_method(&root, "getHTML", 0, get_html, context);
+    define_method(&root, "elementFromPoint", 2, element_from_point, context);
+    define_method(&root, "elementsFromPoint", 2, elements_from_point, context);
+    define_method(&root, "getSelection", 0, get_selection, context);
+    let global = context.global_object();
+    define_method(
+        &global,
+        "__domcSetStyleSheetList",
+        1,
+        set_style_sheet_list,
+        context,
+    );
 
     define_accessor(&node, "assignedSlot", Some(assigned_slot), None, context);
     define_method(&element, "attachShadow", 1, attach_shadow, context);
@@ -119,10 +169,7 @@ fn attach_shadow(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
     };
     let (allowed, shadow_id) = {
         let doc = ctx.doc.borrow();
-        let Some(host) = doc
-            .get_node(host_id)
-            .and_then(|node| node.element_data())
-        else {
+        let Some(host) = doc.get_node(host_id).and_then(|node| node.element_data()) else {
             return Err(JsNativeError::typ()
                 .with_message("attachShadow requires an element")
                 .into());
@@ -219,7 +266,11 @@ fn set_html_unsafe(this: &JsValue, args: &[JsValue], context: &mut Context) -> J
     Ok(JsValue::undefined())
 }
 
-fn parse_html_unsafe(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+fn parse_html_unsafe(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
     let source = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
     let document_id = {
@@ -275,6 +326,136 @@ fn mode(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValu
     } else {
         "closed"
     }))
+}
+
+fn shadow_receiver(this: &JsValue, context: &mut Context) -> JsResult<NodeId> {
+    let ctx = dom_ctx(context)?;
+    let id = this_node_id(this)?;
+    if !ctx
+        .doc
+        .borrow()
+        .get_node(id)
+        .is_some_and(|node| node.is_shadow_root())
+    {
+        return Err(JsNativeError::typ()
+            .with_message("ShadowRoot receiver required")
+            .into());
+    }
+    Ok(id)
+}
+
+/// The element in `root_id`'s tree that is a shadow-including inclusive
+/// ancestor of `node_id`, or `None` when the node is outside that tree.
+fn retarget_element(doc: &BaseDocument, mut node_id: NodeId, root_id: NodeId) -> Option<NodeId> {
+    let mut guard = 0;
+    loop {
+        guard += 1;
+        if guard > 1024 {
+            return None;
+        }
+        if doc.dom_root_id(node_id) == root_id {
+            if doc.get_node(node_id)?.is_element() {
+                return Some(node_id);
+            }
+            node_id = doc.dom_parent_id(node_id)?;
+            continue;
+        }
+        let tree_root = doc.dom_root_id(node_id);
+        let host = doc.get_node(tree_root)?.shadow_root_data()?.host;
+        if host == node_id {
+            return None;
+        }
+        node_id = host;
+    }
+}
+
+fn active_element(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let root_id = shadow_receiver(this, context)?;
+    let focused = {
+        let doc = ctx.doc.borrow();
+        doc.get_focussed_node_id()
+            .and_then(|id| retarget_element(&doc, id, root_id))
+    };
+    Ok(node_or_null(&ctx, focused, context))
+}
+
+fn slot_assignment(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let _ = shadow_receiver(this, context)?;
+    Ok(js_str("named"))
+}
+
+fn null_element(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let _ = shadow_receiver(this, context)?;
+    Ok(JsValue::null())
+}
+
+fn get_html(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let _ = shadow_receiver(this, context)?;
+    element::get_inner_html(this, &[], context)
+}
+
+fn point_hits(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<Vec<NodeId>> {
+    let root_id = shadow_receiver(this, context)?;
+    let x = args
+        .first()
+        .unwrap_or(&JsValue::undefined())
+        .to_number(context)? as f32;
+    let y = args
+        .get(1)
+        .unwrap_or(&JsValue::undefined())
+        .to_number(context)? as f32;
+    let ctx = dom_ctx(context)?;
+    ctx.flush_layout();
+    let ids = ctx.doc.borrow().platform_elements_from_point(x, y);
+    let doc = ctx.doc.borrow();
+    let mut seen = HashSet::new();
+    let mut hits = Vec::new();
+    for id in ids {
+        if let Some(id) = retarget_element(&doc, id, root_id) {
+            if seen.insert(id) {
+                hits.push(id);
+            }
+        }
+    }
+    Ok(hits)
+}
+
+fn element_from_point(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let id = point_hits(this, args, context)?.into_iter().next();
+    let ctx = dom_ctx(context)?;
+    Ok(node_or_null(&ctx, id, context))
+}
+
+fn elements_from_point(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let ids = point_hits(this, args, context)?;
+    let ctx = dom_ctx(context)?;
+    let values: Vec<JsValue> = ids
+        .into_iter()
+        .map(|id| node_wrapper(&ctx, id, context).into())
+        .collect();
+    Ok(JsArray::from_iter(values, context).into())
+}
+
+fn get_selection(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let root_id = shadow_receiver(this, context)?;
+    let owner = {
+        let doc = ctx.doc.borrow();
+        doc.get_node(root_id)
+            .and_then(|node| node.owner_document)
+            .unwrap_or_else(|| doc.root_node().id)
+    };
+    let document = node_wrapper(&ctx, owner, context);
+    super::range::document_selection(&document.into(), args, context)
 }
 
 fn get_element_by_id(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
@@ -396,4 +577,31 @@ pub(crate) fn deliver_slot_changes(ctx: &DomCtx, context: &mut Context) -> bool 
         let _ = super::shadow_event::dispatch(ctx, id, &event, false, context);
     }
     delivered
+}
+
+#[derive(Trace, Finalize, JsData)]
+struct StyleSheetListFn {
+    function: JsObject,
+}
+
+fn set_style_sheet_list(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let function = args
+        .first()
+        .and_then(JsValue::as_object)
+        .ok_or_else(|| JsNativeError::typ().with_message("StyleSheetList is unavailable"))?;
+    context.insert_data(StyleSheetListFn { function });
+    Ok(JsValue::undefined())
+}
+
+fn style_sheets(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let _ = shadow_receiver(this, context)?;
+    let function = context
+        .get_data::<StyleSheetListFn>()
+        .map(|data| data.function.clone());
+    let Some(function) = function else {
+        return Err(JsNativeError::typ()
+            .with_message("StyleSheetList is unavailable")
+            .into());
+    };
+    function.call(&JsValue::undefined(), &[this.clone()], context)
 }

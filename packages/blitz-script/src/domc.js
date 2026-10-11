@@ -320,22 +320,25 @@
         sheets.set(owner, sheet);
         return sheet;
     }
+    function styleSheetList(root) {
+        if (!sheetLists.has(root)) {
+            sheetLists.set(root, liveList(
+                sheetListProto,
+                () => sheetOwners(root).map(wrapSheet).filter(Boolean),
+                false,
+                "StyleSheetList"
+            ));
+        }
+        return sheetLists.get(root);
+    }
     define(documentProto, "styleSheets", {
-        get: function () {
-            if (!sheetLists.has(this)) {
-                const document = this;
-                sheetLists.set(document, liveList(
-                    sheetListProto,
-                    () => sheetOwners(document).map(wrapSheet).filter(Boolean),
-                    false,
-                    "StyleSheetList"
-                ));
-            }
-            return sheetLists.get(this);
-        },
+        get: function () { return styleSheetList(this); },
         configurable: true,
         enumerable: true
     });
+    if (typeof globalThis.__domcSetStyleSheetList === "function") {
+        globalThis.__domcSetStyleSheetList(styleSheetList);
+    }
 
     const mediaState = new WeakMap();
     const active = new Set();
@@ -536,8 +539,9 @@
     for (const name of [
         "__domcSupports", "__domcMedia", "__domcMatches", "__domcCollection",
         "__domcSheetOwners", "__domcSheetHandle", "__domcSheetRead", "__domcSheetWrite",
-        "__domcImmediateStopped"
+        "__domcImmediateStopped", "__domcSetStyleSheetList"
     ]) {
         delete globalThis[name];
     }
 })();
+
