@@ -31,6 +31,7 @@ const CLASSES: &[(&str, &str)] = &[
     ("ProgressEvent", "Event"),
     ("PopStateEvent", "Event"),
     ("HashChangeEvent", "Event"),
+    ("ToggleEvent", "Event"),
     ("StorageEvent", "Event"),
     ("SubmitEvent", "Event"),
     ("AnimationEvent", "Event"),
@@ -141,6 +142,7 @@ fn fields(class: &str) -> &'static [Field] {
         ],
         "PopStateEvent" => fields!["state" => Any],
         "HashChangeEvent" => fields!["newURL" => String, "oldURL" => String],
+        "ToggleEvent" => fields!["newState" => String, "oldState" => String],
         "StorageEvent" => fields![
             "key" => NullableString, "newValue" => NullableString,
             "oldValue" => NullableString, "storageArea" => Interface("Storage"), "url" => String
