@@ -16,7 +16,7 @@
 //!
 //! ## The identity of a module is a URL, not a path
 //!
-//! Boa addresses modules by [`Path`] — [`Referrer::path`], [`Module::path`],
+//! Boa addresses modules by [`Path`]: [`Referrer::path`], [`Module::path`],
 //! [`Source::with_path`]. The web addresses them by URL. Rather than push URLs
 //! through path resolution, where `https://a/b` loses a slash and `..` is
 //! resolved by different rules than the URL spec uses, this loader treats the
@@ -24,7 +24,7 @@
 //! read back out with no interpretation. Resolution is done by [`Url::join`],
 //! which is the spec's algorithm.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -63,12 +63,33 @@ pub(crate) struct BlitzModuleLoader {
     cache: RefCell<HashMap<String, Module>>,
     /// The page's `<script type="importmap">`, if it has one.
     import_map: RefCell<ImportMap>,
+    /// Loader requests whose result futures have not completed or been dropped.
+    ///
+    /// Includes dynamic imports from classic scripts, which have no entry in
+    /// the runtime's list of document module evaluation promises.
+    pending_loads: Cell<usize>,
+}
+
+/// Owns one outstanding loader request through delivery of its result.
+///
+/// Dropping an unpolled future, a failed load or an unwinding fetch releases
+/// the request just as completing a successful load does.
+struct PendingModuleLoad {
+    loader: Rc<BlitzModuleLoader>,
+}
+
+impl Drop for PendingModuleLoad {
+    fn drop(&mut self) {
+        self.loader
+            .pending_loads
+            .set(self.loader.pending_loads.get() - 1);
+    }
 }
 
 /// How many distinct modules one document may fetch.
 ///
 /// Module fetches are synchronous on the document thread, so an unbounded graph
-/// is an unbounded hang with a blank window and no error — the browser looks
+/// is an unbounded hang with a blank window and no error: the browser looks
 /// broken rather than the page. A real application's graph is in the hundreds
 /// unbundled; this is well clear of that and still terminates.
 const MAX_MODULES_PER_DOCUMENT: usize = 4096;
@@ -80,7 +101,12 @@ impl BlitzModuleLoader {
             base_url,
             cache: RefCell::new(HashMap::new()),
             import_map: RefCell::new(ImportMap::default()),
+            pending_loads: Cell::new(0),
         }
+    }
+
+    pub(crate) fn has_pending_loads(&self) -> bool {
+        self.pending_loads.get() != 0
     }
 
     /// Install the page's import map.
@@ -263,8 +289,18 @@ impl ModuleLoader for BlitzModuleLoader {
         request: ModuleRequest,
         context: &RefCell<&mut Context>,
     ) -> impl Future<Output = JsResult<Module>> {
+        // Count before fetching, and retain the guard until Boa polls or drops
+        // the result future. Returning from the synchronous fetch alone does
+        // not mean the module load has been delivered to the job executor.
+        self.pending_loads.set(self.pending_loads.get() + 1);
+        let pending = PendingModuleLoad {
+            loader: Rc::clone(&self),
+        };
         let result = self.load(&referrer, &request, &mut context.borrow_mut());
-        async { result }
+        async move {
+            let _pending = pending;
+            result
+        }
     }
 
     /// `import.meta.url`, which bundlers and asset helpers read to locate
