@@ -161,7 +161,19 @@ impl BaseDocument {
     }
 
     pub fn take_script_custom_element_reactions(&mut self) -> Vec<Reaction> {
-        std::mem::take(&mut self.script_custom_elements.reactions)
+        let mut reactions = std::mem::take(&mut self.script_custom_elements.reactions);
+        // Only a document with a browsing context upgrades. An element created and then
+        // moved into template contents, a clone of template contents, or an element of a
+        // createHTMLDocument document keeps its upgrade until it is adopted back.
+        let root = self.root_node_id;
+        reactions.retain(|reaction| {
+            !matches!(reaction.kind, ReactionKind::Upgrade)
+                || self
+                    .nodes
+                    .get(reaction.node)
+                    .is_some_and(|node| node.owner_document == Some(root))
+        });
+        reactions
     }
 
     /// Register native matching metadata and return only this name's connected

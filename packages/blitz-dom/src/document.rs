@@ -292,6 +292,9 @@ pub struct BaseDocument {
     /// Bumped whenever the stylist device changes (viewport size, scale or colour scheme),
     /// so script can skip re-evaluating media queries while it stays the same.
     viewport_generation: u64,
+    /// The inert document that owns every `<template>`'s contents, made on first use. It
+    /// has no browsing context, so nothing in it is upgraded as a custom element.
+    template_contents_owner: Option<NodeId>,
     dropped_node_ids: FxHashSet<NodeId>,
     dropped_node_parents: FxHashSet<NodeId>,
     /// Survivors that can still point at an id freed by this batch.
@@ -680,6 +683,7 @@ impl BaseDocument {
             node_drop_depth: 0,
             details_toggles: Vec::new(),
             viewport_generation: 0,
+            template_contents_owner: None,
             dropped_node_ids: FxHashSet::default(),
             dropped_node_parents: FxHashSet::default(),
             dropped_reference_owners: FxHashSet::default(),
@@ -5110,6 +5114,18 @@ impl BaseDocument {
         if was_open != present && !self.details_toggles.iter().any(|(id, _)| *id == node_id) {
             self.details_toggles.push((node_id, was_open));
         }
+    }
+
+    /// The inert document template contents belong to.
+    pub(crate) fn template_contents_owner(&mut self) -> NodeId {
+        if let Some(owner) = self.template_contents_owner {
+            return owner;
+        }
+        let mut data = crate::node::DocumentData::default();
+        data.content_type = "text/html";
+        let owner = self.create_node(NodeData::Document(Box::new(data)));
+        self.template_contents_owner = Some(owner);
+        owner
     }
 
     /// Changes whenever the device media queries are evaluated against changes.

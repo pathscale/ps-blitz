@@ -191,6 +191,15 @@ impl DocumentMutator<'_> {
         self.doc.create_node(NodeData::DocumentFragment)
     }
 
+    /// A template's contents: a fragment owned by the inert template contents document, so
+    /// what the parser puts in it is adopted there and never upgraded.
+    fn create_template_contents(&mut self) -> NodeId {
+        let contents = self.create_document_fragment();
+        let owner = self.doc.template_contents_owner();
+        self.doc.nodes[contents].owner_document = Some(owner);
+        contents
+    }
+
     /// A detached HTML document: `html > head > title`, and `body`.
     ///
     /// This backs `document.implementation.createHTMLDocument`, which jQuery
@@ -242,7 +251,7 @@ impl DocumentMutator<'_> {
         let mut data = ElementData::new(name, attrs);
         data.flush_style_attribute(self.doc.guard(), &self.doc.url.url_extra_data());
         if is_template {
-            data.template_contents = Some(self.create_document_fragment());
+            data.template_contents = Some(self.create_template_contents());
         }
 
         let id = self.doc.create_node(NodeData::Element(Box::new(data)));
@@ -269,7 +278,7 @@ impl DocumentMutator<'_> {
         {
             return contents;
         }
-        let contents = self.create_document_fragment();
+        let contents = self.create_template_contents();
         self.doc.nodes[node_id]
             .element_data_mut()
             .expect("template contents require an element")
