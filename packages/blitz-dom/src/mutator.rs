@@ -82,7 +82,9 @@ pub struct DocumentMutator<'doc> {
 impl Drop for DocumentMutator<'_> {
     fn drop(&mut self) {
         self.flush(); // Defined at bottom of file
-        if self.mutations_occurred {
+        self.doc.mutator_redraw_pending |= self.mutations_occurred;
+        self.doc.mutator_depth -= 1;
+        if self.doc.mutator_depth == 0 && mem::take(&mut self.doc.mutator_redraw_pending) {
             self.doc.shell_provider.request_redraw();
         }
     }
@@ -90,6 +92,7 @@ impl Drop for DocumentMutator<'_> {
 
 impl DocumentMutator<'_> {
     pub fn new<'doc>(doc: &'doc mut BaseDocument) -> DocumentMutator<'doc> {
+        doc.mutator_depth += 1;
         DocumentMutator {
             doc,
             eager_op_queue: Vec::new(),

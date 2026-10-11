@@ -9,7 +9,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use blitz_dom::node::{CustomElement, CustomElementCtx, CustomElementDefinition};
-use blitz_dom::{BaseDocument, DocumentConfig, LocalName, NodeId, QualName, ShadowRootMode, ns};
+use blitz_dom::{
+    BaseDocument, DocumentConfig, LocalName, NodeId, QualName, ShadowRootMode, ns, qual_name,
+};
 
 fn qname(local: &str) -> QualName {
     QualName {
@@ -54,12 +56,12 @@ fn shadow_content_is_styled_and_laid_out() {
     let mut mutator = doc.mutate();
 
     let host = mutator.create_element(qname("my-host"), Vec::new());
-    mutator.set_attribute(host, qname("style"), "display:block");
+    mutator.set_attribute(host, qual_name!("style"), "display:block");
     mutator.append_children(body, &[host]);
 
     let shadow_root = mutator.attach_shadow(host, ShadowRootMode::Open);
     let div = mutator.create_element(qname("div"), Vec::new());
-    mutator.set_attribute(div, qname("style"), "width:50px;height:30px");
+    mutator.set_attribute(div, qual_name!("style"), "width:50px;height:30px");
     mutator.append_children(shadow_root, &[div]);
     drop(mutator);
 
@@ -82,12 +84,12 @@ fn slot_projects_light_dom_children() {
     let mut mutator = doc.mutate();
 
     let host = mutator.create_element(qname("my-host"), Vec::new());
-    mutator.set_attribute(host, qname("style"), "display:block");
+    mutator.set_attribute(host, qual_name!("style"), "display:block");
     // Light DOM child
     let light = mutator.create_element(qname("span"), Vec::new());
     mutator.set_attribute(
         light,
-        qname("style"),
+        qual_name!("style"),
         "display:block;width:40px;height:20px",
     );
     mutator.append_children(host, &[light]);
@@ -96,7 +98,7 @@ fn slot_projects_light_dom_children() {
     // Shadow tree: a wrapper containing a default <slot>
     let shadow_root = mutator.attach_shadow(host, ShadowRootMode::Open);
     let wrapper = mutator.create_element(qname("div"), Vec::new());
-    mutator.set_attribute(wrapper, qname("style"), "display:block");
+    mutator.set_attribute(wrapper, qual_name!("style"), "display:block");
     let slot = mutator.create_element(qname("slot"), Vec::new());
     mutator.append_children(wrapper, &[slot]);
     mutator.append_children(shadow_root, &[wrapper]);
@@ -167,7 +169,7 @@ fn custom_element_registry_upgrades_on_insertion() {
 
     let mut mutator = doc.mutate();
     let host = mutator.create_element(qname("greet-box"), Vec::new());
-    mutator.set_attribute(host, qname("name"), "World");
+    mutator.set_attribute(host, qual_name!("name"), "World");
     mutator.append_children(body, &[host]);
     drop(mutator);
 
@@ -193,11 +195,11 @@ fn named_and_default_slots_distribute_light_children() {
     let mut mutator = doc.mutate();
 
     let host = mutator.create_element(qname("my-host"), Vec::new());
-    mutator.set_attribute(host, qname("style"), "display:block");
+    mutator.set_attribute(host, qual_name!("style"), "display:block");
 
     // Two light children: one targeting a named slot, one for the default slot.
     let header = mutator.create_element(qname("h1"), Vec::new());
-    mutator.set_attribute(header, qname("slot"), "title");
+    mutator.set_attribute(header, qual_name!("slot"), "title");
     let para = mutator.create_element(qname("p"), Vec::new());
     mutator.append_children(host, &[header, para]);
     mutator.append_children(body, &[host]);
@@ -205,7 +207,7 @@ fn named_and_default_slots_distribute_light_children() {
     // Shadow tree: a named <slot name="title"> and a default <slot>.
     let shadow_root = mutator.attach_shadow(host, ShadowRootMode::Open);
     let named_slot = mutator.create_element(qname("slot"), Vec::new());
-    mutator.set_attribute(named_slot, qname("name"), "title");
+    mutator.set_attribute(named_slot, qual_name!("name"), "title");
     let default_slot = mutator.create_element(qname("slot"), Vec::new());
     mutator.append_children(shadow_root, &[named_slot, default_slot]);
     drop(mutator);
@@ -239,7 +241,7 @@ fn unfilled_slot_renders_fallback_content() {
 
     // Host with no light-DOM children, so the slot has nothing to project.
     let host = mutator.create_element(qname("my-host"), Vec::new());
-    mutator.set_attribute(host, qname("style"), "display:block");
+    mutator.set_attribute(host, qual_name!("style"), "display:block");
     mutator.append_children(body, &[host]);
 
     let shadow_root = mutator.attach_shadow(host, ShadowRootMode::Open);
@@ -247,7 +249,7 @@ fn unfilled_slot_renders_fallback_content() {
     let fallback = mutator.create_element(qname("div"), Vec::new());
     mutator.set_attribute(
         fallback,
-        qname("style"),
+        qual_name!("style"),
         "display:block;width:33px;height:22px",
     );
     mutator.append_children(slot, &[fallback]);
@@ -269,7 +271,7 @@ fn shadow_style_element_styles_shadow_content() {
     let mut mutator = doc.mutate();
 
     let host = mutator.create_element(qname("my-host"), Vec::new());
-    mutator.set_attribute(host, qname("style"), "display:block");
+    mutator.set_attribute(host, qual_name!("style"), "display:block");
     mutator.append_children(body, &[host]);
 
     let shadow_root = mutator.attach_shadow(host, ShadowRootMode::Open);

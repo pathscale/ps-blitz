@@ -285,6 +285,9 @@ pub struct BaseDocument {
 
     /// Batch cache invalidation across recursive subtree teardown.
     node_drop_depth: usize,
+    /// Active mutation scopes defer redraw until the outermost scope ends.
+    pub(crate) mutator_depth: usize,
+    pub(crate) mutator_redraw_pending: bool,
     /// `<details>` elements whose `open` attribute appeared or disappeared since the script
     /// runtime last took them, each with whether it was open before its first change. The
     /// HTML toggle task coalesces per element, so an element is listed once.
@@ -681,6 +684,8 @@ impl BaseDocument {
 
         let mut doc = Self {
             node_drop_depth: 0,
+            mutator_depth: 0,
+            mutator_redraw_pending: false,
             details_toggles: Vec::new(),
             viewport_generation: 0,
             template_contents_owner: None,
@@ -2139,8 +2144,18 @@ impl BaseDocument {
 
         self.controls_to_form
             .retain(|control, form| !removed.contains(control) && !removed.contains(form));
-        if !dirty.is_empty() {
-            self.shell_provider.request_redraw();
+        // Detached owners still need their caches cleared, but cannot affect
+        // the frame. Live owners share the surrounding mutator's redraw.
+        if dirty.iter().any(|id| {
+            self.nodes
+                .get(*id)
+                .is_some_and(|node| node.flags.is_in_document())
+        }) {
+            if self.mutator_depth == 0 {
+                self.shell_provider.request_redraw();
+            } else {
+                self.mutator_redraw_pending = true;
+            }
         }
 
         // PaintDamage deliberately keeps old rectangles until resolve so
