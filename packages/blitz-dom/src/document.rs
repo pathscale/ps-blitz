@@ -2559,10 +2559,12 @@ impl BaseDocument {
         element.special_data = SpecialElementData::Stylesheet(stylesheet.clone());
 
         // TODO: Nodes could potentially get reused so ordering by node_id might be wrong.
+        // Only sheets the document Stylist holds can be an insertion point: shadow-root sheets are
+        // in `nodes_to_stylesheet` too, and stylo panics on a `before` sheet it does not have.
         let insertion_point = self
             .nodes_to_stylesheet
             .range((Bound::Excluded(node_id), Bound::Unbounded))
-            .next()
+            .find(|(id, _)| self.document_sheet_nodes.contains(id))
             .map(|(_, sheet)| sheet);
 
         if let Some(insertion_point) = insertion_point {
