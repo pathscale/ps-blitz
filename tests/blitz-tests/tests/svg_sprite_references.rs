@@ -2,7 +2,7 @@
 //!
 //! Blitz paints inline SVG as a replaced image: the element's markup is
 //! serialised and handed to usvg, which sees that string and nothing else. An
-//! icon sprite is the common case where that is not enough — the visible
+//! icon sprite is the common case where that is not enough: the visible
 //! `<svg><use href="#icon"></svg>` is a few bytes, and the geometry lives in a
 //! separate `<svg>` elsewhere in the document. Serialise only the subtree and
 //! usvg has no `#icon` to resolve, so the icon is silently not drawn.
@@ -55,7 +55,9 @@ fn a_referenced_sprite_symbol_travels_with_the_svg() {
     );
     // usvg refuses to parse without the namespace on the root.
     assert!(
-        source.starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\""),
+        source.split_once('>').is_some_and(|(root, _)| {
+            root.starts_with("<svg ") && root.contains(" xmlns=\"http://www.w3.org/2000/svg\"")
+        }),
         "the root must carry the SVG namespace: {source}"
     );
 }
@@ -128,12 +130,12 @@ fn setting_a_use_href_later_rebuilds_the_cached_svg() {
     // Inline SVG is cached as a replaced image. Frameworks commonly append
     // `<use>` first and set its `href` in a later DOM operation, so rebuilding
     // only the changed child leaves the root image cached from the empty,
-    // pre-attribute source — an icon that never appears no matter what the
+    // pre-attribute source, an icon that never appears no matter what the
     // markup ends up saying.
     let mut doc = document(
         r##"<html><body>
             <svg id="sprite" style="display:none">
-              <symbol id="icon-bolt" viewBox="0 0 10 10"><path d="M2 2 L8 8"/></symbol>
+              <symbol id="icon-bolt" viewBox="0 0 10 10"><path d="M2 2 L8 2 L8 8 L2 8 Z"/></symbol>
             </svg>
             <svg id="use-site" width="20" height="20"><use/></svg>
         </body></html>"##,
@@ -149,7 +151,7 @@ fn setting_a_use_href_later_rebuilds_the_cached_svg() {
     );
 
     let mut mutator = doc.mutate();
-    mutator.set_attribute(use_el, blitz_dom::qual_name!("href", html), "#icon-bolt");
+    mutator.set_attribute(use_el, blitz_dom::qual_name!("href"), "#icon-bolt");
     drop(mutator);
     doc.resolve(0.0);
 
