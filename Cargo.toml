@@ -220,6 +220,8 @@ reqwest = { version = "^0.13", default-features = false }
 
 # Media & Decoding
 image = { version = "^0.25.6", default-features = false }
+# JPEG XL, which the image crate does not decode. Pure Rust.
+jxl-oxide = { package = "ps-jxl-oxide", version = "^0.13" }
 wuff = "^0.2"
 html-escape = "^0.2.13"
 percent-encoding = "^2.3.1"

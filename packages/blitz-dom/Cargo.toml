@@ -31,6 +31,7 @@ image-formats = [
     "image/webp",
     "image/bmp",
     "image/ico",
+    "dep:jxl-oxide",
 ]
 # Shadow DOM and Custom Element support
 shadow-dom = []
@@ -99,6 +100,7 @@ rayon = { workspace = true }
 
 # Media & Decoding
 image = { workspace = true }
+jxl-oxide = { workspace = true, optional = true }
 usvg = { workspace = true, optional = true }
 wuff = { workspace = true, optional = true }
 html-escape = { workspace = true }
