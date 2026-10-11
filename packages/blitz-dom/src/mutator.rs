@@ -1,4 +1,5 @@
 use blitz_traits::node_id::NodeId;
+use rustc_hash::FxHashSet;
 use std::collections::HashSet;
 use std::mem;
 use std::ops::{Deref, DerefMut};
@@ -1693,13 +1694,17 @@ impl<'doc> DocumentMutator<'doc> {
     }
 
     fn process_removed_subtree(&mut self, node_id: NodeId) {
-        let mut removed = HashSet::new();
-        let mut parents = HashSet::new();
+        let mut removed = FxHashSet::default();
+        let mut parents = FxHashSet::default();
         self.doc
             .iter_shadow_including_subtree_mut(node_id, |node_id, doc| {
                 removed.insert(node_id);
                 let node = &doc.nodes[node_id];
-                parents.extend([node.parent, node.layout_parent.get()].into_iter().flatten());
+                parents.extend(
+                    [node.parent, node.layout_parent.get()]
+                        .into_iter()
+                        .flatten(),
+                );
                 doc.nodes[node_id]
                     .flags
                     .set(NodeFlags::IS_IN_DOCUMENT, false);
@@ -1795,7 +1800,8 @@ impl<'doc> DocumentMutator<'doc> {
         // Detachment must remove published paint edges even while script
         // still owns wrappers. The later drop also invalidates references to
         // pseudo-elements, anonymous blocks and template contents it frees.
-        self.doc.invalidate_node_references(&removed, parents);
+        self.doc
+            .invalidate_node_references(&removed, parents, FxHashSet::default());
         #[cfg(feature = "autofocus")]
         if self
             .node_to_autofocus

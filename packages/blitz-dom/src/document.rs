@@ -30,6 +30,7 @@ use cursor_icon::CursorIcon;
 use linebender_resource_handle::Blob;
 use markup5ever::{local_name, ns};
 use parley::{FontContext, PlainEditorDriver};
+use rustc_hash::FxHashSet;
 use selectors::{Element, matching::QuirksMode};
 use smallvec::SmallVec;
 use std::any::Any;
@@ -284,8 +285,14 @@ pub struct BaseDocument {
 
     /// Batch cache invalidation across recursive subtree teardown.
     node_drop_depth: usize,
-    dropped_node_ids: HashSet<NodeId>,
-    dropped_node_parents: HashSet<NodeId>,
+    dropped_node_ids: FxHashSet<NodeId>,
+    dropped_node_parents: FxHashSet<NodeId>,
+    /// Survivors that can still point at an id freed by this batch.
+    ///
+    /// Recorded while the node is still in the slab. The purge runs after a
+    /// subtree drop has already removed those nodes, so the links have to be
+    /// captured first.
+    dropped_reference_owners: FxHashSet<NodeId>,
 
     /// The id of the root node (a Document node)
     pub(crate) root_node_id: NodeId,
@@ -659,8 +666,9 @@ impl BaseDocument {
 
         let mut doc = Self {
             node_drop_depth: 0,
-            dropped_node_ids: HashSet::new(),
-            dropped_node_parents: HashSet::new(),
+            dropped_node_ids: FxHashSet::default(),
+            dropped_node_parents: FxHashSet::default(),
+            dropped_reference_owners: FxHashSet::default(),
             hoisted_fixed_parents: HashMap::new(),
             hoisted_fixed_indices: HashMap::new(),
             abspos_placements: Vec::new(),
@@ -1521,6 +1529,217 @@ impl BaseDocument {
             .map(|(_, node_id)| node_id)
     }
 
+    /// Nodes that still hold a link to `node_id` after it leaves the document.
+    ///
+    /// Direct parents are recorded separately and force reconstruction. This
+    /// collects everyone else the old document-wide pass would have mutated:
+    /// surviving layout children (their `layout_parent` still points here),
+    /// anonymous blocks that list the id without being its DOM parent, shadow
+    /// slots and hosts, the authored parent of a hoisted fixed box, and
+    /// ancestors whose inline layout, list marker, table grid, or stacking
+    /// context stores a descendant id. Ancestors inside `removed` are not
+    /// walked; detachment does not clean lists on nodes that are themselves
+    /// going away.
+    fn collect_live_reference_owners(
+        nodes: &NodeTree,
+        hoisted_fixed_parents: &HashMap<NodeId, NodeId>,
+        removed: &FxHashSet<NodeId>,
+        node_id: NodeId,
+        candidates: &mut FxHashSet<NodeId>,
+    ) {
+        fn push_survivor(
+            removed: &FxHashSet<NodeId>,
+            candidates: &mut FxHashSet<NodeId>,
+            id: NodeId,
+        ) {
+            if !removed.contains(&id) {
+                candidates.insert(id);
+            }
+        }
+
+        let (removed_is_text, dom_parent, layout_parent, seeds) = {
+            let Some(node) = nodes.get(node_id) else {
+                return;
+            };
+            let mut seeds: SmallVec<[NodeId; 8]> = SmallVec::new();
+            {
+                let borrowed = node.layout_children.borrow();
+                if let Some(children) = borrowed.as_ref() {
+                    seeds.extend(children.iter().copied());
+                }
+            }
+            seeds.extend(node.children.iter().copied());
+            seeds.extend(node.anonymous_blocks.iter().copied());
+            seeds.extend(node.before());
+            seeds.extend(node.after());
+            #[cfg(feature = "shadow-dom")]
+            {
+                seeds.extend(node.assigned_slot);
+                seeds.extend(
+                    node.element_data()
+                        .and_then(|element| element.assigned_slot),
+                );
+                if let Some(assigned) = node.assigned_nodes.as_ref() {
+                    seeds.extend(assigned.iter().copied());
+                }
+                if let Some(root) = node.shadow_root_data() {
+                    seeds.push(root.host);
+                }
+            }
+            (
+                node.is_text_node(),
+                node.parent,
+                node.layout_parent.get(),
+                seeds,
+            )
+        };
+
+        for parent_id in [dom_parent, layout_parent].into_iter().flatten() {
+            let Some(parent) = nodes.get(parent_id) else {
+                continue;
+            };
+            let anons: SmallVec<[NodeId; 4]> = parent.anonymous_blocks.iter().copied().collect();
+            drop(parent);
+            for anon in anons {
+                let Some(anon_node) = nodes.get(anon) else {
+                    continue;
+                };
+                let listed = anon_node
+                    .children
+                    .iter()
+                    .any(|child| removed.contains(child))
+                    || anon_node
+                        .layout_children
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|children| {
+                            children.iter().any(|child| removed.contains(child))
+                        });
+                if listed {
+                    push_survivor(removed, candidates, anon);
+                }
+            }
+        }
+        for id in seeds {
+            push_survivor(removed, candidates, id);
+        }
+
+        let mut stack: SmallVec<[NodeId; 16]> = SmallVec::new();
+        if let Some(id) = dom_parent {
+            if !removed.contains(&id) {
+                stack.push(id);
+            }
+        }
+        if let Some(id) = layout_parent {
+            if !removed.contains(&id) {
+                stack.push(id);
+            }
+        }
+        if let Some(origin) = hoisted_fixed_parents.get(&node_id).copied() {
+            // Hoist drops the layout edge before paint children are rebuilt, so
+            // the authored parent can still name the fixed box.
+            push_survivor(removed, candidates, origin);
+            if !removed.contains(&origin) {
+                stack.push(origin);
+            }
+        }
+
+        let mut seen: SmallVec<[NodeId; 16]> = SmallVec::new();
+        seen.push(node_id);
+        while let Some(id) = stack.pop() {
+            if seen.contains(&id) {
+                continue;
+            }
+            seen.push(id);
+            let Some(ancestor) = nodes.get(id) else {
+                continue;
+            };
+            let stacking = ancestor.stacking_context.as_ref().is_some_and(|context| {
+                context.children.iter().any(|child| {
+                    removed.contains(&child.node_id)
+                        || child
+                            .clip_ancestors
+                            .iter()
+                            .any(|clip| removed.contains(clip))
+                })
+            });
+            let inline_or_list = ancestor.element_data().is_some_and(|element| {
+                element.inline_layout_data.is_some() || element.list_item_data.is_some()
+            });
+            // Table grids store cells, rows, and row groups, never text nodes.
+            let table_root = !removed_is_text && ancestor.flags.is_table_root();
+            #[cfg(feature = "shadow-dom")]
+            let shadow_hit = {
+                let mut hit = ancestor
+                    .flattened_children
+                    .as_ref()
+                    .is_some_and(|children| children.iter().any(|child| removed.contains(child)))
+                    || ancestor.assigned_nodes.as_ref().is_some_and(|assigned| {
+                        assigned.iter().any(|child| removed.contains(child))
+                    });
+                if let Some(root) = ancestor.shadow_root_data() {
+                    let host = root.host;
+                    hit = hit
+                        || root.slots.iter().any(|slot| removed.contains(slot))
+                        || root
+                            .slottables
+                            .iter()
+                            .any(|slottable| removed.contains(slottable))
+                        || root
+                            .stylesheet_nodes
+                            .iter()
+                            .any(|sheet| removed.contains(sheet));
+                    stack.push(host);
+                }
+                hit
+            };
+            #[cfg(not(feature = "shadow-dom"))]
+            let shadow_hit = false;
+            if stacking || inline_or_list || table_root || shadow_hit {
+                push_survivor(removed, candidates, id);
+            }
+            if let Some(parent) = ancestor.parent {
+                stack.push(parent);
+            }
+            if let Some(parent) = ancestor.layout_parent.get() {
+                stack.push(parent);
+            }
+        }
+    }
+
+    /// Stacking-context hosts are few, and a fixed box can paint in one that
+    /// is not a layout ancestor of its current parent. Visit a host only when
+    /// its hoisted list actually names a removed id.
+    fn collect_stacking_context_owners(
+        nodes: &NodeTree,
+        position_hosts: &HashSet<NodeId>,
+        clip_hosts: &HashSet<NodeId>,
+        removed: &FxHashSet<NodeId>,
+        candidates: &mut FxHashSet<NodeId>,
+    ) {
+        for host in position_hosts.iter().chain(clip_hosts.iter()).copied() {
+            if removed.contains(&host) {
+                continue;
+            }
+            let Some(node) = nodes.get(host) else {
+                continue;
+            };
+            let Some(context) = node.stacking_context.as_ref() else {
+                continue;
+            };
+            let references = context.children.iter().any(|child| {
+                removed.contains(&child.node_id)
+                    || child
+                        .clip_ancestors
+                        .iter()
+                        .any(|clip| removed.contains(clip))
+            });
+            if references {
+                candidates.insert(host);
+            }
+        }
+    }
+
     /// Remove detached or freed ids from every persistent rendering cache.
     ///
     /// DOM ancestry alone cannot find the owners: fixed boxes can belong to
@@ -1528,10 +1747,14 @@ impl BaseDocument {
     /// inline boxes and table cells have additional flattened representations.
     /// Invalidate those owners before this mutation returns. Hidden subtrees
     /// retain caches, so leaving cleanup until resolve is insufficient.
+    ///
+    /// Only those owners are visited. A pass over every node made each
+    /// `textContent` write rescan the whole document.
     pub(crate) fn invalidate_node_references(
         &mut self,
-        removed: &HashSet<NodeId>,
-        mut parents: HashSet<NodeId>,
+        removed: &FxHashSet<NodeId>,
+        mut parents: FxHashSet<NodeId>,
+        extra_owners: FxHashSet<NodeId>,
     ) {
         if removed.is_empty() {
             return;
@@ -1539,7 +1762,7 @@ impl BaseDocument {
 
         fn layout_references_removed(
             layout: &parley::Layout<TextBrush>,
-            removed: &HashSet<NodeId>,
+            removed: &FxHashSet<NodeId>,
         ) -> bool {
             layout
                 .inline_boxes()
@@ -1565,6 +1788,47 @@ impl BaseDocument {
             }
         }
 
+        let mut candidates: FxHashSet<NodeId> = FxHashSet::with_capacity_and_hasher(
+            parents.len() + extra_owners.len() + removed.len(),
+            Default::default(),
+        );
+        for &id in &parents {
+            if !removed.contains(&id) {
+                candidates.insert(id);
+            }
+        }
+        for id in extra_owners {
+            if !removed.contains(&id) {
+                candidates.insert(id);
+            }
+        }
+        for &id in removed {
+            let detach = self
+                .nodes
+                .get(id)
+                .and_then(|node| node.layout_parent.get())
+                .is_some_and(|parent| !removed.contains(&parent));
+            if detach {
+                candidates.insert(id);
+            }
+            if self.nodes.contains_key(id) {
+                Self::collect_live_reference_owners(
+                    &self.nodes,
+                    &self.hoisted_fixed_parents,
+                    removed,
+                    id,
+                    &mut candidates,
+                );
+            }
+        }
+        Self::collect_stacking_context_owners(
+            &self.nodes,
+            &self.hoisted_position_hosts,
+            &self.hoisted_clip_hosts,
+            removed,
+            &mut candidates,
+        );
+
         self.fixed_nodes.retain(|id| !removed.contains(id));
         self.sticky_nodes.retain(|id| !removed.contains(id));
         self.sticky_offsets.retain(|id, _| !removed.contains(id));
@@ -1588,8 +1852,11 @@ impl BaseDocument {
         self.abspos_candidates_dirty = true;
         self.abspos_layout_dirty = true;
 
-        let mut dirty = HashSet::new();
-        for (id, node) in self.nodes.iter_mut() {
+        let mut dirty = FxHashSet::default();
+        for id in candidates {
+            let Some(node) = self.nodes.get_mut(id) else {
+                continue;
+            };
             // Detached nodes still owned by script keep their internal box
             // tree, but must lose any edge back into the live layout tree.
             if removed.contains(&id) {
@@ -1736,7 +2003,7 @@ impl BaseDocument {
         // the next incremental traversal would otherwise skip. Follow both
         // trees and tolerate parents already freed by a root-first drop.
         let mut stack: Vec<NodeId> = dirty.iter().copied().collect();
-        let mut visited = HashSet::new();
+        let mut visited = FxHashSet::default();
         while let Some(id) = stack.pop() {
             if !visited.insert(id) || removed.contains(&id) {
                 continue;
@@ -1800,7 +2067,8 @@ impl BaseDocument {
         }
         let removed = std::mem::take(&mut self.dropped_node_ids);
         let parents = std::mem::take(&mut self.dropped_node_parents);
-        self.invalidate_node_references(&removed, parents);
+        let owners = std::mem::take(&mut self.dropped_reference_owners);
+        self.invalidate_node_references(&removed, parents, owners);
     }
 
     /// Remove a node from the node tree, clearing interaction state and
@@ -1817,9 +2085,20 @@ impl BaseDocument {
             self.remove_from_document_id_map(document_id, &id, node_id);
         }
         self.forget_script_custom_element(node_id);
+        if self.nodes.contains_key(node_id) {
+            self.dropped_node_ids.insert(node_id);
+            let mut owners = FxHashSet::default();
+            Self::collect_live_reference_owners(
+                &self.nodes,
+                &self.hoisted_fixed_parents,
+                &self.dropped_node_ids,
+                node_id,
+                &mut owners,
+            );
+            self.dropped_reference_owners.extend(owners);
+        }
         let node = self.nodes.remove(node_id);
         if let Some(node) = &node {
-            self.dropped_node_ids.insert(node_id);
             self.dropped_node_parents.extend(
                 [node.parent, node.layout_parent.get()]
                     .into_iter()

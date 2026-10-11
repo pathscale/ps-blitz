@@ -36,11 +36,13 @@ pub struct TableContext {
 }
 
 impl TableContext {
-    pub(crate) fn references_removed_nodes(
+    pub(crate) fn references_removed_nodes<S: std::hash::BuildHasher>(
         &self,
-        removed: &std::collections::HashSet<NodeId>,
+        removed: &std::collections::HashSet<NodeId, S>,
     ) -> bool {
-        self.cells.iter().any(|cell| removed.contains(&cell.node_id))
+        self.cells
+            .iter()
+            .any(|cell| removed.contains(&cell.node_id))
             || self.rows.iter().any(|row| removed.contains(&row.node_id))
             || self
                 .row_groups
