@@ -1,6 +1,8 @@
 //! ShadowRoot and slot bindings. Distribution remains in blitz-dom.
 
+use blitz_dom::BaseDocument;
 use blitz_dom::node::ShadowRootMode;
+use blitz_html::DocumentHtmlParser;
 use boa_engine::object::{JsObject, builtins::JsArray};
 use boa_engine::{
     Context, Finalize, JsData, JsNativeError, JsResult, JsValue, NativeFunction, Trace, js_string,
@@ -43,6 +45,10 @@ pub(crate) fn init(ctx: &DomCtx, context: &mut Context) {
     )));
     define_accessor(&root, "host", Some(host), None, context);
     define_accessor(&root, "mode", Some(mode), None, context);
+    define_accessor(&root, "clonable", Some(clonable), None, context);
+    define_accessor(&root, "serializable", Some(serializable), None, context);
+    define_accessor(&root, "delegatesFocus", Some(delegates_focus), None, context);
+    define_method(&root, "setHTMLUnsafe", 1, set_html_unsafe, context);
     define_accessor(
         &root,
         "innerHTML",
@@ -62,10 +68,19 @@ pub(crate) fn init(ctx: &DomCtx, context: &mut Context) {
 
     define_accessor(&node, "assignedSlot", Some(assigned_slot), None, context);
     define_method(&element, "attachShadow", 1, attach_shadow, context);
+    define_method(&element, "setHTMLUnsafe", 1, set_html_unsafe, context);
     define_accessor(&element, "shadowRoot", Some(shadow_root), None, context);
     define_accessor(&element, "slot", Some(get_slot), Some(set_slot), context);
     define_method(&element, "assignedNodes", 0, assigned_nodes, context);
     define_method(&element, "assignedElements", 0, assigned_elements, context);
+
+    define_method(
+        &super::interfaces::constructor("Document", context),
+        "parseHTMLUnsafe",
+        1,
+        parse_html_unsafe,
+        context,
+    );
 
     context.insert_data(ShadowProtos { root: root.clone() });
     super::interfaces::register(
@@ -102,44 +117,120 @@ fn attach_shadow(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
                 .into());
         }
     };
-    {
+    let (allowed, shadow_id) = {
         let doc = ctx.doc.borrow();
-        let host = doc
+        let Some(host) = doc
             .get_node(host_id)
             .and_then(|node| node.element_data())
-            .ok_or_else(|| JsNativeError::typ().with_message("attachShadow requires an element"))?;
-        let tag = host.name.local.as_ref();
-        let allowed = host.name.ns == markup5ever::ns!(html)
-            && (tag.contains('-')
-                || matches!(
-                    tag,
-                    "article"
-                        | "aside"
-                        | "blockquote"
-                        | "body"
-                        | "div"
-                        | "footer"
-                        | "h1"
-                        | "h2"
-                        | "h3"
-                        | "h4"
-                        | "h5"
-                        | "h6"
-                        | "header"
-                        | "main"
-                        | "nav"
-                        | "p"
-                        | "section"
-                        | "span"
-                ));
-        if !allowed || host.shadow_root.is_some() {
+        else {
             return Err(JsNativeError::typ()
-                .with_message("NotSupportedError: attachShadow")
+                .with_message("attachShadow requires an element")
                 .into());
+        };
+        (
+            BaseDocument::element_can_be_shadow_host(host),
+            host.shadow_root,
+        )
+    };
+    if !allowed {
+        return Err(super::doma::dom_error(
+            "NotSupportedError",
+            "attachShadow",
+            context,
+        ));
+    }
+    let existing = {
+        let doc = ctx.doc.borrow();
+        shadow_id.and_then(|root_id| {
+            let root = doc.get_node(root_id)?.shadow_root_data()?;
+            Some((root_id, root.declarative, root.mode))
+        })
+    };
+    if let Some((root_id, declarative, existing_mode)) = existing {
+        // A declarative root is reusable when the requested mode matches.
+        // The same root is emptied and returned. Any other existing root,
+        // including a different mode, is NotSupportedError.
+        if declarative && existing_mode == mode {
+            ctx.mutate_doc()
+                .mutate()
+                .remove_and_drop_all_children(root_id);
+            return Ok(node_wrapper(&ctx, root_id, context).into());
         }
+        return Err(super::doma::dom_error(
+            "NotSupportedError",
+            "attachShadow",
+            context,
+        ));
     }
     let root_id = ctx.mutate_doc().mutate().attach_shadow(host_id, mode);
     Ok(node_wrapper(&ctx, root_id, context).into())
+}
+
+fn shadow_bool(
+    this: &JsValue,
+    context: &mut Context,
+    read: fn(&blitz_dom::node::ShadowRootData) -> bool,
+) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let id = this_node_id(this)?;
+    let value = ctx
+        .doc
+        .borrow()
+        .get_node(id)
+        .and_then(|node| node.shadow_root_data())
+        .map(read)
+        .ok_or_else(|| JsNativeError::typ().with_message("ShadowRoot receiver required"))?;
+    Ok(JsValue::from(value))
+}
+
+fn clonable(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    shadow_bool(this, context, |root| root.clonable)
+}
+
+fn serializable(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    shadow_bool(this, context, |root| root.serializable)
+}
+
+fn delegates_focus(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    shadow_bool(this, context, |root| root.delegates_focus)
+}
+
+fn set_html_unsafe(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    let html = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
+    let target = ctx
+        .doc
+        .borrow()
+        .get_node(node_id)
+        .and_then(|node| node.element_data())
+        .and_then(|element| element.template_contents)
+        .unwrap_or(node_id);
+    let children = ctx
+        .doc
+        .borrow()
+        .get_node(target)
+        .map(|node| node.children.to_vec())
+        .unwrap_or_default();
+    for child_id in children {
+        super::remove_and_free_node(&ctx, child_id, context);
+    }
+    ctx.mutate_doc().mutate().set_html_unsafe(node_id, &html);
+    Ok(JsValue::undefined())
+}
+
+fn parse_html_unsafe(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let source = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
+    let document_id = {
+        let mut doc = ctx.doc.borrow_mut();
+        let mut mutr = doc.mutate();
+        let document_id = mutr.create_document("text/html");
+        DocumentHtmlParser::parse_html_unsafe_into_mutator(&mut mutr, document_id, &source);
+        document_id
+    };
+    ctx.state.borrow_mut().detached_nodes.push(document_id);
+    Ok(node_wrapper(&ctx, document_id, context).into())
 }
 
 fn shadow_root(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {

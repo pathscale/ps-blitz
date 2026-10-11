@@ -188,4 +188,21 @@ impl TreeSink for StreamSink {
     fn reparent_children(&self, previous: &NodeId, parent: &NodeId) {
         self.with_sink(|sink| sink.reparent_children(previous, parent));
     }
+
+    fn allow_declarative_shadow_roots(&self, intended_parent: &NodeId) -> bool {
+        self.with_sink(|sink| sink.allow_declarative_shadow_roots(intended_parent))
+    }
+
+    fn attach_declarative_shadow(
+        &self,
+        location: &NodeId,
+        template: &NodeId,
+        attributes: &[html5ever::Attribute],
+    ) -> bool {
+        self.with_sink(|sink| sink.attach_declarative_shadow(location, template, attributes))
+    }
+
+    fn pop(&self, node: &NodeId) {
+        self.with_sink(|sink| sink.pop(node));
+    }
 }

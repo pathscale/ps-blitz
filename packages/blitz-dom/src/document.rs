@@ -504,6 +504,11 @@ pub struct BaseDocument {
     /// Nodes that have an attached custom element controller
     #[cfg(feature = "shadow-dom")]
     pub(crate) custom_element_nodes: HashSet<NodeId>,
+    /// Template element -> declarative shadow root, while that template is open
+    /// on the parser stack. Stored here because each streaming sink call builds
+    /// a new parser.
+    #[cfg(feature = "shadow-dom")]
+    pub(crate) declarative_template_shadows: HashMap<NodeId, NodeId>,
 
     /// Native candidate index and mutation reactions for JavaScript custom elements.
     pub(crate) script_custom_elements: crate::node::script_custom_element::Registry,
@@ -754,6 +759,8 @@ impl BaseDocument {
             adopted_stylesheets: HashMap::new(),
             #[cfg(feature = "shadow-dom")]
             custom_element_nodes: HashSet::new(),
+            #[cfg(feature = "shadow-dom")]
+            declarative_template_shadows: HashMap::new(),
 
             deferred_construction_nodes: Vec::new(),
             paint_damage: Default::default(),
@@ -1329,6 +1336,73 @@ impl BaseDocument {
         self.nodes[host_id].mark_ancestors_dirty();
 
         shadow_root_id
+    }
+
+    /// HTML elements that `Element.attachShadow` accepts.
+    ///
+    /// Hyphenated names are included, matching the existing script binding.
+    /// `template` is not a host.
+    #[cfg(feature = "shadow-dom")]
+    pub fn element_can_be_shadow_host(element: &ElementData) -> bool {
+        let tag = element.name.local.as_ref();
+        element.name.ns == ns!(html)
+            && (tag.contains('-')
+                || matches!(
+                    tag,
+                    "article"
+                        | "aside"
+                        | "blockquote"
+                        | "body"
+                        | "div"
+                        | "footer"
+                        | "h1"
+                        | "h2"
+                        | "h3"
+                        | "h4"
+                        | "h5"
+                        | "h6"
+                        | "header"
+                        | "main"
+                        | "nav"
+                        | "p"
+                        | "section"
+                        | "span"
+                ))
+    }
+
+    /// Attach a declarative shadow root, or return false and leave the template
+    /// as a normal template.
+    ///
+    /// Failure is the host being missing, not a shadow host, or already having
+    /// a root. Success records the template so parsed children land in the root.
+    #[cfg(feature = "shadow-dom")]
+    pub fn try_attach_declarative_shadow(
+        &mut self,
+        host_id: NodeId,
+        template_id: NodeId,
+        mode: crate::node::ShadowRootMode,
+        clonable: bool,
+        serializable: bool,
+        delegates_focus: bool,
+    ) -> bool {
+        let can_attach = self.nodes.get(host_id).is_some_and(|node| {
+            node.element_data().is_some_and(|element| {
+                Self::element_can_be_shadow_host(element) && element.shadow_root.is_none()
+            })
+        });
+        if !can_attach {
+            return false;
+        }
+        let root_id = self.attach_shadow(host_id, mode);
+        if let Some(root) = self.nodes[root_id].shadow_root_data_mut() {
+            root.declarative = true;
+            root.clonable = clonable;
+            root.serializable = serializable;
+            root.delegates_focus = delegates_focus;
+        }
+        self.declarative_template_shadows
+            .insert(template_id, root_id);
+        true
     }
 
     /// Detach (and drop) the shadow root of the given host element, if any.
@@ -2302,6 +2376,8 @@ impl BaseDocument {
         }
 
         let children = node.children.clone();
+        #[cfg(feature = "shadow-dom")]
+        let shadow_source = node.shadow_root_id();
         let template_contents = node
             .element_data()
             .and_then(|element| element.template_contents);
@@ -2345,6 +2421,49 @@ impl BaseDocument {
             self.attach_script_custom_element_subtree(child_id, new_node_id);
         }
         self.nodes[new_node_id].children = new_children;
+
+        // Only a shadow root that opted into `clonable` is copied. Imperative
+        // roots keep the previous behavior of not cloning.
+        #[cfg(feature = "shadow-dom")]
+        if let Some(source_root) = shadow_source {
+            let clonable = self
+                .nodes
+                .get(source_root)
+                .and_then(|node| node.shadow_root_data())
+                .is_some_and(|root| root.clonable);
+            if clonable {
+                let mode = self.nodes[source_root].shadow_root_data().unwrap().mode;
+                let serializable = self.nodes[source_root]
+                    .shadow_root_data()
+                    .unwrap()
+                    .serializable;
+                let delegates_focus = self.nodes[source_root]
+                    .shadow_root_data()
+                    .unwrap()
+                    .delegates_focus;
+                let declarative = self.nodes[source_root]
+                    .shadow_root_data()
+                    .unwrap()
+                    .declarative;
+                let shadow_children = self.nodes[source_root].children.clone();
+                let new_root = self.attach_shadow(new_node_id, mode);
+                if let Some(root) = self.nodes[new_root].shadow_root_data_mut() {
+                    root.clonable = true;
+                    root.serializable = serializable;
+                    root.delegates_focus = delegates_focus;
+                    root.declarative = declarative;
+                }
+                let cloned_shadow_children: ThinVec<NodeId> = shadow_children
+                    .into_iter()
+                    .map(|child_id| self.deep_clone_node(child_id))
+                    .collect();
+                for &child_id in &cloned_shadow_children {
+                    self.nodes[child_id].parent = Some(new_root);
+                    self.attach_script_custom_element_subtree(child_id, new_root);
+                }
+                self.nodes[new_root].children = cloned_shadow_children;
+            }
+        }
 
         new_node_id
     }

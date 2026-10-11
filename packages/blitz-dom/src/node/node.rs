@@ -937,6 +937,14 @@ pub struct ShadowRootData {
     pub host: NodeId,
     /// The encapsulation mode of this shadow root.
     pub mode: ShadowRootMode,
+    /// Set when the root was created from a declarative `<template>`.
+    pub declarative: bool,
+    /// When set, `cloneNode` copies this shadow root.
+    pub clonable: bool,
+    /// Stored for `ShadowRoot.serializable`. Serialization is separate.
+    pub serializable: bool,
+    /// Stored for `ShadowRoot.delegatesFocus`.
+    pub delegates_focus: bool,
     /// Stylesheet owners in shadow-tree order.
     pub stylesheet_nodes: Vec<NodeId>,
     pub(crate) cascade_data: Option<ServoArc<style::stylist::CascadeData>>,
@@ -952,6 +960,10 @@ impl std::fmt::Debug for ShadowRootData {
             .debug_struct("ShadowRootData")
             .field("host", &self.host)
             .field("mode", &self.mode)
+            .field("declarative", &self.declarative)
+            .field("clonable", &self.clonable)
+            .field("serializable", &self.serializable)
+            .field("delegates_focus", &self.delegates_focus)
             .field("stylesheet_nodes", &self.stylesheet_nodes)
             .field("cascade_dirty", &self.cascade_dirty)
             .field("slots", &self.slots)
@@ -964,6 +976,10 @@ impl ShadowRootData {
         Self {
             host,
             mode,
+            declarative: false,
+            clonable: false,
+            serializable: false,
+            delegates_focus: false,
             stylesheet_nodes: Vec::new(),
             cascade_data: None,
             cascade_dirty: true,
