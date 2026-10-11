@@ -80,6 +80,9 @@ fn serve_modules(
                 Err(_) => break,
             };
             stream
+                .set_nonblocking(false)
+                .expect("the accepted stream can use blocking reads");
+            stream
                 .set_read_timeout(Some(Duration::from_secs(15)))
                 .expect("the stream can time out");
 
@@ -89,8 +92,10 @@ fn serve_modules(
             // client holds the connection open waiting for our response.
             while !head.ends_with(b"\r\n\r\n") {
                 match stream.read(&mut byte) {
-                    Ok(0) | Err(_) => break,
+                    Ok(0) => break,
                     Ok(_) => head.push(byte[0]),
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(error) => panic!("failed to read the loopback request head: {error}"),
                 }
             }
             let head = String::from_utf8_lossy(&head).to_string();
