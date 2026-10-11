@@ -38,6 +38,7 @@ struct Definition {
     disconnected: Option<JsObject>,
     attribute_changed: Option<JsObject>,
     adopted: Option<JsObject>,
+    connected_move: Option<JsObject>,
 }
 
 struct PendingDefinition {
@@ -386,6 +387,16 @@ pub(crate) fn define(this: &JsValue, args: &[JsValue], context: &mut Context) ->
         let disconnected = callback(&prototype, "disconnectedCallback", context)?;
         let adopted = callback(&prototype, "adoptedCallback", context)?;
         let attribute_changed = callback(&prototype, "attributeChangedCallback", context)?;
+        let connected_move = callback(&prototype, "connectedMoveCallback", context)?;
+        if constructor
+            .get(js_string!("formAssociated"), context)?
+            .to_boolean()
+        {
+            callback(&prototype, "formAssociatedCallback", context)?;
+            callback(&prototype, "formResetCallback", context)?;
+            callback(&prototype, "formDisabledCallback", context)?;
+            callback(&prototype, "formStateRestoreCallback", context)?;
+        }
         let mut observed = HashSet::new();
         if attribute_changed.is_some() {
             let value = constructor.get(js_string!("observedAttributes"), context)?;
@@ -419,6 +430,7 @@ pub(crate) fn define(this: &JsValue, args: &[JsValue], context: &mut Context) ->
             disconnected,
             attribute_changed,
             adopted,
+            connected_move,
         })
     })();
     ce.state.borrow_mut().defining = false;
@@ -666,6 +678,26 @@ fn collect(ctx: &DomCtx, context: &mut Context) {
                     vec![old.into(), new.into()],
                     context,
                 );
+            }
+            ReactionKind::Moved => {
+                if definition.connected_move.is_some() {
+                    enqueue_callback(
+                        ctx,
+                        record.node,
+                        &definition.connected_move,
+                        Vec::new(),
+                        context,
+                    );
+                } else {
+                    enqueue_callback(
+                        ctx,
+                        record.node,
+                        &definition.disconnected,
+                        Vec::new(),
+                        context,
+                    );
+                    enqueue_callback(ctx, record.node, &definition.connected, Vec::new(), context);
+                }
             }
         }
     }
@@ -934,6 +966,7 @@ pub(crate) fn checkpoint(ctx: &DomCtx, context: &mut Context) {
 /// so the base interface is taken from the matching definition.
 fn interface_construct(
     new_target: &JsValue,
+    invoked: &'static str,
     _: &[JsValue],
     context: &mut Context,
 ) -> JsResult<JsValue> {
@@ -954,6 +987,13 @@ fn interface_construct(
             .with_message("Illegal constructor")
             .into());
     };
+    // A definition extends exactly one interface: an autonomous element HTMLElement, a
+    // customized built-in its element's interface. Any other base is the wrong one.
+    if invoked != interface {
+        return Err(JsNativeError::typ()
+            .with_message("Incorrect HTML base constructor")
+            .into());
+    }
     html_constructor(
         &JsValue::undefined(),
         &[new_target.clone(), js_str(&interface)],
@@ -986,6 +1026,14 @@ fn html_constructor(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
             .with_message("Incorrect HTML base constructor")
             .into());
     }
+    // Read new.target's prototype before consuming the frame so a throwing
+    // getter cannot leave the element marked constructed.
+    let looked_up = new_target.get(js_string!("prototype"), context)?;
+    let prototype = if let Some(prototype) = looked_up.as_object() {
+        prototype
+    } else {
+        super::interfaces::prototype(definition.interface, context)
+    };
     {
         let mut state = ce.state.borrow_mut();
         if let Some(frame) = state.construction.last_mut()
@@ -997,9 +1045,7 @@ fn html_constructor(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
                     .into());
             }
             frame.consumed = true;
-            frame
-                .element
-                .set_prototype(Some(definition.prototype.clone()));
+            frame.element.set_prototype(Some(prototype.clone()));
             return Ok(frame.element.clone().into());
         }
     }
@@ -1021,7 +1067,7 @@ fn html_constructor(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
         .borrow_mut()
         .set_script_custom_element_state(node, State::Custom);
     let wrapper = node_wrapper(&ctx, node, context);
-    wrapper.set_prototype(Some(definition.prototype.clone()));
+    wrapper.set_prototype(Some(prototype));
     Ok(wrapper.into())
 }
 

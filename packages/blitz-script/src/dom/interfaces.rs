@@ -25,7 +25,8 @@ struct Interfaces {
 #[derive(Trace, Finalize, JsData)]
 pub(crate) struct HtmlConstructorHook {
     #[unsafe_ignore_trace]
-    pub construct: fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>,
+    /// new.target, the native interface that was invoked, the arguments.
+    pub construct: fn(&JsValue, &'static str, &[JsValue], &mut Context) -> JsResult<JsValue>,
 }
 
 pub(super) fn prototype(name: &str, context: &Context) -> JsObject {
@@ -103,18 +104,41 @@ pub(super) fn illegal(_: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<J
         .into())
 }
 
+/// `[[Construct]]` passes new.target. A `[[Call]]` passes `undefined`; the receiver is then
+/// [`Context::native_constructor_receiver`], which for the ES5 custom-element pattern
+/// `HTMLElement.call(this)` is an instance of the subclass: its `constructor` is the new.target.
 fn html_constructor(
+    interface: &'static str,
     new_target: &JsValue,
     args: &[JsValue],
     context: &mut Context,
 ) -> JsResult<JsValue> {
+    let called_with = if new_target.is_undefined() {
+        context
+            .native_constructor_receiver()
+            .and_then(JsValue::as_object)
+    } else {
+        None
+    };
+    let new_target = match called_with {
+        Some(receiver) => receiver.get(boa_engine::js_string!("constructor"), context)?,
+        None => new_target.clone(),
+    };
+    let new_target = &new_target;
     let hook = context
         .get_data::<HtmlConstructorHook>()
         .map(|hook| hook.construct);
     match hook {
-        Some(construct) => construct(new_target, args, context),
+        Some(construct) => construct(new_target, interface, args, context),
         None => illegal(new_target, args, context),
     }
+}
+
+/// The native constructor of HTML interface `name`.
+fn html_interface_constructor(name: &'static str) -> NativeFunction {
+    NativeFunction::from_copy_closure(move |receiver, args, context| {
+        html_constructor(name, receiver, args, context)
+    })
 }
 
 pub(super) fn construction_prototype(
@@ -424,7 +448,7 @@ pub(super) fn init(context: &mut Context) {
     ] {
         let proto = JsObject::with_object_proto(context.intrinsics());
         let body = if name.starts_with("HTML") && name != "HTMLDocument" {
-            NativeFunction::from_fn_ptr(html_constructor)
+            html_interface_constructor(name)
         } else {
             NativeFunction::from_fn_ptr(illegal)
         };
@@ -450,7 +474,7 @@ pub(super) fn init(context: &mut Context) {
             Some(parent),
             proto,
             0,
-            NativeFunction::from_fn_ptr(html_constructor),
+            html_interface_constructor(name),
             context,
         );
     }
