@@ -315,13 +315,14 @@ fn inverse(values: [f64; 16]) -> [f64; 16] {
         for value in &mut rows[column] {
             *value /= divisor;
         }
-        for row in 0..4 {
-            if row == column {
+        let pivot_row = rows[column];
+        for (index, row) in rows.iter_mut().enumerate() {
+            if index == column {
                 continue;
             }
-            let factor = rows[row][column];
-            for index in 0..8 {
-                rows[row][index] -= factor * rows[column][index];
+            let factor = row[column];
+            for (value, pivot_value) in row.iter_mut().zip(pivot_row) {
+                *value -= factor * pivot_value;
             }
         }
     }
@@ -758,7 +759,7 @@ pub(super) fn init(element: &JsObject, context: &mut Context) {
             name,
             parent,
             proto.clone(),
-            if kind == 2 { 0 } else { 0 },
+            0,
             NativeFunction::from_copy_closure(move |target, args, context| {
                 let proto = super::interfaces::construction_prototype(target, name, context)?;
                 let object = match kind {

@@ -603,5 +603,5 @@ fn style_sheets(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResul
             .with_message("StyleSheetList is unavailable")
             .into());
     };
-    function.call(&JsValue::undefined(), &[this.clone()], context)
+    function.call(&JsValue::undefined(), std::slice::from_ref(this), context)
 }

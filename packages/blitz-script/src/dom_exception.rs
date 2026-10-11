@@ -122,7 +122,7 @@ pub fn register(context: &mut Context) {
                     "message" => data.message.clone().into(),
                     _ => LEGACY
                         .iter()
-                        .find(|(_, name, _)| !name.is_empty() && data.name == JsString::from(*name))
+                        .find(|(_, name, _)| !name.is_empty() && data.name == *name)
                         .map_or(0, |(_, _, code)| *code)
                         .into(),
                 })

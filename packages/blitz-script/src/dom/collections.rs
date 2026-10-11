@@ -69,8 +69,7 @@ fn record(this: &JsValue, context: &mut Context) -> JsResult<JsObject> {
 
 fn split_tokens(value: &str) -> Vec<String> {
     let mut tokens = Vec::new();
-    for token in value.split(|character| matches!(character, '\t' | '\n' | '\u{000c}' | '\r' | ' '))
-    {
+    for token in value.split(['\t', '\n', '\u{000c}', '\r', ' ']) {
         if !token.is_empty() && !tokens.iter().any(|existing| existing == token) {
             tokens.push(token.to_owned());
         }
@@ -116,7 +115,7 @@ fn values(this: &JsValue, context: &mut Context) -> JsResult<Vec<JsValue>> {
             };
             let element = node.element_data();
             let selected = match &source {
-                Source::Children { elements } => !elements || element.is_some(),
+                Source::Children { elements } => !elements || node.is_element(),
                 Source::Tag { name, namespace } => element.is_some_and(|element| {
                     let tag_matches = name.as_ref() == "*"
                         || if namespace.is_none() && element.name.ns == markup5ever::ns!(html) {
@@ -425,7 +424,7 @@ fn class_list(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<
 }
 
 fn length(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    Ok(JsValue::from(values(this, context)?.len() as f64))
+    Ok(JsValue::from(values(this, context)?.len() as u32))
 }
 
 fn item(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
