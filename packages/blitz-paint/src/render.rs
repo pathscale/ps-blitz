@@ -953,8 +953,13 @@ impl ElementCx<'_, '_> {
                     panic!("Tried to render node marked as inline root that does not have an inline layout: {:?}", self.node);
                 });
 
-            let transform =
-                self.transform * Affine::translate((pos.x * self.scale, pos.y * self.scale));
+            let layout_scale = text_layout.layout.scale() as f64;
+            // Box offsets are CSS pixels; glyphs, backgrounds and selections
+            // are in Parley's stored space. Convert only the latter, after
+            // translating to the content origin.
+            let transform = self.transform
+                * Affine::translate((pos.x * self.scale, pos.y * self.scale))
+                * Affine::scale(self.scale / layout_scale);
 
             // Render inline element backgrounds (e.g. `<span style="background: ...">`)
             // behind the text and selection highlight.
@@ -983,7 +988,7 @@ impl ElementCx<'_, '_> {
                 text_layout.layout.lines(),
                 self.context.dom,
                 transform,
-                self.scale,
+                layout_scale,
             );
         }
     }
@@ -993,7 +998,8 @@ impl ElementCx<'_, '_> {
         if let Some(input_data) = self.text_input {
             // For single-line inputs, add an offset to vertically center the text input layout
             // within the content box of it's node.
-            let y_offset = self.node.text_input_v_centering_offset(self.scale);
+            let editor_scale = input_data.editor.get_scale() as f64;
+            let y_offset = self.node.text_input_v_centering_offset(editor_scale);
             let pos = Point {
                 x: pos.x,
                 y: pos.y + y_offset,
@@ -1011,13 +1017,14 @@ impl ElementCx<'_, '_> {
 
             let transform = self.transform
                 * Affine::translate((pos.x * self.scale - scroll_x, pos.y * self.scale - scroll_y));
+            let editor_transform = transform * Affine::scale(self.scale / editor_scale);
 
             if self.node.is_focussed() {
                 // Render selection/caret
                 for (rect, _line_idx) in input_data.editor.selection_geometry().iter() {
                     scene.fill(
                         Fill::NonZero,
-                        transform,
+                        editor_transform,
                         SELECTION_COLOR,
                         None,
                         &convert_rect(rect),
@@ -1034,7 +1041,7 @@ impl ElementCx<'_, '_> {
 
                     scene.fill(
                         Fill::NonZero,
-                        transform,
+                        editor_transform,
                         caret_color.as_srgb_color(),
                         None,
                         &convert_rect(&cursor),
@@ -1056,12 +1063,14 @@ impl ElementCx<'_, '_> {
             } else {
                 input_data.editor.try_layout().unwrap()
             };
+            let layout_scale = layout.scale() as f64;
+            let text_transform = transform * Affine::scale(self.scale / layout_scale);
             crate::text::stroke_text_with_alpha(
                 scene,
                 layout.lines(),
                 self.context.dom,
-                transform,
-                self.scale,
+                text_transform,
+                layout_scale,
                 if placeholder { 0.55 } else { 1.0 },
             );
         }
@@ -1081,15 +1090,18 @@ impl ElementCx<'_, '_> {
             let x_offset = -(layout.full_width() / layout.scale() + x_padding);
 
             // Align the marker with the baseline of the first line of text in the list item
-            let y_offset = if let Some(first_text_line) = &self
+            let y_offset = if let Some(first_baseline) = self
                 .element
                 .inline_layout_data
                 .as_ref()
-                .and_then(|text_layout| text_layout.layout.lines().next())
-            {
-                (first_text_line.metrics().baseline
-                    - layout.lines().next().unwrap().metrics().baseline)
-                    / layout.scale()
+                .and_then(|text_layout| {
+                    text_layout
+                        .layout
+                        .lines()
+                        .next()
+                        .map(|line| line.metrics().baseline / text_layout.layout.scale())
+                }) {
+                first_baseline - layout.lines().next().unwrap().metrics().baseline / layout.scale()
             } else {
                 0.0
             };
@@ -1099,15 +1111,17 @@ impl ElementCx<'_, '_> {
                 y: pos.y + y_offset as f64,
             };
 
-            let transform =
-                self.transform * Affine::translate((pos.x * self.scale, pos.y * self.scale));
+            let layout_scale = layout.scale() as f64;
+            let transform = self.transform
+                * Affine::translate((pos.x * self.scale, pos.y * self.scale))
+                * Affine::scale(self.scale / layout_scale);
 
             crate::text::stroke_text(
                 scene,
                 layout.lines(),
                 self.context.dom,
                 transform,
-                self.scale,
+                layout_scale,
             );
         }
     }
