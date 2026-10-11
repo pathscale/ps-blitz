@@ -93,8 +93,6 @@ impl BaseDocument {
     /// Returns whether any repair changed a layout's height, which means the
     /// boxes taffy sized are now wrong and layout has to run again.
     fn repair_inline_line_breaks(&mut self) -> bool {
-        let scale = self.viewport.scale();
-
         let mut wrong = Vec::new();
         for (node_id, node) in self.nodes.iter() {
             let Some(inline) = node
@@ -115,7 +113,7 @@ impl BaseDocument {
                 - layout.border.left
                 - layout.border.right)
                 .max(0.0)
-                * scale;
+                * inline.layout.scale();
             // Half a device pixel: below that the break is identical and
             // re-running it would cost a frame to change nothing.
             if inline
@@ -503,11 +501,11 @@ impl BaseDocument {
             .downcast_element()
             .and_then(|element| element.inline_layout_data.as_ref())
         {
-            // Already device pixels: parley is handed the scaled size, so
-            // scaling again doubled every inline root's overflow at 2x and
-            // inflated its hit area with it.
-            let text_width = inline_layout.layout.width() as f64;
-            let text_height = inline_layout.layout.height() as f64;
+            // Convert Parley's stored scale into this viewport's device
+            // pixels, matching the conversion used to paint its glyphs.
+            let text_scale = scale / inline_layout.layout.scale() as f64;
+            let text_width = inline_layout.layout.width() as f64 * text_scale;
+            let text_height = inline_layout.layout.height() as f64 * text_scale;
             overflow = overflow.union(Rect::new(0.0, 0.0, text_width, text_height));
         }
 
@@ -1426,7 +1424,13 @@ impl BaseDocument {
                     //
                     // `layout_parent`, not `parent`: taffy walks the layout
                     // tree, and anonymous blocks make the two chains differ.
-                    self.nodes[result.node_id].cache_mut().clear();
+                    let mut current = Some(result.node_id);
+                    while let Some(node_id) = current {
+                        let node = &mut self.nodes[node_id];
+                        node.cache_release();
+                        node.insert_damage(RestyleDamage::RECALCULATE_OVERFLOW);
+                        current = node.layout_parent.get();
+                    }
                     self.nodes[result.node_id]
                         .element_data_mut()
                         .unwrap()

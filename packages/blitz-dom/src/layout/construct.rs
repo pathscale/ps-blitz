@@ -1458,6 +1458,9 @@ pub(crate) fn build_inline_layout_into(
     }
 
     text_layout.text = builder.build_into(&mut text_layout.layout);
+    // These measurements belong to the previous shaped runs and scale.
+    text_layout.content_widths = None;
+    text_layout.laid_out_at = None;
     return;
 
     fn build_inline_layout_recursive(

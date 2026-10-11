@@ -3473,13 +3473,15 @@ impl BaseDocument {
     }
 
     pub fn zoom_by(&mut self, increment: f32) {
-        *self.viewport.zoom_mut() += increment;
-        self.set_viewport(self.viewport.clone());
+        let mut viewport = self.viewport.clone();
+        viewport.zoom_by(increment);
+        self.set_viewport(viewport);
     }
 
     pub fn zoom_to(&mut self, zoom: f32) {
-        *self.viewport.zoom_mut() = zoom;
-        self.set_viewport(self.viewport.clone());
+        let mut viewport = self.viewport.clone();
+        viewport.set_zoom(zoom);
+        self.set_viewport(viewport);
     }
 
     pub fn get_viewport(&self) -> Viewport {

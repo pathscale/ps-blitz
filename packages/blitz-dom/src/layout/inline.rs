@@ -137,7 +137,6 @@ impl BaseDocument {
         inputs: taffy::tree::LayoutInput,
         block_ctx: &mut BlockContext<'_>,
     ) -> taffy::LayoutOutput {
-        let scale = self.viewport.scale();
         let LayoutInput {
             known_dimensions,
             parent_size,
@@ -154,6 +153,10 @@ impl BaseDocument {
             .take_inline_layout()
             .unwrap();
 
+        // Parley's dimensions and glyph advances use the scale recorded when
+        // this layout was shaped. Convert CSS constraints into that space,
+        // including when a retained context predates a viewport scale change.
+        let scale = inline_layout.layout.scale();
         let style = self.nodes[node_id].style();
 
         // Note: both horizontal and vertical percentage padding/borders are resolved against the container's inline size (i.e. width).
@@ -325,7 +328,7 @@ impl BaseDocument {
             .resolve(CSSPixelLength::new(known_dimensions.width.unwrap_or(0.0)))
             .px();
         inline_layout.layout.set_text_indent(
-            resolved_text_indent,
+            resolved_text_indent * scale,
             // NOTE: hanging and each_line don't current work because parsing them is cfg'd out in Stylo
             // due to Servo not yet supporting those features. They should start to "just work" in Blitz
             // once support is enabled in Stylo.
@@ -826,11 +829,11 @@ impl BaseDocument {
                                 .unwrap_or(true);
                             let static_position = taffy::Point {
                                 x: if is_inline_level {
-                                    ibox.x
+                                    ibox.x / scale + container_pb.left
                                 } else {
                                     container_pb.left
                                 },
-                                y: ibox.y,
+                                y: ibox.y / scale + container_pb.top,
                             };
 
                             layout_abspos_child(
