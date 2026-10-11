@@ -12,6 +12,9 @@ fn doc_from_html(html: &str) -> ScriptDocument {
     let mut doc = ScriptDocument::from_html(
         html,
         DocumentConfig {
+            // A relative route needs a hierarchical document URL.
+            // The default about:blank URL cannot resolve "/b".
+            base_url: Some("https://example.invalid/".to_owned()),
             viewport: Some(blitz_traits::shell::Viewport::new(
                 800,
                 600,

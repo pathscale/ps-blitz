@@ -21,7 +21,7 @@ use url::Url;
 /// than a failure. Every deadline in this file exists for that reason.
 ///
 /// Generous rather than tight. These are loopback sockets that always answer,
-/// so a timeout here never means what the test is asking about — it means the
+/// so a timeout here never means what the test is asking about: it means the
 /// machine was busy compiling. One run of the full suite failed that way before
 /// these were widened.
 const SERVE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -34,9 +34,20 @@ fn config_with_base(base_url: &str) -> DocumentConfig {
 }
 
 fn eval_string(doc: &mut ScriptDocument, expression: &str) -> String {
-    match doc.eval_json(expression) {
-        Ok(serde_json::Value::String(value)) => value,
-        other => panic!("expected {expression} to be a string, got {other:?}"),
+    use blitz_dom::Document as _;
+
+    // Module loading shares the 16 ms startup budget with parsing and fetches.
+    // A yielded graph needs later host polls before its result can be read.
+    let deadline = Instant::now() + SERVE_TIMEOUT;
+    loop {
+        match doc.eval_json(expression) {
+            Ok(serde_json::Value::String(value)) => return value,
+            Ok(serde_json::Value::Null) if Instant::now() < deadline => {
+                doc.poll(None);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            other => panic!("expected {expression} to be a string, got {other:?}"),
+        }
     }
 }
 
@@ -141,7 +152,7 @@ fn serve_modules(
 /// The minimum HTTP/1.1 client needed to prove the loader calls out.
 ///
 /// `ScriptFetcher` is synchronous, so this is a blocking round trip on the
-/// document thread — the same shape a real embedder's fetcher has.
+/// document thread, the same shape a real embedder's fetcher has.
 struct LoopbackFetcher;
 
 impl ScriptFetcher for LoopbackFetcher {
@@ -233,7 +244,7 @@ fn a_classic_script_still_runs_unchanged() {
 
 /// `import.meta.url` names the module's own URL.
 ///
-/// Asset helpers are built on it — `new URL("./icon.svg", import.meta.url)` —
+/// Asset helpers are built on it (`new URL("./icon.svg", import.meta.url)`),
 /// and an undefined value there throws inside module initialisation, taking the
 /// whole module with it.
 #[test]
