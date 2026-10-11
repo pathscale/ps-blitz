@@ -469,6 +469,7 @@ impl DocumentMutator<'_> {
             .record_script_custom_element_attribute(node_id, &name, Some(value));
         self.doc
             .record_inline_handler_attribute(node_id, &name, Some(value));
+        self.doc.record_details_open(node_id, &name, true);
         let node_is_in_document = self.doc.nodes[node_id].flags.is_in_document();
         if node_is_in_document && self.doc.is_recording_mutations() {
             // Recorded even when the value does not change: a browser reports
@@ -740,6 +741,7 @@ impl DocumentMutator<'_> {
             .record_script_custom_element_attribute(node_id, &name, None);
         self.doc
             .record_inline_handler_attribute(node_id, &name, None);
+        self.doc.record_details_open(node_id, &name, false);
         let node_is_in_document = self.doc.nodes[node_id].flags.is_in_document();
         if node_is_in_document && self.doc.is_recording_mutations() {
             // Removing an attribute that is not there changes nothing, and a

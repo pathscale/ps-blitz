@@ -1182,12 +1182,14 @@ impl ScriptRuntime {
                 report_js_error(&self.diagnostics, description, &error);
             }
             let mutations_delivered = self.deliver_mutations();
+            let toggles_delivered =
+                crate::dom::element::deliver_details_toggles(&self.ctx, &mut self.context);
             #[cfg(feature = "shadow-dom")]
             let slots_delivered =
                 crate::dom::shadow::deliver_slot_changes(&self.ctx, &mut self.context);
             #[cfg(not(feature = "shadow-dom"))]
             let slots_delivered = false;
-            if !mutations_delivered && !slots_delivered {
+            if !mutations_delivered && !slots_delivered && !toggles_delivered {
                 return delivered
                     || self.jobs_remain()
                     || self.job_executor.executed_job_count() != before;

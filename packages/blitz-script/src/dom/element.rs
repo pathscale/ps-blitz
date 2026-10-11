@@ -940,6 +940,78 @@ fn set_disabled(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsRe
     Ok(JsValue::undefined())
 }
 
+// === HTMLDetailsElement ===
+
+pub(crate) fn install_details(proto: &JsObject, context: &mut Context) {
+    define_accessor(proto, "open", Some(get_open), Some(set_open), context);
+}
+
+fn get_open(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    Ok(JsValue::from(read_attr(&ctx, node_id, "open").is_some()))
+}
+
+fn set_open(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let node_id = this_node_id(this)?;
+    if args.first().is_some_and(JsValue::to_boolean) {
+        write_attr(&ctx, node_id, "open", "");
+    } else {
+        clear_attr(&ctx, node_id, "open");
+    }
+    Ok(JsValue::undefined())
+}
+
+/// Fire one `toggle` ToggleEvent, not bubbling, at each `<details>` whose `open` attribute
+/// changed since the last delivery: the old state from before its first change, the new state
+/// as it is now. Returns whether any fired.
+pub(crate) fn deliver_details_toggles(ctx: &DomCtx, context: &mut Context) -> bool {
+    let toggles = ctx.doc.borrow_mut().take_details_toggles();
+    if toggles.is_empty() {
+        return false;
+    }
+    let Some(constructor) = context
+        .global_object()
+        .get(js_string!("ToggleEvent"), context)
+        .ok()
+        .and_then(|value| value.as_constructor())
+    else {
+        return false;
+    };
+    let state = |open: bool| js_string!(if open { "open" } else { "closed" });
+    for (node_id, was_open) in toggles {
+        let Some(open) = ctx
+            .doc
+            .borrow()
+            .get_node(node_id)
+            .and_then(|node| node.element_data())
+            .map(|element| element.attr(blitz_dom::local_name!("open")).is_some())
+        else {
+            continue;
+        };
+        let init = JsObject::with_object_proto(context.intrinsics());
+        let fired = init
+            .set(js_string!("oldState"), state(was_open), false, context)
+            .and_then(|_| init.set(js_string!("newState"), state(open), false, context))
+            .and_then(|_| {
+                constructor.construct(&[js_string!("toggle").into(), init.into()], None, context)
+            })
+            .and_then(|event| {
+                let target = super::node_wrapper(ctx, node_id, context);
+                let dispatch = target.get(js_string!("dispatchEvent"), context)?;
+                let dispatch = dispatch.as_callable().ok_or_else(|| {
+                    JsNativeError::typ().with_message("dispatchEvent is not callable")
+                })?;
+                dispatch.call(&target.into(), &[event.into()], context)
+            });
+        if let Err(error) = fired {
+            eprintln!("details toggle event: {error}");
+        }
+    }
+    true
+}
+
 // === dataset ===
 
 #[derive(Trace, Finalize, JsData)]

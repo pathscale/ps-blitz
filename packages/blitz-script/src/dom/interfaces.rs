@@ -536,4 +536,5 @@ pub(super) fn init(context: &mut Context) {
     super::geometry::init(&element, context);
     super::html_element::init(&element, context);
     crate::media::install(&prototype("HTMLMediaElement", context), context);
+    super::element::install_details(&prototype("HTMLDetailsElement", context), context);
 }

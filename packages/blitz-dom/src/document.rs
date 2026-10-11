@@ -285,6 +285,10 @@ pub struct BaseDocument {
 
     /// Batch cache invalidation across recursive subtree teardown.
     node_drop_depth: usize,
+    /// `<details>` elements whose `open` attribute appeared or disappeared since the script
+    /// runtime last took them, each with whether it was open before its first change. The
+    /// HTML toggle task coalesces per element, so an element is listed once.
+    details_toggles: Vec<(NodeId, bool)>,
     dropped_node_ids: FxHashSet<NodeId>,
     dropped_node_parents: FxHashSet<NodeId>,
     /// Survivors that can still point at an id freed by this batch.
@@ -671,6 +675,7 @@ impl BaseDocument {
 
         let mut doc = Self {
             node_drop_depth: 0,
+            details_toggles: Vec::new(),
             dropped_node_ids: FxHashSet::default(),
             dropped_node_parents: FxHashSet::default(),
             dropped_reference_owners: FxHashSet::default(),
@@ -3688,9 +3693,9 @@ impl BaseDocument {
         // viewport here, on the way into the next `resolve`.
         if previous_viewport != next_viewport {
             self.abspos_layout_dirty = true;
-            let invalidated = self.try_root_element().is_some_and(|root| {
-                style::invalidation::viewport_units::invalidate(root)
-            });
+            let invalidated = self
+                .try_root_element()
+                .is_some_and(|root| style::invalidation::viewport_units::invalidate(root));
             if invalidated {
                 self.shell_provider.request_redraw();
             }
@@ -5080,6 +5085,34 @@ pub struct BoundingRect {
 /// The record of changes a script's `MutationObserver` reads. See
 /// [`crate::DomMutation`] for what is recorded and why.
 impl BaseDocument {
+    /// Note a `<details open>` presence change for the toggle event. `present` is whether the
+    /// attribute exists after this write.
+    pub(crate) fn record_details_open(
+        &mut self,
+        node_id: NodeId,
+        name: &markup5ever::QualName,
+        present: bool,
+    ) {
+        if name.local != local_name!("open") || !name.ns.is_empty() {
+            return;
+        }
+        let Some(element) = self.nodes[node_id].element_data() else {
+            return;
+        };
+        if element.name.local != local_name!("details") || element.name.ns != ns!(html) {
+            return;
+        }
+        let was_open = element.attr(local_name!("open")).is_some();
+        if was_open != present && !self.details_toggles.iter().any(|(id, _)| *id == node_id) {
+            self.details_toggles.push((node_id, was_open));
+        }
+    }
+
+    /// The `<details>` toggles recorded since the last call, each with its old open state.
+    pub fn take_details_toggles(&mut self) -> Vec<(NodeId, bool)> {
+        std::mem::take(&mut self.details_toggles)
+    }
+
     /// Update the raw content handler state at the attribute mutation boundary.
     /// Equal-value writes still replace a compiled or script-assigned handler.
     pub(crate) fn record_inline_handler_attribute(
