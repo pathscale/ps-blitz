@@ -664,16 +664,17 @@ impl NetHandler for ResourceHandler<ImageHandler> {
 
 /// A JPEG XL codestream starts with FF 0A; the container form starts with the 12-byte "JXL " box.
 #[cfg(feature = "image-formats")]
-fn is_jxl(bytes: &[u8]) -> bool {
+pub fn is_jxl(bytes: &[u8]) -> bool {
     const CONTAINER: [u8; 12] = [
         0, 0, 0, 0x0C, b'J', b'X', b'L', b' ', 0x0D, 0x0A, 0x87, 0x0A,
     ];
     bytes.starts_with(&[0xFF, 0x0A]) || bytes.starts_with(&CONTAINER)
 }
 
-/// The first keyframe of a JPEG XL image in sRGB, as RGBA8.
+/// The first keyframe of a JPEG XL image in sRGB, as RGBA8. Embedders decode
+/// script and canvas images through this too, so there is one JXL path.
 #[cfg(feature = "image-formats")]
-fn decode_jxl(bytes: &Bytes) -> Result<(u32, u32, Vec<u8>), String> {
+pub fn decode_jxl(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     use jxl_oxide::{EnumColourEncoding, JxlImage, NullCms, RenderingIntent};
 
     // The same decode budget as the canvas path: refuse before rendering anything.
