@@ -124,7 +124,7 @@ fn width_reports_the_used_value() {
     assert_eq!(width, "320px", "width should be the laid-out width");
 }
 
-/// A property outside the supported set reads as unset rather than throwing.
+/// An unknown property reads as unset rather than throwing.
 #[test]
 fn an_unsupported_property_reads_as_empty() {
     let mut doc = page();
@@ -133,10 +133,10 @@ fn an_unsupported_property_reads_as_empty() {
 
     let value = eval_string(
         &mut doc,
-        "getComputedStyle(document.getElementById('shown')).getPropertyValue('clip-path')",
+        "getComputedStyle(document.getElementById('shown')).getPropertyValue('definitely-not-a-css-property')",
     );
 
-    assert_eq!(value, "", "an unsupported property should read as unset");
+    assert_eq!(value, "", "an unknown property should read as unset");
 }
 
 fn boxed_page() -> ScriptDocument {
