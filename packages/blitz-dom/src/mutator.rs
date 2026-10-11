@@ -1,3 +1,4 @@
+use blitz_traits::net::RequestDestination;
 use blitz_traits::node_id::NodeId;
 use rustc_hash::FxHashSet;
 use std::collections::HashSet;
@@ -2036,7 +2037,9 @@ impl<'doc> DocumentMutator<'doc> {
 
         self.doc.net_provider.fetch(
             self.doc.id(),
-            self.doc.build_request(url),
+            self.doc
+                .build_request(url)
+                .destination(RequestDestination::Style),
             Box::new(handler),
         );
     }
@@ -2109,7 +2112,9 @@ impl<'doc> DocumentMutator<'doc> {
 
                 self.doc.net_provider.fetch(
                     self.doc.id(),
-                    self.doc.build_request(src),
+                    self.doc
+                        .build_request(src)
+                        .destination(RequestDestination::Image),
                     ResourceHandler::boxed(
                         self.doc.tx.clone(),
                         self.doc.id(),

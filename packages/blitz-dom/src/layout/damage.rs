@@ -1,3 +1,4 @@
+use blitz_traits::net::RequestDestination;
 use blitz_traits::node_id::NodeId;
 use std::ops::Range;
 
@@ -655,7 +656,8 @@ impl BaseDocument {
                                 crate::net::stamped_request(
                                     (**new_url).clone(),
                                     self.abort_signal.as_ref(),
-                                ),
+                                )
+                                .destination(RequestDestination::Image),
                                 &self.url,
                             ),
                             ResourceHandler::boxed(
