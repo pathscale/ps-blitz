@@ -45,7 +45,7 @@ impl FontMetricsProvider for BlitzFontMetricsProvider {
             .font_family
             .families
             .iter()
-            .map(stylo_to_parley::query_font_family);
+            .flat_map(stylo_to_parley::query_font_families);
         query.set_families(families);
         query.set_attributes(Attributes {
             width: stylo_to_parley::font_width(font_styles.font_stretch),

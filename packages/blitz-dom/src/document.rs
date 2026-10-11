@@ -617,6 +617,9 @@ impl BaseDocument {
                 font_ctx
             });
         let font_ctx = Arc::new(Mutex::new(font_ctx));
+        if let Some(fallback) = config.family_fallback {
+            crate::font_fallback::set(fallback);
+        }
 
         // Make sure we turn on stylo features *before* creating the Stylist
         style_config::set_pref!("layout.grid.enabled", true);

@@ -74,6 +74,23 @@ pub(crate) fn query_font_family(input: &stylo::SingleFontFamily) -> parley::Quer
     }
 }
 
+/// The author family, then the embedder fallback for it when there is one.
+pub(crate) fn query_font_families(
+    input: &stylo::SingleFontFamily,
+) -> impl Iterator<Item = parley::QueryFamily<'_>> + '_ {
+    std::iter::once(query_font_family(input))
+        .chain(family_fallback(input).map(parley::QueryFamily::Named))
+}
+
+fn family_fallback(input: &stylo::SingleFontFamily) -> Option<&'static str> {
+    match input {
+        stylo::SingleFontFamily::FamilyName(name) => {
+            crate::font_fallback::lookup(name.name.as_ref())
+        }
+        stylo::SingleFontFamily::Generic(_) => None,
+    }
+}
+
 pub(crate) fn font_weight(input: stylo::FontWeight) -> parley::FontWeight {
     parley::FontWeight::new(input.value())
 }
@@ -323,7 +340,7 @@ pub(crate) fn style(
     let font_features = self::font_features(font_styles);
 
     // Convert font family
-    let families: Vec<_> = font_styles
+    let mut families: Vec<_> = font_styles
         .font_family
         .families
         .list
@@ -355,6 +372,23 @@ pub(crate) fn style(
             }
         })
         .collect();
+    // Each author name is followed by its embedder fallback, if any. The map above is
+    // one to one, so inserting from the back keeps the indices valid.
+    for (index, family) in font_styles
+        .font_family
+        .families
+        .list
+        .iter()
+        .enumerate()
+        .rev()
+    {
+        if let Some(fallback) = family_fallback(family) {
+            families.insert(
+                index + 1,
+                parley::FontFamilyName::Named(Cow::Borrowed(fallback)),
+            );
+        }
+    }
 
     // Wrapping and breaking
     let word_break = match itext_styles.word_break {
