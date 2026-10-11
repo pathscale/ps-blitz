@@ -662,8 +662,71 @@ impl NetHandler for ResourceHandler<ImageHandler> {
     }
 }
 
+/// A JPEG XL codestream starts with FF 0A; the container form starts with the 12-byte "JXL " box.
+#[cfg(feature = "image-formats")]
+fn is_jxl(bytes: &[u8]) -> bool {
+    const CONTAINER: [u8; 12] = [
+        0, 0, 0, 0x0C, b'J', b'X', b'L', b' ', 0x0D, 0x0A, 0x87, 0x0A,
+    ];
+    bytes.starts_with(&[0xFF, 0x0A]) || bytes.starts_with(&CONTAINER)
+}
+
+/// The first keyframe of a JPEG XL image in sRGB, as RGBA8.
+#[cfg(feature = "image-formats")]
+fn decode_jxl(bytes: &Bytes) -> Result<(u32, u32, Vec<u8>), String> {
+    use jxl_oxide::{EnumColourEncoding, JxlImage, NullCms, RenderingIntent};
+
+    // The same decode budget as the canvas path: refuse before rendering anything.
+    const ALLOCATION_LIMIT: u64 = 64 * 1024 * 1024;
+    let mut image = JxlImage::builder()
+        .read_bytes(Arc::from(&bytes[..]))
+        .map_err(|error| error.to_string())?;
+    let (width, height) = (image.width(), image.height());
+    if u64::from(width) * u64::from(height) * 4 > ALLOCATION_LIMIT {
+        return Err(format!("{width}x{height} exceeds the decode budget"));
+    }
+    image.set_cms(NullCms);
+    image.request_color_encoding(EnumColourEncoding::srgb(RenderingIntent::Relative));
+    let render = image.render_frame(0).map_err(|error| error.to_string())?;
+    let mut stream = render.stream();
+    let (width, height, channels) = (stream.width(), stream.height(), stream.channels() as usize);
+    let mut samples = vec![0f32; width as usize * height as usize * channels];
+    stream.write_to_buffer(&mut samples);
+    let to_byte = |value: f32| (value.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+    let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+    for pixel in samples.chunks_exact(channels) {
+        let (rgb, alpha) = match channels {
+            1 => ([pixel[0]; 3], 1.0),
+            2 => ([pixel[0]; 3], pixel[1]),
+            3 => ([pixel[0], pixel[1], pixel[2]], 1.0),
+            _ => ([pixel[0], pixel[1], pixel[2]], pixel[3]),
+        };
+        rgba.extend_from_slice(&[
+            to_byte(rgb[0]),
+            to_byte(rgb[1]),
+            to_byte(rgb[2]),
+            to_byte(alpha),
+        ]);
+    }
+    Ok((width, height, rgba))
+}
+
 impl ImageHandler {
     fn parse(&self, bytes: Bytes) -> Result<Resource, String> {
+        #[cfg(feature = "image-formats")]
+        if is_jxl(&bytes) {
+            return decode_jxl(&bytes)
+                .map(|(width, height, rgba)| {
+                    Resource::Image(self.kind, width, height, Arc::new(rgba))
+                })
+                .map_err(|error| {
+                    format!(
+                        "Could not parse JPEG XL image ({} bytes): {error}",
+                        bytes.len()
+                    )
+                });
+        }
+
         let image_err = match image::ImageReader::new(Cursor::new(&bytes))
             .with_guessed_format()
             .expect("IO errors impossible with Cursor")
