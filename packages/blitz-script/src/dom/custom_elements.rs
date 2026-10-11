@@ -64,7 +64,7 @@ struct Construction {
 
 #[derive(Default)]
 struct RegistryState {
-    definitions: FxHashMap<String, Arc<Definition>>,
+    definitions: FxHashMap<String, Rc<Definition>>,
     pending: FxHashMap<String, PendingDefinition>,
     elements: FxHashMap<NodeId, ElementQueue>,
     stack: Vec<VecDeque<NodeId>>,
@@ -434,12 +434,12 @@ pub(crate) fn define(this: &JsValue, args: &[JsValue], context: &mut Context) ->
         })
     })();
     ce.state.borrow_mut().defining = false;
-    let definition = Arc::new(definition?);
+    let definition = Rc::new(definition?);
     let ctx = dom_ctx(context)?;
     ce.state
         .borrow_mut()
         .definitions
-        .insert(name.clone(), Arc::clone(&definition));
+        .insert(name.clone(), Rc::clone(&definition));
     ctx.state
         .borrow_mut()
         .custom_element_definitions
@@ -562,7 +562,7 @@ pub(crate) fn upgrade(
     Ok(JsValue::undefined())
 }
 
-fn definition_for(ctx: &DomCtx, node: NodeId, context: &Context) -> Option<Arc<Definition>> {
+fn definition_for(ctx: &DomCtx, node: NodeId, context: &Context) -> Option<Rc<Definition>> {
     let name = {
         let doc = ctx.doc.borrow();
         if !doc.script_custom_element_is_defined(node) {
@@ -996,7 +996,7 @@ fn interface_construct(
     }
     html_constructor(
         &JsValue::undefined(),
-        &[new_target.clone(), js_str(&interface)],
+        &[new_target.clone(), js_str(interface)],
         context,
     )
 }
@@ -1015,7 +1015,7 @@ fn html_constructor(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
         .definitions
         .iter()
         .find(|(_, definition)| JsObject::equals(&definition.constructor, &new_target))
-        .map(|(name, definition)| (name.clone(), Arc::clone(definition)));
+        .map(|(name, definition)| (name.clone(), Rc::clone(definition)));
     let Some((name, definition)) = found else {
         return Err(JsNativeError::typ()
             .with_message("Unregistered HTML constructor")

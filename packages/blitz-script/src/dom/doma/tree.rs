@@ -3,21 +3,15 @@
 use blitz_dom::node::NodeData;
 use blitz_dom::{NodeId, QualName};
 use boa_engine::object::JsObject;
-use boa_engine::object::builtins::{JsArray, JsProxyBuilder};
-use boa_engine::property::PropertyKey;
-use boa_engine::{
-    Context, Finalize, JsData, JsNativeError, JsResult, JsString, JsValue, Trace, js_string,
-};
+use boa_engine::object::builtins::JsArray;
+use boa_engine::{Context, JsNativeError, JsResult, JsValue, js_string};
 
-use super::{attr, dom_error, index_arg, install_iterator};
+use super::{attr, dom_error};
 use crate::dom::{
-    define_accessor, define_method, define_value, dom_ctx, js_str, node_id_of_value, node_or_null,
-    node_wrapper, this_node_id, to_rust_string,
+    define_accessor, define_method, dom_ctx, js_str, node_id_of_value, node_or_null, node_wrapper,
+    this_node_id, to_rust_string,
 };
 use crate::state::DomCtx;
-
-const CHILDREN_CACHE: &str = "__blitz_internal_element_children__";
-const CHILDREN_OWNER: &str = "__blitz_internal_element_children_owner__";
 
 pub(crate) fn install_node(proto: &JsObject, context: &mut Context) {
     define_method(proto, "getRootNode", 0, get_root_node, context);
@@ -61,7 +55,7 @@ pub(crate) fn install_parent(proto: &JsObject, context: &mut Context) {
         None,
         context,
     );
-    define_accessor(proto, "children", Some(children), None, context);
+    // Keep the live children accessor installed by collections.
 }
 
 pub(crate) fn install_child(proto: &JsObject, context: &mut Context) {
@@ -131,7 +125,7 @@ fn last_element_child(this: &JsValue, _: &[JsValue], context: &mut Context) -> J
 
 fn child_element_count(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let ctx = dom_ctx(context)?;
-    Ok((element_ids(&ctx, this_node_id(this)?).len() as f64).into())
+    Ok((element_ids(&ctx, this_node_id(this)?).len() as u32).into())
 }
 
 fn element_sibling(ctx: &DomCtx, id: NodeId, forward: bool) -> Option<NodeId> {
@@ -173,142 +167,6 @@ fn previous_element_sibling(
         element_sibling(&ctx, this_node_id(this)?, false),
         context,
     ))
-}
-
-#[derive(Trace, Finalize, JsData)]
-struct ChildrenRef {
-    owner: JsObject,
-}
-
-fn collection_owner(this: &JsValue, context: &mut Context) -> JsResult<JsValue> {
-    let object = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("invalid children collection"))?;
-    let owner = object.get(JsString::from(CHILDREN_OWNER), context)?;
-    this_node_id(&owner)?;
-    Ok(owner)
-}
-
-fn collection_length(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let owner = collection_owner(this, context)?;
-    let ctx = dom_ctx(context)?;
-    Ok((element_ids(&ctx, this_node_id(&owner)?).len() as f64).into())
-}
-
-fn collection_item(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let owner = collection_owner(this, context)?;
-    let ctx = dom_ctx(context)?;
-    let index = index_arg(args, context)?;
-    Ok(node_or_null(
-        &ctx,
-        element_ids(&ctx, this_node_id(&owner)?).get(index).copied(),
-        context,
-    ))
-}
-
-fn collection_named(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let owner = collection_owner(this, context)?;
-    let ctx = dom_ctx(context)?;
-    let name = to_rust_string(args.first().unwrap_or(&JsValue::undefined()), context)?;
-    let ids = element_ids(&ctx, this_node_id(&owner)?);
-    let id = if name.is_empty() {
-        None
-    } else {
-        let doc = ctx.doc.borrow();
-        ids.into_iter().find(|id| {
-            doc.get_node(*id)
-                .and_then(|node| node.element_data())
-                .is_some_and(|element| {
-                    element.attr(markup5ever::local_name!("id")) == Some(name.as_str())
-                        || (element.name.ns == markup5ever::ns!(html)
-                            && element.attr(markup5ever::local_name!("name"))
-                                == Some(name.as_str()))
-                })
-        })
-    };
-    Ok(node_or_null(&ctx, id, context))
-}
-
-fn collection_target(args: &[JsValue]) -> JsResult<JsObject> {
-    args.first()
-        .and_then(JsValue::as_object)
-        .filter(|object| object.downcast_ref::<ChildrenRef>().is_some())
-        .ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("invalid children target")
-                .into()
-        })
-}
-
-fn collection_get(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let target = collection_target(args)?;
-    let key = args
-        .get(1)
-        .unwrap_or(&JsValue::undefined())
-        .to_property_key(context)?;
-    let string = match &key {
-        PropertyKey::String(key) => Some(key.to_std_string_lossy()),
-        PropertyKey::Index(key) => Some(key.get().to_string()),
-        PropertyKey::Symbol(_) => None,
-    };
-    if let Some(string) = string {
-        if let Ok(index) = string.parse::<usize>() {
-            if index.to_string() == string {
-                let owner = target
-                    .downcast_ref::<ChildrenRef>()
-                    .expect("checked collection")
-                    .owner
-                    .clone();
-                let ctx = dom_ctx(context)?;
-                let ids = element_ids(&ctx, this_node_id(&owner.into())?);
-                return Ok(ids.get(index).map_or_else(JsValue::undefined, |id| {
-                    node_wrapper(&ctx, *id, context).into()
-                }));
-            }
-        }
-        if !target.has_property(key.clone(), context)? {
-            let named = collection_named(&target.clone().into(), &[js_str(&string)], context)?;
-            if !named.is_null() {
-                return Ok(named);
-            }
-        }
-    }
-    target.get(key, context)
-}
-
-fn children(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    this_node_id(this)?;
-    let owner = this.as_object().expect("checked node");
-    let cached = owner.get(JsString::from(CHILDREN_CACHE), context)?;
-    if cached.is_object() {
-        return Ok(cached);
-    }
-    let interface = context
-        .global_object()
-        .clone()
-        .get(js_string!("HTMLCollection"), context)?;
-    let proto = match interface.as_object() {
-        Some(interface) => interface.get(js_string!("prototype"), context)?.as_object(),
-        None => None,
-    }
-    .unwrap_or_else(|| context.intrinsics().constructors().object().prototype());
-    let target = JsObject::from_proto_and_data(
-        Some(proto),
-        ChildrenRef {
-            owner: owner.clone(),
-        },
-    );
-    define_value(&target, CHILDREN_OWNER, owner.clone().into(), context);
-    define_accessor(&target, "length", Some(collection_length), None, context);
-    define_method(&target, "item", 1, collection_item, context);
-    define_method(&target, "namedItem", 1, collection_named, context);
-    install_iterator(&target, context);
-    let collection: JsObject = JsProxyBuilder::new(target)
-        .get(collection_get)
-        .build(context)?
-        .into();
-    define_value(&owner, CHILDREN_CACHE, collection.clone().into(), context);
-    Ok(collection.into())
 }
 
 fn query_selector(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
@@ -611,7 +469,7 @@ fn lookup_namespace_uri(
                         && attr.name.prefix.is_none()
                         && &*attr.name.local == "xmlns")
                         || (attr.name.prefix.as_deref() == Some("xmlns")
-                            && &*attr.name.local == prefix))
+                            && attr.name.local.as_ref() == prefix))
                 {
                     return Ok(if attr.value.is_empty() {
                         JsValue::null()

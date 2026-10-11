@@ -36,7 +36,7 @@ fn text_of_selector(doc: &ScriptDocument, selector: &str) -> String {
 
 #[test]
 fn history_back_dispatches_popstate() {
-    let doc = doc_from_html(
+    let mut doc = doc_from_html(
         r#"
         <html><body>
             <div id="out"></div>
@@ -44,14 +44,18 @@ fn history_back_dispatches_popstate() {
                 const out = document.getElementById("out");
                 addEventListener("popstate", (event) => {
                     out.textContent += "pop:" + JSON.stringify(event.state) + "|";
+                    if (event.state === null) history.forward();
                 });
                 history.pushState({ route: "b" }, "", "/b");
                 history.back();
-                history.forward();
             </script>
         </body></html>
         "#,
     );
+
+    // Each traversal is queued, and forward is queued by the back callback.
+    doc.poll(None);
+    doc.poll(None);
 
     assert_eq!(
         text_of_selector(&doc, "#out"),

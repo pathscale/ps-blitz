@@ -604,7 +604,7 @@ fn set_title(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResul
             call(
                 &head,
                 js_string!("appendChild"),
-                &[created.clone()],
+                std::slice::from_ref(&created),
                 context,
             )?;
             created.as_object().ok_or_else(|| {

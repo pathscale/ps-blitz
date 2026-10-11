@@ -185,9 +185,11 @@ fn history_tracks_state_and_same_origin_urls() {
                 history.replaceState({ ...history.state, depth: 0 }, "");
                 history.pushState({ page: 1 }, "", "/components?group=forms#input");
                 const pushed = [history.length, history.state.page, location.pathname, location.search, location.hash];
+                addEventListener("popstate", () => {
+                    const restored = [history.state.depth, location.pathname, location.search, location.hash];
+                    document.getElementById("out").textContent = [initialState === null, ...pushed, ...restored].join("|");
+                }, { once: true });
                 history.back();
-                const restored = [history.state.depth, location.pathname, location.search, location.hash];
-                document.getElementById("out").textContent = [initialState === null, ...pushed, ...restored].join("|");
             </script>
         </body></html>
         "#,
@@ -197,6 +199,7 @@ fn history_tracks_state_and_same_origin_urls() {
         },
     );
     doc.execute_scripts();
+    doc.poll(None);
     assert_eq!(
         text_of_selector(&doc, "#out"),
         "true|2|1|/components|?group=forms|#input|0|/||"
@@ -1534,8 +1537,9 @@ fn custom_elements_define_upgrades_existing_elements() {
 
 #[test]
 fn custom_elements_rejects_a_name_without_a_dash() {
-    // The dash is what keeps the custom element namespace disjoint from HTML's,
-    // so a name without one is a TypeError rather than a silent no-op.
+    // The dash keeps the custom element namespace disjoint from HTML's.
+    // Invalid names throw a SyntaxError DOMException; duplicates throw
+    // a NotSupportedError DOMException.
     let mut doc = ScriptDocument::from_html("<div></div>", DocumentConfig::default());
     doc.execute_scripts();
 
@@ -1544,7 +1548,7 @@ fn custom_elements_rejects_a_name_without_a_dash() {
             r#"
             const attempt = (name) => {
               try { customElements.define(name, class extends HTMLElement {}); return "ok"; }
-              catch (e) { return e.constructor.name; }
+              catch (e) { return e.name; }
             };
             ({ bare: attempt("card"), dashed: attempt("my-card"),
                twice: attempt("my-card") })
@@ -1552,11 +1556,11 @@ fn custom_elements_rejects_a_name_without_a_dash() {
         )
         .expect("should evaluate");
 
-    assert_eq!(result["bare"].as_str(), Some("TypeError"), "{result}");
+    assert_eq!(result["bare"].as_str(), Some("SyntaxError"), "{result}");
     assert_eq!(result["dashed"].as_str(), Some("ok"), "{result}");
     assert_eq!(
         result["twice"].as_str(),
-        Some("TypeError"),
+        Some("NotSupportedError"),
         "defining the same name twice must throw: {result}"
     );
 }
