@@ -92,7 +92,13 @@ pub(crate) fn seed(ctx: &DomCtx, id: NodeId, wrapper: &JsObject, context: &mut C
         if let Some(event) = event_type(attribute.name.local.as_ref())
             && !forwarded(ctx, id, event)
         {
-            set_raw(ctx, wrapper, event, Some(JsString::from(&*attribute.value)), context);
+            set_raw(
+                ctx,
+                wrapper,
+                event,
+                Some(JsString::from(&*attribute.value)),
+                context,
+            );
         }
     }
 }
@@ -215,11 +221,7 @@ fn compile(
     factory.call(&scopes.into(), &[], context)
 }
 
-pub(crate) fn get(
-    this: &JsValue,
-    event: &'static str,
-    context: &mut Context,
-) -> JsResult<JsValue> {
+pub(crate) fn get(this: &JsValue, event: &'static str, context: &mut Context) -> JsResult<JsValue> {
     let Some(object) = this.as_object() else {
         return Ok(JsValue::null());
     };
@@ -374,4 +376,3 @@ pub(crate) fn install(context: &mut Context) {
         define_accessor(&prototype, "form", Some(form), None, context);
     }
 }
-

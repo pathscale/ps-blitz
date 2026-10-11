@@ -95,10 +95,7 @@ impl H1Client {
     ///
     /// If no provider is installed, TLS configuration installs aws-lc-rs.
     /// An embedder's already installed provider is retained.
-    pub fn new(
-        user_agent: &str,
-        cookies: Option<Arc<dyn CookieJar>>,
-    ) -> Result<Self, Error> {
+    pub fn new(user_agent: &str, cookies: Option<Arc<dyn CookieJar>>) -> Result<Self, Error> {
         Self::with_tls_config(user_agent, cookies, tls::default_config()?)
     }
 
@@ -124,12 +121,6 @@ impl H1Client {
             #[cfg(feature = "cache")]
             cache: None,
         })
-    }
-
-    /// Set the deadline covering permits, DNS, connections and all redirects.
-    pub fn with_timeout(mut self, timeout: Duration) -> Self {
-        self.timeout = timeout;
-        self
     }
 
     /// Attach the private cache opened for this embedder's profile.
@@ -176,12 +167,8 @@ impl H1Client {
             };
             let wire = loop {
                 if lease.connection.is_none() {
-                    let transport = tls::open(
-                        &key,
-                        &self.reactor.handle(),
-                        self.tls_config.clone(),
-                    )
-                    .await?;
+                    let transport =
+                        tls::open(&key, &self.reactor.handle(), self.tls_config.clone()).await?;
                     lease.connection = Some(Connection::new(transport));
                 }
                 let result = lease
@@ -352,9 +339,15 @@ fn validate_request(request: &FetchRequest) -> Result<(), Error> {
         return Err(Error::InvalidRequest("URL contains credentials"));
     }
     if request.method == Method::CONNECT || request.headers.contains_key("upgrade") {
-        return Err(Error::InvalidRequest("tunnels and upgrades are unsupported"));
+        return Err(Error::InvalidRequest(
+            "tunnels and upgrades are unsupported",
+        ));
     }
-    if request.body.as_ref().is_some_and(|body| body.len() > MAX_BODY_BYTES) {
+    if request
+        .body
+        .as_ref()
+        .is_some_and(|body| body.len() > MAX_BODY_BYTES)
+    {
         return Err(Error::TooLarge);
     }
     Ok(())
@@ -533,8 +526,8 @@ impl Connection {
             if digits.is_empty() || !digits.iter().all(u8::is_ascii_hexdigit) {
                 return Err(Error::Protocol("invalid chunk size"));
             }
-            let digits = std::str::from_utf8(digits)
-                .map_err(|_| Error::Protocol("invalid chunk size"))?;
+            let digits =
+                std::str::from_utf8(digits).map_err(|_| Error::Protocol("invalid chunk size"))?;
             let size = usize::from_str_radix(digits, 16)
                 .map_err(|_| Error::Protocol("invalid chunk size"))?;
             if size == 0 {
@@ -601,7 +594,11 @@ fn encode_request(
     encoded.extend_from_slice(request.method.as_str().as_bytes());
     encoded.extend_from_slice(b" ");
     let path = request.url.path();
-    encoded.extend_from_slice(if path.is_empty() { b"/" } else { path.as_bytes() });
+    encoded.extend_from_slice(if path.is_empty() {
+        b"/"
+    } else {
+        path.as_bytes()
+    });
     if let Some(query) = request.url.query() {
         encoded.extend_from_slice(b"?");
         encoded.extend_from_slice(query.as_bytes());
@@ -650,16 +647,20 @@ fn parse_head(raw: &[u8]) -> Result<Head, Error> {
     let mut fields = status_line.splitn(3, |byte| *byte == b' ');
     let version = fields.next().unwrap_or_default();
     let code = fields.next().unwrap_or_default();
-    let reason = fields.next().ok_or(Error::Protocol("invalid status line"))?;
+    let reason = fields
+        .next()
+        .ok_or(Error::Protocol("invalid status line"))?;
     if !matches!(version, b"HTTP/1.1" | b"HTTP/1.0")
         || code.len() != 3
         || !code.iter().all(u8::is_ascii_digit)
-        || reason.iter().any(|byte| *byte < b' ' && *byte != b'\t' || *byte == 127)
+        || reason
+            .iter()
+            .any(|byte| *byte < b' ' && *byte != b'\t' || *byte == 127)
     {
         return Err(Error::Protocol("invalid status line"));
     }
-    let status = StatusCode::from_bytes(code)
-        .map_err(|_| Error::Protocol("invalid status code"))?;
+    let status =
+        StatusCode::from_bytes(code).map_err(|_| Error::Protocol("invalid status code"))?;
     let mut headers = HeaderMap::new();
     let mut count = 0;
     for line in lines {
@@ -677,8 +678,8 @@ fn parse_head(raw: &[u8]) -> Result<Head, Error> {
         headers.append(name, value);
     }
     let close = has_token(&headers, "connection", "close")?;
-    let persistent = !close
-        && (version == b"HTTP/1.1" || has_token(&headers, "connection", "keep-alive")?);
+    let persistent =
+        !close && (version == b"HTTP/1.1" || has_token(&headers, "connection", "keep-alive")?);
     Ok(Head {
         status,
         headers,
@@ -699,10 +700,16 @@ fn parse_header(line: &[u8]) -> Result<(HeaderName, HeaderValue), Error> {
 }
 
 fn trim_ows(mut bytes: &[u8]) -> &[u8] {
-    while bytes.first().is_some_and(|byte| matches!(byte, b' ' | b'\t')) {
+    while bytes
+        .first()
+        .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
+    {
         bytes = &bytes[1..];
     }
-    while bytes.last().is_some_and(|byte| matches!(byte, b' ' | b'\t')) {
+    while bytes
+        .last()
+        .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
+    {
         bytes = &bytes[..bytes.len() - 1];
     }
     bytes
@@ -766,7 +773,9 @@ fn framing(headers: &HeaderMap) -> Result<Framing, Error> {
 }
 
 fn find(bytes: &[u8], needle: &[u8]) -> Option<usize> {
-    bytes.windows(needle.len()).position(|window| window == needle)
+    bytes
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 #[cfg(not(feature = "compression"))]

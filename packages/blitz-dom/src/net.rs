@@ -682,7 +682,7 @@ pub fn decode_jxl(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     // The same decode budget as the canvas path: refuse before rendering anything.
     const ALLOCATION_LIMIT: u64 = 64 * 1024 * 1024;
     let mut image = JxlImage::builder()
-        .read_bytes(Arc::from(&bytes[..]))
+        .read_bytes(Arc::from(bytes))
         .map_err(|error| error.to_string())?;
     let (width, height) = (image.width(), image.height());
     if u64::from(width) * u64::from(height) * 4 > ALLOCATION_LIMIT {

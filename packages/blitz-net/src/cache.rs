@@ -137,11 +137,7 @@ impl PrivateCache {
         self.table.wait_for_ops().await.map_err(storage_error)?;
         for entry in fs::read_dir(&self.bodies)? {
             let entry = entry?;
-            if entry
-                .file_name()
-                .to_str()
-                .is_some_and(valid_file_name)
-            {
+            if entry.file_name().to_str().is_some_and(valid_file_name) {
                 remove_file(&entry.path())?;
             }
         }
@@ -158,8 +154,8 @@ impl PrivateCache {
 
     /// Close after all clients and other cache handles have been dropped.
     pub async fn close(self: Arc<Self>) -> io::Result<()> {
-        let cache = Arc::try_unwrap(self)
-            .map_err(|_| io::Error::other("cache still has live handles"))?;
+        let cache =
+            Arc::try_unwrap(self).map_err(|_| io::Error::other("cache still has live handles"))?;
         cache.table.close().await.map_err(storage_error)
     }
 
@@ -241,15 +237,8 @@ impl PrivateCache {
                     );
                 }
                 let age = initial_age(&merged.headers, started, received);
-                self.publish(
-                    &request,
-                    &headers,
-                    &merged,
-                    started,
-                    received,
-                    generation,
-                )
-                .await;
+                self.publish(&request, &headers, &merged, started, received, generation)
+                    .await;
                 set_age(&mut merged.headers, age);
                 return Ok(merged);
             }
@@ -269,15 +258,8 @@ impl PrivateCache {
                 self.disable(error);
             }
         } else if usable && same_url(&request.url, &response.url) {
-            self.publish(
-                &request,
-                &headers,
-                &response,
-                started,
-                received,
-                generation,
-            )
-            .await;
+            self.publish(&request, &headers, &response, started, received, generation)
+                .await;
         }
         Ok(response)
     }
@@ -306,7 +288,8 @@ impl PrivateCache {
             return Err(io::Error::other("incomplete cache body"));
         }
         let mut body = Vec::new();
-        file.take(MAX_BODY_BYTES as u64 + 1).read_to_end(&mut body)?;
+        file.take(MAX_BODY_BYTES as u64 + 1)
+            .read_to_end(&mut body)?;
         if body.len() as u64 != row.body_length {
             return Err(io::Error::other("cache body changed while reading"));
         }
@@ -375,10 +358,11 @@ impl PrivateCache {
         let encoded = encode_headers(&stored_headers)?;
         let file_name = Nanoid::<21, Base64UrlAlphabet>::new().to_string();
         let path = self.bodies.join(&file_name);
-        let mut file = OpenOptions::new().write(true).create_new(true).open(&path)?;
-        let written = file
-            .write_all(&response.body)
-            .and_then(|_| file.sync_all());
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        let written = file.write_all(&response.body).and_then(|_| file.sync_all());
         drop(file);
         if let Err(error) = written {
             let _ = remove_file(&path);
@@ -413,7 +397,10 @@ impl PrivateCache {
 
     async fn evict(&self, key: &str) -> io::Result<()> {
         if let Some(row) = self.table.select(key.to_owned()) {
-            self.table.delete(key.to_owned()).await.map_err(storage_error)?;
+            self.table
+                .delete(key.to_owned())
+                .await
+                .map_err(storage_error)?;
             self.table.wait_for_ops().await.map_err(storage_error)?;
             if valid_file_name(&row.file) {
                 remove_file(&self.bodies.join(row.file))?;
@@ -422,11 +409,7 @@ impl PrivateCache {
         Ok(())
     }
 
-    async fn invalidate(
-        &self,
-        request: &FetchRequest,
-        response: &FetchResponse,
-    ) -> io::Result<()> {
+    async fn invalidate(&self, request: &FetchRequest, response: &FetchResponse) -> io::Result<()> {
         let _permit = self.gate.acquire().await;
         self.generation.fetch_add(1, Ordering::AcqRel);
         let mut urls = vec![request.url.clone()];
@@ -557,13 +540,11 @@ impl Policy {
         }
         if !headers.contains_key("cache-control") {
             for value in headers.get_all("pragma").iter() {
-                if value
-                    .to_str()
-                    .ok()
-                    .is_some_and(|value| {
-                        value.split(',').any(|part| part.trim().eq_ignore_ascii_case("no-cache"))
-                    })
-                {
+                if value.to_str().ok().is_some_and(|value| {
+                    value
+                        .split(',')
+                        .any(|part| part.trim().eq_ignore_ascii_case("no-cache"))
+                }) {
                     policy.no_cache = true;
                 }
             }
@@ -625,13 +606,14 @@ fn date(headers: &HeaderMap, name: &str) -> Option<SystemTime> {
 }
 
 fn seconds(time: SystemTime) -> u64 {
-    time.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+    time.duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 fn initial_age(headers: &HeaderMap, started: SystemTime, received: SystemTime) -> u64 {
-    let apparent = seconds(received).saturating_sub(seconds(
-        date(headers, "date").unwrap_or(received),
-    ));
+    let apparent =
+        seconds(received).saturating_sub(seconds(date(headers, "date").unwrap_or(received)));
     let mut ages = headers.get_all("age").iter();
     let age = ages
         .next()
@@ -656,7 +638,9 @@ fn initial_age(headers: &HeaderMap, started: SystemTime, received: SystemTime) -
 
 fn current_age(loaded: &Loaded, now: SystemTime) -> u64 {
     loaded.row.initial_age.saturating_add(
-        seconds(now).checked_sub(loaded.row.stored).unwrap_or(u64::MAX),
+        seconds(now)
+            .checked_sub(loaded.row.stored)
+            .unwrap_or(u64::MAX),
     )
 }
 
@@ -723,7 +707,11 @@ fn validator_matches(stored: &HeaderMap, updated: &HeaderMap) -> bool {
             return false;
         };
         let weak = |value: &HeaderValue| {
-            value.as_bytes().strip_prefix(b"W/").unwrap_or(value.as_bytes()).to_vec()
+            value
+                .as_bytes()
+                .strip_prefix(b"W/")
+                .unwrap_or(value.as_bytes())
+                .to_vec()
         };
         return weak(old) == weak(etag);
     }
@@ -780,7 +768,11 @@ fn fingerprint(request: &HeaderMap, response: &HeaderMap) -> io::Result<Option<B
     ];
     for value in response.get_all("vary").iter() {
         let value = value.to_str().map_err(storage_error)?;
-        for name in value.split(',').map(str::trim).filter(|name| !name.is_empty()) {
+        for name in value
+            .split(',')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
             if name == "*" {
                 return Ok(None);
             }
@@ -840,10 +832,9 @@ fn decode_headers(encoded: &[u8]) -> io::Result<HeaderMap> {
         if headers.len() >= MAX_FIELDS {
             return Err(io::Error::other("too many stored headers"));
         }
-        let name = HeaderName::from_bytes(decode_field(&mut remaining)?)
-            .map_err(storage_error)?;
-        let value = HeaderValue::from_bytes(decode_field(&mut remaining)?)
-            .map_err(storage_error)?;
+        let name = HeaderName::from_bytes(decode_field(&mut remaining)?).map_err(storage_error)?;
+        let value =
+            HeaderValue::from_bytes(decode_field(&mut remaining)?).map_err(storage_error)?;
         headers.append(name, value);
     }
     Ok(headers)
@@ -853,9 +844,8 @@ fn decode_field<'a>(remaining: &mut &'a [u8]) -> io::Result<&'a [u8]> {
     if remaining.len() < 4 {
         return Err(io::Error::other("truncated cache metadata"));
     }
-    let length = u32::from_be_bytes(
-        remaining[..4].try_into().expect("four bytes were checked"),
-    ) as usize;
+    let length =
+        u32::from_be_bytes(remaining[..4].try_into().expect("four bytes were checked")) as usize;
     *remaining = &remaining[4..];
     if length > remaining.len() {
         return Err(io::Error::other("truncated cache metadata field"));
@@ -867,9 +857,9 @@ fn decode_field<'a>(remaining: &mut &'a [u8]) -> io::Result<&'a [u8]> {
 
 fn valid_file_name(name: &str) -> bool {
     name.len() == 21
-        && name.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'
-        })
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
 }
 
 fn remove_file(path: &Path) -> io::Result<()> {

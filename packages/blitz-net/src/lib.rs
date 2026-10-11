@@ -22,7 +22,8 @@
 mod h1;
 
 use blitz_traits::net::{
-    AbortSignal, Body, Bytes, CookieJar as CookieStorage, NetHandler, NetProvider, NetWaker, Request,
+    AbortSignal, Body, Bytes, CookieJar as CookieStorage, NetHandler, NetProvider, NetWaker,
+    Request,
     http::{HeaderValue, header::CONTENT_TYPE},
 };
 use blitz_traits::platform::{
@@ -62,10 +63,7 @@ struct Client;
 
 #[cfg(target_arch = "wasm32")]
 impl Client {
-    fn new(
-        user_agent: &str,
-        _cookies: Option<Arc<dyn CookieStorage>>,
-    ) -> Result<Self, FetchError> {
+    fn new(user_agent: &str, _cookies: Option<Arc<dyn CookieStorage>>) -> Result<Self, FetchError> {
         HeaderValue::from_str(user_agent)
             .map_err(|error| FetchError::InvalidRequest(error.to_string()))?;
         Ok(Self)
@@ -143,8 +141,8 @@ impl Provider {
         user_agent: &str,
         cookies: Option<Arc<dyn CookieStorage>>,
     ) -> Self {
-        let client = Client::new(user_agent, cookies)
-            .expect("failed to initialize the house HTTP client");
+        let client =
+            Client::new(user_agent, cookies).expect("failed to initialize the house HTTP client");
         let waker = waker.unwrap_or(Arc::new(DummyNetWaker));
         Self {
             client,
@@ -534,10 +532,7 @@ pub enum ProviderError {
     Network(String),
     InvalidRequest(String),
     UnsupportedScheme(String),
-    HttpStatus {
-        status: StatusCode,
-        url: String,
-    },
+    HttpStatus { status: StatusCode, url: String },
 }
 
 impl std::fmt::Display for ProviderError {
@@ -661,7 +656,9 @@ fn encode_multipart(
             .checked_add(body.len())
             .and_then(|length| length.checked_add(2))
             .and_then(|length| length.checked_add(encoded.len()))
-            .ok_or_else(|| ProviderError::InvalidRequest("multipart body is too large".to_owned()))?;
+            .ok_or_else(|| {
+                ProviderError::InvalidRequest("multipart body is too large".to_owned())
+            })?;
         if required > h1::MAX_BODY_BYTES {
             return Err(ProviderError::InvalidRequest(
                 "multipart body exceeds the body limit".to_owned(),

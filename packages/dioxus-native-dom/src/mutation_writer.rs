@@ -397,7 +397,8 @@ fn set_attribute_inner(
         return;
     }
 
-    let name = qual_name(local_name, ns);
+    // Attributes without an explicit namespace belong to the empty namespace.
+    let name = qual_name(local_name, Some(ns.unwrap_or_default()));
 
     // FIXME: more principled handling of special case attributes
     match value {
