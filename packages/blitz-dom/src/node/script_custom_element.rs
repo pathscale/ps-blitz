@@ -32,6 +32,7 @@ pub enum ReactionKind {
     Upgrade,
     Connected,
     Disconnected,
+    Moved,
     Attribute {
         name: QualName,
         old_value: Option<String>,
@@ -296,9 +297,26 @@ impl BaseDocument {
         self.change_script_custom_element_count(parent, count, false);
     }
 
+    /// Drop the disconnect recorded for `node_id` by the detach in this mutation.
+    fn take_pending_disconnect(&mut self, node_id: NodeId) -> bool {
+        let Some(index) = self
+            .script_custom_elements
+            .reactions
+            .iter()
+            .rposition(|reaction| {
+                reaction.node == node_id && matches!(reaction.kind, ReactionKind::Disconnected)
+            })
+        else {
+            return false;
+        };
+        self.script_custom_elements.reactions.remove(index);
+        true
+    }
+
     /// Called after establishing a new parent edge.
     pub(crate) fn attach_script_custom_element_subtree(&mut self, root: NodeId, parent: NodeId) {
         let owner = self.nodes[parent].owner_document.unwrap_or(parent);
+        let same_document = self.nodes[root].owner_document == Some(owner);
         self.adopt_script_subtree(root, owner);
         let count = self.nodes[root].custom_element_subtree_count;
         self.change_script_custom_element_count(Some(parent), count, true);
@@ -308,7 +326,14 @@ impl BaseDocument {
         for id in self.script_custom_element_candidates(root) {
             match self.script_custom_element_state(id) {
                 State::Custom | State::Upgrading => {
-                    self.record_script_custom_element(id, ReactionKind::Connected);
+                    // A same-document reparent that stays connected is one move.
+                    // The disconnect from this mutation's detach is the signal;
+                    // a node that ends disconnected keeps that reaction.
+                    if same_document && self.take_pending_disconnect(id) {
+                        self.record_script_custom_element(id, ReactionKind::Moved);
+                    } else {
+                        self.record_script_custom_element(id, ReactionKind::Connected);
+                    }
                 }
                 State::Undefined
                     if self.nodes[id].owner_document == Some(self.root_node_id)

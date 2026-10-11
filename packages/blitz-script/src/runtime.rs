@@ -839,6 +839,13 @@ impl ScriptRuntime {
             const sequenceFrom = Array.from;
             const sequenceString = String;
             globalThis.__blitzCEInitialize(function (value) {
+                if (value === null || value === undefined) {
+                    throw new TypeError("cannot convert 'null' or 'undefined' to object");
+                }
+                const iterator = value[Symbol.iterator];
+                if (typeof iterator !== "function") {
+                    throw new TypeError("not a callable function");
+                }
                 return sequenceFrom(value, sequenceString);
             });
             delete globalThis.__blitzCEInitialize;
