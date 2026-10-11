@@ -948,7 +948,7 @@ fn interface_construct(
         .definitions
         .values()
         .find(|definition| JsObject::equals(&definition.constructor, &target))
-        .map(|definition| definition.interface.clone());
+        .map(|definition| definition.interface);
     let Some(interface) = interface else {
         return Err(JsNativeError::typ()
             .with_message("Illegal constructor")
