@@ -15,6 +15,8 @@ pub(crate) struct Timer {
     pub interval: Option<Duration>,
     pub callback: JsObject,
     pub args: Vec<JsValue>,
+    /// Frame callbacks receive their timestamp when the frame runs.
+    pub animation_frame: bool,
 }
 
 /// Ordered by deadline, then by id so that two timers due at the same instant
@@ -74,6 +76,22 @@ impl TimerQueue {
         callback: JsObject,
         args: Vec<JsValue>,
     ) -> u64 {
+        self.add_timer(delay, interval, callback, args, false)
+    }
+
+    pub fn add_animation_frame(&mut self, callback: JsObject) -> u64 {
+        // Approximate the next frame as ~16ms away.
+        self.add_timer(Duration::from_millis(16), None, callback, Vec::new(), true)
+    }
+
+    fn add_timer(
+        &mut self,
+        delay: Duration,
+        interval: Option<Duration>,
+        callback: JsObject,
+        args: Vec<JsValue>,
+        animation_frame: bool,
+    ) -> u64 {
         self.next_id += 1;
         let id = self.next_id;
         self.live.insert(id);
@@ -83,6 +101,7 @@ impl TimerQueue {
             interval,
             callback,
             args,
+            animation_frame,
         });
         id
     }
@@ -92,6 +111,14 @@ impl TimerQueue {
             return;
         }
         self.discard_dead_front();
+    }
+
+    /// Claim a frame callback immediately before invoking it.
+    ///
+    /// Due frame callbacks remain cancellable while earlier callbacks run.
+    /// Removing the id here also makes cancellation after invocation a no-op.
+    pub fn begin_animation_frame_callback(&mut self, id: u64) -> bool {
+        self.live.remove(&id)
     }
 
     /// The deadline of the timer which is due soonest (if any).
@@ -105,6 +132,9 @@ impl TimerQueue {
 
     /// Remove and return all timers that are due at `now`, soonest first.
     /// Interval timers are rescheduled.
+    ///
+    /// Frame callback ids stay live until invocation so an earlier callback
+    /// can cancel a later callback from this snapshot.
     pub fn take_due(&mut self, now: Instant) -> Vec<Timer> {
         let mut due: Vec<Timer> = Vec::new();
 
@@ -126,7 +156,9 @@ impl TimerQueue {
                     interval: timer.interval,
                     callback: timer.callback.clone(),
                     args: timer.args.clone(),
+                    animation_frame: timer.animation_frame,
                 }),
+                None if timer.animation_frame => {}
                 None => {
                     self.live.remove(&timer.id);
                 }

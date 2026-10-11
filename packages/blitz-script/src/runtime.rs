@@ -1302,11 +1302,27 @@ impl ScriptRuntime {
         if due.is_empty() {
             return false;
         }
+        // All frame callbacks in this snapshot share one start time on the
+        // performance.now() clock. Newly registered callbacks stay queued.
+        let frame_args = [JsValue::new(TIME_ORIGIN.elapsed().as_secs_f64() * 1000.0)];
         for timer in due {
-            if let Err(error) =
-                timer
-                    .callback
-                    .call(&JsValue::undefined(), &timer.args, &mut self.context)
+            let args = if timer.animation_frame {
+                if !self
+                    .ctx
+                    .state
+                    .borrow_mut()
+                    .timers
+                    .begin_animation_frame_callback(timer.id)
+                {
+                    continue;
+                }
+                &frame_args[..]
+            } else {
+                &timer.args[..]
+            };
+            if let Err(error) = timer
+                .callback
+                .call(&JsValue::undefined(), args, &mut self.context)
             {
                 report_js_error(&self.diagnostics, "timer callback", &error);
             }
@@ -2257,14 +2273,7 @@ fn request_animation_frame(
     else {
         return Ok(JsValue::from(0));
     };
-    // Approximate the next frame as ~16ms away
-    let timestamp = JsValue::from(16.0);
-    let id = ctx.state.borrow_mut().timers.add(
-        Duration::from_millis(16),
-        None,
-        callback,
-        vec![timestamp],
-    );
+    let id = ctx.state.borrow_mut().timers.add_animation_frame(callback);
     Ok(JsValue::from(id as f64))
 }
 
