@@ -25,7 +25,7 @@ pub(crate) fn init_document_proto(proto: &JsObject, context: &mut Context) {
     define_accessor(proto, "head", Some(head), None, context);
     define_accessor(proto, "activeElement", Some(active_element), None, context);
     define_accessor(proto, "implementation", Some(implementation), None, context);
-    define_accessor(proto, "title", Some(title), None, context);
+    define_accessor(proto, "title", Some(title), Some(set_title), context);
     define_accessor(proto, "defaultView", Some(default_view), None, context);
     define_accessor(
         proto,
@@ -522,6 +522,107 @@ fn title(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsVal
         })
         .unwrap_or_default();
     Ok(JsString::from(text.as_str()).into())
+}
+
+const SVG_NS: &str = "http://www.w3.org/2000/svg";
+
+/// Setting `document.title` replaces the text of the title element. In an SVG document that is the
+/// root's first `<svg:title>` child, inserted as its first child when missing; otherwise the first
+/// `<title>`, appended to `<head>` when missing (nothing happens without a `<head>`). Goes through
+/// the script-visible methods so mutation observers and restyles see an ordinary DOM change.
+fn set_title(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let value = args
+        .first()
+        .cloned()
+        .unwrap_or_default()
+        .to_string(context)?;
+    let ctx = dom_ctx(context)?;
+    let this_id = this_node_id(this)?;
+    let Some(document) = this.as_object() else {
+        return Ok(JsValue::undefined());
+    };
+    let root = document.get(js_string!("documentElement"), context)?;
+    let Some(root) = root.as_object() else {
+        return Ok(JsValue::undefined());
+    };
+    let root_id = this_node_id(&root.clone().into())?;
+    let root_is_svg = {
+        let doc = ctx.doc.borrow();
+        doc.get_node(root_id)
+            .and_then(|node| node.element_data())
+            .is_some_and(|element| &*element.name.ns == SVG_NS)
+    };
+    let existing = if root_is_svg {
+        let doc = ctx.doc.borrow();
+        doc.get_node(root_id).and_then(|node| {
+            node.children.iter().copied().find(|id| {
+                doc.get_node(*id)
+                    .and_then(|child| child.element_data())
+                    .is_some_and(|element| {
+                        element.name.local == local_name!("title") && &*element.name.ns == SVG_NS
+                    })
+            })
+        })
+    } else {
+        find_tag_within(&ctx, this_id, local_name!("title"))
+    };
+    let element = match existing {
+        Some(id) => node_wrapper(&ctx, id, context),
+        None if root_is_svg => {
+            let created = call(
+                &document,
+                js_string!("createElementNS"),
+                &[js_string!(SVG_NS).into(), js_string!("title").into()],
+                context,
+            )?;
+            let first = root.get(js_string!("firstChild"), context)?;
+            call(
+                &root,
+                js_string!("insertBefore"),
+                &[created.clone(), first],
+                context,
+            )?;
+            created.as_object().ok_or_else(|| {
+                boa_engine::JsNativeError::typ().with_message("createElementNS returned no element")
+            })?
+        }
+        None => {
+            let head = document.get(js_string!("head"), context)?;
+            let Some(head) = head.as_object() else {
+                return Ok(JsValue::undefined());
+            };
+            let created = call(
+                &document,
+                js_string!("createElement"),
+                &[js_string!("title").into()],
+                context,
+            )?;
+            call(
+                &head,
+                js_string!("appendChild"),
+                &[created.clone()],
+                context,
+            )?;
+            created.as_object().ok_or_else(|| {
+                boa_engine::JsNativeError::typ().with_message("createElement returned no element")
+            })?
+        }
+    };
+    element.set(js_string!("textContent"), value, true, context)?;
+    Ok(JsValue::undefined())
+}
+
+fn call(
+    object: &JsObject,
+    name: JsString,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let method = object.get(name, context)?;
+    let method = method.as_callable().ok_or_else(|| {
+        boa_engine::JsNativeError::typ().with_message("document.title: missing DOM method")
+    })?;
+    method.call(&object.clone().into(), args, context)
 }
 
 /// `document.implementation.createHTMLDocument(title)`.
