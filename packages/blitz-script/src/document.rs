@@ -171,6 +171,58 @@ impl ScriptDocument {
         self.runtime.jobs_remain()
     }
 
+    /// Drive scripts and runnable event-loop work to quiescence.
+    ///
+    /// Starts document scripts if necessary, then polls until parsing,
+    /// deferred scripts, microtasks, observer delivery and timers due now
+    /// have drained. Completion depends on pending work, not a timeout or a
+    /// fixed number of polls. Each poll retains the configured job budget.
+    ///
+    /// Module fetches use the synchronous document fetcher. If a module
+    /// evaluation is suspended, this waits until the next scheduled timer
+    /// and resumes polling. Unrelated future timers remain scheduled, and
+    /// non-script resources are not awaited.
+    ///
+    /// Returns an error if a module is suspended without a scheduled timer,
+    /// or an unfinished document input stream cannot make progress. A page
+    /// that continuously produces runnable work may never become idle.
+    ///
+    /// Call on the document's owning thread, outside poll hooks and
+    /// JavaScript callbacks. This is a blocking entry point for tests and
+    /// hosts that need completed script startup before inspecting the DOM.
+    pub fn run_until_idle(&mut self) -> Result<(), &'static str> {
+        loop {
+            let progressed = self.poll(None);
+            let next_timer = self.runtime.next_timer_deadline();
+            if self.runtime.jobs_remain()
+                || next_timer.is_some_and(|deadline| deadline <= Instant::now())
+                || progressed
+            {
+                continue;
+            }
+
+            if self.runtime.has_pending_module_evaluations() {
+                let Some(deadline) = next_timer else {
+                    return Err("module evaluation is suspended without a scheduled timer");
+                };
+                std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
+                continue;
+            }
+
+            if crate::docwrite::active(&self.runtime.context)
+                || self.startup_events_pending
+                || self.collect_scripts().iter().any(|script| {
+                    !self.executed_scripts.contains(&script.node_id)
+                        && !crate::docwrite::was_executed(&self.runtime.context, script.node_id)
+                })
+            {
+                return Err("script startup cannot make progress");
+            }
+
+            return Ok(());
+        }
+    }
+
     /// When the soonest page timer is due, so a host can sleep exactly until
     /// then instead of on a fixed tick (a `setTimeout(0)` continuation should
     /// not wait for the host's next frame).
@@ -526,10 +578,11 @@ impl ScriptDocument {
             return false;
         }
         if self.startup_events_pending
-            && self.collect_scripts().iter().any(|script| {
-                !self.executed_scripts.contains(&script.node_id)
-                    && !crate::docwrite::was_executed(&self.runtime.context, script.node_id)
-            })
+            && (self.runtime.has_pending_module_evaluations()
+                || self.collect_scripts().iter().any(|script| {
+                    !self.executed_scripts.contains(&script.node_id)
+                        && !crate::docwrite::was_executed(&self.runtime.context, script.node_id)
+                }))
         {
             return false;
         }

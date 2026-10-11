@@ -188,8 +188,7 @@ fn a_removed_element_is_not_rooted_by_its_handler() {
              button.remove();
            })();"#,
     );
-    document.execute_scripts();
-    document.poll(None);
+    document.run_until_idle().expect("script startup completes");
 
     boa_gc::force_collect();
     assert!(

@@ -30,7 +30,7 @@ fn hiding_a_sibling_by_class_takes_its_box_away() {
            </body></html>"#,
         Default::default(),
     );
-    doc.poll(None);
+    doc.run_until_idle().expect("script startup completes");
     doc.inner_mut().resolve(0.0);
     assert!(area(&doc, "#a") > 0.0, "the shown tab never laid out");
     assert_eq!(area(&doc, "#b"), 0.0, "the hidden tab started with a box");
