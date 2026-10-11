@@ -42,6 +42,7 @@ pub mod node;
 mod config;
 mod debug;
 mod events;
+pub mod font_fallback;
 mod font_metrics;
 mod form;
 mod html;

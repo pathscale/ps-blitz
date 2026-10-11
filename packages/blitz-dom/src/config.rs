@@ -62,4 +62,8 @@ pub struct DocumentConfig {
     /// How deeply this document is nested within other documents
     /// (0 for a root document). Used to limit `<iframe>` nesting depth.
     pub subdocument_depth: usize,
+    /// Maps a CSS family name to a family the embedder registered in `font_ctx`, tried
+    /// after the author name. Process-wide: the first document that sets it wins. See
+    /// [`font_fallback`](crate::font_fallback).
+    pub family_fallback: Option<crate::font_fallback::FamilyFallback>,
 }

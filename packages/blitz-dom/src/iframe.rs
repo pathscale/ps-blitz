@@ -72,6 +72,8 @@ impl BaseDocument {
             incremental: Some(self.incremental_layout),
             abort_signal: Some(abort_signal),
             subdocument_depth: self.subdocument_depth + 1,
+            // Process-wide, already set by the parent if it had one.
+            family_fallback: None,
         }
     }
 
