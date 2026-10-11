@@ -916,6 +916,39 @@ impl DocumentMutator<'_> {
         self.doc.attach_shadow(host_id, mode)
     }
 
+    #[cfg(feature = "shadow-dom")]
+    pub fn try_attach_declarative_shadow(
+        &mut self,
+        host_id: NodeId,
+        template_id: NodeId,
+        mode: crate::node::ShadowRootMode,
+        clonable: bool,
+        serializable: bool,
+        delegates_focus: bool,
+    ) -> bool {
+        self.doc.try_attach_declarative_shadow(
+            host_id,
+            template_id,
+            mode,
+            clonable,
+            serializable,
+            delegates_focus,
+        )
+    }
+
+    #[cfg(feature = "shadow-dom")]
+    pub fn declarative_shadow_for_template(&self, template_id: NodeId) -> Option<NodeId> {
+        self.doc
+            .declarative_template_shadows
+            .get(&template_id)
+            .copied()
+    }
+
+    #[cfg(feature = "shadow-dom")]
+    pub fn forget_declarative_template(&mut self, template_id: NodeId) {
+        self.doc.declarative_template_shadows.remove(&template_id);
+    }
+
     /// Attach a custom element controller to the given node and run its
     /// `connected` lifecycle callback (attaching a shadow root if needed).
     #[cfg(feature = "shadow-dom")]
@@ -1562,6 +1595,20 @@ impl<'doc> DocumentMutator<'doc> {
     }
 
     pub fn set_inner_html(&mut self, node_id: NodeId, html: &str) {
+        self.set_html_replacing(node_id, html, false);
+    }
+
+    /// Replace descendants and honor declarative shadow roots.
+    pub fn set_html_unsafe(&mut self, node_id: NodeId, html: &str) {
+        self.set_html_replacing(node_id, html, true);
+    }
+
+    fn set_html_replacing(
+        &mut self,
+        node_id: NodeId,
+        html: &str,
+        allow_declarative_shadow_roots: bool,
+    ) {
         let target = self.doc.nodes[node_id]
             .element_data()
             .and_then(|element| element.template_contents)
@@ -1574,22 +1621,118 @@ impl<'doc> DocumentMutator<'doc> {
         {
             // html5ever's fragment context must be an element. Parsing into a
             // detached host-shaped element also keeps scripts inert.
+            // Do not promote a top-level template onto that throwaway. The real
+            // host already has a shadow root, so the template stays a template
+            // and moves into this shadow root with the other children.
             let name = self.doc.nodes[host_id].element_data().unwrap().name.clone();
             let context_id = self.create_element(name, Vec::new());
-            self.doc
-                .html_parser_provider
-                .clone()
-                .parse_inner_html(self, context_id, html);
+            if allow_declarative_shadow_roots {
+                self.doc
+                    .html_parser_provider
+                    .clone()
+                    .parse_fragment(self, context_id, html, true);
+            } else {
+                self.doc
+                    .html_parser_provider
+                    .clone()
+                    .parse_inner_html(self, context_id, html);
+            }
             let children = self.child_ids(context_id);
             self.append_children(node_id, &children);
             self.remove_and_drop_node(context_id);
             self.doc.note_shadow_tree_change(node_id);
             return;
         }
-        self.doc
-            .html_parser_provider
-            .clone()
-            .parse_inner_html(self, node_id, html);
+        if allow_declarative_shadow_roots {
+            self.doc
+                .html_parser_provider
+                .clone()
+                .parse_fragment(self, node_id, html, true);
+            // html5ever does not attach a template whose adjusted current node
+            // is the fragment context (its open-element stack has length 1).
+            // Promote that one direct child after the children have moved onto
+            // the real target. Nested hosts are attached during the parse.
+            #[cfg(feature = "shadow-dom")]
+            self.promote_direct_declarative_shadows(target);
+        } else {
+            self.doc
+                .html_parser_provider
+                .clone()
+                .parse_inner_html(self, node_id, html);
+        }
+    }
+
+    /// Turn the first direct `<template shadowrootmode>` child into a shadow root.
+    ///
+    /// Later siblings stay templates, because the host then already has a root.
+    #[cfg(feature = "shadow-dom")]
+    fn promote_direct_declarative_shadows(&mut self, target: NodeId) {
+        let can_host = self
+            .doc
+            .nodes
+            .get(target)
+            .and_then(|node| node.element_data())
+            .is_some_and(|element| {
+                BaseDocument::element_can_be_shadow_host(element) && element.shadow_root.is_none()
+            });
+        if !can_host {
+            return;
+        }
+        let children = self.child_ids(target);
+        for child_id in children {
+            let info = self.doc.nodes[child_id]
+                .element_data()
+                .and_then(Self::declarative_template_flags);
+            let Some((mode, clonable, serializable, delegates_focus, contents)) = info else {
+                continue;
+            };
+            let root_id = self.doc.attach_shadow(target, mode);
+            if let Some(root) = self.doc.nodes[root_id].shadow_root_data_mut() {
+                root.declarative = true;
+                root.clonable = clonable;
+                root.serializable = serializable;
+                root.delegates_focus = delegates_focus;
+            }
+            if let Some(contents) = contents {
+                let inner = self.child_ids(contents);
+                if !inner.is_empty() {
+                    self.append_children(root_id, &inner);
+                }
+            }
+            self.remove_and_drop_node(child_id);
+            self.doc.note_shadow_tree_change(target);
+            break;
+        }
+    }
+
+    #[cfg(feature = "shadow-dom")]
+    fn declarative_template_flags(
+        element: &ElementData,
+    ) -> Option<(
+        crate::node::ShadowRootMode,
+        bool,
+        bool,
+        bool,
+        Option<NodeId>,
+    )> {
+        if element.name.ns != ns!(html) || element.name.local != local_name!("template") {
+            return None;
+        }
+        let raw = element.attr(local_name!("shadowrootmode"))?;
+        let mode = if raw.eq_ignore_ascii_case("open") {
+            crate::node::ShadowRootMode::Open
+        } else if raw.eq_ignore_ascii_case("closed") {
+            crate::node::ShadowRootMode::Closed
+        } else {
+            return None;
+        };
+        Some((
+            mode,
+            element.has_attr(local_name!("shadowrootclonable")),
+            element.has_attr(local_name!("shadowrootserializable")),
+            element.has_attr(local_name!("shadowrootdelegatesfocus")),
+            element.template_contents,
+        ))
     }
 
     fn flush_eager_ops(&mut self) {

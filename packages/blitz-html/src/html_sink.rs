@@ -39,7 +39,22 @@ impl HtmlParserProvider for HtmlProvider {
         element_id: NodeId,
         html: &str,
     ) {
-        DocumentHtmlParser::parse_inner_html_into_mutator(mutr, element_id, html);
+        DocumentHtmlParser::parse_inner_html_into_mutator(mutr, element_id, html, false);
+    }
+
+    fn parse_fragment<'m2, 'doc2>(
+        &self,
+        mutr: &'m2 mut DocumentMutator<'doc2>,
+        element_id: NodeId,
+        html: &str,
+        allow_declarative_shadow_roots: bool,
+    ) {
+        DocumentHtmlParser::parse_inner_html_into_mutator(
+            mutr,
+            element_id,
+            html,
+            allow_declarative_shadow_roots,
+        );
     }
 
     fn parse_document(
@@ -62,6 +77,9 @@ pub struct DocumentHtmlParser<'m, 'doc> {
     pub is_xml: bool,
     document_id: Option<NodeId>,
     parsing_document: bool,
+    /// Document parse and `setHTMLUnsafe` allow declarative shadow roots.
+    /// `innerHTML`, `DOMParser`, and `insertAdjacentHTML` do not.
+    allow_declarative_shadow_roots: bool,
 }
 
 impl<'m, 'doc> DocumentHtmlParser<'m, 'doc> {
@@ -87,6 +105,7 @@ impl<'m, 'doc> DocumentHtmlParser<'m, 'doc> {
             is_xml: false,
             document_id: None,
             parsing_document: true,
+            allow_declarative_shadow_roots: true,
         }
     }
 
@@ -101,6 +120,7 @@ impl<'m, 'doc> DocumentHtmlParser<'m, 'doc> {
         let mut sink = DocumentHtmlParser::new(mutr);
         sink.document_id = Some(document_id);
         sink.is_xml = is_xml;
+        sink.allow_declarative_shadow_roots = false;
         if is_xml {
             let errors = xml5ever::driver::parse_document(sink, Default::default()).one(source);
             Self::repair_xml_prolog(mutr, document_id, source);
@@ -226,13 +246,39 @@ impl<'m, 'doc> DocumentHtmlParser<'m, 'doc> {
         }
     }
 
+    /// Parse HTML into a new document node. Declarative shadow roots attach.
+    /// Scripts stay inert, matching `Document.parseHTMLUnsafe`.
+    pub fn parse_html_unsafe_into_mutator(
+        mutr: &mut DocumentMutator<'_>,
+        document_id: NodeId,
+        source: &str,
+    ) -> Vec<Cow<'static, str>> {
+        let mut sink = DocumentHtmlParser::new(mutr);
+        sink.document_id = Some(document_id);
+        sink.is_xml = false;
+        sink.allow_declarative_shadow_roots = true;
+        let opts = ParseOpts {
+            tokenizer: TokenizerOpts::default(),
+            tree_builder: TreeBuilderOpts {
+                exact_errors: false,
+                scripting_enabled: false,
+                iframe_srcdoc: false,
+                drop_doctype: false,
+                quirks_mode: QuirksMode::NoQuirks,
+            },
+        };
+        html5ever::parse_document(sink, opts).one(source)
+    }
+
     pub fn parse_inner_html_into_mutator<'a, 'd>(
         mutr: &'a mut DocumentMutator<'d>,
         element_id: NodeId,
         html: &str,
+        allow_declarative_shadow_roots: bool,
     ) {
         let mut sink = DocumentHtmlParser::new(mutr);
         sink.parsing_document = false;
+        sink.allow_declarative_shadow_roots = allow_declarative_shadow_roots;
 
         let opts = ParseOpts {
             tokenizer: TokenizerOpts::default(),
@@ -423,7 +469,92 @@ impl<'m, 'doc> TreeSink for DocumentHtmlParser<'m, 'doc> {
     }
 
     fn get_template_contents(&self, target: &Self::Handle) -> Self::Handle {
+        // While a declarative template is open, its children belong to the
+        // shadow root. The association is on the document: a streaming parse
+        // builds a fresh parser for every tree-sink call.
+        #[cfg(feature = "shadow-dom")]
+        if let Some(shadow) = self.mutr().declarative_shadow_for_template(*target) {
+            return shadow;
+        }
         self.mutr().template_contents(*target)
+    }
+
+    fn allow_declarative_shadow_roots(&self, _intended_parent: &Self::Handle) -> bool {
+        // The feature gate is compile-time. Leaving the flag true without the
+        // shadow-dom feature would make html5ever build an off-tree template
+        // and then a second, inserted one.
+        self.allow_declarative_shadow_roots && cfg!(feature = "shadow-dom")
+    }
+
+    fn attach_declarative_shadow(
+        &self,
+        location: &Self::Handle,
+        template: &Self::Handle,
+        attrs: &[html5ever::Attribute],
+    ) -> bool {
+        #[cfg(not(feature = "shadow-dom"))]
+        {
+            let _ = (location, template, attrs);
+            return false;
+        }
+        #[cfg(feature = "shadow-dom")]
+        {
+            let mut mode = None;
+            let mut clonable = false;
+            let mut serializable = false;
+            let mut delegates_focus = false;
+            for attr in attrs {
+                let name = attr.name.local.as_ref();
+                if name == "shadowrootmode" {
+                    let value = attr.value.as_ref();
+                    if value.eq_ignore_ascii_case("open") {
+                        mode = Some(blitz_dom::node::ShadowRootMode::Open);
+                    } else if value.eq_ignore_ascii_case("closed") {
+                        mode = Some(blitz_dom::node::ShadowRootMode::Closed);
+                    }
+                } else if name == "shadowrootclonable" {
+                    clonable = true;
+                } else if name == "shadowrootserializable" {
+                    serializable = true;
+                } else if name == "shadowrootdelegatesfocus" {
+                    delegates_focus = true;
+                }
+            }
+            let Some(mode) = mode else {
+                return false;
+            };
+            self.mutr().try_attach_declarative_shadow(
+                *location,
+                *template,
+                mode,
+                clonable,
+                serializable,
+                delegates_focus,
+            )
+        }
+    }
+
+    fn pop(&self, node: &Self::Handle) {
+        // html5ever inserts a declarative candidate off-tree. On failure it
+        // pops that node and inserts a different element for the same tag, so
+        // the off-tree node has to be dropped here or it leaks. On success the
+        // template is never inserted; the end-tag pop drops it after its
+        // children have gone to the shadow root.
+        let drop_template = {
+            let mutr = self.mutr();
+            mutr.doc.get_node(*node).is_some_and(|current| {
+                current.parent.is_none()
+                    && current
+                        .element_data()
+                        .is_some_and(|element| element.name.local.as_ref() == "template")
+            })
+        };
+        if !drop_template {
+            return;
+        }
+        #[cfg(feature = "shadow-dom")]
+        self.mutr().forget_declarative_template(*node);
+        self.mutr().remove_and_drop_node(*node);
     }
 
     fn same_node(&self, x: &Self::Handle, y: &Self::Handle) -> bool {

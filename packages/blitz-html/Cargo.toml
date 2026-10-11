@@ -19,6 +19,7 @@ name = "blitz_html"
 
 [features]
 accessibility = ["blitz-dom/accessibility"]
+shadow-dom = ["blitz-dom/shadow-dom"]
 tracing = ["dep:tracing", "blitz-dom/tracing"]
 
 [dependencies]

@@ -9,6 +9,22 @@ pub trait HtmlParserProvider {
         html: &str,
     );
 
+    /// Parse a fragment. `allow_declarative_shadow_roots` is set for
+    /// `setHTMLUnsafe` and clear for `innerHTML`.
+    ///
+    /// The default ignores the flag and parses the way `innerHTML` does, so a
+    /// parser without declarative shadow roots keeps working.
+    fn parse_fragment<'m, 'doc>(
+        &self,
+        mutr: &'m mut DocumentMutator<'doc>,
+        element_id: NodeId,
+        html: &str,
+        allow_declarative_shadow_roots: bool,
+    ) {
+        let _ = allow_declarative_shadow_roots;
+        self.parse_inner_html(mutr, element_id, html);
+    }
+
     /// Parse a full HTML document (e.g. the contents of an `<iframe>`).
     ///
     /// The default implementation ignores the HTML and returns an empty document.

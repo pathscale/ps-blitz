@@ -224,6 +224,13 @@ impl TreeSink for PreloadSink {
 
     fn append_doctype_to_document(&self, _: StrTendril, _: StrTendril, _: StrTendril) {}
 
+    fn allow_declarative_shadow_roots(&self, _: &Self::Handle) -> bool {
+        // Prefetch does not build shadow trees. A declarative template stays a
+        // normal template, and finish() does not walk template contents, so
+        // scripts that live only inside the shadow are not prefetched.
+        false
+    }
+
     fn get_template_contents(&self, target: &Self::Handle) -> Self::Handle {
         let mut contents = target.template_contents.borrow_mut();
         Rc::clone(contents.get_or_insert_with(|| PreloadNode::new(None, None)))
