@@ -487,10 +487,9 @@ fn query_selector_all(
 
 /// `document.implementation`.
 ///
-/// Only `createHTMLDocument` is implemented. `hasFeature` was deprecated to a
-/// constant `true` long ago and nothing reads `createDocument` in the corpus,
-/// so neither is here; adding a stub that answers plausibly would be worse
-/// than the absent property, which at least fails where the caller can see it.
+/// `createHTMLDocument` and `createDocument`. `hasFeature` was deprecated to a
+/// constant `true` long ago and is not here; a stub that answers plausibly would be
+/// worse than the absent property, which at least fails where the caller can see it.
 fn implementation(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let _ = this_node_id(this)?;
     let object = ObjectInitializer::new(context)
@@ -498,6 +497,11 @@ fn implementation(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsRes
             NativeFunction::from_fn_ptr(create_html_document),
             js_string!("createHTMLDocument"),
             1,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(create_xml_document),
+            js_string!("createDocument"),
+            2,
         )
         .build();
     Ok(object.into())
@@ -623,6 +627,60 @@ fn call(
         boa_engine::JsNativeError::typ().with_message("document.title: missing DOM method")
     })?;
     method.call(&object.clone().into(), args, context)
+}
+
+/// `document.implementation.createDocument(namespace, qualifiedName, doctype)`.
+///
+/// The content type follows the namespace (XHTML, SVG, or generic XML). A non-empty
+/// qualified name becomes the document element, made as `createElementNS` makes one.
+/// There are no DocumentType nodes, so a doctype other than null is a TypeError.
+fn create_xml_document(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let ctx = dom_ctx(context)?;
+    let namespace = args.first().cloned().unwrap_or_default();
+    let qualified = match args.get(1) {
+        None => {
+            return Err(boa_engine::JsNativeError::typ()
+                .with_message("createDocument: qualifiedName is required")
+                .into());
+        }
+        Some(value) if value.is_null() => String::new(),
+        Some(value) => to_rust_string(value, context)?,
+    };
+    if args
+        .get(2)
+        .is_some_and(|doctype| !doctype.is_null_or_undefined())
+    {
+        return Err(boa_engine::JsNativeError::typ()
+            .with_message("createDocument: parameter 3 is not of type 'DocumentType'")
+            .into());
+    }
+    let ns = if namespace.is_null_or_undefined() {
+        String::new()
+    } else {
+        to_rust_string(&namespace, context)?
+    };
+    let content_type = match ns.as_str() {
+        "http://www.w3.org/1999/xhtml" => "application/xhtml+xml",
+        "http://www.w3.org/2000/svg" => "image/svg+xml",
+        _ => "application/xml",
+    };
+    let document_id = ctx.doc.borrow_mut().mutate().create_document(content_type);
+    ctx.state.borrow_mut().detached_nodes.push(document_id);
+    let document: JsValue = node_wrapper(&ctx, document_id, context).into();
+    if !qualified.is_empty() {
+        let element =
+            create_element_ns(&document, &[namespace, super::js_str(&qualified)], context)?;
+        let element_id = this_node_id(&element)?;
+        ctx.doc
+            .borrow_mut()
+            .mutate()
+            .append_children(document_id, &[element_id]);
+    }
+    Ok(document)
 }
 
 /// `document.implementation.createHTMLDocument(title)`.
