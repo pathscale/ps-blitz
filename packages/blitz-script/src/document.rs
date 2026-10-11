@@ -175,37 +175,71 @@ impl ScriptDocument {
     ///
     /// Starts document scripts if necessary, then polls until parsing,
     /// deferred scripts, microtasks, observer delivery and timers due now
-    /// have drained. Completion depends on pending work, not a timeout or a
-    /// fixed number of polls. Each poll retains the configured job budget.
+    /// have drained. Completion depends on pending work, not a fixed number
+    /// of polls. Each poll retains the configured job budget.
     ///
-    /// Module fetches use the synchronous document fetcher. If a module
-    /// evaluation is suspended, this waits until the next scheduled timer
-    /// and resumes polling. Unrelated future timers remain scheduled, and
-    /// non-script resources are not awaited.
+    /// External scripts use the synchronous document fetcher. Imported module
+    /// loads remain pending until their result futures complete, including
+    /// dynamic imports from classic scripts. Pending loads are polled every
+    /// five milliseconds when there is no runnable work. Suspended module
+    /// evaluations also wait for their next timer or a later host poll.
+    /// Unrelated future timers remain scheduled, and non-script resources
+    /// are not awaited.
     ///
-    /// Returns an error if a module is suspended without a scheduled timer,
-    /// or an unfinished document input stream cannot make progress. A page
-    /// that continuously produces runnable work may never become idle.
+    /// Returns an error if module loading or evaluation remains pending after
+    /// sixty seconds, or an unfinished document input stream cannot make
+    /// progress. Synchronous fetchers must enforce their own I/O timeouts.
+    /// A page that continuously produces runnable work without pending modules
+    /// may never become idle.
     ///
     /// Call on the document's owning thread, outside poll hooks and
     /// JavaScript callbacks. This is a blocking entry point for tests and
     /// hosts that need completed script startup before inspecting the DOM.
     pub fn run_until_idle(&mut self) -> Result<(), &'static str> {
+        const MODULE_TIMEOUT: Duration = Duration::from_secs(60);
+        const LOAD_POLL_INTERVAL: Duration = Duration::from_millis(5);
+        let module_deadline = Instant::now() + MODULE_TIMEOUT;
+
         loop {
             let progressed = self.poll(None);
+            let now = Instant::now();
             let next_timer = self.runtime.next_timer_deadline();
+            let loads_pending = self.runtime.has_pending_module_loads();
+            let evaluations_pending = self.runtime.has_pending_module_evaluations();
+
+            // Check before the progress branch so continuing module work
+            // cannot bypass the deadline by keeping each poll busy.
+            if now >= module_deadline {
+                if loads_pending {
+                    return Err("module loading did not complete within sixty seconds");
+                }
+                if evaluations_pending {
+                    return Err("module evaluation did not complete within sixty seconds");
+                }
+            }
+
             if self.runtime.jobs_remain()
-                || next_timer.is_some_and(|deadline| deadline <= Instant::now())
+                || next_timer.is_some_and(|deadline| deadline <= now)
                 || progressed
             {
                 continue;
             }
 
-            if self.runtime.has_pending_module_evaluations() {
-                let Some(deadline) = next_timer else {
-                    return Err("module evaluation is suspended without a scheduled timer");
+            if loads_pending || evaluations_pending {
+                // A timer is not required for a loader completion. While a
+                // load is outstanding, keep polling even if the next timer
+                // belongs to unrelated page work far in the future.
+                let wait = if loads_pending {
+                    LOAD_POLL_INTERVAL
+                } else {
+                    next_timer.map_or(LOAD_POLL_INTERVAL, |deadline| {
+                        deadline.saturating_duration_since(now)
+                    })
                 };
-                std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
+                let wait = next_timer.map_or(wait, |deadline| {
+                    wait.min(deadline.saturating_duration_since(now))
+                });
+                std::thread::sleep(wait.min(module_deadline.saturating_duration_since(now)));
                 continue;
             }
 

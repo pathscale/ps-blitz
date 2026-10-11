@@ -1136,6 +1136,10 @@ impl ScriptRuntime {
             .any(|(promise, _)| matches!(promise.state(), PromiseState::Pending))
     }
 
+    pub(crate) fn has_pending_module_loads(&self) -> bool {
+        self.module_loader.has_pending_loads()
+    }
+
     pub(crate) fn poll_domc(&mut self) -> bool {
         let polls = match &self.domc_polls {
             Some(polls) => polls.clone(),
