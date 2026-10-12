@@ -1072,11 +1072,12 @@ slot {
     }
 }
 
-/* Hide noscript elements if scripting is enabled */
-@media (scripting) {
-    noscript {
-        display: none !important;
-    }
+/* Hide noscript elements: scripting is always enabled here (blitz-html parses
+   with scripting_enabled, so their contents are raw text). Not wrapped in
+   @media (scripting): Servo stylo has no scripting media feature, drops the
+   whole rule, and the raw markup then shows as text (Google's refresh meta). */
+noscript {
+    display: none !important;
 }
 
 @media print {
