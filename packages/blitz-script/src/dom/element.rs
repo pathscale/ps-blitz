@@ -665,6 +665,19 @@ fn get_value(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<J
         let value = ctx.doc.borrow().select_value(node_id);
         return Ok(js_str(&value));
     }
+    let is_option = {
+        let doc = ctx.doc.borrow();
+        doc.get_node(node_id).is_some_and(|node| {
+            node.data
+                .is_element_with_tag_name(&blitz_dom::local_name!("option"))
+        })
+    };
+    if is_option {
+        // An option without a value attribute reports its text, so reading
+        // the attribute alone gave the empty string.
+        let value = ctx.doc.borrow().option_value(node_id);
+        return Ok(js_str(&value));
+    }
     let value = {
         let doc = ctx.doc.borrow();
         doc.get_node(node_id)
