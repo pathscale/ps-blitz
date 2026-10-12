@@ -1,4 +1,5 @@
-//! Native HTTP/1.1 transport for document and script requests.
+//! Native HTTP transport for document and script requests: HTTP/2 when the
+//! server offers it in ALPN, HTTP/1.1 otherwise.
 //!
 //! NET-WIRE attaches this module to `Provider`. The transport accepts already
 //! encoded request bodies, leaving form encoding and local URL handling with
@@ -11,6 +12,8 @@
 #[cfg(feature = "cache")]
 #[path = "cache.rs"]
 pub mod cache;
+#[path = "h2.rs"]
+mod http2;
 #[path = "pool.rs"]
 mod pool;
 #[path = "tls.rs"]
@@ -79,10 +82,11 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// One HTTP/1.1 client shared by document loads and guest fetches.
+/// One HTTP client shared by document loads and guest fetches.
 #[derive(Clone)]
 pub struct H1Client {
     pool: Arc<Pool>,
+    h2: Arc<http2::H2Pool>,
     reactor: &'static Reactor,
     tls_config: Arc<nago_rustls::rustls::ClientConfig>,
     rsa_fallback: Option<Arc<nago_rustls::rustls::ClientConfig>>,
@@ -98,6 +102,12 @@ fn shared_pool() -> Arc<Pool> {
     POOL.get_or_init(|| Arc::new(Pool::default())).clone()
 }
 
+fn shared_h2_pool() -> Arc<http2::H2Pool> {
+    static POOL: OnceLock<Arc<http2::H2Pool>> = OnceLock::new();
+    POOL.get_or_init(|| Arc::new(http2::H2Pool::default()))
+        .clone()
+}
+
 impl H1Client {
     /// Use platform certificate verification and the process crypto provider.
     ///
@@ -110,12 +120,13 @@ impl H1Client {
         // its subresources and its scripts reuse the same connection per
         // origin. Cookies and the User-Agent are per request, not per socket.
         client.pool = shared_pool();
+        client.h2 = shared_h2_pool();
         Ok(client)
     }
 
     /// Use an explicit TLS policy, for example an embedder's private roots.
     ///
-    /// ALPN is restricted to HTTP/1.1 because this transport cannot speak h2.
+    /// ALPN offers h2 first, then HTTP/1.1.
     pub fn with_tls_config(
         user_agent: &str,
         cookies: Option<Arc<dyn CookieJar>>,
@@ -124,9 +135,10 @@ impl H1Client {
         let user_agent = HeaderValue::from_str(user_agent)
             .map_err(|_| Error::InvalidRequest("invalid User-Agent"))?;
         let mut config = (*config).clone();
-        config.alpn_protocols = vec![b"http/1.1".to_vec()];
+        config.alpn_protocols = tls::alpn();
         Ok(Self {
             pool: Arc::new(Pool::default()),
+            h2: Arc::new(http2::H2Pool::default()),
             reactor: process_reactor()?,
             tls_config: Arc::new(config),
             rsa_fallback: None,
@@ -148,7 +160,7 @@ impl H1Client {
     ) -> Self {
         self.rsa_fallback = config.map(|config| {
             let mut config = (*config).clone();
-            config.alpn_protocols = vec![b"http/1.1".to_vec()];
+            config.alpn_protocols = tls::alpn();
             Arc::new(config)
         });
         self
@@ -189,13 +201,39 @@ impl H1Client {
         validate_request(&request)?;
         for hop in 0..=MAX_REDIRECTS {
             let key = Origin::from_url(&request.url)?;
-            let origin = self.pool.origin(key.clone());
-            let mut lease = origin.acquire().await;
-            let mut reused = lease.connection.is_some();
             let headers = match initial_headers.take() {
                 Some(headers) => headers,
                 None => self.prepare_headers(&request)?,
             };
+            let handle = self.reactor.handle();
+            let opened = match self
+                .h2
+                .route(
+                    &key,
+                    &request,
+                    &headers,
+                    &handle,
+                    &self.tls_config,
+                    &self.rsa_fallback,
+                )
+                .await?
+            {
+                http2::Route::H2(wire) => {
+                    if let Some(next) = self.after_response(&mut request, wire, hop, &key)? {
+                        return Ok(next);
+                    }
+                    continue;
+                }
+                http2::Route::Http1(opened) => opened,
+            };
+            let origin = self.pool.origin(key.clone());
+            let mut lease = origin.acquire().await;
+            if lease.connection.is_none()
+                && let Some(transport) = opened
+            {
+                lease.connection = Some(Connection::new(transport));
+            }
+            let mut reused = lease.connection.is_some();
             let wire = loop {
                 if lease.connection.is_none() {
                     let transport = tls::open(
@@ -228,82 +266,99 @@ impl H1Client {
                 }
             };
 
-            if let Some(jar) = &self.cookies {
-                jar.store_from_response(&request.url, &wire.headers);
-            }
-
-            if is_redirect(wire.status)
-                && let Some(location) = wire.headers.get("location")
-            {
-                if hop == MAX_REDIRECTS {
-                    return Err(Error::TooManyRedirects);
-                }
-                let location = location
-                    .to_str()
-                    .map_err(|_| Error::Protocol("invalid Location"))?;
-                let next_url = request
-                    .url
-                    .join(location)
-                    .map_err(|_| Error::Protocol("invalid redirect URL"))?;
-                let next_origin = Origin::from_url(&next_url)?;
-                if !next_url.username().is_empty() || next_url.password().is_some() {
-                    return Err(Error::InvalidRequest("redirect URL contains credentials"));
-                }
-                if key != next_origin {
-                    for name in [
-                        "authorization",
-                        "proxy-authorization",
-                        "cookie",
-                        "cookie2",
-                        "referer",
-                    ] {
-                        request.headers.remove(name);
-                    }
-                }
-
-                let switch_to_get = matches!(wire.status.as_u16(), 301 | 302)
-                    && request.method == Method::POST
-                    || wire.status == StatusCode::SEE_OTHER
-                        && request.method != Method::GET
-                        && request.method != Method::HEAD;
-                if switch_to_get {
-                    request.method = Method::GET;
-                    request.body = None;
-                    for name in [
-                        "content-type",
-                        "content-length",
-                        "content-encoding",
-                        "content-language",
-                        "content-location",
-                        "content-md5",
-                        "digest",
-                        "transfer-encoding",
-                    ] {
-                        request.headers.remove(name);
-                    }
-                }
-
-                lease.reusable = wire.reusable;
-                // Release this origin before acquiring the next hop's permit.
-                drop(lease);
-                request.url = next_url;
-                continue;
-            }
-
-            let mut response_headers = wire.headers;
-            let body = if wire.bodiless {
-                wire.body
-            } else {
-                decode_body(wire.body, &mut response_headers)?
-            };
             // Decoding happens while the permit is held. Cancellation or a
             // decoding error drops the socket rather than pooling it.
-            lease.reusable = wire.reusable;
-            return Ok(FetchResponse::new(request.url, wire.status)
-                .headers(response_headers)
-                .body(body));
+            let reusable = wire.reusable;
+            let outcome = self.after_response(&mut request, wire, hop, &key)?;
+            lease.reusable = reusable;
+            // Release this origin before acquiring the next hop's permit.
+            drop(lease);
+            if let Some(response) = outcome {
+                return Ok(response);
+            }
         }
         Err(Error::TooManyRedirects)
+    }
+
+    /// Cookies, redirects and body decoding for one response. `None` means
+    /// `request` now points at the redirect target.
+    fn after_response(
+        &self,
+        request: &mut FetchRequest,
+        wire: WireResponse,
+        hop: usize,
+        key: &Origin,
+    ) -> Result<Option<FetchResponse>, Error> {
+        if let Some(jar) = &self.cookies {
+            jar.store_from_response(&request.url, &wire.headers);
+        }
+
+        if is_redirect(wire.status)
+            && let Some(location) = wire.headers.get("location")
+        {
+            if hop == MAX_REDIRECTS {
+                return Err(Error::TooManyRedirects);
+            }
+            let location = location
+                .to_str()
+                .map_err(|_| Error::Protocol("invalid Location"))?;
+            let next_url = request
+                .url
+                .join(location)
+                .map_err(|_| Error::Protocol("invalid redirect URL"))?;
+            let next_origin = Origin::from_url(&next_url)?;
+            if !next_url.username().is_empty() || next_url.password().is_some() {
+                return Err(Error::InvalidRequest("redirect URL contains credentials"));
+            }
+            if *key != next_origin {
+                for name in [
+                    "authorization",
+                    "proxy-authorization",
+                    "cookie",
+                    "cookie2",
+                    "referer",
+                ] {
+                    request.headers.remove(name);
+                }
+            }
+
+            let switch_to_get = matches!(wire.status.as_u16(), 301 | 302)
+                && request.method == Method::POST
+                || wire.status == StatusCode::SEE_OTHER
+                    && request.method != Method::GET
+                    && request.method != Method::HEAD;
+            if switch_to_get {
+                request.method = Method::GET;
+                request.body = None;
+                for name in [
+                    "content-type",
+                    "content-length",
+                    "content-encoding",
+                    "content-language",
+                    "content-location",
+                    "content-md5",
+                    "digest",
+                    "transfer-encoding",
+                ] {
+                    request.headers.remove(name);
+                }
+            }
+
+            request.url = next_url;
+            return Ok(None);
+        }
+
+        let mut response_headers = wire.headers;
+        let body = if wire.bodiless {
+            wire.body
+        } else {
+            decode_body(wire.body, &mut response_headers)?
+        };
+        Ok(Some(
+            FetchResponse::new(request.url.clone(), wire.status)
+                .headers(response_headers)
+                .body(body),
+        ))
     }
 
     fn prepare_headers(&self, request: &FetchRequest) -> Result<HeaderMap, Error> {

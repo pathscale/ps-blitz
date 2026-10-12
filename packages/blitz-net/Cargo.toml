@@ -19,8 +19,6 @@ rust-version.workspace = true
 name = "blitz_net"
 
 [features]
-# Reserved until the house HTTP/2 transport lands. HTTP/1.1 remains available.
-http2 = []
 # Enables the embedder-owned house CookieJar constructor.
 cookies = []
 # Advertise only the codecs decoded by the house HTTP client.
@@ -53,6 +51,11 @@ nagoya = { version = "^0.1.13", features = ["reactor"] }
 nago-rustls = { version = "^0.1.2", path = "../../../nago-rustls", default-features = false }
 rustls = { version = "^0.23.27", default-features = false, features = ["std", "tls12"] }
 ps-rustcrypto = { version = "^0.3", path = "../../../ps-rustls-rustcrypto", default-features = false, features = ["std", "tls12", "zeroize", "rsa-pss"] }
+# HTTP/2 codec. Only the tokio io traits are used: no tokio runtime or reactor.
+h2 = "^0.4"
+tokio = { version = "^1", default-features = false }
+# Name checks against a pooled certificate for HTTP/2 connection coalescing.
+webpki = { package = "rustls-webpki", version = "^0.103", default-features = false, features = ["std"] }
 # Export native trust anchors; cryptographic verification stays in RustCrypto.
 rustls-native-certs = "^0.8.4"
 # Required for durable metadata, house body identifiers and RFC HTTP dates.

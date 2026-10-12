@@ -4,9 +4,10 @@
 //! the resources a document needs, and of
 //! [`blitz_traits::platform::FetchProvider`], which serves a guest's `fetch()`.
 //!
-//! Both use one native HTTP/1.1 client, sharing its connection pool, cookie
-//! jar, compression codecs, private cache and one kept-alive connection per origin.
-//! The `http2` feature is reserved for the subsequent HTTP/2 transport.
+//! Both use one native HTTP client, sharing its connection pools, cookie jar,
+//! compression codecs and private cache. HTTPS prefers HTTP/2 through ALPN,
+//! with one multiplexed connection per origin; HTTP/1.1 serves servers that
+//! do not offer h2, with one kept-alive connection per origin.
 //!
 //! Creating a native provider starts nagoya's process background runtime and
 //! the house client's shared reactor if absent. Multiple providers reuse them.

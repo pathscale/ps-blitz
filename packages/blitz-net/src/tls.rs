@@ -72,8 +72,13 @@ fn build_rsa_fallback_config() -> Result<Arc<ClientConfig>, String> {
         .dangerous()
         .with_custom_certificate_verifier(CtVerifier::new(verifier))
         .with_no_client_auth();
-    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    config.alpn_protocols = alpn();
     Ok(Arc::new(config))
+}
+
+/// HTTP/2 preferred; HTTP/1.1 for servers that do not offer it.
+pub(super) fn alpn() -> Vec<Vec<u8>> {
+    vec![b"h2".to_vec(), b"http/1.1".to_vec()]
 }
 
 fn build_config() -> Result<Arc<ClientConfig>, String> {
@@ -91,7 +96,7 @@ fn build_config() -> Result<Arc<ClientConfig>, String> {
             CtVerifier::ecc_only(roots).map_err(|error| format!("TLS trust store: {error}"))?,
         )
         .with_no_client_auth();
-    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    config.alpn_protocols = alpn();
     Ok(Arc::new(config))
 }
 
@@ -114,6 +119,9 @@ pub struct HostStats {
     pub fallbacks: u32,
     /// Whether the latest completed TLS connection used the RSA fallback.
     pub last_rsa_fallback: Option<bool>,
+    /// The protocol the latest connection to this host settled on: `h2`,
+    /// `h2 (coalesced)` onto another host's connection, or `http/1.1`.
+    pub last_alpn: Option<&'static str>,
 }
 
 fn update(host: &str, change: impl FnOnce(&mut HostStats)) -> HostStats {
@@ -126,6 +134,10 @@ fn update(host: &str, change: impl FnOnce(&mut HostStats)) -> HostStats {
         .or_default();
     change(stats);
     *stats
+}
+
+pub(super) fn record_alpn(host: &str, alpn: &'static str) {
+    update(host, |stats| stats.last_alpn = Some(alpn));
 }
 
 fn record(host: &str, used_fallback: bool) {
@@ -258,7 +270,7 @@ async fn handshake(
     }
     if tls
         .alpn_protocol()
-        .is_some_and(|protocol| protocol != b"http/1.1")
+        .is_some_and(|protocol| protocol != b"http/1.1" && protocol != b"h2")
     {
         return Err(Error::Tls(
             "peer negotiated an unsupported ALPN protocol".to_owned(),
