@@ -841,7 +841,7 @@ fn decode_body(mut body: Bytes, headers: &mut HeaderMap) -> Result<Bytes, Error>
                 let wrapped = body.len() >= 2
                     && body[0] & 0x0f == 8
                     && body[0] >> 4 <= 7
-                    && u16::from_be_bytes([body[0], body[1]]) % 31 == 0;
+                    && u16::from_be_bytes([body[0], body[1]]).is_multiple_of(31);
                 if wrapped {
                     bounded_decode(flate2::read::ZlibDecoder::new(body.as_ref()))?
                 } else {
