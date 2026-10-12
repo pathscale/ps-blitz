@@ -1188,6 +1188,14 @@ impl ScriptRuntime {
         self.job_budget.set_duration(duration);
     }
 
+    /// Callbacks ready to run on the next host tick: every due timer and frame
+    /// callback, plus one while Boa holds runnable jobs. Boa reports only
+    /// whether its job queues are empty, so promise jobs count as one entry.
+    pub(crate) fn pending_task_count(&self) -> u64 {
+        let due = self.ctx.state.borrow().timers.due_count(Instant::now()) as u64;
+        due + u64::from(self.jobs_remain())
+    }
+
     pub(crate) fn jobs_remain(&self) -> bool {
         self.job_executor.has_pending_jobs(&self.context)
     }

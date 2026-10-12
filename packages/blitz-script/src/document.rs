@@ -171,6 +171,12 @@ impl ScriptDocument {
         self.runtime.jobs_remain()
     }
 
+    /// Work queued for the next host tick: due timers and frame callbacks,
+    /// plus one while any promise job is runnable.
+    pub fn pending_task_count(&self) -> u64 {
+        self.runtime.pending_task_count()
+    }
+
     /// Drive scripts and runnable event-loop work to quiescence.
     ///
     /// Starts document scripts if necessary, then polls until parsing,

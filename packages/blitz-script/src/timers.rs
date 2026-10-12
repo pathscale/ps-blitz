@@ -130,6 +130,17 @@ impl TimerQueue {
         self.timers.peek().map(|timer| timer.deadline)
     }
 
+    /// How many live timers and frame callbacks are due at `now`.
+    ///
+    /// Cancelled entries still in the heap are not counted, so this is the
+    /// number of callbacks the next drain would run.
+    pub fn due_count(&self, now: Instant) -> usize {
+        self.timers
+            .iter()
+            .filter(|timer| timer.deadline <= now && self.live.contains(&timer.id))
+            .count()
+    }
+
     /// Remove and return all timers that are due at `now`, soonest first.
     /// Interval timers are rescheduled.
     ///
@@ -191,6 +202,32 @@ mod tests {
     /// logic touches it, so any object stands in.
     fn callback(context: &mut Context) -> JsObject {
         JsObject::with_object_proto(context.intrinsics())
+    }
+
+    #[test]
+    fn due_count_counts_live_due_timers_only() {
+        let mut context = Context::default();
+        let mut queue = TimerQueue::default();
+        let a = queue.add(Duration::ZERO, None, callback(&mut context), Vec::new());
+        queue.add(Duration::ZERO, None, callback(&mut context), Vec::new());
+        queue.add_animation_frame(callback(&mut context));
+        queue.add(
+            Duration::from_secs(60),
+            None,
+            callback(&mut context),
+            Vec::new(),
+        );
+        // Frame callbacks are scheduled one frame (16 ms) out.
+        let now = Instant::now() + Duration::from_millis(20);
+        assert_eq!(queue.due_count(now), 3);
+        queue.remove(a);
+        assert_eq!(
+            queue.due_count(now),
+            2,
+            "a cancelled timer is not queued work"
+        );
+        queue.take_due(now);
+        assert_eq!(queue.due_count(now), 0);
     }
 
     #[test]
@@ -276,7 +313,8 @@ mod tests {
             Vec::new(),
         );
 
-        let now = Instant::now() + Duration::from_millis(1);
+        // Frame callbacks are scheduled one frame (16 ms) out.
+        let now = Instant::now() + Duration::from_millis(20);
         assert_eq!(queue.take_due(now).len(), 1);
         assert!(
             queue.next_deadline().is_some(),
