@@ -93,16 +93,24 @@ pub struct H1Client {
     cache: Option<Arc<cache::PrivateCache>>,
 }
 
+fn shared_pool() -> Arc<Pool> {
+    static POOL: OnceLock<Arc<Pool>> = OnceLock::new();
+    POOL.get_or_init(|| Arc::new(Pool::default())).clone()
+}
+
 impl H1Client {
     /// Use platform certificate verification and the process crypto provider.
     ///
     /// If no provider is installed, TLS configuration installs aws-lc-rs.
     /// An embedder's already installed provider is retained.
     pub fn new(user_agent: &str, cookies: Option<Arc<dyn CookieJar>>) -> Result<Self, Error> {
-        Ok(
-            Self::with_tls_config(user_agent, cookies, tls::default_config()?)?
-                .with_rsa_fallback(Some(tls::rsa_fallback_config()?)),
-        )
+        let mut client = Self::with_tls_config(user_agent, cookies, tls::default_config()?)?
+            .with_rsa_fallback(Some(tls::rsa_fallback_config()?));
+        // Every client on the default policy shares one pool, so a document,
+        // its subresources and its scripts reuse the same connection per
+        // origin. Cookies and the User-Agent are per request, not per socket.
+        client.pool = shared_pool();
+        Ok(client)
     }
 
     /// Use an explicit TLS policy, for example an embedder's private roots.
