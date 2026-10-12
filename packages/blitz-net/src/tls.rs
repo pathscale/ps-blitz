@@ -11,6 +11,7 @@ use nago_rustls::{
     rustls_pki_types::ServerName,
 };
 use nagoya::{net::TcpStream, reactor::Handle};
+use ps_rustcrypto::policy::{self, EccOnlyVerifier};
 use std::sync::{Arc, OnceLock};
 
 const READ_CHUNK: usize = 16 * 1024;
@@ -44,7 +45,12 @@ fn build_config() -> Result<Arc<ClientConfig>, String> {
     let mut config = ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .map_err(|error| error.to_string())?
-        .with_root_certificates(roots)
+        // ECC-only: a chain holding an RSA key anywhere, anchor included, is
+        // refused with unsupported_certificate before any signature check.
+        .dangerous()
+        .with_custom_certificate_verifier(
+            EccOnlyVerifier::new(roots).map_err(|error| format!("TLS trust store: {error}"))?,
+        )
         .with_no_client_auth();
     config.alpn_protocols = vec![b"http/1.1".to_vec()];
     Ok(Arc::new(config))
@@ -75,9 +81,9 @@ pub(super) async fn open(
     let session =
         ClientConnection::new(config, name).map_err(|error| Error::Tls(error.to_string()))?;
     let mut tls = TlsSession::client(stream, session);
-    tls.handshake()
-        .await
-        .map_err(|error| Error::Tls(format!("handshake: {error}")))?;
+    if let Err(errno) = tls.handshake().await {
+        return Err(Error::Tls(handshake_failure(tls.tls_error(), errno)));
+    }
     if tls
         .alpn_protocol()
         .is_some_and(|protocol| protocol != b"http/1.1")
@@ -87,6 +93,26 @@ pub(super) async fn open(
         ));
     }
     Ok(Transport::Tls(Box::new(tls)))
+}
+
+/// Why a handshake failed, in words a page can show.
+///
+/// The errno only says the session is over; the rustls error kept by the
+/// session says why.
+fn handshake_failure(
+    error: Option<&nago_rustls::rustls::Error>,
+    errno: impl std::fmt::Display,
+) -> String {
+    match error {
+        Some(error) if policy::is_rsa_refusal(error) => {
+            "site requires RSA, blocked by policy (alert 43 unsupported_certificate)".to_owned()
+        }
+        Some(error) if policy::is_key_type_refusal(error) => {
+            "site certificate key is not ECDSA or Ed25519, blocked by policy (alert 43 unsupported_certificate)".to_owned()
+        }
+        Some(error) => format!("handshake: {error}"),
+        None => format!("handshake: {errno}"),
+    }
 }
 
 pub(super) enum Transport {
