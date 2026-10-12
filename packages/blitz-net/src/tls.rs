@@ -222,7 +222,10 @@ pub(super) async fn open(
         Err(error) => {
             // Logged here as well as returned: a page that drops the error
             // otherwise leaves the host looking like a stalled connection.
-            info(format_args!("TLS {host}: RSA fallback failed: {}", error.message));
+            info(format_args!(
+                "TLS {host}: RSA fallback failed: {}",
+                error.message
+            ));
             Err(Error::Tls(format!("RSA fallback: {}", error.message)))
         }
     }
