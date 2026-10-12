@@ -201,8 +201,13 @@ pub(super) async fn open(
     let host = &origin.host;
     let reason = if error.rustls.as_ref().is_some_and(policy::is_rsa_refusal) {
         "refused the RSA certificate chain, alert 43 unsupported_certificate sent"
-    } else {
+    } else if matches!(
+        error.rustls,
+        Some(nago_rustls::rustls::Error::AlertReceived(_))
+    ) {
         "server rejected the ECC-only hello with alert 40 handshake_failure"
+    } else {
+        "server answered the ECC-only hello with a non-handshake record"
     };
     update(host, |stats| stats.refusals += 1);
     info(format_args!("TLS {host}: ECC-only {reason}"));
