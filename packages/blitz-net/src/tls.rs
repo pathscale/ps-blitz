@@ -11,7 +11,7 @@ use nago_rustls::{
     rustls_pki_types::ServerName,
 };
 use nagoya::{net::TcpStream, reactor::Handle};
-use ps_rustcrypto::policy::{self, EccOnlyVerifier};
+use ps_rustcrypto::policy::{self, ct::CtVerifier};
 use std::sync::{Arc, OnceLock};
 
 const READ_CHUNK: usize = 16 * 1024;
@@ -47,9 +47,10 @@ fn build_config() -> Result<Arc<ClientConfig>, String> {
         .map_err(|error| error.to_string())?
         // ECC-only: a chain holding an RSA key anywhere, anchor included, is
         // refused with unsupported_certificate before any signature check.
+        // A valid chain must then be publicly logged under the CT policy.
         .dangerous()
         .with_custom_certificate_verifier(
-            EccOnlyVerifier::new(roots).map_err(|error| format!("TLS trust store: {error}"))?,
+            CtVerifier::ecc_only(roots).map_err(|error| format!("TLS trust store: {error}"))?,
         )
         .with_no_client_auth();
     config.alpn_protocols = vec![b"http/1.1".to_vec()];
@@ -110,6 +111,7 @@ fn handshake_failure(
         Some(error) if policy::is_key_type_refusal(error) => {
             "site certificate key is not ECDSA or Ed25519, blocked by policy (alert 43 unsupported_certificate)".to_owned()
         }
+        Some(error) if policy::ct::is_not_logged(error) => "certificate not publicly logged".to_owned(),
         Some(error) => format!("handshake: {error}"),
         None => format!("handshake: {errno}"),
     }
