@@ -33,7 +33,8 @@ pub(super) fn default_config() -> Result<Arc<ClientConfig>, Error> {
 /// The RSA fallback policy, for a second connection after an ECC-only refusal.
 ///
 /// Every native root, RSA ones included; certificate signatures may be RSA
-/// PKCS#1 v1.5 and the server CertificateVerify RSA-PSS. CT still applies.
+/// PKCS#1 v1.5 and the server CertificateVerify RSA-PSS. CT still applies to
+/// chains ending in a public root.
 pub(super) fn rsa_fallback_config() -> Result<Arc<ClientConfig>, Error> {
     static CONFIG: OnceLock<Result<Arc<ClientConfig>, String>> = OnceLock::new();
     match CONFIG.get_or_init(build_rsa_fallback_config) {
@@ -61,16 +62,37 @@ fn native_roots() -> Result<RootCertStore, String> {
     Ok(roots)
 }
 
+/// The native roots that are also built-in public roots, matched by subject
+/// and key. Like Chrome, CT is enforced only on chains ending in one of
+/// these; locally added anchors (enterprise or test CAs) skip it.
+fn public_roots(native: &RootCertStore) -> RootCertStore {
+    let mut public = RootCertStore::empty();
+    public.roots = native
+        .roots
+        .iter()
+        .filter(|root| {
+            webpki_roots::TLS_SERVER_ROOTS.iter().any(|built_in| {
+                root.subject.as_ref() == built_in.subject.as_ref()
+                    && root.subject_public_key_info.as_ref()
+                        == built_in.subject_public_key_info.as_ref()
+            })
+        })
+        .cloned()
+        .collect();
+    public
+}
+
 fn build_rsa_fallback_config() -> Result<Arc<ClientConfig>, String> {
     let roots = native_roots()?;
-    let verifier = fallback::rsa_fallback_verifier(roots)
+    let public = public_roots(&roots);
+    let verifier = fallback::rsa_fallback_ct_verifier(roots, public)
         .map_err(|error| format!("TLS trust store: {error}"))?;
     let provider = Arc::new(ps_rustcrypto::provider_with_rsa_pss());
     let mut config = ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .map_err(|error| error.to_string())?
         .dangerous()
-        .with_custom_certificate_verifier(CtVerifier::new(verifier))
+        .with_custom_certificate_verifier(verifier)
         .with_no_client_auth();
     config.alpn_protocols = alpn();
     Ok(Arc::new(config))
@@ -83,6 +105,7 @@ pub(super) fn alpn() -> Vec<Vec<u8>> {
 
 fn build_config() -> Result<Arc<ClientConfig>, String> {
     let roots = native_roots()?;
+    let public = public_roots(&roots);
     // Explicit even when an embedder installed another process default.
     let provider = Arc::new(ps_rustcrypto::provider());
     let mut config = ClientConfig::builder_with_provider(provider)
@@ -90,10 +113,12 @@ fn build_config() -> Result<Arc<ClientConfig>, String> {
         .map_err(|error| error.to_string())?
         // ECC-only: a chain holding an RSA key anywhere, anchor included, is
         // refused with unsupported_certificate before any signature check.
-        // A valid chain must then be publicly logged under the CT policy.
+        // A valid chain ending in a public root must then be publicly
+        // logged under the CT policy.
         .dangerous()
         .with_custom_certificate_verifier(
-            CtVerifier::ecc_only(roots).map_err(|error| format!("TLS trust store: {error}"))?,
+            CtVerifier::ecc_only(roots, public)
+                .map_err(|error| format!("TLS trust store: {error}"))?,
         )
         .with_no_client_auth();
     config.alpn_protocols = alpn();
