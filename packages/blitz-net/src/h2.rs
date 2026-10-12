@@ -147,9 +147,10 @@ impl AsyncRead for TlsIo {
                     return Poll::Ready(Ok(()));
                 }
             }
-            // One record batch at a time: rustls refuses more ciphertext while
-            // its plaintext buffer is full, so the rest waits here until the
-            // reader above has drained it.
+            // One record batch at a time: read_tls fails with "received
+            // plaintext buffer full" if called while undrained plaintext is
+            // over its limit, so the rest waits here until the reader above
+            // has drained it.
             let mut cursor = &this.cipher[this.cipher_taken..];
             let took = this.tls.read_tls(&mut cursor)?;
             this.cipher_taken += took;
