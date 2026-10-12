@@ -16,6 +16,8 @@ mod pool;
 #[path = "tls.rs"]
 mod tls;
 
+pub use tls::rsa_fallback_state;
+
 use blitz_traits::net::{
     CookieJar,
     http::{HeaderMap, HeaderValue, Method, header::HeaderName},
@@ -83,6 +85,7 @@ pub struct H1Client {
     pool: Arc<Pool>,
     reactor: &'static Reactor,
     tls_config: Arc<nago_rustls::rustls::ClientConfig>,
+    rsa_fallback: Option<Arc<nago_rustls::rustls::ClientConfig>>,
     user_agent: HeaderValue,
     cookies: Option<Arc<dyn CookieJar>>,
     timeout: Duration,
@@ -96,7 +99,10 @@ impl H1Client {
     /// If no provider is installed, TLS configuration installs aws-lc-rs.
     /// An embedder's already installed provider is retained.
     pub fn new(user_agent: &str, cookies: Option<Arc<dyn CookieJar>>) -> Result<Self, Error> {
-        Self::with_tls_config(user_agent, cookies, tls::default_config()?)
+        Ok(
+            Self::with_tls_config(user_agent, cookies, tls::default_config()?)?
+                .with_rsa_fallback(Some(tls::rsa_fallback_config()?)),
+        )
     }
 
     /// Use an explicit TLS policy, for example an embedder's private roots.
@@ -115,12 +121,29 @@ impl H1Client {
             pool: Arc::new(Pool::default()),
             reactor: process_reactor()?,
             tls_config: Arc::new(config),
+            rsa_fallback: None,
             user_agent,
             cookies,
             timeout: Duration::from_secs(120),
             #[cfg(feature = "cache")]
             cache: None,
         })
+    }
+
+    /// The policy for a second connection when the first, ECC-only one ends in
+    /// the RSA refusal (alert 43) or the server answering alert 40. `None`
+    /// turns the fallback off. `new` installs the RSA-PSS fallback; an
+    /// explicit `with_tls_config` policy starts without one.
+    pub fn with_rsa_fallback(
+        mut self,
+        config: Option<Arc<nago_rustls::rustls::ClientConfig>>,
+    ) -> Self {
+        self.rsa_fallback = config.map(|config| {
+            let mut config = (*config).clone();
+            config.alpn_protocols = vec![b"http/1.1".to_vec()];
+            Arc::new(config)
+        });
+        self
     }
 
     /// Attach the private cache opened for this embedder's profile.
@@ -167,8 +190,13 @@ impl H1Client {
             };
             let wire = loop {
                 if lease.connection.is_none() {
-                    let transport =
-                        tls::open(&key, &self.reactor.handle(), self.tls_config.clone()).await?;
+                    let transport = tls::open(
+                        &key,
+                        &self.reactor.handle(),
+                        self.tls_config.clone(),
+                        self.rsa_fallback.clone(),
+                    )
+                    .await?;
                     lease.connection = Some(Connection::new(transport));
                 }
                 let result = lease

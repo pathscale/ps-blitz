@@ -43,6 +43,10 @@ pub use blitz_traits::net::CookieJar;
 #[cfg(all(feature = "cache", not(target_arch = "wasm32")))]
 pub use h1::cache::PrivateCache;
 
+/// Whether the latest TLS connection to a host needed the RSA fallback.
+#[cfg(not(target_arch = "wasm32"))]
+pub use h1::rsa_fallback_state;
+
 /// The `User-Agent` sent when a caller does not choose one.
 ///
 /// Kept as it was so that existing consumers see no change in what servers

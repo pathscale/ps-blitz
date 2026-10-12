@@ -11,8 +11,14 @@ use nago_rustls::{
     rustls_pki_types::ServerName,
 };
 use nagoya::{net::TcpStream, reactor::Handle};
-use ps_rustcrypto::policy::{self, ct::CtVerifier};
-use std::sync::{Arc, OnceLock};
+use ps_rustcrypto::{
+    fallback,
+    policy::{self, ct::CtVerifier},
+};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, OnceLock},
+};
 
 const READ_CHUNK: usize = 16 * 1024;
 
@@ -24,7 +30,19 @@ pub(super) fn default_config() -> Result<Arc<ClientConfig>, Error> {
     }
 }
 
-fn build_config() -> Result<Arc<ClientConfig>, String> {
+/// The RSA fallback policy, for a second connection after an ECC-only refusal.
+///
+/// Every native root, RSA ones included; certificate signatures may be RSA
+/// PKCS#1 v1.5 and the server CertificateVerify RSA-PSS. CT still applies.
+pub(super) fn rsa_fallback_config() -> Result<Arc<ClientConfig>, Error> {
+    static CONFIG: OnceLock<Result<Arc<ClientConfig>, String>> = OnceLock::new();
+    match CONFIG.get_or_init(build_rsa_fallback_config) {
+        Ok(config) => Ok(config.clone()),
+        Err(error) => Err(Error::Tls(error.clone())),
+    }
+}
+
+fn native_roots() -> Result<RootCertStore, String> {
     let native = rustls_native_certs::load_native_certs();
     let mut roots = RootCertStore::empty();
     let (accepted, rejected) = roots.add_parsable_certificates(native.certs);
@@ -40,6 +58,26 @@ fn build_config() -> Result<Arc<ClientConfig>, String> {
             native.errors.len(),
         );
     }
+    Ok(roots)
+}
+
+fn build_rsa_fallback_config() -> Result<Arc<ClientConfig>, String> {
+    let roots = native_roots()?;
+    let verifier = fallback::rsa_fallback_verifier(roots)
+        .map_err(|error| format!("TLS trust store: {error}"))?;
+    let provider = Arc::new(ps_rustcrypto::provider_with_rsa_pss());
+    let mut config = ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|error| error.to_string())?
+        .dangerous()
+        .with_custom_certificate_verifier(CtVerifier::new(verifier))
+        .with_no_client_auth();
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    Ok(Arc::new(config))
+}
+
+fn build_config() -> Result<Arc<ClientConfig>, String> {
+    let roots = native_roots()?;
     // Explicit even when an embedder installed another process default.
     let provider = Arc::new(ps_rustcrypto::provider());
     let mut config = ClientConfig::builder_with_provider(provider)
@@ -57,11 +95,90 @@ fn build_config() -> Result<Arc<ClientConfig>, String> {
     Ok(Arc::new(config))
 }
 
+/// How the TLS connection to each host most recently went: `true` when it
+/// needed the RSA fallback, `false` when ECC-only succeeded.
+///
+/// A record for display and inspection only. It is never consulted before a
+/// handshake: every new connection is ECC-only first, so the server sees the
+/// refusal (alert 43) each time.
+static RSA_FALLBACK: Mutex<Option<HashMap<String, bool>>> = Mutex::new(None);
+
+fn record(host: &str, used_fallback: bool) {
+    if let Ok(mut map) = RSA_FALLBACK.lock() {
+        map.get_or_insert_with(HashMap::new)
+            .insert(host.to_ascii_lowercase(), used_fallback);
+    }
+}
+
+/// Whether the latest TLS connection to `host` used the RSA fallback.
+///
+/// `None` when no TLS connection to it has completed.
+pub fn rsa_fallback_state(host: &str) -> Option<bool> {
+    RSA_FALLBACK
+        .lock()
+        .ok()?
+        .as_ref()?
+        .get(&host.to_ascii_lowercase())
+        .copied()
+}
+
 pub(super) async fn open(
     origin: &Origin,
     handle: &Handle,
     config: Arc<ClientConfig>,
+    rsa_fallback: Option<Arc<ClientConfig>>,
 ) -> Result<Transport, Error> {
+    if !origin.tls {
+        return Ok(Transport::Plain(connect(origin, handle).await?));
+    }
+    // ECC-only first, on every new connection. Never skipped from memory.
+    let error = match handshake(origin, handle, config).await? {
+        Ok(tls) => {
+            record(&origin.host, false);
+            return Ok(Transport::Tls(tls));
+        }
+        Err(error) => error,
+    };
+    let Some(rsa_fallback) = rsa_fallback.filter(|_| {
+        error
+            .rustls
+            .as_ref()
+            .is_some_and(fallback::wants_rsa_fallback)
+    }) else {
+        return Err(Error::Tls(error.message));
+    };
+    let host = &origin.host;
+    let reason = if error.rustls.as_ref().is_some_and(policy::is_rsa_refusal) {
+        "refused the RSA certificate chain, alert 43 unsupported_certificate sent"
+    } else {
+        "server rejected the ECC-only hello with alert 40 handshake_failure"
+    };
+    info(format_args!("TLS {host}: ECC-only {reason}"));
+    info(format_args!(
+        "TLS {host}: RSA fallback, new connection allowing RSA-PSS CertificateVerify and RSA certificate signatures"
+    ));
+    match handshake(origin, handle, rsa_fallback).await? {
+        Ok(tls) => {
+            record(host, true);
+            Ok(Transport::Tls(tls))
+        }
+        Err(error) => Err(Error::Tls(format!("RSA fallback: {}", error.message))),
+    }
+}
+
+fn info(message: std::fmt::Arguments<'_>) {
+    #[cfg(feature = "tracing")]
+    tracing::info!("{message}");
+    #[cfg(not(feature = "tracing"))]
+    eprintln!("info: {message}");
+}
+
+struct Failed {
+    message: String,
+    rustls: Option<nago_rustls::rustls::Error>,
+}
+
+async fn connect(origin: &Origin, handle: &Handle) -> Result<TcpStream, Error> {
     let host = origin.host.clone();
     let port = origin.port;
     let addresses = nagoya::spawn(async move {
@@ -70,20 +187,29 @@ pub(super) async fn open(
     .await
     .ok_or_else(|| Error::Dns("resolver task was cancelled".to_owned()))??;
 
-    let stream = nagoya::net::connect_any(&addresses, handle)
+    nagoya::net::connect_any(&addresses, handle)
         .await
-        .map_err(|error| Error::Io(error.to_string()))?;
-    if !origin.tls {
-        return Ok(Transport::Plain(stream));
-    }
+        .map_err(|error| Error::Io(error.to_string()))
+}
 
+/// One TLS connection attempt. The outer error is a transport failure; the
+/// inner one is the handshake failing, with the rustls error kept.
+async fn handshake(
+    origin: &Origin,
+    handle: &Handle,
+    config: Arc<ClientConfig>,
+) -> Result<Result<Box<TlsSession<TcpStream>>, Failed>, Error> {
+    let stream = connect(origin, handle).await?;
     let name = ServerName::try_from(origin.host.to_string())
         .map_err(|_| Error::InvalidRequest("invalid TLS server name"))?;
     let session =
         ClientConnection::new(config, name).map_err(|error| Error::Tls(error.to_string()))?;
     let mut tls = TlsSession::client(stream, session);
     if let Err(errno) = tls.handshake().await {
-        return Err(Error::Tls(handshake_failure(tls.tls_error(), errno)));
+        return Ok(Err(Failed {
+            message: handshake_failure(tls.tls_error(), errno),
+            rustls: tls.tls_error().cloned(),
+        }));
     }
     if tls
         .alpn_protocol()
@@ -93,7 +219,7 @@ pub(super) async fn open(
             "peer negotiated an unsupported ALPN protocol".to_owned(),
         ));
     }
-    Ok(Transport::Tls(Box::new(tls)))
+    Ok(Ok(Box::new(tls)))
 }
 
 /// Why a handshake failed, in words a page can show.
