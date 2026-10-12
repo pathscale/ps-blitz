@@ -1468,6 +1468,7 @@ impl BaseDocument {
         self.abspos_normal_layout = false;
         let fixed_parents = self.restore_fixed_layout_parents();
         taffy::compute_root_layout(self, root_element_id, available_space);
+        self.note_layout_resolved();
         // A cached root output predates the correction of descendant extents.
         // Its descendant boxes remain corrected; preserve the root's extent too.
         if !self.abspos_normal_layout {
@@ -1518,5 +1519,50 @@ mod tests {
         document.resolve(2.5);
         document.resolve(0.0);
         assert_eq!(document.last_resolve_animation_time, 2.5);
+    }
+
+    fn styled_doc() -> (BaseDocument, crate::NodeId) {
+        let mut document = BaseDocument::new(DocumentConfig::default());
+        let root = document.root_node().id;
+        let mut mutator = document.mutate();
+        let html = mutator.create_element(crate::qual_name!("html"), vec![]);
+        let body = mutator.create_element(crate::qual_name!("body"), vec![]);
+        let block = mutator.create_element(crate::qual_name!("div"), vec![]);
+        mutator.append_children(body, &[block]);
+        mutator.append_children(html, &[body]);
+        mutator.append_children(root, &[html]);
+        drop(mutator);
+        (document, block)
+    }
+
+    #[test]
+    fn style_and_layout_revisions_advance_only_when_that_stage_runs() {
+        let (mut document, block) = styled_doc();
+        assert_eq!(
+            (document.style_revision(), document.layout_revision()),
+            (0, 0)
+        );
+        document.resolve(0.0);
+        let style = document.style_revision();
+        let layout = document.layout_revision();
+        assert!(style > 0, "the first resolve restyles");
+        assert!(layout > 0, "the first resolve lays out");
+
+        document.resolve(0.0);
+        assert_eq!(
+            document.style_revision(),
+            style,
+            "an idle resolve restyles nothing"
+        );
+
+        let mut mutator = document.mutate();
+        mutator.set_attribute(block, crate::qual_name!("style"), "height:40px");
+        drop(mutator);
+        document.resolve(0.0);
+        assert!(document.style_revision() > style, "a style change restyles");
+        assert!(
+            document.layout_revision() > layout,
+            "a height change relayouts"
+        );
     }
 }

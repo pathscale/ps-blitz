@@ -148,6 +148,7 @@ impl crate::document::BaseDocument {
         // dbg!(root);
         let token = RecalcStyle::pre_traverse(root, &context);
 
+        let mut style_traversed = false;
         if token.should_traverse() {
             // Style the elements, resolving their data
             let traverser = RecalcStyle::new(context);
@@ -156,6 +157,11 @@ impl crate::document::BaseDocument {
                 .then(|| STYLE_THREAD_POOL.pool());
             let rayon_pool = pool_guard.as_ref().and_then(|g| g.as_ref());
             style::driver::traverse_dom(&traverser, token, rayon_pool);
+            style_traversed = true;
+        }
+
+        if style_traversed {
+            self.style_revision = self.style_revision.wrapping_add(1);
         }
 
         for opaque in self.snapshots.keys() {

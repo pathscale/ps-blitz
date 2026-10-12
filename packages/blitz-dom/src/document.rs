@@ -296,6 +296,13 @@ pub struct BaseDocument {
     /// Bumped whenever the stylist device changes (viewport size, scale or colour scheme),
     /// so script can skip re-evaluating media queries while it stays the same.
     viewport_generation: u64,
+    /// Bumped each time a Stylo traversal restyles the tree. A resolve that
+    /// finds nothing to restyle leaves it alone, so an inspector can tell a
+    /// style change from an idle frame.
+    pub(crate) style_revision: u64,
+    /// Bumped each time layout is computed. An incremental resolve that keeps
+    /// every box leaves it alone.
+    layout_revision: u64,
     /// The inert document that owns every `<template>`'s contents, made on first use. It
     /// has no browsing context, so nothing in it is upgraded as a custom element.
     template_contents_owner: Option<NodeId>,
@@ -689,6 +696,8 @@ impl BaseDocument {
             mutator_redraw_pending: false,
             details_toggles: Vec::new(),
             viewport_generation: 0,
+            style_revision: 0,
+            layout_revision: 0,
             template_contents_owner: None,
             dropped_node_ids: FxHashSet::default(),
             dropped_node_parents: FxHashSet::default(),
@@ -5139,6 +5148,20 @@ impl BaseDocument {
         let owner = self.create_node(NodeData::Document(Box::new(data)));
         self.template_contents_owner = Some(owner);
         owner
+    }
+
+    /// How many Stylo traversals have restyled this document.
+    pub fn style_revision(&self) -> u64 {
+        self.style_revision
+    }
+
+    /// How many times layout has been computed for this document.
+    pub fn layout_revision(&self) -> u64 {
+        self.layout_revision
+    }
+
+    pub(crate) fn note_layout_resolved(&mut self) {
+        self.layout_revision = self.layout_revision.wrapping_add(1);
     }
 
     /// Changes whenever the device media queries are evaluated against changes.
