@@ -47,6 +47,10 @@ pub use h1::cache::PrivateCache;
 #[cfg(not(target_arch = "wasm32"))]
 pub use h1::rsa_fallback_state;
 
+/// Per-host connection counters, for logs and inspection.
+#[cfg(not(target_arch = "wasm32"))]
+pub use h1::{HostStats, connection_stats};
+
 /// The `User-Agent` sent when a caller does not choose one.
 ///
 /// Kept as it was so that existing consumers see no change in what servers

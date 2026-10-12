@@ -16,7 +16,7 @@ mod pool;
 #[path = "tls.rs"]
 mod tls;
 
-pub use tls::rsa_fallback_state;
+pub use tls::{HostStats, connection_stats, rsa_fallback_state};
 
 use blitz_traits::net::{
     CookieJar,

@@ -101,25 +101,64 @@ fn build_config() -> Result<Arc<ClientConfig>, String> {
 /// A record for display and inspection only. It is never consulted before a
 /// handshake: every new connection is ECC-only first, so the server sees the
 /// refusal (alert 43) each time.
-static RSA_FALLBACK: Mutex<Option<HashMap<String, bool>>> = Mutex::new(None);
+static HOSTS: Mutex<Option<HashMap<String, HostStats>>> = Mutex::new(None);
+
+/// Connection counters for one host, since the process started.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct HostStats {
+    /// New TCP connections opened, TLS attempts and fallbacks included.
+    pub connections: u32,
+    /// ECC-only handshakes that ended in the RSA refusal or alert 40.
+    pub refusals: u32,
+    /// RSA fallback connections that completed.
+    pub fallbacks: u32,
+    /// Whether the latest completed TLS connection used the RSA fallback.
+    pub last_rsa_fallback: Option<bool>,
+}
+
+fn update(host: &str, change: impl FnOnce(&mut HostStats)) -> HostStats {
+    let Ok(mut map) = HOSTS.lock() else {
+        return HostStats::default();
+    };
+    let stats = map
+        .get_or_insert_with(HashMap::new)
+        .entry(host.to_ascii_lowercase())
+        .or_default();
+    change(stats);
+    *stats
+}
 
 fn record(host: &str, used_fallback: bool) {
-    if let Ok(mut map) = RSA_FALLBACK.lock() {
-        map.get_or_insert_with(HashMap::new)
-            .insert(host.to_ascii_lowercase(), used_fallback);
-    }
+    update(host, |stats| {
+        stats.last_rsa_fallback = Some(used_fallback);
+        stats.fallbacks += u32::from(used_fallback);
+    });
+}
+
+/// Connection counters for every host contacted so far, sorted by host.
+pub fn connection_stats() -> Vec<(String, HostStats)> {
+    let mut all: Vec<_> = HOSTS
+        .lock()
+        .ok()
+        .and_then(|map| {
+            map.as_ref()
+                .map(|map| map.iter().map(|(h, s)| (h.clone(), *s)).collect())
+        })
+        .unwrap_or_default();
+    all.sort_by(|a, b| a.0.cmp(&b.0));
+    all
 }
 
 /// Whether the latest TLS connection to `host` used the RSA fallback.
 ///
 /// `None` when no TLS connection to it has completed.
 pub fn rsa_fallback_state(host: &str) -> Option<bool> {
-    RSA_FALLBACK
+    HOSTS
         .lock()
         .ok()?
         .as_ref()?
         .get(&host.to_ascii_lowercase())
-        .copied()
+        .and_then(|stats| stats.last_rsa_fallback)
 }
 
 pub(super) async fn open(
@@ -153,6 +192,7 @@ pub(super) async fn open(
     } else {
         "server rejected the ECC-only hello with alert 40 handshake_failure"
     };
+    update(host, |stats| stats.refusals += 1);
     info(format_args!("TLS {host}: ECC-only {reason}"));
     info(format_args!(
         "TLS {host}: RSA fallback, new connection allowing RSA-PSS CertificateVerify and RSA certificate signatures"
@@ -187,6 +227,11 @@ async fn connect(origin: &Origin, handle: &Handle) -> Result<TcpStream, Error> {
     .await
     .ok_or_else(|| Error::Dns("resolver task was cancelled".to_owned()))??;
 
+    let stats = update(&origin.host, |stats| stats.connections += 1);
+    info(format_args!(
+        "net {}: new connection #{} (tls {})",
+        origin.host, stats.connections, origin.tls
+    ));
     nagoya::net::connect_any(&addresses, handle)
         .await
         .map_err(|error| Error::Io(error.to_string()))
