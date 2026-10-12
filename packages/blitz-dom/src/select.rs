@@ -78,7 +78,7 @@ impl BaseDocument {
     }
 
     /// An option's submission value: the `value` attribute if present,
-    /// otherwise its label. An empty `value=""` is a value, not an absence,
+    /// otherwise its text. An empty `value=""` is a value, not an absence,
     /// which is why this tests for the attribute rather than for a non-empty
     /// string.
     pub fn option_value(&self, option_id: NodeId) -> String {
@@ -92,7 +92,7 @@ impl BaseDocument {
         {
             return value.to_string();
         }
-        self.option_label(option_id)
+        collapse_whitespace(&node.text_content())
     }
 
     /// The selectedness a freshly constructed select should start with.
