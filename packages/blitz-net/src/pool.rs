@@ -1,4 +1,9 @@
-//! Connection ownership and the six-slot budget for each HTTP origin.
+//! Connection ownership: one kept-alive connection per HTTP origin.
+//!
+//! One slot, not six. Every new TLS connection is refuse-first (ECC-only, then
+//! possibly an RSA fallback), so parallel connections multiplied handshakes:
+//! amazon.com opened 12 to one image host in 30 s. Requests to an origin now
+//! queue for its single connection until the multiplexed transports land.
 
 use super::{Connection, Error};
 use blitz_traits::net::Url;
@@ -9,8 +14,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-const PER_ORIGIN_SLOTS: usize = 6;
-const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+const PER_ORIGIN_SLOTS: usize = 1;
+const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 const MAX_IDLE_ORIGINS: usize = 256;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]

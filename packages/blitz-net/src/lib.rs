@@ -5,7 +5,7 @@
 //! [`blitz_traits::platform::FetchProvider`], which serves a guest's `fetch()`.
 //!
 //! Both use one native HTTP/1.1 client, sharing its connection pool, cookie
-//! jar, compression codecs, private cache and six connection slots per origin.
+//! jar, compression codecs, private cache and one kept-alive connection per origin.
 //! The `http2` feature is reserved for the subsequent HTTP/2 transport.
 //!
 //! Creating a native provider starts nagoya's process background runtime and
