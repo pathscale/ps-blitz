@@ -52,6 +52,9 @@ struct TlsIo {
     out: Vec<u8>,
     out_sent: usize,
     close_sent: bool,
+    /// Ciphertext read from the socket but not yet taken by rustls.
+    cipher: Vec<u8>,
+    cipher_taken: usize,
 }
 
 fn errno(error: impl std::fmt::Display) -> io::Error {
@@ -68,6 +71,8 @@ impl TlsIo {
             out: Vec::new(),
             out_sent: 0,
             close_sent: false,
+            cipher: Vec::new(),
+            cipher_taken: 0,
         }
     }
 
@@ -122,22 +127,36 @@ impl AsyncRead for TlsIo {
             if let Poll::Ready(Err(error)) = this.poll_drain(cx) {
                 return Poll::Ready(Err(error));
             }
-            let mut chunk = [0u8; READ_CHUNK];
-            let read = match ready!(this.tcp.poll_read(cx, &mut chunk)) {
-                Ok(0) => return Poll::Ready(Ok(())),
-                Ok(read) => read,
-                Err(error) => return Poll::Ready(Err(errno(error))),
-            };
-            let mut cursor = &chunk[..read];
-            while !cursor.is_empty() {
-                if this.tls.read_tls(&mut cursor)? == 0 {
-                    break;
+            if this.cipher_taken == this.cipher.len() {
+                this.cipher.resize(READ_CHUNK, 0);
+                this.cipher_taken = 0;
+                let read = match this.tcp.poll_read(cx, &mut this.cipher) {
+                    Poll::Ready(Ok(read)) => read,
+                    Poll::Ready(Err(error)) => {
+                        this.cipher.clear();
+                        return Poll::Ready(Err(errno(error)));
+                    }
+                    Poll::Pending => {
+                        // Nothing arrived: the zeroed buffer is not ciphertext.
+                        this.cipher.clear();
+                        return Poll::Pending;
+                    }
+                };
+                this.cipher.truncate(read);
+                if read == 0 {
+                    return Poll::Ready(Ok(()));
                 }
-                if let Err(error) = this.tls.process_new_packets() {
-                    // Send the queued alert before giving up.
-                    let _ = this.poll_drain(cx);
-                    return Poll::Ready(Err(io::Error::new(io::ErrorKind::InvalidData, error)));
-                }
+            }
+            // One record batch at a time: rustls refuses more ciphertext while
+            // its plaintext buffer is full, so the rest waits here until the
+            // reader above has drained it.
+            let mut cursor = &this.cipher[this.cipher_taken..];
+            let took = this.tls.read_tls(&mut cursor)?;
+            this.cipher_taken += took;
+            if let Err(error) = this.tls.process_new_packets() {
+                // Send the queued alert before giving up.
+                let _ = this.poll_drain(cx);
+                return Poll::Ready(Err(io::Error::new(io::ErrorKind::InvalidData, error)));
             }
         }
     }
