@@ -47,6 +47,7 @@ use style::Atom;
 use style::animation::{AnimationState, DocumentAnimationSet};
 use style::attr::{AttrIdentifier, AttrValue};
 use style::data::{ElementData as StyloElementData, ElementStyles};
+use style::invalidation::element::restyle_hints::RestyleHint;
 use style::media_queries::MediaType;
 use style::properties::ComputedValues;
 use style::properties::style_structs::Font;
@@ -3711,20 +3712,14 @@ impl BaseDocument {
             }
         }
 
-        // `Stylist::set_device` reports media-query changes only. A CSS-pixel
-        // change still has to recascade `vh`/`vw` (including on `::before`)
-        // and lay out again: the initial containing block changed, and
-        // incremental layout otherwise keeps the boxes from the previous
-        // viewport. Capture builds the document at 0x0 and installs the real
-        // viewport here, on the way into the next `resolve`.
+        // Recascade through normal style traversal, which skips hidden subtrees.
+        // Allocated element data does not guarantee a computed primary style.
+        if let Some(root_id) = self.try_root_element().map(|root| root.id) {
+            self.nodes[root_id].set_restyle_hint(RestyleHint::recascade_subtree());
+            self.shell_provider.request_redraw();
+        }
         if previous_viewport != next_viewport {
             self.abspos_layout_dirty = true;
-            let invalidated = self
-                .try_root_element()
-                .is_some_and(style::invalidation::viewport_units::invalidate);
-            if invalidated {
-                self.shell_provider.request_redraw();
-            }
         }
     }
 
