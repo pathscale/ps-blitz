@@ -49,6 +49,31 @@ fn subtree_skip_enabled() -> bool {
 }
 
 impl BaseDocument {
+    /// Invalidate layout inputs installed after damage propagation.
+    ///
+    /// Follow the layout tree, including anonymous blocks. Clearing only the
+    /// changed node lets a cached ancestor return without visiting it.
+    pub(crate) fn invalidate_layout_ancestors(&mut self, node_id: NodeId) {
+        self.abspos_layout_dirty = true;
+        let mut current = Some(node_id);
+        while let Some(id) = current {
+            let Some(node) = self.nodes.get_mut(id) else {
+                break;
+            };
+            current = node.layout_parent.get();
+            #[cfg(feature = "log-phase-times")]
+            crate::layout::layout_counters::note_cache_cleared();
+            node.cache_release();
+            if let Some(inline_layout) = node
+                .data
+                .downcast_element_mut()
+                .and_then(|element| element.inline_layout_data.as_mut())
+            {
+                inline_layout.content_widths = None;
+            }
+        }
+    }
+
     pub(crate) fn propagate_damage_flags(
         &mut self,
         node_id: NodeId,
@@ -180,9 +205,9 @@ impl BaseDocument {
         // Compute damage to propagate to parent
         let damage_for_parent = damage; // & RestyleDamage::RELAYOUT;
 
-        // If the node or any of it's children have been mutated or their layout styles
-        // have changed, then we should clear it's layout cache.
-        if damage.intersects(ONLY_RELAYOUT | CONSTRUCT_BOX) {
+        // Damage is already the union of this node and its descendants.
+        // Construction changes layout inputs even without ONLY_RELAYOUT.
+        if damage.intersects(ONLY_RELAYOUT | CONSTRUCT_BOX | CONSTRUCT_FC | CONSTRUCT_DESCENDENT) {
             #[cfg(feature = "log-phase-times")]
             crate::layout::layout_counters::note_cache_cleared();
             node.cache_mut().clear();
@@ -754,6 +779,7 @@ impl BaseDocument {
         if style_changed && self.abspos_candidate_ids.contains(&node_id) {
             self.abspos_written.insert(node_id);
         }
+        let mut layout_inputs_changed = false;
 
         let display = {
             let node = self.nodes.get_mut(node_id).unwrap();
@@ -831,12 +857,12 @@ impl BaseDocument {
                 // the new ones. Comparing is cheap next to laying out, and
                 // equal styles are the common case: a recolour rebuilds an
                 // identical taffy style and keeps its cache.
-                let layout_inputs_changed = *node.style() != taffy_style;
+                layout_inputs_changed = *node.style() != taffy_style;
                 *node.style_mut() = taffy_style;
                 *node.display_constructed_as_mut() = display_constructed_as;
                 if layout_inputs_changed {
                     self.abspos_layout_dirty = true;
-                    node.cache_mut().clear();
+                    node.cache_release();
                     if let Some(inline_layout) = node
                         .data
                         .downcast_element_mut()
@@ -877,6 +903,14 @@ impl BaseDocument {
 
             node.style().display
         };
+        // Style comparison can discover changed layout inputs after the
+        // damage pass. The current node was cleared above; invalidate every
+        // retained layout ancestor before Taffy can answer from its cache.
+        if layout_inputs_changed {
+            if let Some(parent) = self.nodes[node_id].layout_parent.get() {
+                self.invalidate_layout_ancestors(parent);
+            }
+        }
 
         // A hidden subtree is not walked.
         //

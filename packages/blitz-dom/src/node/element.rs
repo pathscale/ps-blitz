@@ -1,3 +1,4 @@
+use crate::layout::cache::Cache;
 use blitz_traits::node_id::NodeId;
 use cssparser::ParserInput;
 use kurbo::{Affine, Rect as KurboRect};
@@ -22,10 +23,7 @@ use style::{
 };
 use style_dom::ElementState;
 use style_traits::ParsingMode;
-use taffy::{
-    Cache,
-    prelude::{Layout, Style},
-};
+use taffy::prelude::{Layout, Style};
 use url::Url;
 
 use super::stylo_data::StyloData;

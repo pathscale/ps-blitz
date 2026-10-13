@@ -266,6 +266,7 @@ pub mod layout_counters {
 }
 
 pub(crate) mod abspos;
+pub mod cache;
 pub(crate) mod construct;
 pub(crate) mod damage;
 pub(crate) mod inline;
@@ -894,9 +895,15 @@ impl taffy::CacheTree for BaseDocument {
         inputs: &taffy::LayoutInput,
         layout_output: taffy::LayoutOutput,
     ) {
-        self.node_from_id_mut(node_id)
-            .cache_mut()
-            .store(inputs, layout_output);
+        let node = self.node_from_id_mut(node_id);
+        let independent_container = matches!(node.style().display, Display::Flex | Display::Grid)
+            && !node.flags.is_inline_root()
+            && !node.flags.is_table_root();
+        if independent_container {
+            node.cache_mut().store_intrinsic(inputs, layout_output);
+        } else {
+            node.cache_mut().store(inputs, layout_output);
+        }
     }
 
     #[inline]

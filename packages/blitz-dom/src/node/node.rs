@@ -1,4 +1,5 @@
 use crate::Document;
+use crate::layout::cache::Cache;
 use crate::layout::damage::HoistedPaintChildren;
 use bitflags::bitflags;
 use blitz_traits::events::{
@@ -34,10 +35,7 @@ use style::values::generics::transform::{Scale, Translate};
 use style::values::specified::box_::{DisplayInside, DisplayOutside};
 use style_dom::ElementState;
 use style_traits::values::ToCss;
-use taffy::{
-    Cache,
-    prelude::{Layout, Style},
-};
+use taffy::prelude::{Layout, Style};
 use thin_vec::ThinVec;
 
 use super::stylo_data::StyloData;
