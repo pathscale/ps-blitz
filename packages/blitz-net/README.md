@@ -50,3 +50,36 @@ Invoke the existing cargo-deny tool with
 the workspace graph. This policy is not yet wired into the existing manual
 CI workflow. Any CI checkout consuming the path dependency must supply
 `ps-rustls-rustcrypto` beside `ps-blitz`.
+
+## Request cancellation
+
+The issuer owns a `blitz_traits::net::AbortController` and attaches a clone
+of its public `signal` to each `Request` or `FetchRequest`. Calling
+`AbortController::abort(self)` wakes all pending operations on that signal.
+`AbortSignal::cancelled()` returns an `AbortWaiter` future; dropping the
+waiter removes its registration. No timer or socket activity is needed to
+observe cancellation. Dropping a controller alone does not abort it.
+
+`Provider::fetch_async` and `fetch_response_async` return
+`ProviderError::Abort` on abort. `Provider::fetch_platform_async` returns
+`FetchError::Abort` and retains status, headers and HTTP error responses.
+These async entry points own their transport futures; dropping an unfinished
+future sends HTTP/2 RST_STREAM CANCEL for its active stream. The connection
+driver remains shared with other requests.
+
+`NetProvider::fetch`, `FetchProvider::fetch` and
+`Provider::fetch_with_callback` drop the handler without calling it when
+the request is aborted before completion. Callers must retire their own
+pending-resource bookkeeping when cancelling a document. Completion that
+has already been delivered is not undone by a later abort.
+
+Only complete response bodies reach the private cache. Cancellation before
+mutation admission skips the mutation; an admitted metadata commit holds
+the cache gate and runs to completion even if its caller is dropped.
+Cancellation is not a cache failure and does not disable the cache.
+
+WSS transport belongs to the embedder. Race its owned HTTP/1.1 upgrade
+future against `signal.cancelled()` and drop the upgrade future on abort
+to close its socket. The same waiter can govern an established WebSocket.
+There is no WebSocket entry point in this crate. This release adds no
+HTTP/1.1 configuration or protocol-selection changes.

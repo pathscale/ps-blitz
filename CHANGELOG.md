@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.2
+
+- Make AbortSignal reactive: abort wakes every registered request without timers, and dropped waiters unregister.
+- Accept an issuer-owned abort signal on FetchRequest and expose Provider::fetch_platform_async, preserving HTTP error responses.
+- Reset unfinished HTTP/2 streams with RST_STREAM CANCEL and omit completion callbacks after request abort. Async callers receive ProviderError::Abort or FetchError::Abort.
+- Keep admitted cache publications and invalidations alive until persistence completes; aborted requests cannot publish partial bodies or poison later cache lookups.
+
 ## 0.6.1
 
 - Honor passive event listeners in blitz-script. Ignore preventDefault() and returnValue = false during passive callbacks, including native and shadow DOM dispatch, while preserving an existing defaultPrevented value and listener matching.
