@@ -19,19 +19,20 @@
 //! On wasm32, local URL handling remains available, but this native socket
 //! transport does not provide HTTP.
 
+mod abort;
+
 #[cfg(not(target_arch = "wasm32"))]
 mod h1;
 
 use blitz_traits::net::{
-    AbortSignal, Body, Bytes, CookieJar as CookieStorage, NetHandler, NetProvider, NetWaker,
-    Request,
+    Body, Bytes, CookieJar as CookieStorage, NetHandler, NetProvider, NetWaker, Request,
     http::{HeaderValue, header::CONTENT_TYPE},
 };
 use blitz_traits::platform::{
     FetchError, FetchHandler, FetchProvider, FetchRequest, FetchResponse, HeaderMap, StatusCode,
 };
 use data_url::DataUrl;
-use std::{marker::PhantomData, pin::Pin, sync::Arc, task::Poll};
+use std::sync::Arc;
 
 /// Cookie storage supplied to [`Provider::with_user_agent_and_cookie_provider`].
 ///
@@ -231,6 +232,7 @@ impl Provider {
         Ok((response.url.to_string(), response.body))
     }
 
+    /// Fetch bytes, omitting the callback when the issuer aborts.
     #[allow(clippy::type_complexity)]
     pub fn fetch_with_callback(
         &self,
@@ -241,8 +243,14 @@ impl Provider {
         let url = request.url.to_string();
 
         let client = self.client.clone();
+        let signal = request.signal.clone();
         spawn(async move {
             let result = Self::fetch_inner(client, request).await;
+            if matches!(&result, Err(ProviderError::Abort))
+                || signal.as_ref().is_some_and(|signal| signal.aborted())
+            {
+                return;
+            }
 
             #[cfg(feature = "tracing")]
             if let Err(e) = &result {
@@ -288,6 +296,18 @@ impl Provider {
         client: Client,
         request: Request,
     ) -> Result<FetchResponse, ProviderError> {
+        abort::until_cancelled(
+            request.signal.clone(),
+            Self::fetch_response_uncancelled(client, request),
+        )
+        .await
+        .unwrap_or(Err(ProviderError::Abort))
+    }
+
+    async fn fetch_response_uncancelled(
+        client: Client,
+        request: Request,
+    ) -> Result<FetchResponse, ProviderError> {
         let url = request.url.clone();
         match url.scheme() {
             "data" => {
@@ -313,6 +333,7 @@ impl Provider {
             "http" | "https" => {
                 let mut wire_request = FetchRequest::get(request.url).method(request.method);
                 wire_request.headers = request.headers;
+                wire_request.signal = request.signal;
                 let content_type = request.content_type.or_else(|| {
                     wire_request
                         .headers
@@ -365,7 +386,30 @@ impl Provider {
 /// that [`NetProvider::fetch`] then logs and drops. A caller loading an image
 /// wants exactly that. A `fetch()` caller wants the 404.
 impl Provider {
+    /// Fetch with status and headers, including HTTP error responses.
+    ///
+    /// Aborting the request signal returns FetchError::Abort. Dropping this
+    /// future cancels its active HTTP/2 stream. No callback task is spawned.
+    pub async fn fetch_platform_async(
+        &self,
+        request: FetchRequest,
+    ) -> Result<FetchResponse, FetchError> {
+        Self::platform_fetch_inner(self.client.clone(), request).await
+    }
+
     async fn platform_fetch_inner(
+        client: Client,
+        request: FetchRequest,
+    ) -> Result<FetchResponse, FetchError> {
+        abort::until_cancelled(
+            request.signal.clone(),
+            Self::platform_fetch_uncancelled(client, request),
+        )
+        .await
+        .unwrap_or(Err(FetchError::Abort))
+    }
+
+    async fn platform_fetch_uncancelled(
         client: Client,
         request: FetchRequest,
     ) -> Result<FetchResponse, FetchError> {
@@ -434,12 +478,18 @@ impl Provider {
 impl FetchProvider for Provider {
     fn fetch(&self, request: FetchRequest, handler: Box<dyn FetchHandler>) {
         let client = self.client.clone();
+        let signal = request.signal.clone();
 
         #[cfg(feature = "tracing")]
         let url = request.url.to_string();
 
         spawn(async move {
             let result = Self::platform_fetch_inner(client, request).await;
+            if matches!(&result, Err(FetchError::Abort))
+                || signal.as_ref().is_some_and(|signal| signal.aborted())
+            {
+                return;
+            }
 
             #[cfg(feature = "tracing")]
             match &result {
@@ -457,29 +507,24 @@ impl FetchProvider for Provider {
 }
 
 impl NetProvider for Provider {
-    fn fetch(&self, doc_id: usize, mut request: Request, handler: Box<dyn NetHandler>) {
+    fn fetch(&self, doc_id: usize, request: Request, handler: Box<dyn NetHandler>) {
         let client = self.client.clone();
 
         #[cfg(feature = "tracing")]
         tracing::info!(url = request.url.as_str(), "Fetching");
 
+        let signal = request.signal.clone();
         let waker = self.waker.clone();
         spawn(async move {
             #[cfg(feature = "tracing")]
             let url = request.url.to_string();
 
-            let signal = request.signal.take();
-            let result = if let Some(signal) = signal {
-                AbortFetch::new(
-                    signal,
-                    Box::pin(async move { Self::fetch_inner(client, request).await }),
-                )
-                .await
-            } else {
-                Self::fetch_inner(client, request).await
-            };
-
-            waker.wake(doc_id);
+            let result = Self::fetch_inner(client, request).await;
+            if matches!(&result, Err(ProviderError::Abort))
+                || signal.as_ref().is_some_and(|signal| signal.aborted())
+            {
+                return;
+            }
 
             match result {
                 Ok((response_url, bytes)) => {
@@ -494,46 +539,9 @@ impl NetProvider for Provider {
                     let _ = e;
                 }
             };
+            // Publish bytes before notifying the document that they exist.
+            waker.wake(doc_id);
         });
-    }
-}
-
-struct AbortFetch<F, T> {
-    signal: AbortSignal,
-    future: F,
-    _rt: PhantomData<T>,
-}
-
-impl<F, T> AbortFetch<F, T> {
-    fn new(signal: AbortSignal, future: F) -> Self {
-        Self {
-            signal,
-            future,
-            _rt: PhantomData,
-        }
-    }
-}
-
-impl<F, T> Future for AbortFetch<F, T>
-where
-    F: Future + Unpin + 'static,
-    F::Output: Into<Result<T, ProviderError>> + 'static,
-    T: Unpin,
-{
-    type Output = Result<T, ProviderError>;
-
-    fn poll(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        if self.signal.aborted() {
-            return Poll::Ready(Err(ProviderError::Abort));
-        }
-
-        match Pin::new(&mut self.future).poll(cx) {
-            Poll::Ready(output) => Poll::Ready(output.into()),
-            Poll::Pending => Poll::Pending,
-        }
     }
 }
 
