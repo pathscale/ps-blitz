@@ -160,7 +160,7 @@ impl PrivateCache {
     }
 
     pub(super) async fn fetch(
-        &self,
+        self: &Arc<Self>,
         client: &H1Client,
         request: FetchRequest,
     ) -> Result<FetchResponse, Error> {
@@ -254,9 +254,17 @@ impl PrivateCache {
         if !safe_method(&request.method)
             && (response.status.is_success() || response.status.is_redirection())
         {
-            if let Err(error) = self.invalidate(&request, &response).await {
-                self.disable(error);
-            }
+            let cache = Arc::clone(self);
+            let request = request.clone();
+            let response = response.clone();
+            // Only a complete response reaches this point. Once admitted,
+            // invalidation owns the cache gate until persistence finishes.
+            let _ = nagoya::spawn(async move {
+                if let Err(error) = cache.invalidate(&request, &response).await {
+                    cache.disable(error);
+                }
+            })
+            .await;
         } else if usable && same_url(&request.url, &response.url) {
             self.publish(&request, &headers, &response, started, received, generation)
                 .await;
@@ -301,7 +309,7 @@ impl PrivateCache {
     }
 
     async fn publish(
-        &self,
+        self: &Arc<Self>,
         request: &FetchRequest,
         headers: &HeaderMap,
         response: &FetchResponse,
@@ -309,12 +317,21 @@ impl PrivateCache {
         received: SystemTime,
         generation: u64,
     ) {
-        if let Err(error) = self
-            .store(request, headers, response, started, received, generation)
-            .await
-        {
-            self.disable(error);
-        }
+        let cache = Arc::clone(self);
+        let request = request.clone();
+        let headers = headers.clone();
+        let response = response.clone();
+        // Dropping the join handle detaches only this completed-response
+        // commit. No network operation is detached by cache publication.
+        let _ = nagoya::spawn(async move {
+            if let Err(error) = cache
+                .store(&request, &headers, &response, started, received, generation)
+                .await
+            {
+                cache.disable(error);
+            }
+        })
+        .await;
     }
 
     async fn store(
@@ -329,6 +346,10 @@ impl PrivateCache {
         let _permit = self.gate.acquire().await;
         if !self.enabled.load(Ordering::Acquire)
             || self.generation.load(Ordering::Acquire) != generation
+            || request
+                .signal
+                .as_ref()
+                .is_some_and(|signal| signal.aborted())
         {
             return Ok(());
         }
@@ -370,9 +391,17 @@ impl PrivateCache {
         }
         sync_directory(&self.bodies)?;
 
+        if request
+            .signal
+            .as_ref()
+            .is_some_and(|signal| signal.aborted())
+        {
+            remove_file(&path)?;
+            return Ok(());
+        }
         let old = self.table.select(key.clone());
-        // From this point cancellation may leave an orphan, but must never
-        // delete a file that a published row could reference.
+        // Publication now runs to completion even if its caller is dropped.
+        // Keep the gate and both body files until metadata is durable.
         self.table
             .upsert(HttpCacheMetaRow {
                 key,
@@ -411,6 +440,13 @@ impl PrivateCache {
 
     async fn invalidate(&self, request: &FetchRequest, response: &FetchResponse) -> io::Result<()> {
         let _permit = self.gate.acquire().await;
+        if request
+            .signal
+            .as_ref()
+            .is_some_and(|signal| signal.aborted())
+        {
+            return Ok(());
+        }
         self.generation.fetch_add(1, Ordering::AcqRel);
         let mut urls = vec![request.url.clone()];
         if response.url.origin() == request.url.origin() {

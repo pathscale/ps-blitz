@@ -476,6 +476,21 @@ enum Failure {
     Local(Error),
 }
 
+/// Keep the send handle until the complete response has been consumed.
+/// Dropping an unfinished exchange queues RST_STREAM CANCEL on the driver.
+struct StreamReset {
+    stream: h2::SendStream<Bytes>,
+    complete: bool,
+}
+
+impl Drop for StreamReset {
+    fn drop(&mut self) {
+        if !self.complete {
+            self.stream.send_reset(h2::Reason::CANCEL);
+        }
+    }
+}
+
 async fn exchange(
     live: &Live,
     request: &FetchRequest,
@@ -507,11 +522,18 @@ async fn exchange(
     }
 
     let mut send = live.send.clone().ready().await.map_err(Failure::Before)?;
-    let (response, mut stream) = send
+    let (response, stream) = send
         .send_request(head, body.is_none())
         .map_err(Failure::Before)?;
+    let mut stream = StreamReset {
+        stream,
+        complete: false,
+    };
     if let Some(body) = body {
-        stream.send_data(body, true).map_err(Failure::After)?;
+        stream
+            .stream
+            .send_data(body, true)
+            .map_err(Failure::After)?;
     }
     let response = response.await.map_err(|error| {
         if error.reason() == Some(h2::Reason::REFUSED_STREAM) {
@@ -533,6 +555,8 @@ async fn exchange(
         }
         buffer.extend_from_slice(&chunk);
     }
+    let _ = recv.trailers().await.map_err(Failure::After)?;
+    stream.complete = true;
     Ok(WireResponse {
         status: parts.status,
         headers: parts.headers,
