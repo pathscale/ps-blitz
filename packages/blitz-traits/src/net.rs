@@ -6,10 +6,7 @@ use serde::{
     Serialize,
     ser::{SerializeSeq, SerializeTuple},
 };
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::{Arc, Mutex};
 use std::{ops::Deref, path::PathBuf};
 pub use url::Url;
 
@@ -241,7 +238,18 @@ impl AbortController {
     ///
     /// <https://developer.mozilla.org/en-US/docs/Web/API/AbortController/abort>
     pub fn abort(self) {
-        self.signal.0.store(true, Ordering::SeqCst);
+        let waiters = {
+            let mut state = self
+                .signal
+                .0
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            state.aborted = true;
+            std::mem::take(&mut state.waiters)
+        };
+        for (_, waker) in waiters {
+            waker.wake();
+        }
     }
 }
 
@@ -250,12 +258,79 @@ impl AbortController {
 ///
 /// <https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal>
 #[derive(Debug, Default, Clone)]
-pub struct AbortSignal(Arc<AtomicBool>);
+pub struct AbortSignal(Arc<Mutex<AbortState>>);
+
+#[derive(Debug, Default)]
+struct AbortState {
+    aborted: bool,
+    next: u64,
+    waiters: std::collections::BTreeMap<u64, std::task::Waker>,
+}
+
+/// A reactive cancellation future, with one registration per operation.
+///
+/// Dropping this future unregisters its waker. It does not abort the signal.
+pub struct AbortWaiter {
+    signal: AbortSignal,
+    id: u64,
+}
+
+impl std::future::Future for AbortWaiter {
+    type Output = ();
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<()> {
+        let mut state = self
+            .signal
+            .0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if state.aborted {
+            std::task::Poll::Ready(())
+        } else {
+            state.waiters.insert(self.id, cx.waker().clone());
+            std::task::Poll::Pending
+        }
+    }
+}
+
+impl Drop for AbortWaiter {
+    fn drop(&mut self) {
+        self.signal
+            .0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .waiters
+            .remove(&self.id);
+    }
+}
 
 impl AbortSignal {
     /// The aborted read-only property returns a value that indicates whether
     /// the asynchronous operations the signal is communicating with has been aborted.
     pub fn aborted(&self) -> bool {
-        self.0.load(Ordering::SeqCst)
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .aborted
+    }
+
+    /// Completes when the issuer aborts, waking every pending waiter.
+    ///
+    /// A signal that is already aborted completes on the first poll. A
+    /// signal can be shared by requests and WebSocket upgrade attempts.
+    pub fn cancelled(&self) -> AbortWaiter {
+        let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        let id = state.next;
+        state.next = state
+            .next
+            .checked_add(1)
+            .expect("abort waiter identifier exhausted");
+        AbortWaiter {
+            signal: self.clone(),
+            id,
+        }
     }
 }

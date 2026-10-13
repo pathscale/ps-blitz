@@ -48,7 +48,7 @@ pub trait FetchProvider: Send + Sync + 'static {
 /// which makes "completed twice" unrepresentable rather than merely wrong.
 /// Same shape as [`NetHandler`](crate::net::NetHandler).
 pub trait FetchHandler: Send + Sync + 'static {
-    /// Called exactly once.
+    /// Called once unless the request is aborted before completion.
     ///
     /// **A response with a non-success status is `Ok`, not `Err`.** A 404 has a
     /// status, headers and usually a body, all of which the caller asked for.
@@ -59,9 +59,8 @@ pub trait FetchHandler: Send + Sync + 'static {
 /// A request, loosely <https://fetch.spec.whatwg.org/#requests>.
 ///
 /// Narrower than [`Request`](crate::net::Request) on purpose: no form bodies,
-/// because a guest that wants a multipart body can encode one, and no abort
-/// signal, because nothing in the current scope cancels. Both are additive
-/// later; see the README.
+/// because a guest that wants a multipart body can encode one. Cancellation
+/// uses the same issuer-owned signal as document resource requests.
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct FetchRequest {
@@ -71,6 +70,8 @@ pub struct FetchRequest {
     /// `None` is distinct from `Some(empty)`: the first sends no body at all,
     /// the second sends a zero-length one with a `Content-Length: 0`.
     pub body: Option<Bytes>,
+    /// Cancellation shared with the request's issuer.
+    pub signal: Option<crate::net::AbortSignal>,
 }
 
 impl FetchRequest {
@@ -81,7 +82,14 @@ impl FetchRequest {
             method: Method::GET,
             headers: HeaderMap::new(),
             body: None,
+            signal: None,
         }
+    }
+
+    /// Attach the signal owned by this request's issuer.
+    pub fn signal(mut self, signal: crate::net::AbortSignal) -> Self {
+        self.signal = Some(signal);
+        self
     }
 
     /// The same request with a method.
@@ -147,6 +155,8 @@ impl FetchResponse {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FetchError {
+    /// The issuer aborted the owned fetch future.
+    Abort,
     /// The request could not be completed: DNS, TLS, connection, timeout, a
     /// malformed response, or a local read that failed.
     ///
@@ -171,6 +181,7 @@ pub enum FetchError {
 impl std::fmt::Display for FetchError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Abort => write!(f, "request aborted"),
             Self::Network(detail) => write!(f, "network error: {detail}"),
             Self::TlsPolicy(reason) => write!(f, "TLS policy: {reason}"),
             Self::UnsupportedScheme(scheme) => write!(f, "unsupported URL scheme: {scheme}"),
