@@ -150,10 +150,11 @@ pub enum FetchError {
     /// The request could not be completed: DNS, TLS, connection, timeout, a
     /// malformed response, or a local read that failed.
     ///
-    /// One variant rather than a taxonomy because `fetch()` itself exposes one
-    /// (`TypeError`), and a guest cannot act differently on a DNS failure than
-    /// on a TLS one. The string is for a human reading a log.
+    /// The string is for a human reading a log. TLS algorithm refusals use
+    /// `TlsPolicy` so callers can retain the reason without parsing this text.
     Network(String),
+    /// The peer could not complete TLS under the permitted algorithm policy.
+    TlsPolicy(crate::tls_policy::TlsPolicyError),
     /// The URL's scheme is not one this provider serves.
     UnsupportedScheme(String),
     /// The request was rejected before it was sent: an unparseable header, a
@@ -171,6 +172,7 @@ impl std::fmt::Display for FetchError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Network(detail) => write!(f, "network error: {detail}"),
+            Self::TlsPolicy(reason) => write!(f, "TLS policy: {reason}"),
             Self::UnsupportedScheme(scheme) => write!(f, "unsupported URL scheme: {scheme}"),
             Self::InvalidRequest(detail) => write!(f, "invalid request: {detail}"),
             Self::Blocked(reason) => write!(f, "blocked: {reason}"),

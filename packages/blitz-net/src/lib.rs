@@ -44,9 +44,8 @@ pub use blitz_traits::net::CookieJar;
 #[cfg(all(feature = "cache", not(target_arch = "wasm32")))]
 pub use h1::cache::PrivateCache;
 
-/// Whether the latest TLS connection to a host needed the RSA fallback.
-#[cfg(not(target_arch = "wasm32"))]
-pub use h1::rsa_fallback_state;
+/// Why the strict TLS policy refused a connection.
+pub use blitz_traits::tls_policy::TlsPolicyError;
 
 /// Per-host connection counters, for logs and inspection.
 #[cfg(not(target_arch = "wasm32"))]
@@ -331,10 +330,13 @@ impl Provider {
                     content_type.as_deref(),
                     &mut wire_request.headers,
                 )?;
-                let response = client
-                    .fetch(wire_request)
-                    .await
-                    .map_err(|error| ProviderError::Network(error.to_string()))?;
+                let response = client.fetch(wire_request).await.map_err(|error| {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let h1::Error::TlsPolicy(reason) = &error {
+                        return ProviderError::TlsPolicy(*reason);
+                    }
+                    ProviderError::Network(error.to_string())
+                })?;
 
                 if !response.status.is_success() {
                     #[cfg(feature = "tracing")]
@@ -370,10 +372,13 @@ impl Provider {
         match request.url.scheme() {
             "data" => Self::platform_fetch_data(request),
             "file" => Self::platform_fetch_file(request),
-            "http" | "https" => client
-                .fetch(request)
-                .await
-                .map_err(|error| FetchError::Network(error.to_string())),
+            "http" | "https" => client.fetch(request).await.map_err(|error| {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let h1::Error::TlsPolicy(reason) = &error {
+                    return FetchError::TlsPolicy(*reason);
+                }
+                FetchError::Network(error.to_string())
+            }),
             scheme => Err(FetchError::UnsupportedScheme(scheme.to_owned())),
         }
     }
@@ -539,6 +544,7 @@ pub enum ProviderError {
     DataUrl(data_url::DataUrlError),
     DataUrlBase64(data_url::forgiving_base64::InvalidBase64),
     Network(String),
+    TlsPolicy(TlsPolicyError),
     InvalidRequest(String),
     UnsupportedScheme(String),
     HttpStatus { status: StatusCode, url: String },
@@ -552,6 +558,7 @@ impl std::fmt::Display for ProviderError {
             Self::DataUrl(e) => write!(f, "data url error: {e:?}"),
             Self::DataUrlBase64(e) => write!(f, "data url base64 error: {e:?}"),
             Self::Network(e) => write!(f, "network error: {e}"),
+            Self::TlsPolicy(reason) => write!(f, "TLS policy: {reason}"),
             Self::InvalidRequest(e) => write!(f, "invalid request: {e}"),
             Self::UnsupportedScheme(scheme) => write!(f, "unsupported URL scheme: {scheme}"),
             Self::HttpStatus { status, url } => write!(f, "HTTP {status} for {url}"),

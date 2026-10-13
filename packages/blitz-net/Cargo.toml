@@ -49,8 +49,8 @@ tracing = { workspace = true, optional = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 nagoya = { version = "^0.1.13", features = ["reactor"] }
 nago-rustls = { version = "^0.1.3", default-features = false }
-rustls = { version = "^0.23.27", default-features = false, features = ["std", "tls12"] }
-ps-rustcrypto = { version = "^0.4", default-features = false, features = ["std", "tls12", "zeroize", "rsa-pss"] }
+rustls = { version = "^0.23.40", default-features = false, features = ["std", "tls12"] }
+ps-rustcrypto = { version = "^0.4", path = "../../../ps-rustls-rustcrypto", default-features = false, features = ["std", "tls12", "zeroize"] }
 # HTTP/2 codec. Only the tokio io traits are used: no tokio runtime or reactor.
 h2 = "^0.4"
 tokio = { version = "^1", default-features = false }
@@ -67,4 +67,3 @@ httpdate = { version = "^1", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = { workspace = true }
-

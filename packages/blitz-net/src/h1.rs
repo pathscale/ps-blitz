@@ -19,7 +19,7 @@ mod pool;
 #[path = "tls.rs"]
 mod tls;
 
-pub use tls::{HostStats, connection_stats, rsa_fallback_state};
+pub use tls::{HostStats, connection_stats};
 
 use blitz_traits::net::{
     CookieJar,
@@ -51,6 +51,7 @@ pub enum Error {
     Write(String),
     Dns(String),
     Tls(String),
+    TlsPolicy(blitz_traits::tls_policy::TlsPolicyError),
     InvalidRequest(&'static str),
     Protocol(&'static str),
     UnsupportedScheme(String),
@@ -67,6 +68,7 @@ impl fmt::Display for Error {
             Self::Write(detail) => write!(formatter, "HTTP write failed: {detail}"),
             Self::Dns(detail) => write!(formatter, "DNS failed: {detail}"),
             Self::Tls(detail) => write!(formatter, "TLS failed: {detail}"),
+            Self::TlsPolicy(reason) => write!(formatter, "TLS policy: {reason}"),
             Self::InvalidRequest(detail) => write!(formatter, "invalid request: {detail}"),
             Self::Protocol(detail) => write!(formatter, "invalid HTTP response: {detail}"),
             Self::UnsupportedScheme(scheme) => {
@@ -89,7 +91,7 @@ pub struct H1Client {
     h2: Arc<http2::H2Pool>,
     reactor: &'static Reactor,
     tls_config: Arc<nago_rustls::rustls::ClientConfig>,
-    rsa_fallback: Option<Arc<nago_rustls::rustls::ClientConfig>>,
+
     user_agent: HeaderValue,
     cookies: Option<Arc<dyn CookieJar>>,
     timeout: Duration,
@@ -109,61 +111,25 @@ fn shared_h2_pool() -> Arc<http2::H2Pool> {
 }
 
 impl H1Client {
-    /// Use platform certificate verification and the process crypto provider.
-    ///
-    /// If no provider is installed, TLS configuration installs aws-lc-rs.
-    /// An embedder's already installed provider is retained.
-    pub fn new(user_agent: &str, cookies: Option<Arc<dyn CookieJar>>) -> Result<Self, Error> {
-        let mut client = Self::with_tls_config(user_agent, cookies, tls::default_config()?)?
-            .with_rsa_fallback(Some(tls::rsa_fallback_config()?));
-        // Every client on the default policy shares one pool, so a document,
-        // its subresources and its scripts reuse the same connection per
-        // origin. Cookies and the User-Agent are per request, not per socket.
-        client.pool = shared_pool();
-        client.h2 = shared_h2_pool();
-        Ok(client)
-    }
-
-    /// Use an explicit TLS policy, for example an embedder's private roots.
+    /// Native trust anchors and CT, with ECDSA/Ed25519 and ChaCha20-Poly1305.
     ///
     /// ALPN offers h2 first, then HTTP/1.1.
-    pub fn with_tls_config(
-        user_agent: &str,
-        cookies: Option<Arc<dyn CookieJar>>,
-        config: Arc<nago_rustls::rustls::ClientConfig>,
-    ) -> Result<Self, Error> {
+    pub fn new(user_agent: &str, cookies: Option<Arc<dyn CookieJar>>) -> Result<Self, Error> {
         let user_agent = HeaderValue::from_str(user_agent)
             .map_err(|_| Error::InvalidRequest("invalid User-Agent"))?;
-        let mut config = (*config).clone();
-        config.alpn_protocols = tls::alpn();
         Ok(Self {
-            pool: Arc::new(Pool::default()),
-            h2: Arc::new(http2::H2Pool::default()),
+            // Document, subresource and script requests share one connection
+            // per origin. Cookies and the User-Agent belong to each request.
+            pool: shared_pool(),
+            h2: shared_h2_pool(),
             reactor: process_reactor()?,
-            tls_config: Arc::new(config),
-            rsa_fallback: None,
+            tls_config: tls::default_config()?,
             user_agent,
             cookies,
             timeout: Duration::from_secs(120),
             #[cfg(feature = "cache")]
             cache: None,
         })
-    }
-
-    /// The policy for a second connection when the first, ECC-only one ends in
-    /// the RSA refusal (alert 43) or the server answering alert 40. `None`
-    /// turns the fallback off. `new` installs the RSA-PSS fallback; an
-    /// explicit `with_tls_config` policy starts without one.
-    pub fn with_rsa_fallback(
-        mut self,
-        config: Option<Arc<nago_rustls::rustls::ClientConfig>>,
-    ) -> Self {
-        self.rsa_fallback = config.map(|config| {
-            let mut config = (*config).clone();
-            config.alpn_protocols = tls::alpn();
-            Arc::new(config)
-        });
-        self
     }
 
     /// Attach the private cache opened for this embedder's profile.
@@ -208,14 +174,7 @@ impl H1Client {
             let handle = self.reactor.handle();
             let opened = match self
                 .h2
-                .route(
-                    &key,
-                    &request,
-                    &headers,
-                    &handle,
-                    &self.tls_config,
-                    &self.rsa_fallback,
-                )
+                .route(&key, &request, &headers, &handle, &self.tls_config)
                 .await?
             {
                 http2::Route::H2(wire) => {
@@ -236,13 +195,8 @@ impl H1Client {
             let mut reused = lease.connection.is_some();
             let wire = loop {
                 if lease.connection.is_none() {
-                    let transport = tls::open(
-                        &key,
-                        &self.reactor.handle(),
-                        self.tls_config.clone(),
-                        self.rsa_fallback.clone(),
-                    )
-                    .await?;
+                    let transport =
+                        tls::open(&key, &self.reactor.handle(), self.tls_config.clone()).await?;
                     lease.connection = Some(Connection::new(transport));
                 }
                 let result = lease

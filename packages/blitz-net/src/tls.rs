@@ -4,6 +4,7 @@
 //! polled directly by a caller or a local reactor.
 
 use super::{Error, pool::Origin};
+use blitz_traits::tls_policy::TlsPolicyError;
 use bytes::BytesMut;
 use nago_rustls::{
     TlsSession,
@@ -11,10 +12,7 @@ use nago_rustls::{
     rustls_pki_types::ServerName,
 };
 use nagoya::{net::TcpStream, reactor::Handle};
-use ps_rustcrypto::{
-    fallback,
-    policy::{self, ct::CtVerifier},
-};
+use ps_rustcrypto::policy::{self, ct::CtVerifier};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex, OnceLock},
@@ -25,19 +23,6 @@ const READ_CHUNK: usize = 16 * 1024;
 pub(super) fn default_config() -> Result<Arc<ClientConfig>, Error> {
     static CONFIG: OnceLock<Result<Arc<ClientConfig>, String>> = OnceLock::new();
     match CONFIG.get_or_init(build_config) {
-        Ok(config) => Ok(config.clone()),
-        Err(error) => Err(Error::Tls(error.clone())),
-    }
-}
-
-/// The RSA fallback policy, for a second connection after an ECC-only refusal.
-///
-/// Every native root, RSA ones included; certificate signatures may be RSA
-/// PKCS#1 v1.5 and the server CertificateVerify RSA-PSS. CT still applies to
-/// chains ending in a public root.
-pub(super) fn rsa_fallback_config() -> Result<Arc<ClientConfig>, Error> {
-    static CONFIG: OnceLock<Result<Arc<ClientConfig>, String>> = OnceLock::new();
-    match CONFIG.get_or_init(build_rsa_fallback_config) {
         Ok(config) => Ok(config.clone()),
         Err(error) => Err(Error::Tls(error.clone())),
     }
@@ -82,22 +67,6 @@ fn public_roots(native: &RootCertStore) -> RootCertStore {
     public
 }
 
-fn build_rsa_fallback_config() -> Result<Arc<ClientConfig>, String> {
-    let roots = native_roots()?;
-    let public = public_roots(&roots);
-    let verifier = fallback::rsa_fallback_ct_verifier(roots, public)
-        .map_err(|error| format!("TLS trust store: {error}"))?;
-    let provider = Arc::new(ps_rustcrypto::provider_with_rsa_pss());
-    let mut config = ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()
-        .map_err(|error| error.to_string())?
-        .dangerous()
-        .with_custom_certificate_verifier(verifier)
-        .with_no_client_auth();
-    config.alpn_protocols = alpn();
-    Ok(Arc::new(config))
-}
-
 /// HTTP/2 preferred; HTTP/1.1 for servers that do not offer it.
 pub(super) fn alpn() -> Vec<Vec<u8>> {
     vec![b"h2".to_vec(), b"http/1.1".to_vec()]
@@ -107,7 +76,13 @@ fn build_config() -> Result<Arc<ClientConfig>, String> {
     let roots = native_roots()?;
     let public = public_roots(&roots);
     // Explicit even when an embedder installed another process default.
-    let provider = Arc::new(ps_rustcrypto::provider());
+    let mut provider = ps_rustcrypto::provider();
+    // Keep the wire offer explicit even if a later provider adds suites.
+    provider.cipher_suites = vec![
+        ps_rustcrypto::TLS13_CHACHA20_POLY1305_SHA256,
+        ps_rustcrypto::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+    ];
+    let provider = Arc::new(provider);
     let mut config = ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .map_err(|error| error.to_string())?
@@ -125,25 +100,20 @@ fn build_config() -> Result<Arc<ClientConfig>, String> {
     Ok(Arc::new(config))
 }
 
-/// How the TLS connection to each host most recently went: `true` when it
-/// needed the RSA fallback, `false` when ECC-only succeeded.
-///
-/// A record for display and inspection only. It is never consulted before a
-/// handshake: every new connection is ECC-only first, so the server sees the
-/// refusal (alert 43) each time.
+/// Connection counters and the latest TLS policy refusal for each host.
 static HOSTS: Mutex<Option<HashMap<String, HostStats>>> = Mutex::new(None);
 
 /// Connection counters for one host, since the process started.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct HostStats {
-    /// New TCP connections opened, TLS attempts and fallbacks included.
+    /// New TCP connections opened, TLS attempts included.
     pub connections: u32,
-    /// ECC-only handshakes that ended in the RSA refusal or alert 40.
+    /// Handshakes refused under the strict TLS policy.
     pub refusals: u32,
-    /// RSA fallback connections that completed.
-    pub fallbacks: u32,
-    /// Whether the latest completed TLS connection used the RSA fallback.
-    pub last_rsa_fallback: Option<bool>,
+    /// TLS handshakes that completed under the strict policy.
+    pub handshakes: u32,
+    /// The latest TLS policy refusal, cleared by the next TLS attempt.
+    pub last_tls_policy_error: Option<TlsPolicyError>,
     /// The protocol the latest connection to this host settled on: `h2`,
     /// `h2 (coalesced)` onto another host's connection, or `http/1.1`.
     pub last_alpn: Option<&'static str>,
@@ -165,13 +135,6 @@ pub(super) fn record_alpn(host: &str, alpn: &'static str) {
     update(host, |stats| stats.last_alpn = Some(alpn));
 }
 
-fn record(host: &str, used_fallback: bool) {
-    update(host, |stats| {
-        stats.last_rsa_fallback = Some(used_fallback);
-        stats.fallbacks += u32::from(used_fallback);
-    });
-}
-
 /// Connection counters for every host contacted so far, sorted by host.
 pub fn connection_stats() -> Vec<(String, HostStats)> {
     let mut all: Vec<_> = HOSTS
@@ -186,72 +149,31 @@ pub fn connection_stats() -> Vec<(String, HostStats)> {
     all
 }
 
-/// Whether the latest TLS connection to `host` used the RSA fallback.
-///
-/// `None` when no TLS connection to it has completed.
-pub fn rsa_fallback_state(host: &str) -> Option<bool> {
-    HOSTS
-        .lock()
-        .ok()?
-        .as_ref()?
-        .get(&host.to_ascii_lowercase())
-        .and_then(|stats| stats.last_rsa_fallback)
-}
-
 pub(super) async fn open(
     origin: &Origin,
     handle: &Handle,
     config: Arc<ClientConfig>,
-    rsa_fallback: Option<Arc<ClientConfig>>,
 ) -> Result<Transport, Error> {
     if !origin.tls {
         return Ok(Transport::Plain(connect(origin, handle).await?));
     }
-    // ECC-only first, on every new connection. Never skipped from memory.
-    let error = match handshake(origin, handle, config).await? {
+    update(&origin.host, |stats| stats.last_tls_policy_error = None);
+    // One connection and one policy. A refusal is terminal for this request.
+    match handshake(origin, handle, config).await {
         Ok(tls) => {
-            record(&origin.host, false);
-            return Ok(Transport::Tls(tls));
-        }
-        Err(error) => error,
-    };
-    let Some(rsa_fallback) = rsa_fallback.filter(|_| {
-        error
-            .rustls
-            .as_ref()
-            .is_some_and(fallback::wants_rsa_fallback)
-    }) else {
-        return Err(Error::Tls(error.message));
-    };
-    let host = &origin.host;
-    let reason = if error.rustls.as_ref().is_some_and(policy::is_rsa_refusal) {
-        "refused the RSA certificate chain, alert 43 unsupported_certificate sent"
-    } else if matches!(
-        error.rustls,
-        Some(nago_rustls::rustls::Error::AlertReceived(_))
-    ) {
-        "server rejected the ECC-only hello with alert 40 handshake_failure"
-    } else {
-        "server answered the ECC-only hello with a non-handshake record"
-    };
-    update(host, |stats| stats.refusals += 1);
-    info(format_args!("TLS {host}: ECC-only {reason}"));
-    info(format_args!(
-        "TLS {host}: RSA fallback, new connection allowing RSA-PSS CertificateVerify and RSA certificate signatures"
-    ));
-    match handshake(origin, handle, rsa_fallback).await? {
-        Ok(tls) => {
-            record(host, true);
+            update(&origin.host, |stats| stats.handshakes += 1);
             Ok(Transport::Tls(tls))
         }
         Err(error) => {
-            // Logged here as well as returned: a page that drops the error
-            // otherwise leaves the host looking like a stalled connection.
-            info(format_args!(
-                "TLS {host}: RSA fallback failed: {}",
-                error.message
-            ));
-            Err(Error::Tls(format!("RSA fallback: {}", error.message)))
+            if let Error::TlsPolicy(reason) = &error {
+                update(&origin.host, |stats| {
+                    stats.refusals += 1;
+                    stats.last_tls_policy_error = Some(*reason);
+                });
+            }
+            // Resource loads may discard the returned error, so log it here.
+            info(format_args!("TLS {}: {error}", origin.host));
+            Err(error)
         }
     }
 }
@@ -261,11 +183,6 @@ fn info(message: std::fmt::Arguments<'_>) {
     tracing::info!("{message}");
     #[cfg(not(feature = "tracing"))]
     eprintln!("info: {message}");
-}
-
-struct Failed {
-    message: String,
-    rustls: Option<nago_rustls::rustls::Error>,
 }
 
 async fn connect(origin: &Origin, handle: &Handle) -> Result<TcpStream, Error> {
@@ -287,13 +204,12 @@ async fn connect(origin: &Origin, handle: &Handle) -> Result<TcpStream, Error> {
         .map_err(|error| Error::Io(error.to_string()))
 }
 
-/// One TLS connection attempt. The outer error is a transport failure; the
-/// inner one is the handshake failing, with the rustls error kept.
+/// One TLS connection attempt, retaining the reason for any policy refusal.
 async fn handshake(
     origin: &Origin,
     handle: &Handle,
     config: Arc<ClientConfig>,
-) -> Result<Result<Box<TlsSession<TcpStream>>, Failed>, Error> {
+) -> Result<Box<TlsSession<TcpStream>>, Error> {
     let stream = connect(origin, handle).await?;
     let name = ServerName::try_from(origin.host.to_string())
         .map_err(|_| Error::InvalidRequest("invalid TLS server name"))?;
@@ -301,10 +217,7 @@ async fn handshake(
         ClientConnection::new(config, name).map_err(|error| Error::Tls(error.to_string()))?;
     let mut tls = TlsSession::client(stream, session);
     if let Err(errno) = tls.handshake().await {
-        return Ok(Err(Failed {
-            message: handshake_failure(tls.tls_error(), errno),
-            rustls: tls.tls_error().cloned(),
-        }));
+        return Err(handshake_failure(tls.tls_error(), errno));
     }
     if tls
         .alpn_protocol()
@@ -314,28 +227,51 @@ async fn handshake(
             "peer negotiated an unsupported ALPN protocol".to_owned(),
         ));
     }
-    Ok(Ok(Box::new(tls)))
+    Ok(Box::new(tls))
 }
 
-/// Why a handshake failed, in words a page can show.
+/// Preserve the observed reason without probing a second, weaker connection.
 ///
-/// The errno only says the session is over; the rustls error kept by the
-/// session says why.
+/// An alert 40 or 71 does not say whether the server needs RSA, AES, or some
+/// other algorithm. Report the rejected profile without inventing that fact.
 fn handshake_failure(
     error: Option<&nago_rustls::rustls::Error>,
     errno: impl std::fmt::Display,
-) -> String {
-    match error {
-        Some(error) if policy::is_rsa_refusal(error) => {
-            "site requires RSA, blocked by policy (alert 43 unsupported_certificate)".to_owned()
+) -> Error {
+    use nago_rustls::rustls::Error as TlsError;
+    use nago_rustls::rustls::{
+        AlertDescription, CertificateError, PeerIncompatible, PeerMisbehaved,
+    };
+
+    let reason = match error {
+        Some(error) if policy::is_rsa_refusal(error) => TlsPolicyError::RsaCertificateChain,
+        Some(error) if policy::is_key_type_refusal(error) => TlsPolicyError::CertificateKey,
+        Some(TlsError::InvalidCertificate(
+            CertificateError::UnsupportedSignatureAlgorithmContext { .. }
+            | CertificateError::UnsupportedSignatureAlgorithmForPublicKeyContext { .. },
+        )) => TlsPolicyError::CertificateSignature,
+        Some(TlsError::PeerMisbehaved(PeerMisbehaved::SelectedUnofferedCipherSuite)) => {
+            TlsPolicyError::CipherSuite
         }
-        Some(error) if policy::is_key_type_refusal(error) => {
-            "site certificate key is not ECDSA or Ed25519, blocked by policy (alert 43 unsupported_certificate)".to_owned()
+        Some(TlsError::PeerMisbehaved(
+            PeerMisbehaved::SignedHandshakeWithUnadvertisedSigScheme,
+        ))
+        | Some(TlsError::PeerIncompatible(PeerIncompatible::NoSignatureSchemesInCommon)) => {
+            TlsPolicyError::HandshakeSignature
         }
-        Some(error) if policy::ct::is_not_logged(error) => "certificate not publicly logged".to_owned(),
-        Some(error) => format!("handshake: {error}"),
-        None => format!("handshake: {errno}"),
-    }
+        Some(TlsError::AlertReceived(AlertDescription::HandshakeFailure)) => {
+            TlsPolicyError::PeerRejectedAlgorithms { alert: 40 }
+        }
+        Some(TlsError::AlertReceived(AlertDescription::InsufficientSecurity)) => {
+            TlsPolicyError::PeerRejectedAlgorithms { alert: 71 }
+        }
+        Some(error) if policy::ct::is_not_logged(error) => {
+            return Error::Tls("certificate not publicly logged".to_owned());
+        }
+        Some(error) => return Error::Tls(format!("handshake: {error}")),
+        None => return Error::Tls(format!("handshake: {errno}")),
+    };
+    Error::TlsPolicy(reason)
 }
 
 pub(super) enum Transport {

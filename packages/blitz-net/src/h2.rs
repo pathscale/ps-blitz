@@ -2,7 +2,7 @@
 //!
 //! ALPN offers `h2` first. A server that answers `http/1.1` is remembered as
 //! HTTP/1.1-only and its connection is handed to the HTTP/1.1 pool. Every new
-//! connection still goes through refuse-first TLS in `tls::open`.
+//! connection still goes through the strict TLS policy in `tls::open`.
 //!
 //! The `h2` codec is driven through tokio io traits only: no tokio runtime,
 //! reactor or timer. Readiness comes from the nagoya reactor, keepalive from
@@ -264,7 +264,6 @@ impl H2Pool {
         headers: &HeaderMap,
         handle: &Handle,
         config: &Arc<nago_rustls::rustls::ClientConfig>,
-        rsa_fallback: &Option<Arc<nago_rustls::rustls::ClientConfig>>,
     ) -> Result<Route, Error> {
         if !origin.tls || self.lock().h1_only.contains(origin) {
             return Ok(Route::Http1(None));
@@ -275,7 +274,7 @@ impl H2Pool {
             attempts += 1;
             let live = match self.current(origin) {
                 Some(live) => live,
-                None => match self.dial(origin, handle, config, rsa_fallback).await? {
+                None => match self.dial(origin, handle, config).await? {
                     Ok(live) => live,
                     Err(transport) => return Ok(Route::Http1(transport)),
                 },
@@ -315,7 +314,6 @@ impl H2Pool {
         origin: &Origin,
         handle: &Handle,
         config: &Arc<nago_rustls::rustls::ClientConfig>,
-        rsa_fallback: &Option<Arc<nago_rustls::rustls::ClientConfig>>,
     ) -> Result<Result<Arc<Live>, Option<tls::Transport>>, Error> {
         let gate = self
             .lock()
@@ -334,7 +332,7 @@ impl H2Pool {
         if let Some(live) = self.coalesce(origin).await {
             return Ok(Ok(live));
         }
-        let transport = tls::open(origin, handle, config.clone(), rsa_fallback.clone()).await?;
+        let transport = tls::open(origin, handle, config.clone()).await?;
         let session = match transport {
             tls::Transport::Tls(session) if session.alpn_protocol() == Some(b"h2") => session,
             other => {
