@@ -1,0 +1,32 @@
+[
+    (
+        id: "event-listener-error-page-loads",
+        group: "event-listener-error",
+        what: "the fixture builds and paints",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "heading:Event listener error",
+        expect: Present,
+    ),
+    (
+        id: "event-listener-error-reports-and-continues",
+        group: "event-listener-error",
+        what: "a thrown listener does not prevent the next listener from updating the page",
+        open: None,
+        hover: None,
+        click: Some("button:Fire event"),
+        subject: "heading:Second listener ran after exception",
+        expect: Present,
+    ),
+    (
+        id: "event-listener-error-button-paints",
+        group: "event-listener-error",
+        what: "the event target itself paints",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "button:Fire event",
+        expect: PaintsNamed,
+    ),
+]

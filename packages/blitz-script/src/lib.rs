@@ -67,3 +67,4 @@ pub use debug_control::DebugController;
 pub use document::ScriptDocument;
 pub use fetch::{DefaultScriptFetcher, FetchError, ScriptFetcher};
 pub use raster::raster_image_for_attribute;
+pub use runtime::{DiagnosticBatch, DiagnosticEntry, DiagnosticStreamBatch};

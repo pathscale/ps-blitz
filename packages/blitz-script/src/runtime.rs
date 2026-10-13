@@ -35,15 +35,53 @@ const DIAGNOSTIC_CAPACITY: usize = 1_000;
 
 #[derive(Debug, Clone)]
 #[cfg_attr(not(feature = "debug-control"), allow(dead_code))]
-pub(crate) struct DiagnosticEntry {
+pub struct DiagnosticEntry {
     pub sequence: u64,
+    pub order: u64,
     pub level: String,
     pub message: String,
     pub stack: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct DiagnosticStreamBatch {
+    pub entries: Vec<DiagnosticEntry>,
+    pub lost: u64,
+    pub next_sequence: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiagnosticBatch {
+    pub console: DiagnosticStreamBatch,
+    pub errors: DiagnosticStreamBatch,
+}
+
+#[cfg(feature = "debug-control")]
+fn diagnostic_stream(
+    queue: &VecDeque<DiagnosticEntry>,
+    after: u64,
+    limit: usize,
+) -> DiagnosticStreamBatch {
+    let lost = queue.front().map_or(0, |entry| {
+        entry.sequence.saturating_sub(after.saturating_add(1))
+    });
+    let entries: Vec<_> = queue
+        .iter()
+        .filter(|entry| entry.sequence > after)
+        .take(limit.clamp(1, DIAGNOSTIC_CAPACITY))
+        .cloned()
+        .collect();
+    let next_sequence = entries.last().map_or(after, |entry| entry.sequence);
+    DiagnosticStreamBatch {
+        entries,
+        lost,
+        next_sequence,
+    }
+}
+
 #[derive(Debug, Default)]
 struct RuntimeDiagnostics {
+    next_order: u64,
     next_console_sequence: u64,
     next_error_sequence: u64,
     console: VecDeque<DiagnosticEntry>,
@@ -53,10 +91,12 @@ struct RuntimeDiagnostics {
 impl RuntimeDiagnostics {
     fn push_console(&mut self, level: &str, message: String) {
         self.next_console_sequence += 1;
+        self.next_order += 1;
         push_bounded(
             &mut self.console,
             DiagnosticEntry {
                 sequence: self.next_console_sequence,
+                order: self.next_order,
                 level: level.into(),
                 message,
                 stack: String::new(),
@@ -66,10 +106,12 @@ impl RuntimeDiagnostics {
 
     fn push_error(&mut self, what: &str, error: &boa_engine::JsError) {
         self.next_error_sequence += 1;
+        self.next_order += 1;
         push_bounded(
             &mut self.errors,
             DiagnosticEntry {
                 sequence: self.next_error_sequence,
+                order: self.next_order,
                 level: "error".into(),
                 message: format!("Uncaught JS error in {what}: {error}"),
                 stack: format!("{error:?}"),
@@ -1106,6 +1148,20 @@ impl ScriptRuntime {
             .filter(|entry| entry.sequence > sequence)
             .cloned()
             .collect()
+    }
+
+    #[cfg(feature = "debug-control")]
+    pub fn diagnostic_batch(
+        &self,
+        console_after: u64,
+        errors_after: u64,
+        limit: usize,
+    ) -> DiagnosticBatch {
+        let diagnostics = self.diagnostics.borrow();
+        DiagnosticBatch {
+            console: diagnostic_stream(&diagnostics.console, console_after, limit),
+            errors: diagnostic_stream(&diagnostics.errors, errors_after, limit),
+        }
     }
 
     pub(crate) fn eval_internal(&mut self, code: &str, description: &str) {

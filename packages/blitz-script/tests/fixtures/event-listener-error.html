@@ -1,0 +1,18 @@
+<html>
+  <body>
+    <h1>Event listener error</h1>
+    <button id="fire">Fire event</button>
+    <h2 id="result">Waiting</h2>
+
+    <script>
+      const button = document.getElementById("fire");
+      const result = document.getElementById("result");
+      button.addEventListener("click", () => {
+        throw new Error("first listener failure");
+      });
+      button.addEventListener("click", () => {
+        result.textContent = "Second listener ran after exception";
+      });
+    </script>
+  </body>
+</html>

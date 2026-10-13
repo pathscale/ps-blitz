@@ -128,13 +128,15 @@ pub(crate) fn dispatch(
             set_event_path(event, path);
             for listener in listeners {
                 called = true;
-                let _ = super::passive::invoke(
+                if let Err(error) = super::passive::invoke(
                     &listener.callback,
                     &global.clone().into(),
                     event,
                     listener.passive,
                     context,
-                );
+                ) {
+                    crate::runtime::report_handler_error(context, "window event listener", &error);
+                }
                 if immediate(event) {
                     break;
                 }
@@ -226,7 +228,11 @@ fn invoke(
     let mut called = false;
     for (callback, passive) in callbacks {
         called = true;
-        let _ = super::passive::invoke(&callback, &wrapper.clone().into(), event, passive, context);
+        if let Err(error) =
+            super::passive::invoke(&callback, &wrapper.clone().into(), event, passive, context)
+        {
+            crate::runtime::report_handler_error(context, "event listener", &error);
+        }
         if immediate(event) {
             break;
         }

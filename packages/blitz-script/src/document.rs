@@ -421,6 +421,17 @@ impl ScriptDocument {
     }
 
     #[cfg(feature = "debug-control")]
+    pub fn diagnostic_batch(
+        &self,
+        console_after: u64,
+        errors_after: u64,
+        limit: usize,
+    ) -> crate::DiagnosticBatch {
+        self.runtime
+            .diagnostic_batch(console_after, errors_after, limit)
+    }
+
+    #[cfg(feature = "debug-control")]
     pub(crate) fn console_entries_after(
         &self,
         sequence: u64,
