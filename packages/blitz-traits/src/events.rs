@@ -627,9 +627,24 @@ pub enum BlitzWheelDelta {
     Pixels(f64, f64),
 }
 
+/// Gesture phase supplied by a wheel input source.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BlitzWheelPhase {
+    Started,
+    /// Movement, including discrete wheel input with no gesture boundaries.
+    #[default]
+    Moved,
+    Ended,
+    Cancelled,
+    /// Inertial movement, when the input source distinguishes it from contact.
+    Momentum,
+}
+
 #[derive(Clone, Debug)]
 pub struct BlitzWheelEvent {
     pub delta: BlitzWheelDelta,
+    /// Preserved through UI and DOM dispatch, independently of delta units.
+    pub phase: BlitzWheelPhase,
     pub coords: PointerCoords,
     pub buttons: MouseEventButtons,
     pub mods: Modifiers,

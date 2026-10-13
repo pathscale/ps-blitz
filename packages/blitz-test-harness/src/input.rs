@@ -188,6 +188,7 @@ impl<D: Document> Harness<D> {
         self.move_mouse_to(x, y);
         let event = BlitzWheelEvent {
             delta: BlitzWheelDelta::Pixels(delta_x, delta_y),
+            phase: Default::default(),
             coords: coords(x, y),
             buttons: MouseEventButtons::empty(),
             mods: Modifiers::default(),
