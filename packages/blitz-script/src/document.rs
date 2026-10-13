@@ -326,15 +326,7 @@ impl ScriptDocument {
         self.startup_events_pending = true;
 
         crate::docwrite::begin(&mut self.runtime.context);
-        loop {
-            let progressed = self.run_pending_scripts();
-            if !progressed
-                || self.runtime.jobs_remain()
-                || !crate::docwrite::active(&self.runtime.context)
-            {
-                break;
-            }
-        }
+        self.resume_parser_and_scripts();
         self.finish_startup_events();
 
         self.request_redraw();
@@ -473,6 +465,27 @@ impl ScriptDocument {
 
         self.request_redraw();
         self.arm_timer_thread();
+    }
+
+    /// Resume navigation input through completed script checkpoints.
+    ///
+    /// Startup and subsequent polls must use the same continuation loop.
+    /// After a yielded checkpoint completes, keep feeding the retained input
+    /// through each script boundary until EOF or another checkpoint yields.
+    fn resume_parser_and_scripts(&mut self) -> bool {
+        let _slice = self.runtime.begin_job_slice();
+        let mut ran = false;
+        loop {
+            let progressed = self.run_pending_scripts();
+            ran |= progressed;
+            if !progressed
+                || self.runtime.jobs_remain()
+                || !crate::docwrite::active(&self.runtime.context)
+            {
+                break;
+            }
+        }
+        ran
     }
 
     /// Run every `<script>` that has appeared since the last pass.
@@ -949,10 +962,11 @@ impl ScriptDocument {
             }
             ran = true;
         } else {
-            // Steady state: pick up any script the page appended since the last
-            // turn. Cheap when there are none, and it is the only path by which
-            // a runtime-injected bundle ever runs.
-            ran |= self.run_pending_scripts();
+            // Resume navigation after a yielded checkpoint using the same
+            // continuation loop as startup. A completed script boundary must
+            // not leave the remaining input waiting for another host poll.
+            // After EOF, this still picks up scripts appended by the page.
+            ran |= self.resume_parser_and_scripts();
         }
         ran |= self.finish_startup_events();
 
