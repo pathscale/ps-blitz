@@ -1,7 +1,11 @@
 # Runtime-free network proposal
 
-This patch is reviewed source preparation, not enabled runtime or accepted networking behavior.
-Its target is this repository and this pull request; keeping it here does not change the compiled network provider.
+This is a historical HTTP/1.1-only proposal against the source base below.
+Do not apply it to current master: `packages/blitz-net/src/tls.rs` and
+`h2.rs` contain the active strict TLS policy and HTTP/2 transport. The archived
+patch's TLS recipe now uses the base ps-rustcrypto provider so it cannot
+reintroduce a process-default RSA/AES provider. Keeping the proposal here does
+not change the compiled network provider.
 
 Source base: `5fd4633ccc4d53351b50ca5685761b5c436d4001`.
 Source head: `de471e45650681509aea8fd871019981c7ce9be3`.

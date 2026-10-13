@@ -1,0 +1,25 @@
+# RSA and AES are forbidden across the complete workspace dependency graph.
+# No target or package exclusions: GUI consumers obey the same crypto policy.
+[graph]
+exclude-dev = false
+all-features = true
+
+[bans]
+deny = [
+    { crate = "rsa", reason = "RSA is forbidden" },
+    { crate = "aes", reason = "AES is forbidden" },
+    { crate = "aes-gcm", reason = "AES-GCM is forbidden" },
+    { crate = "aes-gcm-siv", reason = "AES-GCM-SIV is forbidden" },
+    { crate = "aes-siv", reason = "AES-SIV is forbidden" },
+    { crate = "aes-soft", reason = "AES is forbidden" },
+    { crate = "aesni", reason = "AES is forbidden" },
+    { crate = "legacy-bullshit", reason = "contains RSA verification and imports AES for QUIC" },
+    { crate = "ring", reason = "bundles RSA and AES implementations" },
+    { crate = "aws-lc-rs", reason = "bundles RSA and AES implementations" },
+    { crate = "aws-lc-sys", reason = "bundles RSA and AES implementations" },
+    { crate = "aws-lc-fips-sys", reason = "bundles RSA and AES implementations" },
+    { crate = "openssl", reason = "allows RSA and AES outside the house provider" },
+    { crate = "openssl-sys", reason = "links implementations of RSA and AES" },
+    { crate = "openssl-src", reason = "bundles implementations of RSA and AES" },
+    { crate = "native-tls", reason = "allows RSA and AES outside the house provider" },
+]

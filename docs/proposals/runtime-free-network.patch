@@ -116,7 +116,7 @@ index 27511c1d..1d5a5df7 100644
  tracing = ["dep:tracing"]
  
  [dependencies]
-@@ -53,38 +38,26 @@ tracing = ["dep:tracing"]
+@@ -53,38 +38,28 @@ tracing = ["dep:tracing"]
  blitz-traits = { workspace = true }
  
  # Networking dependencies
@@ -160,8 +160,10 @@ index 27511c1d..1d5a5df7 100644
 +[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 +nagoya = { version = "^0.1.13", features = ["reactor"] }
 +nago-rustls = { version = "^0.1.1", default-features = false }
-+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "std", "tls12"] }
-+rustls-platform-verifier = "^0.6.2"
++rustls = { version = "^0.23.40", default-features = false, features = ["std", "tls12"] }
++ps-rustcrypto = { version = "^0.4", path = "../../../ps-rustls-rustcrypto", default-features = false, features = ["std", "tls12", "zeroize"] }
++rustls-native-certs = "^0.8.4"
++webpki-roots = "^1"
 +# Required for durable metadata, house body identifiers and RFC HTTP dates.
 +worktable = { version = "^1.10.0-beta2", default-features = false, features = ["std", "wti-std-search"], optional = true }
 +psc-nanoid = { version = "^3.2", optional = true }
@@ -1167,10 +1169,10 @@ index 00000000..d17a51da
 +}
 +
 +impl H1Client {
-+    /// Use platform certificate verification and the process crypto provider.
++    /// Native certificate roots under the ECDSA/Ed25519 and ChaCha20 policy.
 +    ///
-+    /// If no provider is installed, TLS configuration installs aws-lc-rs.
-+    /// An embedder's already installed provider is retained.
++    /// The provider is explicit and independent of any process default.
++    /// Public-root certificate chains must also satisfy CT.
 +    pub fn new(
 +        user_agent: &str,
 +        cookies: Option<Arc<dyn CookieJar>>,
@@ -3249,7 +3251,7 @@ new file mode 100644
 index 00000000..b245e03c
 --- /dev/null
 +++ b/packages/blitz-net/src/tls.rs
-@@ -0,0 +1,130 @@
+@@ -0,0 +1,152 @@
 +//! Platform trust and nagoya socket transport.
 +//!
 +//! DNS always runs on a nagoya worker, including when the fetch future is
@@ -3259,11 +3261,11 @@ index 00000000..b245e03c
 +use bytes::BytesMut;
 +use nago_rustls::{
 +    TlsSession,
-+    rustls::{self, ClientConfig, ClientConnection, crypto::CryptoProvider},
++    rustls::{ClientConfig, ClientConnection, RootCertStore},
 +    rustls_pki_types::ServerName,
 +};
 +use nagoya::{net::TcpStream, reactor::Handle};
-+use rustls_platform_verifier::BuilderVerifierExt;
++use ps_rustcrypto::policy::ct::CtVerifier;
 +use std::sync::{Arc, OnceLock};
 +
 +const READ_CHUNK: usize = 16 * 1024;
@@ -3277,19 +3279,41 @@ index 00000000..b245e03c
 +}
 +
 +fn build_config() -> Result<Arc<ClientConfig>, String> {
-+    if CryptoProvider::get_default().is_none() {
-+        // A racing embedder may install its provider first. Never replace it,
-+        // and never ask rustls to infer one from the unified crate features.
-+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
++    let native = rustls_native_certs::load_native_certs();
++    let mut roots = RootCertStore::empty();
++    let (accepted, rejected) = roots.add_parsable_certificates(native.certs);
++    if accepted == 0 {
++        return Err(format!(
++            "no usable native TLS trust anchors: {} loading errors, {rejected} rejected certificates",
++            native.errors.len(),
++        ));
 +    }
-+    let provider = CryptoProvider::get_default()
++    let mut public = RootCertStore::empty();
++    public.roots = roots
++        .roots
++        .iter()
++        .filter(|root| {
++            webpki_roots::TLS_SERVER_ROOTS.iter().any(|built_in| {
++                root.subject.as_ref() == built_in.subject.as_ref()
++                    && root.subject_public_key_info.as_ref()
++                        == built_in.subject_public_key_info.as_ref()
++            })
++        })
 +        .cloned()
-+        .ok_or_else(|| "no process crypto provider".to_owned())?;
-+    let mut config = ClientConfig::builder_with_provider(provider)
++        .collect();
++    let mut provider = ps_rustcrypto::provider();
++    provider.cipher_suites = vec![
++        ps_rustcrypto::TLS13_CHACHA20_POLY1305_SHA256,
++        ps_rustcrypto::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
++    ];
++    let mut config = ClientConfig::builder_with_provider(Arc::new(provider))
 +        .with_safe_default_protocol_versions()
 +        .map_err(|error| error.to_string())?
-+        .with_platform_verifier()
-+        .map_err(|error| error.to_string())?
++        .dangerous()
++        .with_custom_certificate_verifier(
++            CtVerifier::ecc_only(roots, public)
++                .map_err(|error| format!("TLS trust store: {error}"))?,
++        )
 +        .with_no_client_auth();
 +    config.alpn_protocols = vec![b"http/1.1".to_vec()];
 +    Ok(Arc::new(config))

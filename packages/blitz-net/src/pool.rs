@@ -1,9 +1,8 @@
 //! Connection ownership: one kept-alive connection per HTTP origin.
 //!
-//! One slot, not six. Every new TLS connection is refuse-first (ECC-only, then
-//! possibly an RSA fallback), so parallel connections multiplied handshakes:
-//! amazon.com opened 12 to one image host in 30 s. Requests to an origin now
-//! queue for its single connection until the multiplexed transports land.
+//! One slot, not six. HTTP/1.1 requests to an origin queue for its single
+//! kept-alive connection. Every TLS connection uses the strict policy in
+//! `tls::open`; HTTP/2 multiplexing belongs to the separate HTTP/2 pool.
 
 use super::{Connection, Error};
 use blitz_traits::net::Url;
