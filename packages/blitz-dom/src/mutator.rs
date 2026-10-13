@@ -2197,6 +2197,8 @@ impl<'doc> DocumentMutator<'doc> {
             let value = value.to_string();
             let id = self.create_text_node(&value);
             self.append_children(target_id, &[id]);
+            // Needed only when the file-input arm below is compiled in.
+            #[cfg_attr(not(feature = "file-input"), allow(clippy::needless_return))]
             return;
         }
         #[cfg(feature = "file-input")]
