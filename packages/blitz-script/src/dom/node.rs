@@ -937,7 +937,7 @@ pub(crate) fn add_event_listener(
         return Ok(JsValue::undefined());
     }
 
-    // Parse options (bool `capture` or `{ capture, once }`)
+    // Parse options (bool `capture` or `{ capture, once, passive }`)
     let mut capture = false;
     let mut once = false;
     match args.get(2) {
@@ -954,6 +954,7 @@ pub(crate) fn add_event_listener(
         None => {}
     }
 
+    let passive = super::passive::resolve(this, args, &event_type, context)?;
     let mut state = ctx.state.borrow_mut();
     let listeners = state
         .node_listeners
@@ -974,6 +975,7 @@ pub(crate) fn add_event_listener(
             callback: callback.downgrade(),
             capture,
             once,
+            passive,
         });
     }
     drop(state);
@@ -1084,11 +1086,12 @@ pub(crate) fn dispatch_event(
                 .get_mut(&node_id)
                 .and_then(|listeners| listeners.get_mut(&event_type))
             {
-                callbacks.extend(
-                    listeners
-                        .iter()
-                        .filter_map(|listener| listener.callback.upgrade()),
-                );
+                callbacks.extend(listeners.iter().filter_map(|listener| {
+                    listener
+                        .callback
+                        .upgrade()
+                        .map(|callback| (callback, listener.passive))
+                }));
                 listeners.retain(|listener| !listener.once);
             }
         }
@@ -1096,8 +1099,8 @@ pub(crate) fn dispatch_event(
 
         let current_target: JsValue = node_wrapper(&ctx, node_id, context).into();
         define_value(&event, "currentTarget", current_target.clone(), context);
-        for callback in callbacks {
-            callback.call(&current_target, &[event.clone().into()], context)?;
+        for (callback, passive) in callbacks {
+            super::passive::invoke(&callback, &current_target, &event, passive, context)?;
             if event
                 .downcast_ref::<EventRef>()
                 .is_some_and(|event| event.stopped_immediate.get())

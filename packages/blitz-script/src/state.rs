@@ -29,6 +29,7 @@ pub(crate) struct DomProtos {
 pub(crate) struct Listener {
     pub callback: JsObject,
     pub once: bool,
+    pub passive: bool,
 }
 
 pub(crate) type ListenerMap = HashMap<String, Vec<Listener>>;
@@ -41,6 +42,7 @@ pub(crate) struct NodeListener {
     pub callback: WeakJsObject,
     pub capture: bool,
     pub once: bool,
+    pub passive: bool,
 }
 
 pub(crate) type NodeListenerMap = HashMap<String, Vec<NodeListener>>;

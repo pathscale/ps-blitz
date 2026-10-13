@@ -32,6 +32,8 @@ struct Listener {
     #[unsafe_ignore_trace]
     once: bool,
     #[unsafe_ignore_trace]
+    passive: bool,
+    #[unsafe_ignore_trace]
     id: u64,
 }
 
@@ -67,9 +69,12 @@ pub(super) fn construct(
     .into())
 }
 
-fn options(args: &[JsValue], context: &mut Context) -> JsResult<(bool, bool, Option<JsObject>)> {
+fn options(
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<(bool, bool, bool, Option<JsObject>)> {
     let Some(options) = args.get(2) else {
-        return Ok((false, false, None));
+        return Ok((false, false, false, None));
     };
     if let Some(object) = options.as_object() {
         Ok((
@@ -79,12 +84,13 @@ fn options(args: &[JsValue], context: &mut Context) -> JsResult<(bool, bool, Opt
             object
                 .get(boa_engine::js_string!("once"), context)?
                 .to_boolean(),
+            super::passive::option(args, context)?.unwrap_or(false),
             object
                 .get(boa_engine::js_string!("signal"), context)?
                 .as_object(),
         ))
     } else {
-        Ok((options.to_boolean(), false, None))
+        Ok((options.to_boolean(), false, false, None))
     }
 }
 
@@ -206,7 +212,7 @@ fn add(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsVa
     let Some(callback) = args.get(1).and_then(JsValue::as_object) else {
         return Ok(JsValue::undefined());
     };
-    let (capture, once, signal) = options(args, context)?;
+    let (capture, once, passive, signal) = options(args, context)?;
     if let Some(signal) = &signal
         && signal
             .get(boa_engine::js_string!("aborted"), context)?
@@ -228,6 +234,7 @@ fn add(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsVa
             kind,
             capture,
             once,
+            passive,
             id,
         });
     }
@@ -246,7 +253,15 @@ fn remove(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<J
     let Some(callback) = args.get(1).and_then(JsValue::as_object) else {
         return Ok(JsValue::undefined());
     };
-    let (capture, _, _) = options(args, context)?;
+    let capture = match args.get(2) {
+        Some(options) if options.is_object() => options
+            .as_object()
+            .expect("listener options object")
+            .get(boa_engine::js_string!("capture"), context)?
+            .to_boolean(),
+        Some(options) => options.to_boolean(),
+        None => false,
+    };
     target.listeners.borrow_mut().retain(|listener| {
         listener.kind.as_ref() != kind
             || listener.capture != capture
@@ -334,28 +349,8 @@ fn dispatch(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult
                 .borrow_mut()
                 .retain(|entry| entry.id != listener.id);
         }
-        let result = if listener.callback.is_callable() {
-            listener
-                .callback
-                .call(this, &[event.clone().into()], context)
-        } else {
-            let method = listener
-                .callback
-                .get(boa_engine::js_string!("handleEvent"), context);
-            method.and_then(|method| {
-                let method = method
-                    .as_object()
-                    .filter(|method| method.is_callable())
-                    .ok_or_else(|| {
-                        JsNativeError::typ().with_message("handleEvent is not callable")
-                    })?;
-                method.call(
-                    &listener.callback.clone().into(),
-                    &[event.clone().into()],
-                    context,
-                )
-            })
-        };
+        let result =
+            super::passive::invoke(&listener.callback, this, &event, listener.passive, context);
         if let Err(error) = result {
             eprintln!("EventTarget listener: {error}");
         }

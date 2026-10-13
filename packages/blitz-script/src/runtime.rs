@@ -1622,7 +1622,7 @@ impl ScriptRuntime {
         'chain: for &node_id in chain {
             // Gather listeners for this node: `addEventListener` listeners plus
             // an `on<event>` property handler (if any)
-            let mut callbacks: Vec<JsObject> = Vec::new();
+            let mut callbacks: Vec<(JsObject, bool)> = Vec::new();
             {
                 let mut state = ctx.state.borrow_mut();
                 if let Some(listeners) = state
@@ -1630,11 +1630,12 @@ impl ScriptRuntime {
                     .get_mut(&node_id)
                     .and_then(|map| map.get_mut(name))
                 {
-                    callbacks.extend(
-                        listeners
-                            .iter()
-                            .filter_map(|listener| listener.callback.upgrade()),
-                    );
+                    callbacks.extend(listeners.iter().filter_map(|listener| {
+                        listener
+                            .callback
+                            .upgrade()
+                            .map(|callback| (callback, listener.passive))
+                    }));
                     // `once` listeners are removed at dispatch time
                     listeners.retain(|l| !l.once);
                 }
@@ -1646,11 +1647,15 @@ impl ScriptRuntime {
             crate::dom::define_value(&event_obj, "eventPhase", JsValue::from(phase), context);
             crate::dom::define_value(&event_obj, "currentTarget", current_target.clone(), context);
 
-            for callback in callbacks {
+            for (callback, passive) in callbacks {
                 any_called = true;
-                if let Err(error) =
-                    callback.call(&current_target, &[event_obj.clone().into()], context)
-                {
+                if let Err(error) = crate::dom::passive::invoke(
+                    &callback,
+                    &current_target,
+                    &event_obj,
+                    passive,
+                    context,
+                ) {
                     let what = listener_error_context(
                         name,
                         &format!("node {node_id}"),
@@ -1694,11 +1699,13 @@ impl ScriptRuntime {
             crate::dom::define_value(&event_obj, "currentTarget", global.clone(), context);
             for listener in listeners {
                 any_called = true;
-                if let Err(error) =
-                    listener
-                        .callback
-                        .call(&global, &[event_obj.clone().into()], context)
-                {
+                if let Err(error) = crate::dom::passive::invoke(
+                    &listener.callback,
+                    &global,
+                    &event_obj,
+                    listener.passive,
+                    context,
+                ) {
                     let what = listener_error_context(name, "window", &listener.callback, context);
                     report_js_error(&self.diagnostics, &what, &error);
                 }
@@ -1790,11 +1797,13 @@ impl ScriptRuntime {
         let mut any_called = false;
         for listener in listeners {
             any_called = true;
-            if let Err(error) =
-                listener
-                    .callback
-                    .call(&global, &[event_obj.clone().into()], context)
-            {
+            if let Err(error) = crate::dom::passive::invoke(
+                &listener.callback,
+                &global,
+                &event_obj,
+                listener.passive,
+                context,
+            ) {
                 let what = listener_error_context(name, "window", &listener.callback, context);
                 report_js_error(&self.diagnostics, &what, &error);
             }
@@ -2357,9 +2366,13 @@ fn dispatch_window_supplied_event(
         }
     };
     for listener in listeners {
-        listener
-            .callback
-            .call(&global, &[event.clone().into()], context)?;
+        crate::dom::passive::invoke(
+            &listener.callback,
+            &global,
+            &event,
+            listener.passive,
+            context,
+        )?;
         if event
             .downcast_ref::<EventRef>()
             .is_some_and(|event| event.stopped_immediate.get())
@@ -2400,6 +2413,8 @@ pub(crate) fn window_add_event_listener(
         return Ok(JsValue::undefined());
     };
 
+    let window: JsValue = context.global_object().into();
+    let passive = crate::dom::passive::resolve(&window, args, &event_type, context)?;
     let mut state = ctx.state.borrow_mut();
     let listeners = state.window_listeners.entry(event_type).or_default();
     if !listeners
@@ -2409,6 +2424,7 @@ pub(crate) fn window_add_event_listener(
         listeners.push(Listener {
             callback,
             once: false,
+            passive,
         });
     }
     Ok(JsValue::undefined())

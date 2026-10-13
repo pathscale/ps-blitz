@@ -20,6 +20,7 @@ pub(crate) mod inline_handlers;
 pub(crate) mod interfaces;
 pub(crate) mod node;
 mod parsing;
+pub(crate) mod passive;
 pub(crate) mod range;
 #[cfg(feature = "shadow-dom")]
 pub(crate) mod shadow;

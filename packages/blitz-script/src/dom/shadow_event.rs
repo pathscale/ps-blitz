@@ -128,9 +128,11 @@ pub(crate) fn dispatch(
             set_event_path(event, path);
             for listener in listeners {
                 called = true;
-                let _ = listener.callback.call(
+                let _ = super::passive::invoke(
+                    &listener.callback,
                     &global.clone().into(),
-                    &[event.clone().into()],
+                    event,
+                    listener.passive,
                     context,
                 );
                 if immediate(event) {
@@ -187,7 +189,7 @@ fn invoke(
                 .filter(|listener| listener.capture == capture)
             {
                 if let Some(callback) = listener.callback.upgrade() {
-                    callbacks.push(callback);
+                    callbacks.push((callback, listener.passive));
                 }
             }
             listeners.retain(|listener| !(listener.capture == capture && listener.once));
@@ -222,9 +224,9 @@ fn invoke(
     }
     set_event_path(event, path);
     let mut called = false;
-    for callback in callbacks {
+    for (callback, passive) in callbacks {
         called = true;
-        let _ = callback.call(&wrapper.clone().into(), &[event.clone().into()], context);
+        let _ = super::passive::invoke(&callback, &wrapper.clone().into(), event, passive, context);
         if immediate(event) {
             break;
         }

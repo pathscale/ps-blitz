@@ -30,6 +30,8 @@ pub(crate) struct EventRef {
     #[unsafe_ignore_trace]
     pub prevented: Cell<bool>,
     #[unsafe_ignore_trace]
+    pub in_passive_listener: Cell<bool>,
+    #[unsafe_ignore_trace]
     pub stopped: Cell<bool>,
     #[unsafe_ignore_trace]
     pub stopped_immediate: Cell<bool>,
@@ -137,6 +139,7 @@ impl Drop for DispatchGuard {
     fn drop(&mut self) {
         if let Some(event) = self.event.downcast_ref::<EventRef>() {
             event.dispatching.set(false);
+            event.in_passive_listener.set(false);
             event.stopped.set(false);
             event.stopped_immediate.set(false);
             event.path.borrow_mut().clear();
@@ -180,7 +183,7 @@ fn composed_path(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResu
 
 fn prevent_default(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
     event_ref(this, |event| {
-        if event.get("cancelable").to_boolean() {
+        if event.get("cancelable").to_boolean() && !event.in_passive_listener.get() {
             event.prevented.set(true);
         }
     })?;
