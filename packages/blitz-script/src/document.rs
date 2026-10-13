@@ -153,8 +153,9 @@ impl ScriptDocument {
 
     /// Set the microtask budget shared by all drains in one poll.
     ///
-    /// Defaults to 16 milliseconds. Individual jobs run to completion and
-    /// cannot be preempted. Panics if `duration` is zero.
+    /// Defaults to 16 milliseconds. Unstarted jobs remain queued. Individual
+    /// jobs run to completion unless the context's hard execution limit
+    /// interrupts them. Panics if `duration` is zero.
     pub fn set_job_budget(&mut self, duration: Duration) {
         self.runtime.set_job_budget(duration);
     }
@@ -164,7 +165,7 @@ impl ScriptDocument {
         self.runtime.job_budget()
     }
 
-    /// Whether immediate Boa jobs remain for a later host tick.
+    /// Whether immediate Boa jobs or observer records remain for a later host tick.
     ///
     /// Future timers and suspended module evaluations alone do not count.
     pub fn has_pending_jobs(&self) -> bool {
@@ -270,6 +271,13 @@ impl ScriptDocument {
         self.runtime.next_timer_deadline()
     }
 
+    /// Retain the context's hard execution deadline across a host operation.
+    ///
+    /// Input, polling and evaluation enter scopes automatically. An embedder
+    /// can retain an outer scope across several input events in one action.
+    pub fn enter_execution_time_limit(&self) -> boa_engine::vm::ExecutionScope {
+        self.runtime.context.enter_execution_time_limit()
+    }
     /// Override the [`ScriptFetcher`] used to load external (`src="..."`) scripts.
     /// The default fetcher supports `file:` and `data:` URLs.
     pub fn with_fetcher(self, fetcher: impl ScriptFetcher) -> Self {
@@ -317,6 +325,7 @@ impl ScriptDocument {
     ///
     /// Does nothing if scripts have already been executed.
     pub fn execute_scripts(&mut self) {
+        let _execution = self.enter_execution_time_limit();
         let _profiling = self.runtime.ctx.enter_profiling_boundary();
         let _slice = self.runtime.begin_job_slice();
         if self.scripts_executed {
@@ -378,11 +387,13 @@ impl ScriptDocument {
         &mut self,
         callback: impl FnOnce(&mut boa_engine::Context) -> R,
     ) -> R {
+        let _execution = self.enter_execution_time_limit();
         callback(&mut self.runtime.context)
     }
 
     /// Evaluate arbitrary JavaScript code in the document's script context
     pub fn eval(&mut self, code: &str) {
+        let _execution = self.enter_execution_time_limit();
         let _profiling = self.runtime.ctx.enter_profiling_boundary();
         self.runtime.eval(code, "<eval>");
         self.request_redraw();
@@ -392,6 +403,7 @@ impl ScriptDocument {
     /// Evaluate an embedder prelude under a name, which becomes its source path
     /// in stack traces and profiles (for example `<chuzz-webgpu>`).
     pub fn eval_named(&mut self, code: &str, name: &str) {
+        let _execution = self.enter_execution_time_limit();
         let _profiling = self.runtime.ctx.enter_profiling_boundary();
         self.runtime.eval_internal(code, name);
         self.runtime.run_jobs(name);
@@ -405,6 +417,7 @@ impl ScriptDocument {
     /// `eval_script_with_callback`. JavaScript exceptions are recorded in the runtime diagnostics
     /// and returned as an error.
     pub fn eval_json(&mut self, code: &str) -> Result<serde_json::Value, String> {
+        let _execution = self.enter_execution_time_limit();
         let _profiling = self.runtime.ctx.enter_profiling_boundary();
         let result = self.runtime.eval_json(code, "<eval with result>");
         self.request_redraw();
@@ -454,6 +467,7 @@ impl ScriptDocument {
     /// through the document's event driver. The event is exposed to JavaScript
     /// event listeners, and Blitz's default actions run unless prevented.
     pub fn dispatch_dom_event(&mut self, event: DomEvent) {
+        let _execution = self.enter_execution_time_limit();
         let profiling_boundary = self.runtime.ctx.enter_profiling_boundary();
         let profiling = profiling_boundary.enabled();
         let handler = ScriptEventHandler {
@@ -502,7 +516,7 @@ impl ScriptDocument {
     /// would still leave the page blank.
     fn run_pending_scripts(&mut self) -> bool {
         let _slice = self.runtime.begin_job_slice();
-        if self.runtime.jobs_remain() {
+        if self.runtime.jobs_remain() || self.runtime.job_slice_exhausted() {
             return false;
         }
         if crate::docwrite::take_restart(&self.runtime.context) {
@@ -553,6 +567,9 @@ impl ScriptDocument {
             pending.into_iter().partition(|script| script.deferred);
 
         for script in immediate.into_iter().chain(deferred) {
+            if self.runtime.job_slice_exhausted() {
+                break;
+            }
             if generation != crate::docwrite::generation(&self.runtime.context) {
                 break;
             }
@@ -638,6 +655,7 @@ impl ScriptDocument {
         if !(self.startup_events_pending || self.load_event_pending)
             || self.runtime.jobs_remain()
             || crate::docwrite::active(&self.runtime.context)
+            || self.runtime.job_slice_exhausted()
         {
             return false;
         }
@@ -667,6 +685,7 @@ impl ScriptDocument {
             doc.has_pending_critical_resources() || doc.pending_image_count() != 0
         };
         if self.load_event_pending
+            && !self.runtime.job_slice_exhausted()
             && !self.runtime.jobs_remain()
             && !resources_pending
             && !self.runtime.has_pending_module_evaluations()
@@ -833,6 +852,7 @@ impl Document for ScriptDocument {
     }
 
     fn handle_ui_event(&mut self, event: UiEvent) {
+        let _execution = self.enter_execution_time_limit();
         let profiling_boundary = self.runtime.ctx.enter_profiling_boundary();
         let profiling = profiling_boundary.enabled();
         let handler = ScriptEventHandler {
@@ -863,6 +883,7 @@ impl ScriptDocument {
         task_context: Option<TaskContext>,
         settle_timers: Option<bool>,
     ) -> bool {
+        let _execution = self.enter_execution_time_limit();
         let profiling_boundary = self.runtime.ctx.enter_profiling_boundary();
         let profiling = profiling_boundary.enabled();
         let poll_started = profiling.then(std::time::Instant::now);
@@ -881,6 +902,7 @@ impl ScriptDocument {
     /// node by id, so routing those coordinates through hit testing again can
     /// silently select an overlapping descendant or retained overlay.
     pub fn handle_pointer_move_to_node(&mut self, event: BlitzPointerEvent, node_id: NodeId) {
+        let _execution = self.enter_execution_time_limit();
         let profiling_boundary = self.runtime.ctx.enter_profiling_boundary();
         let profiling = profiling_boundary.enabled();
         let handler = ScriptEventHandler {
@@ -898,6 +920,7 @@ impl ScriptDocument {
     /// by the caller, while retaining the normal pointer event ordering,
     /// compatibility mouse events, activation state and click synthesis.
     pub fn handle_ui_event_to_node(&mut self, event: UiEvent, node_id: NodeId) {
+        let _execution = self.enter_execution_time_limit();
         let profiling_boundary = self.runtime.ctx.enter_profiling_boundary();
         let profiling = profiling_boundary.enabled();
         let handler = ScriptEventHandler {

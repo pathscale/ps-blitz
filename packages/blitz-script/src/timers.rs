@@ -141,20 +141,30 @@ impl TimerQueue {
             .count()
     }
 
-    /// Remove and return all timers that are due at `now`, soonest first.
+    /// Remove one due ordinary timer or a snapshot of ready frame callbacks.
     /// Interval timers are rescheduled.
     ///
     /// Frame callback ids stay live until invocation so an earlier callback
     /// can cancel a later callback from this snapshot.
     pub fn take_due(&mut self, now: Instant) -> Vec<Timer> {
+        self.discard_dead_front();
         let mut due: Vec<Timer> = Vec::new();
+        let frames = self
+            .timers
+            .peek()
+            .is_some_and(|timer| timer.animation_frame);
+        let mut postponed = Vec::new();
 
         while let Some(timer) = self.timers.peek() {
-            if timer.deadline > now {
+            if timer.deadline > now || (!frames && !due.is_empty()) {
                 break;
             }
             let timer = self.timers.pop().expect("peeked");
             if !self.live.contains(&timer.id) {
+                continue;
+            }
+            if frames && !timer.animation_frame {
+                postponed.push(timer);
                 continue;
             }
             match timer.interval {
@@ -177,6 +187,7 @@ impl TimerQueue {
             due.push(timer);
         }
 
+        self.timers.extend(postponed);
         self.discard_dead_front();
         due
     }

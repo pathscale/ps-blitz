@@ -5249,6 +5249,12 @@ impl BaseDocument {
     pub fn is_recording_mutations(&self) -> bool {
         self.mutation_log.is_some()
     }
+    /// Whether observer delivery still has recorded changes to consume.
+    pub fn has_pending_mutations(&self) -> bool {
+        self.mutation_log
+            .as_ref()
+            .is_some_and(|records| !records.is_empty())
+    }
 
     /// Take every change recorded since the last call, oldest first.
     pub fn take_mutations(&mut self) -> Vec<crate::DomMutation> {

@@ -1252,8 +1252,13 @@ impl ScriptRuntime {
         due + u64::from(self.jobs_remain())
     }
 
+    pub(crate) fn job_slice_exhausted(&self) -> bool {
+        self.job_budget.exhausted()
+    }
+
     pub(crate) fn jobs_remain(&self) -> bool {
         self.job_executor.has_pending_jobs(&self.context)
+            || self.ctx.doc.borrow().has_pending_mutations()
     }
 
     /// Run pending promise jobs (microtasks) within the current slice.
@@ -1263,10 +1268,10 @@ impl ScriptRuntime {
 
     /// Run a slice and report jobs executed, queued work, or mutation delivery.
     ///
-    /// Every drain in a poll shares one deadline. Observer delivery still
-    /// happens at the slice end, including when promise jobs remain queued.
-    /// Observer callbacks can enqueue more jobs and mutations; those jobs use
-    /// the remaining budget and records retain the existing delivery cap.
+    /// Every drain in a poll shares one deadline. Observer delivery uses the
+    /// remaining budget. When it expires, unconsumed records remain in the
+    /// document for the next poll, alongside queued promise jobs.
+    /// Observer callbacks retain the existing delivery cap.
     pub(crate) fn run_jobs_with_progress(&mut self, description: &str) -> bool {
         let _slice = self.begin_job_slice();
         let before = self.job_executor.executed_job_count();
@@ -1294,9 +1299,6 @@ impl ScriptRuntime {
                     || self.job_executor.executed_job_count() != before;
             }
             delivered = true;
-            if self.job_budget.exhausted() {
-                break;
-            }
         }
         delivered || self.jobs_remain() || self.job_executor.executed_job_count() != before
     }
@@ -1359,8 +1361,15 @@ impl ScriptRuntime {
         crate::dom::sweep_detached_nodes(&self.ctx);
     }
 
-    /// Run all timers that are currently due. Returns `true` if any JavaScript was run.
+    /// Run one due timer and its budgeted microtask checkpoint.
+    ///
+    /// Unstarted timers remain cancellable and the host regains control before
+    /// another callback starts. A yielded checkpoint finishes on later polls
+    /// before the next timer is allowed to run.
     pub fn run_due_timers(&mut self, profiling: bool) -> bool {
+        if self.job_budget.exhausted() || self.jobs_remain() {
+            return false;
+        }
         let timers_started = profiling.then(std::time::Instant::now);
         let due = self.ctx.state.borrow_mut().timers.take_due(Instant::now());
         if due.is_empty() {
