@@ -905,7 +905,7 @@ impl Document for ScriptDocument {
         if self.inner.borrow().page_frozen { return; }
         self.runtime.context.set_execution_time_limit(Some(std::time::Duration::from_millis(50)));
         let _execution = self.enter_execution_time_limit();
-        self.runtime.dispatch_document_event("freeze");
+        self.runtime.dispatch_lifecycle_event("freeze");
         self.runtime.run_jobs_with_progress("freeze microtasks");
         self.inner.borrow_mut().page_frozen = true;
         self.timer_wake.take();
@@ -916,7 +916,7 @@ impl Document for ScriptDocument {
     fn resume(&mut self) {
         if !self.inner.borrow().page_frozen || self.inner.borrow().page_retiring { return; }
         self.inner.borrow_mut().page_frozen = false;
-        self.runtime.dispatch_document_event("resume");
+        self.runtime.dispatch_lifecycle_event("resume");
         self.arm_timer_wake();
         self.request_redraw();
     }

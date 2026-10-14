@@ -500,7 +500,13 @@ impl<Rend: WindowRenderer> View<Rend> {
     pub fn poll(&mut self) -> bool {
         if let Some(waker) = &self.waker {
             let cx = std::task::Context::from_waker(waker);
-            if self.doc.poll(Some(cx)) {
+            let changed = self.doc.poll(Some(cx));
+            #[cfg(feature = "custom-widget")]
+            for retirement in self.doc.inner_mut().take_retired_resources() {
+                for id in &retirement.resources { self.renderer.unregister_resource(*id); }
+                drop(retirement);
+            }
+            if changed {
                 #[cfg(feature = "accessibility")]
                 {
                     let inner = self.doc.inner();
