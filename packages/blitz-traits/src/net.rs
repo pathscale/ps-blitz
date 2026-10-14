@@ -32,6 +32,11 @@ pub trait NetProvider: Send + Sync + 'static {
         None
     }
 
+    /// The native principal held by a document-bound provider.
+    fn resource_initiator(&self) -> Initiator {
+        Initiator::Unknown
+    }
+
     /// Whether this provider is a no-op (e.g. `DummyNetProvider`) that will never
     /// deliver resources. When true, callers must NOT register resources as
     /// "pending critical" — doing so blocks painting forever, since the
