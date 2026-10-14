@@ -326,6 +326,9 @@ impl Provider {
         client: Client,
         request: Request,
     ) -> Result<FetchResponse, ProviderError> {
+        if matches!(request.initiator, blitz_traits::net::Initiator::Unknown) {
+            return Err(ProviderError::Blocked("resource-initiator-unknown".into()));
+        }
         let mut wire = FetchRequest::get(request.url).method(request.method);
         wire.headers = request.headers;
         wire.signal = request.signal;
