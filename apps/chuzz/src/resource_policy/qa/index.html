@@ -1,0 +1,73 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Resource policy witness</title>
+<style>body { font: 20px sans-serif; color: #16181d; background: #fff; padding: 24px; }</style>
+<h1>Browser resource policy</h1>
+<p>RESOURCE_POLICY_STARTED</p>
+<p id="result">Waiting for the resource operation</p>
+<script>
+const resourceFixture = __RESOURCE_FIXTURE__;
+async function rejected(url, name) {
+  try {
+    const response = await fetch(url);
+    const text = await response.text();
+    throw new Error("allowed " + url + ": " + text.slice(0, 80));
+  } catch (error) {
+    if (!String(error).includes(name)) throw error;
+  }
+}
+async function witness() {
+  const mode = resourceFixture.mode;
+  // A working data fetch proves this is a live native bridge before denial.
+  const positive = await fetch("data:text/plain,bridge-live");
+  if (await positive.text() !== "bridge-live") throw new Error("bridge positive control");
+  if (mode === "file") {
+    await rejected(resourceFixture.file, "resource-file-origin");
+  } else if (mode === "file-allowed") {
+    const response = await fetch(resourceFixture.file);
+    if (!(await response.text()).includes("RESOURCE_FILE_CANARY")) {
+      throw new Error("native file navigation lost its file capability");
+    }
+  } else if (mode === "private-address") {
+    await rejected(resourceFixture.loopback + "/probe", "resource-private-address");
+    // This public-looking name actually resolves to the same loopback server.
+    // A hostname-only check cannot pass this witness.
+    await rejected(resourceFixture.resolved + "/probe", "resource-private-address");
+  } else if (mode === "credentials") {
+    const own = await (await fetch(resourceFixture.own + "/echo")).json();
+    if (!own.cookie.includes("resource_seed=RESOURCE_COOKIE_CANARY")) {
+      throw new Error("same-origin cookie positive control");
+    }
+    for (const options of [{}, { credentials: "include" }]) {
+      const cross = await (await fetch(resourceFixture.loopback + "/echo", options)).json();
+      if (cross.cookie !== "") throw new Error("cross-origin credentials escaped: " + cross.cookie);
+    }
+    const after = await (await fetch(resourceFixture.own + "/echo")).json();
+    if (after.cookie.includes("resource_foreign=")) throw new Error("cross-origin Set-Cookie accepted");
+  } else if (mode === "request-cap") {
+    let denied = false;
+    for (let request = 0; request < 20; request++) {
+      try {
+        const response = await fetch(resourceFixture.own + "/tiny?request=" + request);
+        if (await response.text() !== "ok") throw new Error("bad request control");
+      } catch (error) {
+        if (!String(error).includes("resource-request-cap")) throw error;
+        denied = true;
+        break;
+      }
+    }
+    if (!denied) throw new Error("document request cap was bypassed");
+  } else if (mode === "byte-cap") {
+    const chunk = await (await fetch(resourceFixture.own + "/chunk")).text();
+    if (chunk.length !== 6000) throw new Error("byte positive control");
+    await rejected(resourceFixture.own + "/big", "resource-byte-cap");
+  } else {
+    throw new Error("unknown witness mode");
+  }
+}
+witness().then(() => {
+  document.getElementById("result").textContent = "READY: RESOURCE_POLICY " + resourceFixture.mode + " PASS";
+}, error => {
+  document.getElementById("result").textContent = "READY: RESOURCE_POLICY " + resourceFixture.mode + " FAIL: " + String(error);
+});
+</script>

@@ -1,0 +1,74 @@
+{
+  "format": 1,
+  "defects": [
+    {
+      "name": "file",
+      "env": "QA_RESOURCE_DEFECT_FILE_BIN",
+      "edits": [
+        {
+          "search": "if url.scheme() == \"file\" && !scope.file_access {",
+          "replace": "if false && url.scheme() == \"file\" && !scope.file_access {"
+        }
+      ],
+      "expected_failure": "resource-policy-file",
+      "repository": "ps-blitz",
+      "file": "packages/blitz-traits/src/resource_policy.rs"
+    },
+    {
+      "name": "private-address",
+      "env": "QA_RESOURCE_DEFECT_PRIVATE_ADDRESS_BIN",
+      "edits": [
+        {
+          "search": "&& local_host(url) && !scope.private_network",
+          "replace": "&& false && local_host(url) && !scope.private_network"
+        },
+        {
+          "search": "if private_address(address) && !scope.private_network {",
+          "replace": "if false && private_address(address) && !scope.private_network {"
+        }
+      ],
+      "expected_failure": "resource-policy-private-address",
+      "repository": "ps-blitz",
+      "file": "packages/blitz-traits/src/resource_policy.rs"
+    },
+    {
+      "name": "credentials",
+      "env": "QA_RESOURCE_DEFECT_CREDENTIALS_BIN",
+      "edits": [
+        {
+          "search": "mode != Credentials::Omit && (scope.origin.is_persistable()",
+          "replace": "mode != Credentials::Omit && (true || scope.origin.is_persistable()"
+        }
+      ],
+      "expected_failure": "resource-policy-credentials",
+      "repository": "ps-blitz",
+      "file": "packages/blitz-traits/src/resource_policy.rs"
+    },
+    {
+      "name": "request-cap",
+      "env": "QA_RESOURCE_DEFECT_REQUEST_CAP_BIN",
+      "edits": [
+        {
+          "search": "if usage.requests >= scope.policy.max_requests {",
+          "replace": "if false && usage.requests >= scope.policy.max_requests {"
+        }
+      ],
+      "expected_failure": "resource-policy-request-cap",
+      "repository": "ps-blitz",
+      "file": "packages/blitz-traits/src/resource_policy.rs"
+    },
+    {
+      "name": "byte-cap",
+      "env": "QA_RESOURCE_DEFECT_BYTE_CAP_BIN",
+      "edits": [
+        {
+          "search": "if bytes > scope.policy.max_bytes.saturating_sub(usage.bytes) {",
+          "replace": "if false && bytes > scope.policy.max_bytes.saturating_sub(usage.bytes) {"
+        }
+      ],
+      "expected_failure": "resource-policy-byte-cap",
+      "repository": "ps-blitz",
+      "file": "packages/blitz-traits/src/resource_policy.rs"
+    }
+  ]
+}
