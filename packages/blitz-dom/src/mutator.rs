@@ -259,7 +259,7 @@ impl DocumentMutator<'_> {
         }
 
         let id = self.doc.create_node(NodeData::Element(Box::new(data)));
-        self.doc.classify_stash();
+        self.doc.note_stash_subtree(id);
         let node = self.doc.get_node_mut(id).unwrap();
 
         // Initialise style data
@@ -475,7 +475,7 @@ impl DocumentMutator<'_> {
     }
 
     pub fn set_attribute(&mut self, node_id: NodeId, name: QualName, value: &str) {
-        self.doc.classify_stash();
+        self.doc.note_stash_subtree(node_id);
         self.doc.note_stash_attribute(node_id, &name, value);
         #[cfg(feature = "shadow-dom")]
         if name.local == local_name!("slot") || name.local == local_name!("name") {
@@ -749,7 +749,7 @@ impl DocumentMutator<'_> {
     }
 
     pub fn clear_attribute(&mut self, node_id: NodeId, name: QualName) {
-        self.doc.classify_stash();
+        self.doc.note_stash_subtree(node_id);
         #[cfg(feature = "shadow-dom")]
         if name.local == local_name!("slot") || name.local == local_name!("name") {
             self.doc.note_shadow_tree_change(node_id);
@@ -1485,7 +1485,7 @@ impl DocumentMutator<'_> {
             }
         }
 
-        self.doc.classify_stash();
+        self.doc.note_stash_subtree(parent_id);
         self.maybe_record_node(parent_id);
     }
 
@@ -1533,7 +1533,6 @@ impl DocumentMutator<'_> {
 
 impl<'doc> DocumentMutator<'doc> {
     pub fn flush(&mut self) {
-        self.doc.classify_stash();
         if self.recompute_is_animating {
             self.doc.has_canvas = self.doc.compute_has_canvas();
         }

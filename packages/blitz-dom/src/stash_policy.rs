@@ -2,8 +2,7 @@ use std::collections::BTreeSet;
 
 use crate::{BaseDocument, NodeId, QualName};
 
-/// Classification belongs to a document incarnation, including detached nodes.
-/// Removing an attribute or changing a password's type cannot revoke it.
+/// Incarnation-owned policy. Revoking a marker never revokes its classification.
 #[derive(Default)]
 pub struct StashPolicy {
     sensitive: BTreeSet<NodeId>,
@@ -25,40 +24,70 @@ fn forbidden_autocomplete(value: &str) -> bool {
 }
 
 impl BaseDocument {
+    fn mark_stash_sensitive(&mut self, id: NodeId) {
+        if self.stash_policy.no_stash { return; }
+        if self.stash_policy.sensitive.len() >= 4096 {
+            self.stash_policy.no_stash = true;
+            self.stash_policy.sensitive.clear();
+        } else { self.stash_policy.sensitive.insert(id); }
+    }
+
+    pub(crate) fn inherit_stash_classification(&mut self, from: NodeId, to: NodeId) {
+        if self.stash_sensitive(from) { self.mark_stash_sensitive(to); }
+    }
+
     pub(crate) fn note_stash_attribute(&mut self, id: NodeId, name: &QualName, value: &str) {
         if !name.ns.as_ref().is_empty() { return; }
         match name.local.as_ref() {
             "data-chuzz-no-stash" => self.stash_policy.no_stash = true,
-            "data-chuzz-sensitive" => { self.stash_policy.sensitive.insert(id); }
-            "autocomplete" if forbidden_autocomplete(value) => { self.stash_policy.sensitive.insert(id); }
-            "type" if ["password", "file", "hidden"].iter().any(|kind| value.eq_ignore_ascii_case(kind)) => {
-                self.stash_policy.sensitive.insert(id);
-            }
+            "data-chuzz-sensitive" => self.mark_stash_sensitive(id),
+            "autocomplete" if forbidden_autocomplete(value) => self.mark_stash_sensitive(id),
+            "type" if ["password", "file", "hidden"].iter().any(|kind| value.eq_ignore_ascii_case(kind)) => self.mark_stash_sensitive(id),
             _ => {}
+        }
+        self.note_stash_subtree(id);
+    }
+
+    fn note_stash_node(&mut self, id: NodeId) {
+        if self.stash_policy.no_stash { return; }
+        let Some(element) = self.get_node(id).and_then(|node| node.element_data()) else { return; };
+        let sensitive = element.attrs.iter().any(|attr| {
+            attr.name.ns.as_ref().is_empty() && match attr.name.local.as_ref() {
+                "data-chuzz-sensitive" => true,
+                "autocomplete" => forbidden_autocomplete(&attr.value),
+                "type" => ["password", "file", "hidden"].iter().any(|kind| attr.value.eq_ignore_ascii_case(kind)),
+                _ => false,
+            }
+        });
+        let no_stash = element.attrs.iter().any(|attr| attr.name.ns.as_ref().is_empty() && attr.name.local.as_ref() == "data-chuzz-no-stash");
+        self.stash_policy.no_stash |= no_stash;
+        if sensitive || self.stash_sensitive(id) { self.mark_stash_sensitive(id); }
+    }
+
+    /// Mutations visit only the affected subtree and associated form controls.
+    pub(crate) fn note_stash_subtree(&mut self, id: NodeId) {
+        if self.stash_policy.no_stash { return; }
+        let associated: Vec<_> = self.get_node(id).filter(|node| node.local_name() == "form")
+            .and_then(|node| node.attr(crate::local_name!("id"))).map_or_else(Vec::new, |name| {
+                self.nodes.iter().filter_map(|(control, node)| {
+                    (node.attr(crate::local_name!("form")) == Some(name) || self.controls_to_form.get(&control) == Some(&id)).then_some(control)
+                }).collect()
+            });
+        let mut pending = vec![id];
+        pending.extend(associated);
+        let mut visited = BTreeSet::new();
+        while let Some(id) = pending.pop() {
+            if !visited.insert(id) { continue; }
+            self.note_stash_node(id);
+            if let Some(node) = self.get_node(id) { pending.extend(node.children.iter().copied()); }
         }
     }
 
-    /// Called at mutation boundaries, never by a periodic scan.
+    /// One capture checkpoint also covers native custom-element mutation paths.
     pub fn classify_stash(&mut self) {
-        let marked: Vec<_> = self.nodes.iter().filter_map(|(id, node)| {
-            let element = node.element_data()?;
-            let sensitive = element.attrs.iter().any(|attr| {
-                attr.name.ns.as_ref().is_empty() && match attr.name.local.as_ref() {
-                    "data-chuzz-sensitive" => true,
-                    "autocomplete" => forbidden_autocomplete(&attr.value),
-                    "type" => ["password", "file", "hidden"].iter().any(|kind| attr.value.eq_ignore_ascii_case(kind)),
-                    _ => false,
-                }
-            });
-            let no_stash = element.attrs.iter().any(|attr| attr.name.local.as_ref() == "data-chuzz-no-stash");
-            Some((id, sensitive, no_stash))
-        }).collect();
-        for (id, sensitive, no_stash) in marked {
-            self.stash_policy.no_stash |= no_stash;
-            if sensitive { self.stash_policy.sensitive.insert(id); }
-        }
-        let inherited: Vec<_> = self.nodes.iter().filter_map(|(id, _)| self.stash_sensitive(id).then_some(id)).collect();
-        self.stash_policy.sensitive.extend(inherited);
+        if self.stash_policy.no_stash { return; }
+        let ids: Vec<_> = self.nodes.iter().map(|(id, _)| id).collect();
+        for id in ids { self.note_stash_node(id); }
     }
 
     pub fn stash_disabled(&self) -> bool { self.stash_policy.no_stash }
