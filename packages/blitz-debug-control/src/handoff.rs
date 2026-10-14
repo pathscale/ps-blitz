@@ -124,17 +124,17 @@ struct ReplyState {
 }
 
 #[derive(Debug)]
-pub(crate) struct Reply(Mutex<ReplyState>);
+pub(crate) struct Reply(Arc<Mutex<ReplyState>>);
 
 impl Reply {
     pub(crate) fn new() -> Arc<Self> {
-        Arc::new(Self(Mutex::new(ReplyState {
+        Arc::new(Self(Arc::new(Mutex::new(ReplyState {
             response: None,
             waiter: None,
             completed: false,
             sender_closed: false,
             receiver_alive: true,
-        })))
+        }))))
     }
 
     pub(crate) fn complete(
@@ -156,7 +156,7 @@ impl Reply {
         Ok(())
     }
 
-    pub(crate) fn close_sender(&self) {
+    fn close_sender(&self) {
         let wake = {
             let mut state = self.0.lock().unwrap();
             state.sender_closed = true;
@@ -168,13 +168,26 @@ impl Reply {
     }
 }
 
-pub(crate) struct ResponseWait(pub(crate) Arc<Reply>);
+impl Drop for Reply {
+    fn drop(&mut self) {
+        self.close_sender();
+    }
+}
+
+pub(crate) struct ResponseWait(Arc<Mutex<ReplyState>>);
+
+impl ResponseWait {
+    pub(crate) fn new(reply: &Arc<Reply>) -> Self {
+        // Own completion state without keeping the request's sender alive.
+        Self(Arc::clone(&reply.0))
+    }
+}
 
 impl Future for ResponseWait {
     type Output = Result<Arc<ControlResponse>, ()>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut state = self.0.0.lock().unwrap();
+        let mut state = self.0.lock().unwrap();
         if let Some(response) = state.response.take() {
             Poll::Ready(Ok(response))
         } else if state.sender_closed {
@@ -188,7 +201,7 @@ impl Future for ResponseWait {
 
 impl Drop for ResponseWait {
     fn drop(&mut self) {
-        let mut state = self.0.0.lock().unwrap();
+        let mut state = self.0.lock().unwrap();
         state.receiver_alive = false;
         state.waiter = None;
         state.response = None;

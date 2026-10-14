@@ -19,6 +19,7 @@ rust-version.workspace = true
 
 [lib]
 name = "blitz_debug_control"
+path = "src/reactor_transport.rs"
 
 [dependencies]
 getrandom.workspace = true
