@@ -75,6 +75,14 @@ pub(crate) fn install(context: &mut Context, loader: Rc<BlitzModuleLoader>) {
     define_accessor(&prototype, "compatMode", Some(compat_mode), None, context);
 }
 
+pub(crate) fn retire(context: &Context) {
+    let input = state(context);
+    input.parser.borrow_mut().take();
+    input.original.borrow_mut().take();
+    input.fetcher.borrow_mut().take();
+    input.executed.borrow_mut().clear();
+}
+
 pub(crate) fn prepare(
     context: &Context,
     html: &str,

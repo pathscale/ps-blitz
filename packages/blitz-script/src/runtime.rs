@@ -231,6 +231,20 @@ pub(crate) struct BoaScriptEngine {
 }
 
 impl BoaScriptEngine {
+    pub(crate) fn retire(&mut self) {
+        use zeroize::Zeroize;
+        self.job_executor.get_cancellation_token().store(true, std::sync::atomic::Ordering::Release);
+        let _ = boa_engine::job::JobExecutor::run_jobs(Rc::clone(&self.job_executor), &mut self.context);
+        self.pending_modules.clear();
+        self.domc_polls.take();
+        if let Some((_, mut text)) = self.focussed_text_value.take() { text.zeroize(); }
+        self.module_loader.retire();
+        crate::docwrite::retire(&self.context);
+        self.context.clear_kept_objects();
+        let state = std::mem::take(&mut *self.ctx.state.borrow_mut());
+        drop(state);
+    }
+
     pub fn new(
         doc: Rc<RefCell<BaseDocument>>,
         base_url: Option<&Url>,

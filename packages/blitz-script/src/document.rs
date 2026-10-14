@@ -193,6 +193,8 @@ impl ScriptDocument {
         self.before_script_hook.take();
         self.waker.take();
         for hook in std::mem::take(&mut self.teardown_hooks) { hook(); }
+        self.poll_hook.take();
+        self.runtime.retire();
     }
 
     /// Set the microtask budget shared by all drains in one poll.
