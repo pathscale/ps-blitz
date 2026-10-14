@@ -1,10 +1,11 @@
 //! [`ScriptDocument`]: a [`Document`] implementation with JavaScript support
 
 use std::cell::RefCell;
+use std::future::Future;
+use std::pin::Pin;
 use std::rc::Rc;
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
-use std::sync::{Arc, Mutex};
-use std::task::{Context as TaskContext, Waker};
+use std::sync::Arc;
+use std::task::{Context as TaskContext, Poll, Waker};
 
 use blitz_dom::{
     BaseDocument, DEFAULT_CSS, DocGuard, DocGuardMut, Document, DocumentConfig, EventDriver, NodeId,
@@ -80,10 +81,9 @@ pub struct ScriptDocument {
     executed_scripts: std::collections::HashSet<NodeId>,
     poll_hook: Option<PollHook>,
 
-    // Timer wakeups: a background thread which wakes the event loop (via the
-    // `Waker` passed to `poll`) when the next JS timer is due.
-    waker: Arc<Mutex<Option<Waker>>>,
-    timer_thread: Option<Sender<Instant>>,
+    // The timer registry owns a clone of the current document waker.
+    waker: Option<Waker>,
+    timer_wake: Option<(Instant, nagoya::time::Sleep)>,
 }
 
 impl ScriptDocument {
@@ -146,8 +146,8 @@ impl ScriptDocument {
             load_event_pending: false,
             executed_scripts: std::collections::HashSet::new(),
             poll_hook: None,
-            waker: Arc::new(Mutex::new(None)),
-            timer_thread: None,
+            waker: None,
+            timer_wake: None,
         }
     }
 
@@ -187,9 +187,9 @@ impl ScriptDocument {
     ///
     /// External scripts use the synchronous document fetcher. Imported module
     /// loads remain pending until their result futures complete, including
-    /// dynamic imports from classic scripts. Pending loads are polled every
-    /// five milliseconds when there is no runnable work. Suspended module
-    /// evaluations also wait for their next timer or a later host poll.
+    /// dynamic imports from classic scripts. Runnable result futures drain
+    /// with the microtask queue. Suspended module evaluations wait for a
+    /// document wake or the module deadline.
     /// Unrelated future timers remain scheduled, and non-script resources
     /// are not awaited.
     ///
@@ -204,24 +204,28 @@ impl ScriptDocument {
     /// hosts that need completed script startup before inspecting the DOM.
     pub fn run_until_idle(&mut self) -> Result<(), &'static str> {
         const MODULE_TIMEOUT: Duration = Duration::from_secs(60);
-        const LOAD_POLL_INTERVAL: Duration = Duration::from_millis(5);
         let module_deadline = Instant::now() + MODULE_TIMEOUT;
+        let mut module_timeout = nagoya::time::sleep(MODULE_TIMEOUT);
+        let host_waker = self.waker.clone();
 
-        loop {
-            let progressed = self.poll(None);
+        let result = nagoya::block_on(std::future::poll_fn(|cx| {
+            let progressed = self.poll(Some(TaskContext::from_waker(cx.waker())));
             let now = Instant::now();
             let next_timer = self.runtime.next_timer_deadline();
             let loads_pending = self.runtime.has_pending_module_loads();
             let evaluations_pending = self.runtime.has_pending_module_evaluations();
 
-            // Check before the progress branch so continuing module work
-            // cannot bypass the deadline by keeping each poll busy.
+            // Check before yielding another runnable slice.
             if now >= module_deadline {
                 if loads_pending {
-                    return Err("module loading did not complete within sixty seconds");
+                    return Poll::Ready(Err(
+                        "module loading did not complete within sixty seconds",
+                    ));
                 }
                 if evaluations_pending {
-                    return Err("module evaluation did not complete within sixty seconds");
+                    return Poll::Ready(Err(
+                        "module evaluation did not complete within sixty seconds",
+                    ));
                 }
             }
 
@@ -229,25 +233,15 @@ impl ScriptDocument {
                 || next_timer.is_some_and(|deadline| deadline <= now)
                 || progressed
             {
-                continue;
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
             }
 
             if loads_pending || evaluations_pending {
-                // A timer is not required for a loader completion. While a
-                // load is outstanding, keep polling even if the next timer
-                // belongs to unrelated page work far in the future.
-                let wait = if loads_pending {
-                    LOAD_POLL_INTERVAL
-                } else {
-                    next_timer.map_or(LOAD_POLL_INTERVAL, |deadline| {
-                        deadline.saturating_duration_since(now)
-                    })
-                };
-                let wait = next_timer.map_or(wait, |deadline| {
-                    wait.min(deadline.saturating_duration_since(now))
-                });
-                std::thread::sleep(wait.min(module_deadline.saturating_duration_since(now)));
-                continue;
+                // Loads use the synchronous fetcher and ready result futures.
+                // Suspended evaluation resumes on a document wake or timeout.
+                let _ = Pin::new(&mut module_timeout).poll(cx);
+                return Poll::Pending;
             }
 
             if crate::docwrite::active(&self.runtime.context)
@@ -257,11 +251,14 @@ impl ScriptDocument {
                         && !crate::docwrite::was_executed(&self.runtime.context, script.node_id)
                 })
             {
-                return Err("script startup cannot make progress");
+                return Poll::Ready(Err("script startup cannot make progress"));
             }
 
-            return Ok(());
-        }
+            Poll::Ready(Ok(()))
+        }));
+        self.waker = host_waker;
+        self.arm_timer_wake();
+        result
     }
 
     /// When the soonest page timer is due, so a host can sleep exactly until
@@ -339,7 +336,7 @@ impl ScriptDocument {
         self.finish_startup_events();
 
         self.request_redraw();
-        self.arm_timer_thread();
+        self.arm_timer_wake();
     }
 
     /// The resolved URLs of the document's external (`<script src="...">`) scripts,
@@ -397,7 +394,7 @@ impl ScriptDocument {
         let _profiling = self.runtime.ctx.enter_profiling_boundary();
         self.runtime.eval(code, "<eval>");
         self.request_redraw();
-        self.arm_timer_thread();
+        self.arm_timer_wake();
     }
 
     /// Evaluate an embedder prelude under a name, which becomes its source path
@@ -408,7 +405,7 @@ impl ScriptDocument {
         self.runtime.eval_internal(code, name);
         self.runtime.run_jobs(name);
         self.request_redraw();
-        self.arm_timer_thread();
+        self.arm_timer_wake();
     }
 
     /// Evaluate JavaScript and convert its result to JSON.
@@ -421,7 +418,7 @@ impl ScriptDocument {
         let _profiling = self.runtime.ctx.enter_profiling_boundary();
         let result = self.runtime.eval_json(code, "<eval with result>");
         self.request_redraw();
-        self.arm_timer_thread();
+        self.arm_timer_wake();
         result
     }
 
@@ -478,7 +475,7 @@ impl ScriptDocument {
         driver.handle_dom_event(event);
 
         self.request_redraw();
-        self.arm_timer_thread();
+        self.arm_timer_wake();
     }
 
     /// Resume navigation input through completed script checkpoints.
@@ -783,61 +780,30 @@ impl ScriptDocument {
         self.inner.borrow().shell_provider.request_redraw();
     }
 
-    /// Ensure the timer thread is armed to wake the event loop when the next
-    /// JS timer is due.
-    fn arm_timer_thread(&mut self) {
+    /// Register the next JS deadline with the document's current host waker.
+    fn arm_timer_wake(&mut self) {
         let Some(deadline) = self.runtime.next_timer_deadline() else {
+            self.timer_wake = None;
             return;
         };
-
-        let sender = self.timer_thread.get_or_insert_with(|| {
-            let (tx, rx) = channel::<Instant>();
-            let waker = Arc::clone(&self.waker);
-            std::thread::Builder::new()
-                .name("blitz-script-timers".to_string())
-                .spawn(move || timer_thread_main(rx, waker))
-                .expect("failed to spawn timer thread");
-            tx
-        });
-
-        // If the thread has exited (channel disconnected) drop the sender so a
-        // new thread is spawned next time.
-        if sender.send(deadline).is_err() {
-            self.timer_thread = None;
+        let Some(waker) = &self.waker else {
+            self.timer_wake = None;
+            return;
+        };
+        if self
+            .timer_wake
+            .as_ref()
+            .is_none_or(|(armed, _)| *armed != deadline)
+        {
+            self.timer_wake = Some((
+                deadline,
+                nagoya::time::sleep(deadline.saturating_duration_since(Instant::now())),
+            ));
         }
-    }
-}
-
-/// Background thread which wakes the event loop when JS timers are due
-fn timer_thread_main(rx: Receiver<Instant>, waker: Arc<Mutex<Option<Waker>>>) {
-    let mut deadline: Option<Instant> = None;
-
-    loop {
-        match deadline {
-            None => match rx.recv() {
-                Ok(new_deadline) => deadline = Some(new_deadline),
-                Err(_) => return,
-            },
-            Some(current) => {
-                let now = Instant::now();
-                if current <= now {
-                    if let Some(waker) = waker.lock().unwrap().as_ref() {
-                        waker.wake_by_ref();
-                    }
-                    deadline = None;
-                    continue;
-                }
-                match rx.recv_timeout(current - now) {
-                    Ok(new_deadline) => deadline = Some(new_deadline.min(current)),
-                    Err(RecvTimeoutError::Timeout) => {
-                        if let Some(waker) = waker.lock().unwrap().as_ref() {
-                            waker.wake_by_ref();
-                        }
-                        deadline = None;
-                    }
-                    Err(RecvTimeoutError::Disconnected) => return,
-                }
-            }
+        let (_, timer) = self.timer_wake.as_mut().unwrap();
+        let mut cx = TaskContext::from_waker(waker);
+        if Pin::new(timer).poll(&mut cx).is_ready() {
+            waker.wake_by_ref();
         }
     }
 }
@@ -864,7 +830,7 @@ impl Document for ScriptDocument {
 
         // JS may have mutated the DOM or scheduled timers
         self.request_redraw();
-        self.arm_timer_thread();
+        self.arm_timer_wake();
     }
 
     fn poll(&mut self, task_context: Option<TaskContext>) -> bool {
@@ -913,7 +879,7 @@ impl ScriptDocument {
         driver.handle_pointer_move_to_node(&event, node_id);
 
         self.request_redraw();
-        self.arm_timer_thread();
+        self.arm_timer_wake();
     }
 
     /// Deliver one automation input event to the exact semantic node selected
@@ -931,7 +897,7 @@ impl ScriptDocument {
         driver.handle_ui_event_to_node(event, node_id);
 
         self.request_redraw();
-        self.arm_timer_thread();
+        self.arm_timer_wake();
     }
 
     /// The real poll. Split out so every exit path is timed by the wrapper
@@ -942,15 +908,14 @@ impl ScriptDocument {
         profiling: bool,
         settle_timers: Option<bool>,
     ) -> bool {
-        // Store the waker so the timer thread can wake the event loop
+        // Re-registering the Sleep below also updates its captured waker.
         if let Some(cx) = &task_context {
-            let mut waker = self.waker.lock().unwrap();
-            let stale = waker
+            if self
+                .waker
                 .as_ref()
-                .map(|old| !old.will_wake(cx.waker()))
-                .unwrap_or(true);
-            if stale {
-                *waker = Some(cx.waker().clone());
+                .is_none_or(|old| !old.will_wake(cx.waker()))
+            {
+                self.waker = Some(cx.waker().clone());
             }
         }
 
@@ -1027,7 +992,7 @@ impl ScriptDocument {
                 cx.waker().wake_by_ref();
             }
         }
-        self.arm_timer_thread();
+        self.arm_timer_wake();
         ran
     }
 }
