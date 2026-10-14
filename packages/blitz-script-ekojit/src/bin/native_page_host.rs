@@ -9,7 +9,8 @@ use std::sync::Arc;
 use anyrender::render_to_buffer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
 use blitz_dom::{Document, DocumentConfig, StyleThreading};
-use blitz_script::{ApplicationDocument, EkojitDocument, NativePageDefect, ScriptBackend};
+use blitz_script::{ApplicationDocument, ScriptBackend};
+use blitz_script_ekojit::{EkojitDocument, NativePageDefect};
 use blitz_traits::shell::{ColorScheme, Viewport};
 use nagoya::reactor::{Reactor, TaskSet, block_on_with};
 use serde_json::{Value, json};
@@ -39,7 +40,7 @@ fn parameters() -> Result<Parameters, String> {
                     .as_deref()
                 {
                     Some("boa") => ScriptBackend::Boa,
-                    Some("ekojit") => ScriptBackend::Ekojit,
+                    Some("ekojit") => ScriptBackend::Custom,
                     _ => return Err("--engine requires boa or ekojit".into()),
                 }
             }
@@ -56,7 +57,7 @@ fn parameters() -> Result<Parameters, String> {
             _ => return Err("expected --page, --engine or --plant".into()),
         }
     }
-    if defect != NativePageDefect::None && engine != ScriptBackend::Ekojit {
+    if defect != NativePageDefect::None && engine != ScriptBackend::Custom {
         return Err("native-page defect requires --engine ekojit".into());
     }
     Ok(Parameters {
@@ -83,12 +84,12 @@ fn observe(parameters: Parameters) -> Result<Arc<Value>, String> {
         ..DocumentConfig::default()
     };
     let mut document = if parameters.defect == NativePageDefect::None {
-        ApplicationDocument::from_html(source, config, parameters.engine)?
+        ApplicationDocument::<EkojitDocument>::from_html(source, config, parameters.engine)?
     } else {
-        ApplicationDocument::Ekojit(
+        ApplicationDocument::Custom(Box::new(
             EkojitDocument::from_html(source, config, parameters.defect)
                 .map_err(|error| error.to_string())?,
-        )
+        ))
     };
     document.execute_scripts()?;
     document.inner_mut().resolve(0.0);
@@ -109,7 +110,7 @@ fn observe(parameters: Parameters) -> Result<Arc<Value>, String> {
         480,
     ));
     let (backend, title, console, errors, receipts) = match &document {
-        ApplicationDocument::Ekojit(native) => (
+        ApplicationDocument::Custom(native) => (
             "ekojit",
             native.title(),
             native.console_entries(),

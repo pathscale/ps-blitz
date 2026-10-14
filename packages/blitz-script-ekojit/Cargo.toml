@@ -1,0 +1,45 @@
+[package]
+name = "ps-blitz-script-ekojit"
+description = "Local native page backend for Blitz using ekojit"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "blitz_script_ekojit"
+
+[[bin]]
+name = "native-page-host"
+path = "src/bin/native_page_host.rs"
+required-features = ["ekojit-page-witness"]
+
+[features]
+default = ["shadow-dom"]
+shadow-dom = ["blitz-script/shadow-dom"]
+debug-control = ["blitz-script/debug-control"]
+# Linked native page gate with the real renderer and machine font catalogue.
+ekojit-page-witness = [
+    "debug-control",
+    "blitz-script/system-fonts",
+    "dep:anyrender",
+    "dep:anyrender_vello_cpu",
+    "dep:blitz-paint",
+    "dep:nagoya",
+]
+
+[dependencies]
+blitz-script = { workspace = true }
+blitz-dom = { workspace = true }
+blitz-html = { workspace = true }
+blitz-traits = { workspace = true }
+ekojit = { path = "../../../ekojit/crates/ekojit" }
+markup5ever = { workspace = true }
+serde_json = { workspace = true }
+url = { workspace = true }
+web-time = { workspace = true }
+anyrender = { workspace = true, optional = true }
+anyrender_vello_cpu = { workspace = true, optional = true }
+blitz-paint = { workspace = true, optional = true }
+nagoya = { workspace = true, optional = true }

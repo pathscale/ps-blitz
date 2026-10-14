@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use web_time::{Duration, Instant};
 
-pub(crate) struct JobBudget {
+pub struct JobBudget {
     duration: Cell<Duration>,
     deadline: Cell<Option<Instant>>,
 }
@@ -18,16 +18,16 @@ impl Default for JobBudget {
 }
 
 impl JobBudget {
-    pub(crate) fn duration(&self) -> Duration {
+    pub fn duration(&self) -> Duration {
         self.duration.get()
     }
 
-    pub(crate) fn set_duration(&self, duration: Duration) {
+    pub fn set_duration(&self, duration: Duration) {
         assert!(!duration.is_zero(), "the job budget must be positive");
         self.duration.set(duration);
     }
 
-    pub(crate) fn begin(self: &Rc<Self>) -> JobSlice {
+    pub fn begin(self: &Rc<Self>) -> JobSlice {
         let owns_deadline = self.deadline.get().is_none();
         if owns_deadline {
             self.deadline
@@ -39,13 +39,13 @@ impl JobBudget {
         }
     }
 
-    pub(crate) fn remaining(&self) -> Duration {
+    pub fn remaining(&self) -> Duration {
         self.deadline.get().map_or(self.duration.get(), |deadline| {
             deadline.saturating_duration_since(Instant::now())
         })
     }
 
-    pub(crate) fn exhausted(&self) -> bool {
+    pub fn exhausted(&self) -> bool {
         self.deadline
             .get()
             .is_some_and(|deadline| Instant::now() >= deadline)
@@ -53,7 +53,7 @@ impl JobBudget {
 }
 
 /// Nested drains share the owning poll's deadline.
-pub(crate) struct JobSlice {
+pub struct JobSlice {
     budget: Rc<JobBudget>,
     owns_deadline: bool,
 }

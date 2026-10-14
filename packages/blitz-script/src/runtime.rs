@@ -56,7 +56,6 @@ pub struct DiagnosticBatch {
     pub errors: DiagnosticStreamBatch,
 }
 
-#[cfg(feature = "debug-control")]
 fn diagnostic_stream(
     queue: &VecDeque<DiagnosticEntry>,
     after: u64,
@@ -1158,7 +1157,6 @@ impl BoaScriptEngine {
         }
     }
 
-    #[cfg(feature = "debug-control")]
     pub fn console_entries_after(&self, sequence: u64) -> Vec<DiagnosticEntry> {
         self.diagnostics
             .borrow()
@@ -1169,7 +1167,6 @@ impl BoaScriptEngine {
             .collect()
     }
 
-    #[cfg(feature = "debug-control")]
     pub fn runtime_errors_after(&self, sequence: u64) -> Vec<DiagnosticEntry> {
         self.diagnostics
             .borrow()
@@ -1180,7 +1177,6 @@ impl BoaScriptEngine {
             .collect()
     }
 
-    #[cfg(feature = "debug-control")]
     pub fn diagnostic_batch(
         &self,
         console_after: u64,

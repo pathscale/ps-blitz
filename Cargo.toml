@@ -11,6 +11,7 @@ members = [
 
     "packages/blitz-html",
     "packages/blitz-script",
+    "packages/blitz-script-ekojit",
     "packages/blitz-net",
     "packages/blitz-paint",
     "packages/blitz-shell",
