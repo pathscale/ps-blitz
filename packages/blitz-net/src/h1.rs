@@ -21,6 +21,10 @@ mod tls;
 
 pub use tls::{HostStats, connection_stats};
 
+pub(super) fn prepare_native_tls() -> Result<(), String> {
+    tls::default_config().map(|_| ()).map_err(|error| error.to_string())
+}
+
 use blitz_traits::net::{
     CookieJar,
     http::{HeaderMap, HeaderValue, Method, header::HeaderName},

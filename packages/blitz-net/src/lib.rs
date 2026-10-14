@@ -20,6 +20,11 @@
 //! transport does not provide HTTP.
 
 mod abort;
+
+#[cfg(not(target_arch = "wasm32"))]
+mod chacha_policy;
+#[cfg(not(target_arch = "wasm32"))]
+pub use chacha_policy::{chacha_provider, certificate_verifier, prepare_native_tls};
 mod local_fetch;
 
 #[cfg(not(target_arch = "wasm32"))]

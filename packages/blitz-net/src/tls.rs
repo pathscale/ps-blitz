@@ -12,7 +12,7 @@ use nago_rustls::{
     rustls_pki_types::ServerName,
 };
 use nagoya::{net::TcpStream, reactor::Handle};
-use ps_rustcrypto::policy::{self, ct::CtVerifier};
+use ps_rustcrypto::policy;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex, OnceLock},
@@ -44,6 +44,8 @@ fn native_roots() -> Result<RootCertStore, String> {
             native.errors.len(),
         );
     }
+    #[cfg(feature = "sandbox2-witness")]
+    crate::chacha_policy::add_witness_roots(&mut roots)?;
     Ok(roots)
 }
 
@@ -75,28 +77,19 @@ pub(super) fn alpn() -> Vec<Vec<u8>> {
 fn build_config() -> Result<Arc<ClientConfig>, String> {
     let roots = native_roots()?;
     let public = public_roots(&roots);
-    // Explicit even when an embedder installed another process default.
-    let mut provider = ps_rustcrypto::provider();
-    // Keep the wire offer explicit even if a later provider adds suites.
-    provider.cipher_suites = vec![
-        ps_rustcrypto::TLS13_CHACHA20_POLY1305_SHA256,
-        ps_rustcrypto::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
-    ];
-    let provider = Arc::new(provider);
+    let provider = crate::chacha_provider();
     let mut config = ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()
+        .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
         .map_err(|error| error.to_string())?
-        // ECC-only: a chain holding an RSA key anywhere, anchor included, is
-        // refused with unsupported_certificate before any signature check.
-        // A valid chain ending in a public root must then be publicly
-        // logged under the CT policy.
         .dangerous()
-        .with_custom_certificate_verifier(
-            CtVerifier::ecc_only(roots, public)
-                .map_err(|error| format!("TLS trust store: {error}"))?,
-        )
+        .with_custom_certificate_verifier(crate::certificate_verifier(roots, public)?)
         .with_no_client_auth();
     config.alpn_protocols = alpn();
+    #[cfg(feature = "sandbox2-witness")]
+    if std::env::var("SANDBOX2_TLS_DEFECT").ok().as_deref() == Some("chacha-load") {
+        // Plant a real incompatible ALPN in the production TLS entry point.
+        config.alpn_protocols = vec![b"sandbox2-incompatible".to_vec()];
+    }
     Ok(Arc::new(config))
 }
 

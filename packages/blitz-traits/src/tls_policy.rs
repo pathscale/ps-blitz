@@ -1,6 +1,6 @@
 //! Typed reasons for refusing TLS under the house algorithm policy.
 
-/// Only ECDSA/Ed25519 authentication and ChaCha20-Poly1305 encryption are allowed.
+/// ChaCha20-Poly1305 encryption with ECDSA/Ed25519/RSA signature verification.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TlsPolicyError {
@@ -30,17 +30,17 @@ impl std::fmt::Display for TlsPolicyError {
                 "certificate key forbidden; only ECDSA/Ed25519 keys allowed (alert 43 unsupported_certificate)",
             ),
             Self::CertificateSignature => f.write_str(
-                "certificate signature forbidden; only ECDSA/Ed25519 verification allowed, RSA signatures forbidden",
+                "certificate signature forbidden; ECDSA/Ed25519/RSA signature verification required",
             ),
             Self::HandshakeSignature => f.write_str(
-                "TLS handshake signature forbidden; only ECDSA/Ed25519 schemes allowed, RSA signatures forbidden",
+                "TLS handshake signature forbidden; only advertised ECDSA/Ed25519/RSA verification schemes allowed",
             ),
             Self::CipherSuite => f.write_str(
-                "peer selected a forbidden cipher suite; only ChaCha20-Poly1305 allowed, AES forbidden",
+                "tls-chacha-required: peer selected an unoffered cipher suite; ChaCha20-Poly1305 required",
             ),
             Self::PeerRejectedAlgorithms { alert } => write!(
                 f,
-                "peer rejected ECDSA/Ed25519 with ChaCha20-Poly1305 (TLS alert {alert}); RSA and AES forbidden; no fallback",
+                "tls-chacha-required: peer rejected the ChaCha20-Poly1305 offer (TLS alert {alert}); no fallback",
             ),
         }
     }
