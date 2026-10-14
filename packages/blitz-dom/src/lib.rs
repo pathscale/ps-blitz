@@ -57,6 +57,7 @@ pub mod paint_damage;
 pub mod platform;
 mod query_selector;
 pub mod range;
+pub mod release;
 mod resolve;
 mod select;
 mod selection;

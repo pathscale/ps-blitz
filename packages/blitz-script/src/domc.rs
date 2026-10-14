@@ -104,6 +104,7 @@ pub(crate) fn install(context: &mut Context) {
         context,
     );
     define_accessor(&document_proto, "hidden", Some(hidden), None, context);
+    define_accessor(&document_proto, "wasDiscarded", Some(was_discarded), None, context);
     define_accessor(
         &document_proto,
         "characterSet",
@@ -232,15 +233,24 @@ fn current_script(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsRes
 }
 
 fn visibility_state(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    Ok(js_str(if is_main_document(this, context)? {
-        "visible"
-    } else {
-        "hidden"
-    }))
+    is_main_document(this, context)?;
+    let ctx = dom_ctx(context)?;
+    let visible = ctx.doc.borrow().page_visible;
+    Ok(js_str(if visible { "visible" } else { "hidden" }))
 }
 
 fn hidden(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    Ok(JsValue::from(!is_main_document(this, context)?))
+    is_main_document(this, context)?;
+    let ctx = dom_ctx(context)?;
+    let hidden = !ctx.doc.borrow().page_visible;
+    Ok(JsValue::from(hidden))
+}
+
+fn was_discarded(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    is_main_document(this, context)?;
+    let ctx = dom_ctx(context)?;
+    let discarded = ctx.doc.borrow().was_discarded;
+    Ok(JsValue::from(discarded))
 }
 
 fn character_set(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
