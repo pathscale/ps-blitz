@@ -192,7 +192,7 @@ pub(super) async fn resolve_addresses(origin: &Origin, initiator: &blitz_traits:
         use nagoya::reactor::socket::Addr;
         let ip = match address {
             Addr::V4(bytes, _) => std::net::IpAddr::from(*bytes),
-            Addr::V6(bytes, _) => std::net::IpAddr::from(*bytes),
+            Addr::V6(bytes, _) | Addr::V6Scoped(bytes, _, _) => std::net::IpAddr::from(*bytes),
             Addr::Path(_) => return Err(Error::Blocked("resource-private-address".into())),
         };
         initiator.check_address(ip).map_err(Error::Blocked)?;

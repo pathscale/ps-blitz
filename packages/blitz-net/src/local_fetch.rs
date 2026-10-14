@@ -42,7 +42,7 @@ pub(crate) fn fetch(request: FetchRequest) -> Result<FetchResponse, FetchError> 
 fn read_file(file: &mut std::fs::File, initiator: &Initiator) -> Result<Bytes, FetchError> {
     let mut body = BytesMut::new();
     loop {
-        let capacity = initiator.remaining_bytes().min(16 * 1024).max(1);
+        let capacity = initiator.remaining_bytes().clamp(1, 16 * 1024);
         let start = body.len();
         body.resize(start + capacity, 0);
         let read = file.read(&mut body[start..])
