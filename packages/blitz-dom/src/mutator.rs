@@ -6,7 +6,7 @@ use std::mem;
 use std::ops::{Deref, DerefMut};
 
 use crate::document::make_device;
-use crate::layout::damage::ALL_DAMAGE;
+use crate::layout::damage::{ALL_DAMAGE, CONSTRUCT_FC, ONLY_RELAYOUT};
 use crate::net::{ImageHandler, ResourceHandler, StylesheetHandler};
 use crate::node::{CanvasData, NodeFlags, SpecialElementData};
 use crate::util::ImageType;
@@ -25,6 +25,117 @@ macro_rules! tag_and_attr {
     ($tag:tt, $attr:tt) => {
         (&local_name!($tag), &local_name!($attr))
     };
+}
+
+/// Select density candidates for the device scale, or the largest width candidate.
+/// This bounded fallback does not evaluate `sizes` or `<picture>` sources.
+fn select_image_source<'a>(
+    src: Option<&'a str>,
+    srcset: Option<&'a str>,
+    scale: f32,
+    is_valid_url: impl Fn(&str) -> bool,
+) -> Option<&'a str> {
+    let src = src.filter(|src| !src.is_empty());
+    let Some(mut input) = srcset else {
+        return src;
+    };
+    let target = if scale.is_finite() && scale > 0.0 {
+        f64::from(scale)
+    } else {
+        1.0
+    };
+    let mut best_density: Option<(&'a str, f64)> = None;
+    let mut best_width: Option<(&'a str, f64)> = None;
+    let mut has_one_x = false;
+    let mut consider_density = |url: &'a str, density: f64| {
+        let better = best_density.is_none_or(|(_, current)| {
+            if density >= target {
+                current < target || density < current
+            } else {
+                current < target && density > current
+            }
+        });
+        if better {
+            best_density = Some((url, density));
+        }
+    };
+    let is_space = |c: char| matches!(c, '\t' | '\n' | '\x0C' | '\r' | ' ');
+
+    loop {
+        input = input.trim_start_matches(|c| c == ',' || is_space(c));
+        if input.is_empty() {
+            break;
+        }
+
+        // Commas within a URL, including a data URL, are not separators.
+        let end = input.find(is_space).unwrap_or(input.len());
+        let token = &input[..end];
+        input = &input[end..];
+        let url = token.trim_end_matches(',');
+        let descriptors = if url.len() != token.len() {
+            ""
+        } else {
+            let end = input.find(',').unwrap_or(input.len());
+            let descriptors = &input[..end];
+            input = &input[end..];
+            descriptors
+        };
+        let mut descriptors = descriptors.split(is_space).filter(|part| !part.is_empty());
+        let (value, is_width) = match (descriptors.next(), descriptors.next()) {
+            (None, None) => (1.0, false),
+            (Some(descriptor), None) => {
+                if let Some(number) = descriptor.strip_suffix('x') {
+                    if number.starts_with('+') {
+                        continue;
+                    }
+                    let Ok(density) = number.parse::<f64>() else {
+                        continue;
+                    };
+                    if !density.is_finite() || density <= 0.0 {
+                        continue;
+                    }
+                    (density, false)
+                } else if let Some(number) = descriptor.strip_suffix('w') {
+                    if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) {
+                        continue;
+                    }
+                    let Ok(width) = number.parse::<u64>() else {
+                        continue;
+                    };
+                    if width == 0 {
+                        continue;
+                    }
+                    (width as f64, true)
+                } else {
+                    continue;
+                }
+            }
+            _ => continue,
+        };
+        if url.is_empty() || !is_valid_url(url) {
+            continue;
+        }
+
+        if is_width {
+            if best_width.is_none_or(|(_, current)| value > current) {
+                best_width = Some((url, value));
+            }
+        } else {
+            has_one_x |= value == 1.0;
+            consider_density(url, value);
+        }
+    }
+
+    if let Some((url, _)) = best_width {
+        return Some(url);
+    }
+    // A nonempty src supplies an implicit 1x candidate unless srcset supplies one.
+    if !has_one_x {
+        if let Some(src) = src.filter(|src| is_valid_url(src)) {
+            consider_density(src, 1.0);
+        }
+    }
+    best_density.map(|(url, _)| url).or(src)
 }
 
 #[derive(Debug, Clone)]
@@ -294,6 +405,12 @@ impl DocumentMutator<'_> {
     // Node mutation methods
 
     pub fn set_node_text(&mut self, node_id: NodeId, value: &str) {
+        if self.doc.nodes[node_id]
+            .text_data()
+            .is_some_and(|text| text.content == value)
+        {
+            return;
+        }
         if matches!(
             self.doc.nodes[node_id].markup.as_deref(),
             Some(crate::node::MarkupNode::Doctype { .. })
@@ -407,7 +524,7 @@ impl DocumentMutator<'_> {
             self.mutations_occurred |= node_is_in_document;
             text.content.clear();
             text.content.push_str(value);
-            node.insert_damage(ALL_DAMAGE);
+            node.insert_damage(CONSTRUCT_FC | ONLY_RELAYOUT);
             // Mark ancestors dirty so the style traversal visits this subtree.
             // Without this, the traversal may skip nodes with pending damage.
             node.mark_ancestors_dirty();
@@ -417,7 +534,7 @@ impl DocumentMutator<'_> {
             // affect the parent's layout (text may wrap differently, change size, etc.)
             if let Some(parent_id) = parent_id {
                 let parent = &mut self.doc.nodes[parent_id];
-                parent.insert_damage(ALL_DAMAGE);
+                parent.insert_damage(CONSTRUCT_FC | ONLY_RELAYOUT);
             }
 
             self.maybe_record_node(parent_id);
@@ -431,12 +548,18 @@ impl DocumentMutator<'_> {
     ) -> Result<(), AppendTextErr> {
         let node_is_in_document = self.doc.nodes[node_id].flags.is_in_document();
         let node = &mut self.doc.nodes[node_id];
-        node.insert_damage(ALL_DAMAGE);
-        node.mark_ancestors_dirty();
         let parent = node.parent;
         match node.text_data_mut() {
             Some(data) => {
+                if text.is_empty() {
+                    return Ok(());
+                }
                 data.content += text;
+                node.insert_damage(CONSTRUCT_FC | ONLY_RELAYOUT);
+                node.mark_ancestors_dirty();
+                if let Some(parent) = parent {
+                    self.doc.nodes[parent].insert_damage(CONSTRUCT_FC | ONLY_RELAYOUT);
+                }
                 self.mutations_occurred |= node_is_in_document;
                 // A streaming parser appends a <style>'s text in several
                 // chunks, possibly across mutator sessions. Each chunk must
@@ -692,7 +815,9 @@ impl DocumentMutator<'_> {
 
         if (tag, attr) == tag_and_attr!("input", "checked") {
             set_input_checked_state(element, value.to_string());
-        } else if (tag, attr) == tag_and_attr!("img", "src") {
+        } else if (tag, attr) == tag_and_attr!("img", "src")
+            || (tag, attr) == tag_and_attr!("img", "srcset")
+        {
             self.load_image(node_id);
         } else if (tag, attr) == tag_and_attr!("canvas", "src") {
             self.load_custom_paint_src(node_id);
@@ -880,6 +1005,12 @@ impl DocumentMutator<'_> {
         if *attr == local_name!("style") {
             element.flush_style_attribute(&self.doc.guard, &self.doc.url.url_extra_data());
             node.mark_style_attr_updated();
+        } else if node_is_in_document
+            && *tag == local_name!("img")
+            && (*attr == local_name!("srcset")
+                || (*attr == local_name!("src") && element.attr(local_name!("srcset")).is_some()))
+        {
+            self.load_image(node_id);
         } else if (tag, attr) == tag_and_attr!("canvas", "src") {
             self.recompute_is_animating = true;
         } else if (tag, attr) == tag_and_attr!("link", "href") {
@@ -2093,7 +2224,12 @@ impl<'doc> DocumentMutator<'doc> {
 
     fn load_image(&mut self, target_id: NodeId) {
         let node = &self.doc.nodes[target_id];
-        if let Some(raw_src) = node.attr(local_name!("src")) {
+        if let Some(raw_src) = select_image_source(
+            node.attr(local_name!("src")),
+            node.attr(local_name!("srcset")),
+            self.doc.viewport.scale(),
+            |raw| self.doc.url.resolve_relative(raw).is_some(),
+        ) {
             if !raw_src.is_empty() {
                 let src = self.doc.resolve_url(raw_src);
                 let src_string = src.as_str();
