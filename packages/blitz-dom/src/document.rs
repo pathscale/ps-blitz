@@ -40,7 +40,7 @@ use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use blitz_traits::handoff::{EventQueue, EventTarget};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLockReadGuard, RwLockWriteGuard};
 use std::task::{Context as TaskContext, Waker};
 use style::Atom;
@@ -274,9 +274,8 @@ pub struct BaseDocument {
     pub(crate) subdocument_depth: usize,
 
     // Events
-    pub(crate) tx: Sender<DocumentEvent>,
-    // rx will always be Some, except temporarily while processing events
-    pub(crate) rx: Option<Receiver<DocumentEvent>>,
+    pub(crate) tx: EventTarget<DocumentEvent>,
+    pub(crate) rx: EventQueue<DocumentEvent>,
 
     /// A slotmap-backed tree of nodes
     ///
@@ -688,7 +687,9 @@ impl BaseDocument {
             .html_parser_provider
             .unwrap_or_else(|| Arc::new(DummyHtmlParserProvider));
 
-        let (tx, rx) = channel();
+        let wake_shell = Arc::clone(&shell_provider);
+        let rx = EventQueue::new(move || wake_shell.request_redraw());
+        let tx = rx.target();
 
         let mut doc = Self {
             node_drop_depth: 0,
@@ -720,7 +721,7 @@ impl BaseDocument {
             hoisted_position_hosts: HashSet::new(),
             id,
             tx,
-            rx: Some(rx),
+            rx,
 
             guard,
             nodes,
@@ -2737,16 +2738,11 @@ impl BaseDocument {
     }
 
     pub fn handle_messages(&mut self) {
-        // Remove event Reciever from the Document so that we can process events
-        // without holding a borrow to the Document
-        let rx = self.rx.take().unwrap();
-
-        while let Ok(msg) = rx.try_recv() {
+        for msg in self.rx.take_pending() {
+            let msg = Arc::try_unwrap(msg)
+                .unwrap_or_else(|_| panic!("document event has one consumer"));
             self.handle_message(msg);
         }
-
-        // Put Reciever back
-        self.rx = Some(rx);
     }
 
     pub fn handle_message(&mut self, msg: DocumentEvent) {

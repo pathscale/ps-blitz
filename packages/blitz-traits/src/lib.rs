@@ -3,6 +3,7 @@
 
 pub mod devtools;
 pub mod events;
+pub mod handoff;
 pub mod navigation;
 pub mod net;
 pub mod node_id;
