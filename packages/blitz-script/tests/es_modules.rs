@@ -6,25 +6,12 @@
 //! `SyntaxError: expected token '.', got '{' in import.meta`. Every assertion
 //! here is about a page that could not start at all.
 
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::time::{Duration, Instant};
+#[path = "../src/loopback_modules.rs"]
+mod loopback_modules;
+use loopback_modules::{LoopbackFetcher, serve_modules};
 
 use blitz_dom::DocumentConfig;
-use blitz_script::{FetchError, ScriptDocument, ScriptFetcher};
-use url::Url;
-
-/// How long a fixture server waits for the engine to connect.
-///
-/// A server blocking in `accept()` forever turns "the loader stopped calling
-/// the fetcher" into a hung test suite with no output, which is strictly worse
-/// than a failure. Every deadline in this file exists for that reason.
-///
-/// Generous rather than tight. These are loopback sockets that always answer,
-/// so a timeout here never means what the test is asking about: it means the
-/// machine was busy compiling. One run of the full suite failed that way before
-/// these were widened.
-const SERVE_TIMEOUT: Duration = Duration::from_secs(30);
+use blitz_script::ScriptDocument;
 
 fn config_with_base(base_url: &str) -> DocumentConfig {
     DocumentConfig {
@@ -48,144 +35,6 @@ fn eval_string(doc: &mut ScriptDocument, expression: &str) -> String {
 // itself. A map keyed by the string the test already wrote down would pass
 // without the resolution ever being right.
 // ---------------------------------------------------------------------------
-
-/// Serve `routes` (path -> JavaScript body) until the deadline expires, then
-/// stop. Returns the origin to import from and a handle recording which paths
-/// were actually requested.
-fn serve_modules(
-    routes: Vec<(&'static str, String)>,
-) -> (String, std::thread::JoinHandle<Vec<String>>) {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("loopback is available");
-    let port = listener
-        .local_addr()
-        .expect("the socket has an address")
-        .port();
-    listener
-        .set_nonblocking(true)
-        .expect("the listener can be polled");
-
-    let handle = std::thread::spawn(move || {
-        let mut requested = Vec::new();
-        let deadline = Instant::now() + SERVE_TIMEOUT;
-
-        while Instant::now() < deadline {
-            let mut stream = match listener.accept() {
-                Ok((stream, _)) => stream,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    // No connection yet. The test either has not reached the
-                    // fetch or never will; the deadline decides which.
-                    std::thread::sleep(Duration::from_millis(5));
-                    continue;
-                }
-                Err(_) => break,
-            };
-            stream
-                .set_nonblocking(false)
-                .expect("the accepted stream can use blocking reads");
-            stream
-                .set_read_timeout(Some(Duration::from_secs(15)))
-                .expect("the stream can time out");
-
-            let mut head = Vec::new();
-            let mut byte = [0u8; 1];
-            // Only the request head: reading to EOF would block, since the
-            // client holds the connection open waiting for our response.
-            while !head.ends_with(b"\r\n\r\n") {
-                match stream.read(&mut byte) {
-                    Ok(0) => break,
-                    Ok(_) => head.push(byte[0]),
-                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                    Err(error) => panic!("failed to read the loopback request head: {error}"),
-                }
-            }
-            let head = String::from_utf8_lossy(&head).to_string();
-            let path = head
-                .split_whitespace()
-                .nth(1)
-                .unwrap_or("/")
-                .split('?')
-                .next()
-                .unwrap_or("/")
-                .to_owned();
-
-            let body = routes
-                .iter()
-                .find(|(route, _)| *route == path)
-                .map(|(_, body)| body.clone());
-            requested.push(path);
-
-            let response = match body {
-                Some(body) => format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/javascript\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                ),
-                None => "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                    .to_owned(),
-            };
-            let _ = stream.write_all(response.as_bytes());
-            let _ = stream.flush();
-
-            // Stop as soon as every route has been asked for once. The
-            // deadline is the backstop for a regression that stops fetching;
-            // waiting for it on the happy path would add SERVE_TIMEOUT to
-            // every passing run, because the test joins this thread.
-            if routes
-                .iter()
-                .all(|(route, _)| requested.iter().any(|seen| seen == route))
-            {
-                break;
-            }
-        }
-
-        requested
-    });
-
-    (format!("http://127.0.0.1:{port}"), handle)
-}
-
-/// The minimum HTTP/1.1 client needed to prove the loader calls out.
-///
-/// `ScriptFetcher` is synchronous, so this is a blocking round trip on the
-/// document thread, the same shape a real embedder's fetcher has.
-struct LoopbackFetcher;
-
-impl ScriptFetcher for LoopbackFetcher {
-    fn fetch(&self, url: &Url) -> Result<String, FetchError> {
-        if url.scheme() != "http" {
-            return Err(FetchError::UnsupportedScheme(url.scheme().to_owned()));
-        }
-        let host = url.host_str().unwrap_or("127.0.0.1");
-        let port = url.port().unwrap_or(80);
-        let path = url.path();
-
-        let mut stream = TcpStream::connect((host, port)).map_err(FetchError::Io)?;
-        stream
-            .set_read_timeout(Some(Duration::from_secs(30)))
-            .map_err(FetchError::Io)?;
-        stream
-            .write_all(
-                format!("GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n")
-                    .as_bytes(),
-            )
-            .map_err(FetchError::Io)?;
-
-        let mut response = String::new();
-        stream
-            .read_to_string(&mut response)
-            .map_err(FetchError::Io)?;
-
-        let (head, body) = response
-            .split_once("\r\n\r\n")
-            .ok_or_else(|| FetchError::InvalidData("no header terminator".to_owned()))?;
-        if !head.starts_with("HTTP/1.1 200") {
-            return Err(FetchError::InvalidData(format!(
-                "unexpected status for {url}: {}",
-                head.lines().next().unwrap_or_default()
-            )));
-        }
-        Ok(body.to_owned())
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Tests
