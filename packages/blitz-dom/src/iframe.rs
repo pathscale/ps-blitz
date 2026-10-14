@@ -75,6 +75,7 @@ impl BaseDocument {
             style_threading: self.style_threading,
             incremental: Some(self.incremental_layout),
             abort_signal: Some(abort_signal),
+            teardown: None,
             subdocument_depth: self.subdocument_depth + 1,
             // Process-wide, already set by the parent if it had one.
             family_fallback: None,

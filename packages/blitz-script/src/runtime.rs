@@ -1823,6 +1823,14 @@ impl BoaScriptEngine {
         any_called
     }
 
+    pub(crate) fn dispatch_lifecycle_event(&mut self, name: &str) {
+        let root_id = self.ctx.doc.borrow().root_node().id;
+        let mut event_state = EventState::default();
+        let ran = self.dispatch_event_inner(&[root_id], name, false,
+            |ctx, target, context| create_event(ctx, name, false, false, target, context), &mut event_state);
+        if ran { self.run_jobs("lifecycle microtasks"); }
+    }
+
     /// Dispatch a simple event (e.g. `DOMContentLoaded`) targeting the document node
     pub fn dispatch_document_event(&mut self, name: &str) -> bool {
         let root_id = self.ctx.doc.borrow().root_node().id;

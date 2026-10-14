@@ -1266,7 +1266,7 @@ impl BaseDocument {
         }
         #[cfg(feature = "custom-widget")]
         self.destroy_surfaces();
-        for load in self.iframe_loads.values() { load.abort_controller.abort(); }
+        for (_, load) in std::mem::take(&mut self.iframe_loads) { load.abort_controller.abort(); }
         self.teardown.retire(children);
     }
 
