@@ -77,6 +77,10 @@ impl<E: ScriptEngine> Engine<E> {
         Self { backend }
     }
 
+    pub(crate) fn backend(&self) -> &E { &self.backend }
+
+    pub(crate) fn backend_mut(&mut self) -> &mut E { &mut self.backend }
+
     pub(crate) fn eval(&mut self, code: &str, description: &str) {
         self.backend.eval(code, description)
     }
