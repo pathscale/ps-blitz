@@ -203,7 +203,9 @@ fn listener_error_context(
     format!("{event_name} event listener on {target}: {source}")
 }
 
-pub(crate) struct ScriptRuntime {
+pub(crate) type ScriptRuntime = crate::engine::Engine<BoaScriptEngine>;
+
+pub(crate) struct BoaScriptEngine {
     pub context: Context,
     pub ctx: DomCtx,
     diagnostics: Rc<RefCell<RuntimeDiagnostics>>,
@@ -228,7 +230,7 @@ pub(crate) struct ScriptRuntime {
     domc_generation: Option<u64>,
 }
 
-impl ScriptRuntime {
+impl BoaScriptEngine {
     pub fn new(
         doc: Rc<RefCell<BaseDocument>>,
         base_url: Option<&Url>,

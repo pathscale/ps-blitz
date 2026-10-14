@@ -45,6 +45,7 @@ mod docwrite;
 mod dom;
 pub mod dom_exception;
 mod domc;
+mod engine;
 mod event_handler;
 mod fetch;
 mod fonts;

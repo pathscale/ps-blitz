@@ -19,7 +19,7 @@ use web_time::{Duration, Instant};
 use crate::event_handler::ScriptEventHandler;
 use crate::fetch::{DefaultScriptFetcher, ScriptFetcher};
 use crate::module::SharedFetcher;
-use crate::runtime::ScriptRuntime;
+use crate::runtime::{BoaScriptEngine, ScriptRuntime};
 
 type PollHook =
     Box<dyn for<'a> FnMut(&mut ScriptDocument, Option<&TaskContext<'a>>) -> bool + 'static>;
@@ -133,7 +133,11 @@ impl ScriptDocument {
             }
         };
         let fetcher: SharedFetcher = Rc::new(RefCell::new(Rc::new(DefaultScriptFetcher)));
-        let runtime = ScriptRuntime::new(Rc::clone(&inner), base_url.as_ref(), Rc::clone(&fetcher));
+        let runtime = ScriptRuntime::new(BoaScriptEngine::new(
+            Rc::clone(&inner),
+            base_url.as_ref(),
+            Rc::clone(&fetcher),
+        ));
         crate::docwrite::prepare(&runtime.context, html, Rc::clone(&fetcher), parser);
 
         Self {
