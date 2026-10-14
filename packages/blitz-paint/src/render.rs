@@ -173,6 +173,9 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             return;
         };
         let root_id = root_element.id;
+        if !self.dom.stash_paint {
+            self.dom.paint_revision.set(self.dom.paint_revision.get().saturating_add(1));
+        }
         // `width`/`height` are device pixels; the root element's layout is in CSS
         // pixels. Taking the max of the two unscaled compared different units,
         // so on a HiDPI display a document taller than the viewport had its
@@ -304,6 +307,12 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             return;
         };
 
+        if self.dom.stash_paint {
+            let opaque = matches!(node.local_name(), "canvas" | "video" | "iframe" | "web-view");
+            #[cfg(feature = "custom-widget")]
+            let opaque = opaque || node.element_data().and_then(|el| el.custom_widget_data()).is_some();
+            if opaque || self.dom.stash_sensitive(node_id) { return; }
+        }
         // Early return if the element is hidden
         if matches!(node.style().display, taffy::Display::None) {
             return;
