@@ -1256,6 +1256,7 @@ impl BaseDocument {
     pub fn prepare_teardown(&mut self) {
         if self.page_retiring { return; }
         self.page_retiring = true;
+        if let Some(signal) = &self.abort_signal { blitz_traits::net::AbortController { signal: signal.clone() }.abort(); }
         self.page_visible = false;
         self.page_frozen = true;
         let nodes: Vec<_> = self.sub_document_nodes.iter().copied().collect();
