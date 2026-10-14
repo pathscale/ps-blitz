@@ -248,6 +248,13 @@ impl BoaScriptEngine {
             .job_executor(Rc::clone(&job_executor))
             .build()
             .expect("building the script context should not fail");
+        // Retired guest runtime: direct use raises ReferenceError, while
+        // feature detection sees an absent WebAssembly global.
+        context
+            .global_object()
+            .clone()
+            .delete_property_or_throw(js_string!("WebAssembly"), &mut context)
+            .expect("remove WebAssembly before page scripts run");
         /*
          * A call depth a real application actually reaches.
          *

@@ -8,7 +8,7 @@ members = [
     "packages/blitz-debug-control",
     "packages/blitz-platform-api",
     "packages/dom-abi",
-    "packages/blitz-wasm",
+
     "packages/blitz-html",
     "packages/blitz-script",
     "packages/blitz-net",
@@ -32,13 +32,10 @@ members = [
     "examples/wgpu_texture",
     "examples/wasm_hello",
 ]
-# `packages/blitz-wasm/guest` is a SEPARATE workspace, deliberately. It builds
-# for wasm32-unknown-unknown and has its own target directory, so
-# `cargo test -p blitz-wasm` can shell out to build it without deadlocking on
-# this workspace's own target lock. See packages/blitz-wasm/ABI.md.
+
 # CI checks the coordinated runtime stack out below this repository. Keep those
 # independent workspaces out of Cargo's automatic path-dependency membership.
-exclude = ["sites", "packages/blitz-wasm/guest", ".ps-observability", ".chuzz", ".izumo"]
+exclude = ["sites", ".ps-observability", ".chuzz", ".izumo"]
 resolver = "2"
 
 [workspace.package]

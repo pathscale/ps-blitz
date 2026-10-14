@@ -85,8 +85,7 @@ if [ -z "$host" ]; then
       --config "patch.crates-io.ps-blitz-paint.path='$PACKAGES/blitz-paint'" \
       --config "patch.crates-io.ps-blitz-script.path='$PACKAGES/blitz-script'" \
       --config "patch.crates-io.ps-blitz-shell.path='$PACKAGES/blitz-shell'" \
-      --config "patch.crates-io.ps-blitz-traits.path='$PACKAGES/blitz-traits'" \
-      --config "patch.crates-io.ps-blitz-wasm.path='$PACKAGES/blitz-wasm'" )
+      --config "patch.crates-io.ps-blitz-traits.path='$PACKAGES/blitz-traits'" )
   host="$chuzz/target/release/chuzz-headless"
 
   # ps-qa still comes from ps-observability, and still with the patches:
