@@ -50,6 +50,8 @@ struct PendingScript {
     deferred: bool,
 }
 
+type BeforeScriptHook = Box<dyn FnMut(&mut BaseDocument)>;
+
 /// A [`Document`] which executes the JavaScript contained in the document's
 /// `<script>` tags, exposing DOM APIs backed by `blitz-dom` to the scripts.
 ///
@@ -81,7 +83,7 @@ pub struct ScriptDocument {
     executed_scripts: std::collections::HashSet<NodeId>,
     poll_hook: Option<PollHook>,
     teardown_hooks: Vec<Box<dyn FnOnce()>>,
-    before_script_hook: Option<Box<dyn FnMut(&mut BaseDocument)>>,
+    before_script_hook: Option<BeforeScriptHook>,
     _runtime_lease: blitz_dom::release::ReleaseLease,
 
     // The timer registry owns a clone of the current document waker.
