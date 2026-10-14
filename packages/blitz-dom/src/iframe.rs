@@ -25,16 +25,21 @@ struct IframePermit;
 
 impl IframePermit {
     fn acquire() -> Option<Self> {
-        RESERVED_IFRAMES
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |reserved| {
-                if reserved < MAX_LIVE_IFRAMES {
-                    Some(reserved + 1)
-                } else {
-                    None
-                }
-            })
-            .ok()
-            .map(|_| Self)
+        let mut reserved = RESERVED_IFRAMES.load(Ordering::Acquire);
+        loop {
+            if reserved >= MAX_LIVE_IFRAMES {
+                return None;
+            }
+            match RESERVED_IFRAMES.compare_exchange_weak(
+                reserved,
+                reserved + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Some(Self),
+                Err(observed) => reserved = observed,
+            }
+        }
     }
 }
 
