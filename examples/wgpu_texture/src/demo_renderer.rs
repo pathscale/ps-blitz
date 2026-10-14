@@ -6,15 +6,15 @@ use blitz_dom::node::ComputedStyles;
 use blitz_dom::Widget;
 use peniko::kurbo::{Affine, Rect};
 use peniko::{Fill, ImageBrush, ImageSampler};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use blitz_traits::handoff::{EventQueue, EventTarget};
+use std::sync::Arc;
 use std::time::Instant;
 use wgpu_context::DeviceHandle;
 
 pub struct DemoWidget {
     state: DemoRendererState,
     start_time: std::time::Instant,
-    tx: Sender<DemoMessage>,
-    rx: Receiver<DemoMessage>,
+    messages: EventQueue<DemoMessage>,
     color: Color,
 }
 
@@ -104,32 +104,29 @@ struct ActiveDemoRenderer {
 }
 
 impl DemoWidget {
-    pub fn new() -> Self {
-        let (tx, rx) = channel();
-        Self::with_channel(tx, rx)
+    pub fn new(wake: impl Fn() + Send + Sync + 'static) -> Self {
+        Self::with_queue(EventQueue::new(wake))
     }
 
-    pub fn with_channel(tx: Sender<DemoMessage>, rx: Receiver<DemoMessage>) -> Self {
+    pub fn with_queue(messages: EventQueue<DemoMessage>) -> Self {
         Self {
             state: DemoRendererState::Suspended,
             start_time: std::time::Instant::now(),
-            tx,
-            rx,
+            messages,
             color: Color::WHITE,
         }
     }
 
-    pub fn sender(&self) -> Sender<DemoMessage> {
-        self.tx.clone()
+    pub fn target(&self) -> EventTarget<DemoMessage> {
+        self.messages.target()
     }
 
     fn process_messages(&mut self) {
-        loop {
-            match self.rx.try_recv() {
-                Err(_) => return,
-                Ok(msg) => match msg {
-                    DemoMessage::SetColor(color) => self.color = color,
-                },
+        for msg in self.messages.take_pending() {
+            let msg = Arc::try_unwrap(msg)
+                .unwrap_or_else(|_| panic!("demo message has one consumer"));
+            match msg {
+                DemoMessage::SetColor(color) => self.color = color,
             }
         }
     }
