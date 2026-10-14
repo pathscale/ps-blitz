@@ -757,7 +757,7 @@ impl BaseDocument {
         let mut sticky: Vec<NodeId> = Vec::new();
         let root_transformed = self.nodes[root_id]
             .primary_styles()
-            .is_some_and(|styles| establishes_containing_block(&styles));
+            .is_some_and(|styles| establishes_containing_block(&styles, true));
         let mut escaped = if self.abspos_candidates_dirty || !self.incremental_layout {
             Some(Vec::new())
         } else {
@@ -885,7 +885,7 @@ impl BaseDocument {
                 collect_fixed(
                     doc,
                     child_id,
-                    under_transform || establishes_containing_block(&styles),
+                    under_transform || establishes_containing_block(&styles, false),
                     out,
                     sticky,
                     escaped,
@@ -894,11 +894,8 @@ impl BaseDocument {
         }
 
         /// Whether a node becomes the containing block for fixed descendants.
-        ///
-        /// TODO: `filter`, `backdrop-filter`, `will-change`, `contain` and
-        /// `perspective` also do this.
-        fn establishes_containing_block(styles: &ComputedValues) -> bool {
-            crate::layout::abspos::establishes_transform_containing_block(styles)
+        fn establishes_containing_block(styles: &ComputedValues, is_root: bool) -> bool {
+            crate::layout::abspos::establishes_all_descendants_containing_block(styles, is_root)
         }
     }
 

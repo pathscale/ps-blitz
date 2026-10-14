@@ -106,6 +106,10 @@ impl crate::document::BaseDocument {
                 continue;
             }
 
+            if !self.css_animation_ticks_enabled {
+                continue;
+            }
+
             self.nodes[node_id].set_restyle_hint(RestyleHint::RESTYLE_SELF);
 
             for animation in set.animations.iter_mut() {
