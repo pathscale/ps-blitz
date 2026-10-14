@@ -488,6 +488,7 @@ pub struct BaseDocument {
     pub(crate) controls_to_form: HashMap<NodeId, NodeId>,
     /// Nodes that contain sub documents
     pub(crate) sub_document_nodes: HashSet<NodeId>,
+    pub stash_policy: crate::stash_policy::StashPolicy,
     /// Load state (abort controller and in-flight request id) for each
     /// `<iframe>` element whose sub-document is loaded automatically
     pub(crate) iframe_loads: HashMap<NodeId, crate::iframe::IframeLoad>,
@@ -767,6 +768,7 @@ impl BaseDocument {
             subdoc_animation_pacing: AnimationPacing::Idle,
             has_canvas: false,
             sub_document_nodes: HashSet::new(),
+            stash_policy: Default::default(),
             iframe_loads: HashMap::new(),
 
             #[cfg(feature = "custom-widget")]

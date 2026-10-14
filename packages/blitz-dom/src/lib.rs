@@ -60,6 +60,7 @@ pub mod range;
 mod resolve;
 mod select;
 mod selection;
+pub mod stash_policy;
 #[cfg(feature = "shadow-dom")]
 mod shadow;
 /// Implementations that interact with servo's style engine
