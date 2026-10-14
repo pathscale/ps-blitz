@@ -598,6 +598,27 @@ impl DocumentMutator<'_> {
     }
 
     pub fn set_attribute(&mut self, node_id: NodeId, name: QualName, value: &str) {
+        // Equal writes still notify observers and can affect live element state.
+        let needs_attribute_invalidation =
+            self.doc.nodes[node_id]
+                .element_data()
+                .is_none_or(|element| {
+                    element.attr_by_name(&name) != Some(value)
+                        || !matches!(&element.special_data, SpecialElementData::None)
+                        || (name.ns == ns!()
+                            && matches!(
+                                name.local.as_ref(),
+                                "value"
+                                    | "style"
+                                    | "disabled"
+                                    | "checked"
+                                    | "src"
+                                    | "srcset"
+                                    | "href"
+                                    | "srcdoc"
+                                    | "selected"
+                            ))
+                });
         self.doc.note_stash_subtree(node_id);
         self.doc.note_stash_attribute(node_id, &name, value);
         #[cfg(feature = "shadow-dom")]
@@ -623,7 +644,7 @@ impl DocumentMutator<'_> {
                 });
             }
         }
-        if node_is_in_document {
+        if node_is_in_document && needs_attribute_invalidation {
             self.doc.snapshot_attribute(node_id, &name.local);
 
             // Damage is asserted only where an attribute can change what the
@@ -878,6 +899,13 @@ impl DocumentMutator<'_> {
     }
 
     pub fn clear_attribute(&mut self, node_id: NodeId, name: QualName) {
+        if self.doc.nodes[node_id]
+            .element_data()
+            .and_then(|element| element.attr_by_name(&name))
+            .is_none()
+        {
+            return;
+        }
         self.doc.note_stash_subtree(node_id);
         #[cfg(feature = "shadow-dom")]
         if name.local == local_name!("slot") || name.local == local_name!("name") {
@@ -905,9 +933,6 @@ impl DocumentMutator<'_> {
             }
         }
         if node_is_in_document {
-            let removes_existing_attribute = self.doc.nodes[node_id]
-                .element_data()
-                .is_some_and(|element| element.attrs.iter().any(|attr| attr.name == name));
             self.doc.snapshot_attribute(node_id, &name.local);
             let parent_id = self.doc.nodes[node_id].parent;
             {
@@ -921,9 +946,7 @@ impl DocumentMutator<'_> {
                 // Make pending restyle hints reachable by traversal.
                 node.mark_ancestors_dirty();
             }
-            if removes_existing_attribute {
-                self.restyle_parent_for_attribute_change(parent_id);
-            }
+            self.restyle_parent_for_attribute_change(parent_id);
         }
 
         if name.ns == ns!() && name.local == local_name!("id") {

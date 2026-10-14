@@ -68,7 +68,6 @@ use style::{
     stylesheets::{AllowImportRules, DocumentStyleSheet, Origin, Stylesheet},
     stylist::Stylist,
 };
-use thin_vec::ThinVec;
 use url::Url;
 use web_time::Instant;
 
@@ -2582,7 +2581,7 @@ impl BaseDocument {
             _ => {}
         }
 
-        let children = node.children.clone();
+        let mut children = node.children.clone();
         #[cfg(feature = "shadow-dom")]
         let shadow_source = node.shadow_root_id();
         let template_contents = node
@@ -2620,15 +2619,14 @@ impl BaseDocument {
         }
 
         // Recursively clone children
-        let new_children: ThinVec<NodeId> = children
-            .into_iter()
-            .map(|child_id| self.deep_clone_node(child_id))
-            .collect();
-        for &child_id in &new_children {
+        for child_id in &mut children {
+            *child_id = self.deep_clone_node(*child_id);
+        }
+        for &child_id in &children {
             self.nodes[child_id].parent = Some(new_node_id);
             self.attach_script_custom_element_subtree(child_id, new_node_id);
         }
-        self.nodes[new_node_id].children = new_children;
+        self.nodes[new_node_id].children = children;
 
         // Only a shadow root that opted into `clonable` is copied. Imperative
         // roots keep the previous behavior of not cloning.
@@ -2653,7 +2651,7 @@ impl BaseDocument {
                     .shadow_root_data()
                     .unwrap()
                     .declarative;
-                let shadow_children = self.nodes[source_root].children.clone();
+                let mut shadow_children = self.nodes[source_root].children.clone();
                 let new_root = self.attach_shadow(new_node_id, mode);
                 if let Some(root) = self.nodes[new_root].shadow_root_data_mut() {
                     root.clonable = true;
@@ -2661,15 +2659,14 @@ impl BaseDocument {
                     root.delegates_focus = delegates_focus;
                     root.declarative = declarative;
                 }
-                let cloned_shadow_children: ThinVec<NodeId> = shadow_children
-                    .into_iter()
-                    .map(|child_id| self.deep_clone_node(child_id))
-                    .collect();
-                for &child_id in &cloned_shadow_children {
+                for child_id in &mut shadow_children {
+                    *child_id = self.deep_clone_node(*child_id);
+                }
+                for &child_id in &shadow_children {
                     self.nodes[child_id].parent = Some(new_root);
                     self.attach_script_custom_element_subtree(child_id, new_root);
                 }
-                self.nodes[new_root].children = cloned_shadow_children;
+                self.nodes[new_root].children = shadow_children;
             }
         }
 
