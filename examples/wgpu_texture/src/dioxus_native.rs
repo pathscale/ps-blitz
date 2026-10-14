@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use color::{palette::css::WHITE, parse_color};
 use dioxus_native::prelude::*;
+use dioxus_native::prelude::dioxus_core::schedule_update;
 use dioxus_native::CustomWidgetAttr;
 use std::any::Any;
 
