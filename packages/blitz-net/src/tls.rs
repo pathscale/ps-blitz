@@ -153,13 +153,14 @@ pub(super) async fn open(
     origin: &Origin,
     handle: &Handle,
     config: Arc<ClientConfig>,
+    addresses: &[nagoya::reactor::socket::Addr],
 ) -> Result<Transport, Error> {
     if !origin.tls {
-        return Ok(Transport::Plain(connect(origin, handle).await?));
+        return Ok(Transport::Plain(connect(origin, handle, addresses).await?));
     }
     update(&origin.host, |stats| stats.last_tls_policy_error = None);
     // One connection and one policy. A refusal is terminal for this request.
-    match handshake(origin, handle, config).await {
+    match handshake(origin, handle, config, addresses).await {
         Ok(tls) => {
             update(&origin.host, |stats| stats.handshakes += 1);
             Ok(Transport::Tls(tls))
@@ -185,7 +186,7 @@ fn info(message: std::fmt::Arguments<'_>) {
     eprintln!("info: {message}");
 }
 
-async fn connect(origin: &Origin, handle: &Handle) -> Result<TcpStream, Error> {
+pub(super) async fn resolve_addresses(origin: &Origin, initiator: &blitz_traits::net::Initiator) -> Result<Vec<nagoya::reactor::socket::Addr>, Error> {
     let host = origin.host.clone();
     let port = origin.port;
     let addresses = nagoya::spawn(async move {
@@ -194,12 +195,25 @@ async fn connect(origin: &Origin, handle: &Handle) -> Result<TcpStream, Error> {
     .await
     .ok_or_else(|| Error::Dns("resolver task was cancelled".to_owned()))??;
 
+    for address in &addresses {
+        use nagoya::reactor::socket::Addr;
+        let ip = match address {
+            Addr::V4(bytes, _) => std::net::IpAddr::from(*bytes),
+            Addr::V6(bytes, _) => std::net::IpAddr::from(*bytes),
+            Addr::Path(_) => return Err(Error::Blocked("resource-private-address".into())),
+        };
+        initiator.check_address(ip).map_err(Error::Blocked)?;
+    }
+    Ok(addresses)
+}
+
+async fn connect(origin: &Origin, handle: &Handle, addresses: &[nagoya::reactor::socket::Addr]) -> Result<TcpStream, Error> {
     let stats = update(&origin.host, |stats| stats.connections += 1);
     info(format_args!(
         "net {}: new connection #{} (tls {})",
         origin.host, stats.connections, origin.tls
     ));
-    nagoya::net::connect_any(&addresses, handle)
+    nagoya::net::connect_any(addresses, handle)
         .await
         .map_err(|error| Error::Io(error.to_string()))
 }
@@ -209,8 +223,9 @@ async fn handshake(
     origin: &Origin,
     handle: &Handle,
     config: Arc<ClientConfig>,
+    addresses: &[nagoya::reactor::socket::Addr],
 ) -> Result<Box<TlsSession<TcpStream>>, Error> {
-    let stream = connect(origin, handle).await?;
+    let stream = connect(origin, handle, addresses).await?;
     let name = ServerName::try_from(origin.host.to_string())
         .map_err(|_| Error::InvalidRequest("invalid TLS server name"))?;
     let session =

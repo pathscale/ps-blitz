@@ -184,6 +184,7 @@ impl PrivateCache {
         if let Some(loaded) = &loaded
             && reusable(loaded, &request_policy, SystemTime::now())
         {
+            request.initiator.charge(loaded.response.body.len()).map_err(Error::Blocked)?;
             return Ok(aged_response(loaded, SystemTime::now()));
         }
 
@@ -240,6 +241,7 @@ impl PrivateCache {
                 self.publish(&request, &headers, &merged, started, received, generation)
                     .await;
                 set_age(&mut merged.headers, age);
+                request.initiator.charge(merged.body.len()).map_err(Error::Blocked)?;
                 return Ok(merged);
             }
 
