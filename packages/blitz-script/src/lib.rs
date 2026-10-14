@@ -68,6 +68,9 @@ mod timers;
 pub use boa_engine;
 pub use boa_runtime;
 
+/// Drop-context collection on its current owner thread.
+pub fn collect_retired_realms() { boa_gc::force_collect(); }
+
 #[cfg(feature = "debug-control")]
 pub use debug_control::DebugController;
 pub use document::ScriptDocument;

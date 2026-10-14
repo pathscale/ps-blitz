@@ -174,6 +174,7 @@ pub trait Document: Any + 'static {
 
     fn set_page_visible(&mut self, visible: bool) { self.inner_mut().page_visible = visible; }
     fn freeze(&mut self) { self.inner_mut().page_frozen = true; }
+    fn finish_restore(&mut self) {}
     fn resume(&mut self) { self.inner_mut().page_frozen = false; }
 
     /// Get the [`Document`]'s id
@@ -513,6 +514,7 @@ pub struct BaseDocument {
     pub was_discarded: bool,
     pub paint_revision: std::cell::Cell<u64>,
     pub stash_paint: bool,
+    pub restore_scroll: Option<crate::Point<f64>>,
     #[cfg(feature = "custom-widget")]
     retired_resources: Vec<crate::release::ResourceRetirement>,
     /// Load state (abort controller and in-flight request id) for each
@@ -804,6 +806,7 @@ impl BaseDocument {
             was_discarded: false,
             paint_revision: std::cell::Cell::new(0),
             stash_paint: false,
+            restore_scroll: None,
             #[cfg(feature = "custom-widget")]
             retired_resources: Vec::new(),
             iframe_loads: HashMap::new(),
@@ -1284,18 +1287,20 @@ impl BaseDocument {
         #[cfg(feature = "custom-widget")]
         {
             let receipt = Arc::clone(&document.inner().teardown);
-            let resources = document.inner_mut().retire_render_resources();
+            let (resources, mut leases) = document.inner_mut().retire_render_resources();
             if !resources.is_empty() {
-                self.retired_resources.push(crate::release::ResourceRetirement { resources, lease: receipt.lease() });
+                leases.push(receipt.lease());
+                self.retired_resources.push(crate::release::ResourceRetirement { resources, leases });
             }
         }
         Some(document.dispose())
     }
 
     #[cfg(feature = "custom-widget")]
-    fn retire_render_resources(&mut self) -> Vec<anyrender::ResourceId> {
+    fn retire_render_resources(&mut self) -> (Vec<anyrender::ResourceId>, Vec<crate::release::ReleaseLease>) {
         let mut resources = self.take_pending_resource_deallocations();
-        for retirement in self.retired_resources.drain(..) { resources.extend(retirement.resources); }
+        let mut leases = Vec::new();
+        for retirement in self.retired_resources.drain(..) { resources.extend(retirement.resources); leases.extend(retirement.leases); }
         for id in self.custom_widget_nodes.iter().copied() {
             if let Some(data) = self.nodes.get_mut(id).and_then(|node| node.element_data_mut()).and_then(|el| el.custom_widget_data_mut()) {
                 resources.append(&mut data.active_resource_ids);
@@ -1303,10 +1308,12 @@ impl BaseDocument {
         }
         for id in self.sub_document_nodes.iter().copied() {
             if let Some(document) = self.nodes.get_mut(id).and_then(|node| node.subdoc_mut()) {
-                resources.extend(document.inner_mut().retire_render_resources());
+                let (child_resources, child_leases) = document.inner_mut().retire_render_resources();
+                resources.extend(child_resources);
+                leases.extend(child_leases);
             }
         }
-        resources
+        (resources, leases)
     }
 
     #[cfg(feature = "custom-widget")]

@@ -64,7 +64,7 @@ impl Drop for ReleaseLease {
 #[cfg(feature = "custom-widget")]
 pub struct ResourceRetirement {
     pub resources: Vec<anyrender::ResourceId>,
-    pub lease: ReleaseLease,
+    pub leases: Vec<ReleaseLease>,
 }
 
 pub struct Released(Arc<Teardown>);
