@@ -526,7 +526,7 @@ impl ScriptDocument {
     /// through the document's event driver. The event is exposed to JavaScript
     /// event listeners, and Blitz's default actions run unless prevented.
     pub fn dispatch_dom_event(&mut self, event: DomEvent) {
-        if self.inner.borrow().page_frozen || self.inner.borrow().page_retiring { return; }
+        if self.inner.borrow().page_frozen || self.inner.borrow().page_retiring || self.inner.borrow().page_input_blocked { return; }
         let _execution = self.enter_execution_time_limit();
         let profiling_boundary = self.runtime.ctx.enter_profiling_boundary();
         let profiling = profiling_boundary.enabled();
@@ -911,7 +911,10 @@ impl Document for ScriptDocument {
         self.timer_wake.take();
     }
 
-    fn finish_restore(&mut self) { self.before_script_hook.take(); }
+    fn finish_restore(&mut self) {
+        self.before_script_hook.take();
+        self.inner.borrow_mut().page_input_blocked = false;
+    }
 
     fn resume(&mut self) {
         if !self.inner.borrow().page_frozen || self.inner.borrow().page_retiring { return; }
@@ -931,7 +934,7 @@ impl Document for ScriptDocument {
     }
 
     fn handle_ui_event(&mut self, event: UiEvent) {
-        if self.inner.borrow().page_frozen || self.inner.borrow().page_retiring { return; }
+        if self.inner.borrow().page_frozen || self.inner.borrow().page_retiring || self.inner.borrow().page_input_blocked { return; }
         let _execution = self.enter_execution_time_limit();
         let profiling_boundary = self.runtime.ctx.enter_profiling_boundary();
         let profiling = profiling_boundary.enabled();
@@ -983,7 +986,7 @@ impl ScriptDocument {
     /// node by id, so routing those coordinates through hit testing again can
     /// silently select an overlapping descendant or retained overlay.
     pub fn handle_pointer_move_to_node(&mut self, event: BlitzPointerEvent, node_id: NodeId) {
-        if self.inner.borrow().page_frozen || self.inner.borrow().page_retiring { return; }
+        if self.inner.borrow().page_frozen || self.inner.borrow().page_retiring || self.inner.borrow().page_input_blocked { return; }
         let _execution = self.enter_execution_time_limit();
         let profiling_boundary = self.runtime.ctx.enter_profiling_boundary();
         let profiling = profiling_boundary.enabled();
@@ -1002,7 +1005,7 @@ impl ScriptDocument {
     /// by the caller, while retaining the normal pointer event ordering,
     /// compatibility mouse events, activation state and click synthesis.
     pub fn handle_ui_event_to_node(&mut self, event: UiEvent, node_id: NodeId) {
-        if self.inner.borrow().page_frozen || self.inner.borrow().page_retiring { return; }
+        if self.inner.borrow().page_frozen || self.inner.borrow().page_retiring || self.inner.borrow().page_input_blocked { return; }
         let _execution = self.enter_execution_time_limit();
         let profiling_boundary = self.runtime.ctx.enter_profiling_boundary();
         let profiling = profiling_boundary.enabled();
