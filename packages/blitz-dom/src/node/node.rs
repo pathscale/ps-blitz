@@ -662,13 +662,18 @@ impl Node {
 
     /// Set appropriate damage for Stylo when an element's style attribute is updated
     pub(crate) fn mark_style_attr_updated(&mut self) {
+        self.mark_style_attr_updated_without_propagation();
+        self.mark_ancestors_dirty();
+    }
+
+    /// Marks a style attribute update after the caller has dirtied the current ancestors.
+    pub(crate) fn mark_style_attr_updated_without_propagation(&mut self) {
         if let Some(stylo_element_data) = self.stylo_element_data_opt_mut() {
             if let Some(mut data) = stylo_element_data.get_mut() {
                 data.hint |= RestyleHint::RESTYLE_STYLE_ATTRIBUTE;
             }
         }
         self.set_dirty_descendants();
-        self.mark_ancestors_dirty();
     }
 
     /// Marks all ancestors of this node as having dirty descendants.
