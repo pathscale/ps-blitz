@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::time::Duration;
 
 use blitz_dom::{Document, DocumentConfig};
 use blitz_script::{DebugController, ScriptDocument};
@@ -34,12 +33,8 @@ fn main() {
     document.inner_mut().resolve(0.0);
 
     while !control.exit_requested() {
-        match control.service_one(&mut document, Duration::from_millis(100)) {
-            Ok(true) => {}
-            Ok(false) => break,
-            Err(_) => {
-                document.poll(None);
-            }
+        if !control.service_reactive(&mut document) {
+            break;
         }
     }
 }
