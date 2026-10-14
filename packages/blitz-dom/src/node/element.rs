@@ -590,6 +590,13 @@ impl ElementData {
         &self.attrs
     }
 
+    pub(crate) fn attr_by_name(&self, name: &QualName) -> Option<&str> {
+        self.attrs
+            .iter()
+            .find(|attr| attr.name.ns == name.ns && attr.name.local == name.local)
+            .map(|attr| attr.value.as_ref())
+    }
+
     pub fn attr(&self, name: impl PartialEq<LocalName>) -> Option<&str> {
         let attr = self
             .attrs
