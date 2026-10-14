@@ -2,13 +2,16 @@ use std::collections::VecDeque;
 use std::io;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
+use std::sync::Arc;
+use std::sync::mpsc::{RecvTimeoutError, TryRecvError};
 use std::time::{Duration, Instant};
 
 use anyrender::render_to_buffer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
 use base64::Engine;
-use blitz_debug_control::{ControlRequest, ControlResponse, DebugServer, ServerConfig};
+use blitz_debug_control::{
+    CommandReceiver, ControlRequest, ControlResponse, DebugServer, ServerConfig,
+};
 use blitz_dom::Document;
 use blitz_dom::NodeId;
 use blitz_traits::events::{
@@ -25,13 +28,13 @@ const MAX_IDLE_TURNS: usize = 1_000;
 const ASYNC_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
 const EVENT_TRACE_CAPACITY: usize = 256;
 
-/// UI-thread half of the debug-control channel.
+/// Renderer half of the typed debug-control queue.
 ///
-/// The networking thread can only create [`ControlRequest`] values. Call one
-/// of the `service_*` methods from the thread that owns `ScriptDocument`.
+/// Reactor tasks enqueue request pointers. Service them on the lane that owns
+/// the ScriptDocument.
 pub struct DebugController {
     server: DebugServer,
-    requests: Receiver<ControlRequest>,
+    requests: CommandReceiver,
     active_document_id: Option<usize>,
     document_generation: u64,
     document_revision: u64,
@@ -52,7 +55,7 @@ pub struct DebugController {
 
 impl DebugController {
     pub fn start(config: ServerConfig) -> io::Result<Self> {
-        let (server, requests) = DebugServer::start(config)?;
+        let (server, requests) = DebugServer::start_typed(config)?;
         Ok(Self {
             server,
             requests,
@@ -80,7 +83,7 @@ impl DebugController {
     /// An embedder with an event loop should install this, then service on
     /// wake. Without it the server has no way to say a request has arrived and
     /// the embedder is back to polling. Harnesses that call `service_one` block
-    /// on the channel and need nothing here.
+    /// on queue readiness and need nothing here.
     pub fn set_waker(&self, wake: impl Fn() + Send + Sync + 'static) {
         self.server.waker().set(wake);
     }
@@ -167,10 +170,10 @@ impl DebugController {
         self.exit_requested
     }
 
-    fn handle(&mut self, document: &mut ScriptDocument, request: ControlRequest) {
+    fn handle(&mut self, document: &mut ScriptDocument, request: Arc<ControlRequest>) {
         self.observe_document(document);
         let response = self.route(document, &request);
-        let _ = request.respond(response);
+        let _ = request.respond_arc(Arc::new(response));
     }
 
     fn observe_document(&mut self, document: &ScriptDocument) {

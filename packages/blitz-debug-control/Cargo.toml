@@ -24,3 +24,7 @@ name = "blitz_debug_control"
 getrandom.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+nagoya.workspace = true
+spsc.workspace = true
+bytes.workspace = true
+futures-util.workspace = true

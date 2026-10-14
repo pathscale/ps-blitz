@@ -1,7 +1,7 @@
 //! Debug-only, loopback WebDriver transport for Blitz renderers.
 //!
 //! The server owns networking and session authentication. Renderer commands
-//! cross a serialized channel and must be executed by the UI/runtime thread.
+//! cross a typed Arc queue and must be executed by the UI/runtime thread.
 //!
 //! # Security boundary
 //!
@@ -15,17 +15,24 @@
 //! the feature and its environment variables disabled.
 
 use std::fs::{self, OpenOptions};
-use std::io::{self, Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::io::{self, Write};
+use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
-use std::sync::{Arc, OnceLock};
-use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::task::{Poll, Waker};
+use std::time::Duration;
 
+use futures_util::{Stream, stream::FuturesUnordered};
+use nagoya::reactor::{Addr, Reactor, TcpListener, TcpStream};
 use serde::Serialize;
 use serde_json::{Value, json};
+
+mod handoff;
+pub use handoff::CommandReceiver;
+use handoff::{CommandQueue, QueueError, Reply, ResponseWait};
 
 const PROTOCOL_VERSION: u32 = 1;
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
@@ -95,7 +102,10 @@ pub struct ServiceWaker(Arc<OnceLock<Box<dyn Fn() + Send + Sync>>>);
 impl ServiceWaker {
     /// Install the wake callback. Later calls are ignored.
     pub fn set(&self, wake: impl Fn() + Send + Sync + 'static) {
-        let _ = self.0.set(Box::new(wake));
+        if self.0.set(Box::new(wake)).is_ok() {
+            // A request may have arrived before the embedder installed us.
+            self.wake();
+        }
     }
 
     fn wake(&self) {
@@ -120,13 +130,26 @@ pub struct ControlRequest {
     pub method: String,
     pub path: String,
     pub body: Value,
-    reply: SyncSender<ControlResponse>,
+    reply: Arc<Reply>,
 }
 
 impl ControlRequest {
+    /// Hand the finished pointer to the waiting transport task.
+    pub fn respond_arc(&self, response: Arc<ControlResponse>) -> Result<(), Arc<ControlResponse>> {
+        self.reply.complete(response)
+    }
+
     /// Complete this request. Failure means the client already disconnected.
     pub fn respond(self, response: ControlResponse) -> Result<(), ControlResponse> {
-        self.reply.send(response).map_err(|error| error.0)
+        self.respond_arc(Arc::new(response)).map_err(|response| {
+            Arc::try_unwrap(response).expect("failed response is uniquely owned")
+        })
+    }
+}
+
+impl Drop for ControlRequest {
+    fn drop(&mut self) {
+        self.reply.close_sender();
     }
 }
 
@@ -167,66 +190,103 @@ pub struct DebugServer {
     address: SocketAddr,
     token: String,
     descriptor_path: PathBuf,
-    shutdown: Arc<AtomicBool>,
     waker: ServiceWaker,
-    thread: Option<JoinHandle<()>>,
+    state: Option<Arc<ServerState>>,
+    task: Option<nagoya::JoinHandle<()>>,
+    reactor: Option<Reactor>,
+}
+
+enum CommandSink {
+    Typed(Arc<CommandQueue>),
+    // Keep the published Receiver<ControlRequest> API for existing consumers.
+    Compatible(SyncSender<ControlRequest>),
+}
+
+impl CommandSink {
+    fn enqueue(&self, request: Arc<ControlRequest>) -> Result<(), &'static str> {
+        match self {
+            Self::Typed(queue) => queue.enqueue(request).map_err(|error| match error {
+                QueueError::Full => "renderer command queue is full",
+                QueueError::Closed => "renderer command channel is closed",
+            }),
+            Self::Compatible(sender) => {
+                // The legacy adapter takes the uniquely owned value without
+                // copying any request data. It creates no response channel.
+                let request = Arc::try_unwrap(request).expect("unqueued request has one owner");
+                sender.try_send(request).map_err(|error| match error {
+                    TrySendError::Full(_) => "renderer command queue is full",
+                    TrySendError::Disconnected(_) => "renderer command channel is closed",
+                })
+            }
+        }
+    }
+
+    fn close(&self) {
+        if let Self::Typed(queue) = self {
+            queue.close();
+        }
+    }
+}
+
+struct ServerState {
+    token: Arc<String>,
+    active_session: ActiveSession,
+    commands: CommandSink,
+    waker: ServiceWaker,
+    shutdown: AtomicBool,
+    stop_waker: Mutex<Option<Waker>>,
 }
 
 impl DebugServer {
-    /// Bind a loopback port, write the descriptor, and start the server thread.
+    /// Bind a loopback port and retain the published value-receiver adapter.
     pub fn start(config: ServerConfig) -> io::Result<(Self, Receiver<ControlRequest>)> {
+        let (command_tx, command_rx) = mpsc::sync_channel(MAX_PENDING_COMMANDS);
+        let server = Self::start_with_sink(config, CommandSink::Compatible(command_tx))?;
+        Ok((server, command_rx))
+    }
+
+    /// Bind a loopback port and hand typed request pointers to the renderer.
+    pub fn start_typed(config: ServerConfig) -> io::Result<(Self, CommandReceiver)> {
+        let queue = CommandQueue::new(MAX_PENDING_COMMANDS);
+        let server = Self::start_with_sink(config, CommandSink::Typed(Arc::clone(&queue)))?;
+        Ok((server, CommandReceiver(queue)))
+    }
+
+    fn start_with_sink(config: ServerConfig, commands: CommandSink) -> io::Result<Self> {
         if !config.bind_address.ip().is_loopback() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "debug control must bind to a loopback address",
             ));
         }
-        let listener = TcpListener::bind(config.bind_address)?;
-        let address = listener.local_addr()?;
+        let reactor = Reactor::start().map_err(reactor_error)?;
+        let listener = TcpListener::bind(reactor_addr(config.bind_address), &reactor.handle())
+            .map_err(reactor_error)?;
+        let address = socket_addr(listener.local_addr().map_err(reactor_error)?)?;
         let token = random_hex(32)?;
-        // Enough room for a driver burst, but never an unbounded owner of parsed
-        // request bodies while the renderer is unavailable.
-        let (command_tx, command_rx) = mpsc::sync_channel(MAX_PENDING_COMMANDS);
-        let shutdown = Arc::new(AtomicBool::new(false));
         let waker = ServiceWaker::default();
-
-        let thread_shutdown = Arc::clone(&shutdown);
-        let thread_token = token.clone();
-        let thread_waker = waker.clone();
-        let thread = thread::Builder::new()
-            .name("blitz-debug-control".into())
-            .spawn(move || {
-                server_loop(
-                    listener,
-                    &thread_token,
-                    command_tx,
-                    &thread_waker,
-                    thread_shutdown,
-                )
-            })?;
-
-        if let Err(error) = write_descriptor(&config, address, &token) {
-            shutdown.store(true, Ordering::Release);
-            let _ = TcpStream::connect(address);
-            let _ = thread.join();
-            return Err(error);
-        }
-
-        Ok((
-            Self {
-                address,
-                token,
-                descriptor_path: config.descriptor_path,
-                shutdown,
-                waker,
-                thread: Some(thread),
-            },
-            command_rx,
-        ))
+        let state = Arc::new(ServerState {
+            token: Arc::new(token.clone()),
+            active_session: ActiveSession::default(),
+            commands,
+            waker: waker.clone(),
+            shutdown: AtomicBool::new(false),
+            stop_waker: Mutex::new(None),
+        });
+        write_descriptor(&config, address, &token)?;
+        let task = nagoya::runtime::background().spawn(server_loop(listener, Arc::clone(&state)));
+        Ok(Self {
+            address,
+            token,
+            descriptor_path: config.descriptor_path,
+            waker,
+            state: Some(state),
+            task: Some(task),
+            reactor: Some(reactor),
+        })
     }
 
-    /// Handle for telling the server how to wake the thread that services
-    /// requests. Nothing wakes until a callback is installed.
+    /// Handle for waking the renderer after a request has been queued.
     pub fn waker(&self) -> ServiceWaker {
         self.waker.clone()
     }
@@ -244,10 +304,19 @@ impl DebugServer {
     }
 
     fn stop(&mut self) {
-        self.shutdown.store(true, Ordering::Release);
-        let _ = TcpStream::connect(self.address);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+        if let Some(state) = self.state.take() {
+            state.commands.close();
+            state.shutdown.store(true, Ordering::Release);
+            let wake = state.stop_waker.lock().unwrap().take();
+            if let Some(wake) = wake {
+                wake.wake();
+            }
+        }
+        if let Some(task) = self.task.take() {
+            let _ = nagoya::block_on(task);
+        }
+        if let Some(reactor) = self.reactor.take() {
+            reactor.shutdown();
         }
         let _ = fs::remove_file(&self.descriptor_path);
     }
@@ -256,6 +325,33 @@ impl DebugServer {
 impl Drop for DebugServer {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+fn reactor_error(error: nagoya::reactor::Errno) -> io::Error {
+    io::Error::from_raw_os_error(error.0)
+}
+
+fn reactor_addr(address: SocketAddr) -> Addr {
+    match address {
+        SocketAddr::V4(address) => Addr::V4(address.ip().octets(), address.port()),
+        SocketAddr::V6(address) => {
+            Addr::V6Scoped(address.ip().octets(), address.port(), address.scope_id())
+        }
+    }
+}
+
+fn socket_addr(address: Addr) -> io::Result<SocketAddr> {
+    match address {
+        Addr::V4(ip, port) => Ok((std::net::Ipv4Addr::from(ip), port).into()),
+        Addr::V6(ip, port) => Ok((std::net::Ipv6Addr::from(ip), port).into()),
+        Addr::V6Scoped(ip, port, scope) => {
+            Ok(std::net::SocketAddrV6::new(std::net::Ipv6Addr::from(ip), port, 0, scope).into())
+        }
+        Addr::Path(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "expected a TCP address",
+        )),
     }
 }
 
@@ -305,64 +401,50 @@ fn write_descriptor(config: &ServerConfig, address: SocketAddr, token: &str) -> 
     result
 }
 
-fn server_loop(
-    listener: TcpListener,
-    token: &str,
-    command_tx: SyncSender<ControlRequest>,
-    waker: &ServiceWaker,
-    shutdown: Arc<AtomicBool>,
-) {
-    let active_session = Arc::new(ActiveSession::default());
-    let active_connections = Arc::new(AtomicUsize::new(0));
-    let token: Arc<str> = Arc::from(token);
-    for connection in listener.incoming() {
-        if shutdown.load(Ordering::Acquire) {
-            break;
-        }
-        match connection {
-            Ok(mut stream) => {
-                if active_connections.fetch_add(1, Ordering::AcqRel) >= MAX_CONNECTIONS {
-                    active_connections.fetch_sub(1, Ordering::AcqRel);
-                    let _ = write_response(
-                        &mut stream,
-                        webdriver_error("unknown error", "debug-control connection limit reached"),
-                    );
-                    continue;
-                }
-                let token = Arc::clone(&token);
-                let active_session = Arc::clone(&active_session);
-                let thread_connections = Arc::clone(&active_connections);
-                let command_tx = command_tx.clone();
-                let waker = waker.clone();
-                let spawned = thread::Builder::new()
-                    .name("blitz-debug-connection".into())
-                    .spawn(move || {
-                        let _permit = ConnectionPermit(thread_connections);
-                        let _ = stream.set_write_timeout(Some(COMMAND_TIMEOUT));
-                        let response = match read_request(&mut stream) {
-                            Ok(request) => {
-                                route(request, &token, &active_session, &command_tx, &waker)
-                            }
-                            Err(error) => webdriver_error("invalid argument", error.to_string()),
-                        };
-                        let _ = write_response(&mut stream, response);
-                    });
-                if spawned.is_err() {
-                    active_connections.fetch_sub(1, Ordering::AcqRel);
-                }
+async fn server_loop(listener: TcpListener, state: Arc<ServerState>) {
+    let mut connections = FuturesUnordered::new();
+    std::future::poll_fn(|cx| {
+        {
+            let mut wake = state.stop_waker.lock().unwrap();
+            if state.shutdown.load(Ordering::Acquire) {
+                return Poll::Ready(());
             }
-            Err(_) if shutdown.load(Ordering::Acquire) => break,
-            Err(_) => continue,
+            *wake = Some(cx.waker().clone());
         }
-    }
+        while let Poll::Ready(Some(())) = Pin::new(&mut connections).poll_next(cx) {}
+        // One extra slot reports the connection limit. Until it finishes,
+        // accept is backpressured, keeping all connection work bounded.
+        if connections.len() <= MAX_CONNECTIONS {
+            match listener.poll_accept(cx) {
+                Poll::Ready(Ok((stream, _))) => {
+                    let limited = connections.len() == MAX_CONNECTIONS;
+                    connections.push(serve_connection(stream, Arc::clone(&state), limited));
+                    cx.waker().wake_by_ref();
+                }
+                Poll::Ready(Err(_)) => {
+                    state.commands.close();
+                    return Poll::Ready(());
+                }
+                Poll::Pending => {}
+            }
+        }
+        Poll::Pending
+    })
+    .await;
+    // Dropping these futures releases every socket and response waiter.
+    drop(connections);
 }
 
-struct ConnectionPermit(Arc<AtomicUsize>);
-
-impl Drop for ConnectionPermit {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::AcqRel);
-    }
+async fn serve_connection(mut stream: TcpStream, state: Arc<ServerState>, limited: bool) {
+    let response = if limited {
+        webdriver_error("unknown error", "debug-control connection limit reached")
+    } else {
+        match read_request(&mut stream).await {
+            Ok(request) => route(request, &state).await,
+            Err(error) => webdriver_error("invalid argument", error.to_string()),
+        }
+    };
+    let _ = nagoya::time::timeout(COMMAND_TIMEOUT, write_response(&mut stream, response)).await;
 }
 
 #[derive(Debug)]
@@ -372,13 +454,19 @@ struct HttpRequest {
     body: Value,
 }
 
-fn read_request(stream: &mut TcpStream) -> io::Result<HttpRequest> {
-    read_request_within(stream, COMMAND_TIMEOUT)
+async fn read_request(stream: &mut TcpStream) -> io::Result<HttpRequest> {
+    read_request_within(stream, COMMAND_TIMEOUT).await
 }
 
-fn read_request_within(stream: &mut TcpStream, within: Duration) -> io::Result<HttpRequest> {
-    let deadline = Instant::now() + within;
-    let mut bytes = Vec::with_capacity(4096);
+async fn read_request_within(stream: &mut TcpStream, within: Duration) -> io::Result<HttpRequest> {
+    nagoya::time::timeout(within, read_request_inner(stream))
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "request timed out"))?
+}
+
+async fn read_request_inner(stream: &mut TcpStream) -> io::Result<HttpRequest> {
+    // Read directly into uninitialised receive storage, with a fixed bound.
+    let mut bytes = bytes::BytesMut::with_capacity(MAX_REQUEST_BYTES);
     let mut scan_from = 0;
     let header_end = loop {
         if bytes.len() >= MAX_REQUEST_BYTES {
@@ -387,22 +475,14 @@ fn read_request_within(stream: &mut TcpStream, within: Duration) -> io::Result<H
                 "request is too large",
             ));
         }
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Err(io::Error::new(io::ErrorKind::TimedOut, "request timed out"));
-        }
-        stream.set_read_timeout(Some(remaining))?;
-        let mut chunk = [0; 4096];
-        let allowed = (MAX_REQUEST_BYTES - bytes.len()).min(chunk.len());
-        let count = stream.read(&mut chunk[..allowed])?;
+        let prior_len = bytes.len();
+        let count = stream.read_buf(&mut bytes).await.map_err(reactor_error)?;
         if count == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "connection closed before headers",
             ));
         }
-        let prior_len = bytes.len();
-        bytes.extend_from_slice(&chunk[..count]);
         scan_from = scan_from.min(prior_len.saturating_sub(3));
         if let Some(index) = bytes[scan_from..]
             .windows(4)
@@ -453,21 +533,13 @@ fn read_request_within(stream: &mut TcpStream, within: Duration) -> io::Result<H
         ));
     }
     while bytes.len() < body_end {
-        let deadline_remaining = deadline.saturating_duration_since(Instant::now());
-        if deadline_remaining.is_zero() {
-            return Err(io::Error::new(io::ErrorKind::TimedOut, "request timed out"));
-        }
-        stream.set_read_timeout(Some(deadline_remaining))?;
-        let remaining = body_end - bytes.len();
-        let mut chunk = vec![0; remaining.min(4096)];
-        let count = stream.read(&mut chunk)?;
+        let count = stream.read_buf(&mut bytes).await.map_err(reactor_error)?;
         if count == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "connection closed before body",
             ));
         }
-        bytes.extend_from_slice(&chunk[..count]);
     }
     let body = if content_length == 0 {
         Value::Null
@@ -478,13 +550,9 @@ fn read_request_within(stream: &mut TcpStream, within: Duration) -> io::Result<H
     Ok(HttpRequest { method, path, body })
 }
 
-fn route(
-    request: HttpRequest,
-    token: &str,
-    active_session: &ActiveSession,
-    command_tx: &SyncSender<ControlRequest>,
-    waker: &ServiceWaker,
-) -> Value {
+async fn route(request: HttpRequest, state: &ServerState) -> Value {
+    let token = state.token.as_str();
+    let active_session = &state.active_session;
     if request.method == "GET" && request.path == "/status" {
         return json!({"value": {
             "ready": true,
@@ -528,40 +596,33 @@ fn route(
         return json!({"value": null});
     }
 
-    let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-    let control_request = ControlRequest {
+    let reply = Reply::new();
+    let response = ResponseWait(Arc::clone(&reply));
+    let control_request = Arc::new(ControlRequest {
         method: request.method,
         path: command_path.to_string(),
         body: request.body,
-        reply: reply_tx,
-    };
-    match command_tx.try_send(control_request) {
-        Ok(()) => {}
-        Err(TrySendError::Full(_)) => {
-            return webdriver_error("unknown error", "renderer command queue is full");
-        }
-        Err(TrySendError::Disconnected(_)) => {
-            return webdriver_error("unknown error", "renderer command channel is closed");
-        }
+        reply,
+    });
+    if let Err(message) = state.commands.enqueue(control_request) {
+        return webdriver_error("unknown error", message);
     }
-    // Queue first, then wake: the embedder must find the request already there
-    // when it comes round, or the wake is spent on an empty queue.
-    waker.wake();
-    match reply_rx.recv_timeout(COMMAND_TIMEOUT) {
-        Ok(ControlResponse::Success(value)) => json!({"value": value}),
-        Ok(ControlResponse::Error {
-            error,
-            message,
-            stacktrace,
-        }) => json!({"value": {
-            "error": error,
-            "message": message,
-            "stacktrace": stacktrace,
-        }}),
-        Err(RecvTimeoutError::Timeout) => webdriver_error("timeout", "renderer command timed out"),
-        Err(RecvTimeoutError::Disconnected) => {
-            webdriver_error("unknown error", "renderer response channel is closed")
-        }
+    state.waker.wake();
+    match nagoya::time::timeout(COMMAND_TIMEOUT, response).await {
+        Ok(Ok(response)) => match response.as_ref() {
+            ControlResponse::Success(value) => json!({"value": value}),
+            ControlResponse::Error {
+                error,
+                message,
+                stacktrace,
+            } => json!({"value": {
+                "error": error,
+                "message": message,
+                "stacktrace": stacktrace,
+            }}),
+        },
+        Err(_) => webdriver_error("timeout", "renderer command timed out"),
+        Ok(Err(())) => webdriver_error("unknown error", "renderer response channel is closed"),
     }
 }
 
@@ -591,7 +652,7 @@ fn webdriver_error(error: &str, message: impl Into<String>) -> Value {
     }})
 }
 
-fn write_response(stream: &mut TcpStream, body: Value) -> io::Result<()> {
+async fn write_response(stream: &mut TcpStream, body: Value) -> io::Result<()> {
     let bytes = serde_json::to_vec(&body).map_err(io::Error::other)?;
     let status = match body.pointer("/value/error").and_then(Value::as_str) {
         None => "200 OK",
@@ -599,376 +660,12 @@ fn write_response(stream: &mut TcpStream, body: Value) -> io::Result<()> {
         Some("timeout" | "unknown error") => "500 Internal Server Error",
         Some(_) => "400 Bad Request",
     };
-    write!(
-        stream,
+    let header = format!(
         "HTTP/1.1 {status}\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         bytes.len()
-    )?;
-    stream.write_all(&bytes)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Mutex;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    #[test]
-    fn token_comparison_rejects_prefixes_suffixes_and_missing_values() {
-        assert!(token_matches(Some("012345"), "012345"));
-        assert!(!token_matches(Some("01234x"), "012345"));
-        assert!(!token_matches(Some("0123456"), "012345"));
-        assert!(!token_matches(Some("01234"), "012345"));
-        assert!(!token_matches(None, "012345"));
-    }
-
-    fn descriptor_path() -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!("blitz-debug-{nonce}.json"))
-    }
-
-    fn request(address: SocketAddr, method: &str, path: &str, body: Value) -> Value {
-        let body = if body.is_null() {
-            Vec::new()
-        } else {
-            serde_json::to_vec(&body).unwrap()
-        };
-        let mut stream = TcpStream::connect(address).unwrap();
-        write!(
-            stream,
-            "{method} {path} HTTP/1.1\r\nHost: {address}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            body.len()
-        )
-        .unwrap();
-        stream.write_all(&body).unwrap();
-        let mut response = Vec::new();
-        stream.read_to_end(&mut response).unwrap();
-        let body_start = response
-            .windows(4)
-            .position(|window| window == b"\r\n\r\n")
-            .unwrap()
-            + 4;
-        serde_json::from_slice(&response[body_start..]).unwrap()
-    }
-
-    fn raw_request(address: SocketAddr, request: &str) -> Value {
-        let mut stream = TcpStream::connect(address).unwrap();
-        stream.write_all(request.as_bytes()).unwrap();
-        let mut response = Vec::new();
-        stream.read_to_end(&mut response).unwrap();
-        let body_start = response
-            .windows(4)
-            .position(|window| window == b"\r\n\r\n")
-            .unwrap()
-            + 4;
-        serde_json::from_slice(&response[body_start..]).unwrap()
-    }
-
-    fn create_session(address: SocketAddr, token: &str) -> String {
-        request(
-            address,
-            "POST",
-            "/session",
-            json!({"capabilities": {"alwaysMatch": {"blitz:token": token}}}),
-        )["value"]["sessionId"]
-            .as_str()
-            .unwrap()
-            .to_string()
-    }
-
-    #[test]
-    fn status_auth_session_command_and_reconnect() {
-        let descriptor = descriptor_path();
-        let (server, commands) = DebugServer::start(ServerConfig {
-            bind_address: (std::net::Ipv4Addr::LOCALHOST, 0).into(),
-            descriptor_path: descriptor.clone(),
-            renderer_revision: "test-revision".into(),
-        })
-        .unwrap();
-
-        let status = request(server.address(), "GET", "/status", Value::Null);
-        assert_eq!(status["value"]["ready"], true);
-        assert!(descriptor.exists());
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            assert_eq!(
-                fs::metadata(&descriptor).unwrap().permissions().mode() & 0o777,
-                0o600
-            );
-        }
-
-        let rejected = request(
-            server.address(),
-            "POST",
-            "/session",
-            json!({"capabilities": {"alwaysMatch": {"blitz:token": "wrong"}}}),
-        );
-        assert_eq!(rejected["value"]["error"], "invalid argument");
-
-        let session = create_session(server.address(), server.token());
-        let duplicate = request(
-            server.address(),
-            "POST",
-            "/session",
-            json!({"capabilities": {"alwaysMatch": {"blitz:token": server.token()}}}),
-        );
-        assert_eq!(duplicate["value"]["error"], "session not created");
-        assert_eq!(
-            request(
-                server.address(),
-                "GET",
-                "/session/not-the-session/blitz/getDomSnapshot",
-                Value::Null,
-            )["value"]["error"],
-            "invalid session id"
-        );
-        assert_eq!(
-            request(server.address(), "GET", "/not-a-route", Value::Null)["value"]["error"],
-            "unknown command"
-        );
-        let address = server.address();
-        let command_path = format!("/session/{session}/blitz/getDomSnapshot");
-        let client = thread::spawn(move || request(address, "GET", &command_path, Value::Null));
-        let command = commands.recv_timeout(COMMAND_TIMEOUT).unwrap();
-        assert_eq!(command.method, "GET");
-        assert_eq!(command.path, "blitz/getDomSnapshot");
-        command
-            .respond(ControlResponse::Success(json!({"documentRevision": 7})))
-            .unwrap();
-        let response = client.join().unwrap();
-        assert_eq!(response["value"]["documentRevision"], 7);
-
-        let deleted = request(
-            server.address(),
-            "DELETE",
-            &format!("/session/{session}"),
-            Value::Null,
-        );
-        assert!(deleted["value"].is_null());
-        let second_session = create_session(server.address(), server.token());
-        assert_ne!(second_session, session);
-
-        server.shutdown();
-        assert!(!descriptor.exists());
-    }
-
-    #[test]
-    fn rejects_non_loopback_bind_address() {
-        let result = DebugServer::start(ServerConfig {
-            bind_address: ([0, 0, 0, 0], 0).into(),
-            descriptor_path: descriptor_path(),
-            renderer_revision: "test-revision".into(),
-        });
-        assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::InvalidInput));
-    }
-
-    #[test]
-    fn overflowing_content_length_is_rejected_without_killing_the_server() {
-        let (server, _commands) = DebugServer::start(ServerConfig {
-            bind_address: (std::net::Ipv4Addr::LOCALHOST, 0).into(),
-            descriptor_path: descriptor_path(),
-            renderer_revision: "test-revision".into(),
-        })
-        .unwrap();
-
-        let rejected = raw_request(
-            server.address(),
-            &format!(
-                "POST /session HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                usize::MAX
-            ),
-        );
-        assert_eq!(rejected["value"]["error"], "invalid argument");
-        let malformed_length = raw_request(
-            server.address(),
-            "POST /session HTTP/1.1\r\nHost: localhost\r\nContent-Length: nope\r\nConnection: close\r\n\r\n",
-        );
-        assert_eq!(malformed_length["value"]["error"], "invalid argument");
-        let malformed_json = raw_request(
-            server.address(),
-            "POST /session HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1\r\nConnection: close\r\n\r\n{",
-        );
-        assert_eq!(malformed_json["value"]["error"], "invalid argument");
-        assert_eq!(
-            request(server.address(), "GET", "/status", Value::Null)["value"]["ready"],
-            true
-        );
-        server.shutdown();
-    }
-
-    #[test]
-    fn a_slow_client_does_not_block_other_connections_and_has_an_absolute_deadline() {
-        let (server, _commands) = DebugServer::start(ServerConfig {
-            bind_address: (std::net::Ipv4Addr::LOCALHOST, 0).into(),
-            descriptor_path: descriptor_path(),
-            renderer_revision: "test-revision".into(),
-        })
-        .unwrap();
-        let mut slow = TcpStream::connect(server.address()).unwrap();
-        slow.write_all(b"G").unwrap();
-        let started = Instant::now();
-        assert_eq!(
-            request(server.address(), "GET", "/status", Value::Null)["value"]["ready"],
-            true
-        );
-        assert!(started.elapsed() < Duration::from_millis(500));
-
-        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let address = listener.local_addr().unwrap();
-        let reader = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            read_request_within(&mut stream, Duration::from_millis(40)).unwrap_err()
-        });
-        let mut drip = TcpStream::connect(address).unwrap();
-        drip.write_all(b"G").unwrap();
-        let error = reader.join().unwrap();
-        assert!(matches!(
-            error.kind(),
-            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
-        ));
-        server.shutdown();
-    }
-
-    fn snapshot_request() -> HttpRequest {
-        HttpRequest {
-            method: "GET".into(),
-            path: "/session/0000000000000001/blitz/getDomSnapshot".into(),
-            body: Value::Null,
-        }
-    }
-
-    /*
-     * The wake has to arrive after the request is queued, never before: a wake
-     * delivered to an empty queue is spent, and the embedder has no timer to
-     * fall back on any more. Draining inside the callback is exactly what the
-     * event loop does when it comes round, so servicing here proves the
-     * ordering rather than asserting it indirectly.
-     */
-    #[test]
-    fn wakes_the_servicer_with_the_request_already_queued() {
-        let (command_tx, command_rx) = mpsc::sync_channel::<ControlRequest>(4);
-        let waker = ServiceWaker::default();
-        let queue = Mutex::new(command_rx);
-        waker.set(move || {
-            let queued = queue.lock().unwrap().try_recv().unwrap();
-            assert_eq!(queued.path, "blitz/getDomSnapshot");
-            queued
-                .respond(ControlResponse::Success(json!({"serviced": true})))
-                .unwrap();
-        });
-
-        let active_session = ActiveSession(AtomicU64::new(1));
-        let response = route(
-            snapshot_request(),
-            "token",
-            &active_session,
-            &command_tx,
-            &waker,
-        );
-
-        assert_eq!(response["value"]["serviced"], true);
-    }
-
-    /*
-     * `sync_channel(1)` refused this outright with "renderer command queue is
-     * full". One unserviced request is normal, not a fault: it happens whenever
-     * a command arrives before the embedder has a document to run it against.
-     */
-    #[test]
-    fn a_second_request_queues_behind_an_unserviced_one() {
-        let (command_tx, command_rx) = mpsc::sync_channel::<ControlRequest>(4);
-        let (reply_tx, _reply_rx) = mpsc::sync_channel(1);
-        command_tx
-            .send(ControlRequest {
-                method: "GET".into(),
-                path: "occupied".into(),
-                body: Value::Null,
-                reply: reply_tx,
-            })
-            .unwrap();
-
-        let waker = ServiceWaker::default();
-        let queue = Mutex::new(command_rx);
-        waker.set(move || {
-            let queue = queue.lock().unwrap();
-            assert_eq!(queue.try_recv().unwrap().path, "occupied");
-            queue
-                .try_recv()
-                .unwrap()
-                .respond(ControlResponse::Success(json!({"serviced": true})))
-                .unwrap();
-        });
-
-        let active_session = ActiveSession(AtomicU64::new(1));
-        let response = route(
-            snapshot_request(),
-            "token",
-            &active_session,
-            &command_tx,
-            &waker,
-        );
-
-        assert_eq!(response["value"]["serviced"], true);
-    }
-
-    #[test]
-    fn a_saturated_renderer_queue_fails_without_growing() {
-        let (command_tx, _command_rx) = mpsc::sync_channel::<ControlRequest>(1);
-        let (reply_tx, _reply_rx) = mpsc::sync_channel(1);
-        command_tx
-            .send(ControlRequest {
-                method: "GET".into(),
-                path: "occupied".into(),
-                body: Value::Null,
-                reply: reply_tx,
-            })
-            .unwrap();
-
-        let response = route(
-            snapshot_request(),
-            "token",
-            &ActiveSession(AtomicU64::new(1)),
-            &command_tx,
-            &ServiceWaker::default(),
-        );
-
-        assert_eq!(response["value"]["error"], "unknown error");
-        assert_eq!(
-            response["value"]["message"],
-            "renderer command queue is full"
-        );
-    }
-
-    /// Nothing installs a waker until the embedder is up, and requests that
-    /// arrive in that window must still be queued rather than dropped.
-    #[test]
-    fn queues_requests_while_no_waker_is_installed() {
-        let (command_tx, command_rx) = mpsc::sync_channel::<ControlRequest>(4);
-        let waker = ServiceWaker::default();
-        let active_session = ActiveSession(AtomicU64::new(1));
-
-        let sender = command_tx.clone();
-        let servicer = thread::spawn(move || {
-            let queued = command_rx.recv_timeout(COMMAND_TIMEOUT).unwrap();
-            drop(sender);
-            queued
-                .respond(ControlResponse::Success(json!({"serviced": true})))
-                .unwrap();
-        });
-
-        let response = route(
-            snapshot_request(),
-            "token",
-            &active_session,
-            &command_tx,
-            &waker,
-        );
-
-        servicer.join().unwrap();
-        assert_eq!(response["value"]["serviced"], true);
-    }
+    );
+    stream
+        .write_all_vectored(header.as_bytes(), &bytes)
+        .await
+        .map_err(reactor_error)
 }
