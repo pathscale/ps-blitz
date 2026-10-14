@@ -108,7 +108,7 @@ pub(crate) fn draw_inline_backgrounds<'a>(
 
 pub(crate) fn stroke_text<'a>(
     scene: &mut impl PaintScene,
-    lines: impl Iterator<Item = Line<'a, TextBrush>>,
+    lines: impl Iterator<Item = Line<'a, TextBrush>> + Clone,
     doc: &BaseDocument,
     transform: Affine,
     scale: f64,
@@ -118,12 +118,81 @@ pub(crate) fn stroke_text<'a>(
 
 pub(crate) fn stroke_text_with_alpha<'a>(
     scene: &mut impl PaintScene,
-    lines: impl Iterator<Item = Line<'a, TextBrush>>,
+    lines: impl Iterator<Item = Line<'a, TextBrush>> + Clone,
     doc: &BaseDocument,
     transform: Affine,
     scale: f64,
     alpha: f32,
 ) {
+    // Paint all glyph shadows before any foreground glyphs.
+    for line in lines.clone() {
+        for item in line.items() {
+            let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
+                continue;
+            };
+            let styles = doc
+                .get_node(glyph_run.style().brush.id)
+                .unwrap()
+                .primary_styles()
+                .unwrap();
+            let itext_styles = styles.get_inherited_text();
+            let run = glyph_run.run();
+
+            // The first listed shadow paints on top of subsequent shadows.
+            for shadow in itext_styles.text_shadow.0.iter().rev() {
+                // Blur requires a separate implementation.
+                if shadow.blur.px() != 0.0 {
+                    continue;
+                }
+
+                let shadow_color = shadow
+                    .color
+                    .resolve_to_absolute(&itext_styles.color)
+                    .as_srgb_color();
+                if shadow_color.components[3] == 0.0 || alpha == 0.0 {
+                    continue;
+                }
+
+                let font_size = run.font_size();
+                let glyph_xform = run
+                    .synthesis()
+                    .skew()
+                    .map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));
+                let embolden = if FONT_EMBOLDEN_ENABLED {
+                    let fs = font_size as f64 / scale;
+                    kurbo::Vec2::new((0.015125 * fs).min(0.3), (0.0121 * fs).min(0.3))
+                } else {
+                    kurbo::Vec2::default()
+                };
+
+                // CSS offsets become stored layout units before transformation.
+                let shadow_transform = transform
+                    * Affine::translate((
+                        shadow.horizontal.px() as f64 * scale,
+                        shadow.vertical.px() as f64 * scale,
+                    ));
+
+                scene.draw_glyphs(
+                    run.font(),
+                    font_size,
+                    !FONT_EMBOLDEN_ENABLED, // hint
+                    run.normalized_coords(),
+                    embolden,
+                    Fill::NonZero,
+                    &anyrender::Paint::from(shadow_color),
+                    alpha,
+                    shadow_transform,
+                    glyph_xform,
+                    glyph_run.positioned_glyphs().map(|glyph| anyrender::Glyph {
+                        id: glyph.id as _,
+                        x: glyph.x,
+                        y: glyph.y,
+                    }),
+                );
+            }
+        }
+    }
+
     for line in lines {
         for item in line.items() {
             if let PositionedLayoutItem::GlyphRun(glyph_run) = item {
