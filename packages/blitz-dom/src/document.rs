@@ -4422,6 +4422,32 @@ impl BaseDocument {
         }
     }
 
+    /// Geometry, ancestor clipping and computed visibility, in CSS viewport units.
+    pub fn surface_on_screen(&self, id: NodeId) -> bool {
+        use style::computed_values::visibility::T as Visibility;
+        let Some(rect) = self.get_client_bounding_rect(id) else { return false; };
+        let viewport = self.viewport();
+        let scale = viewport.scale_f64();
+        let mut x0 = rect.x.max(0.0);
+        let mut y0 = rect.y.max(0.0);
+        let mut x1 = (rect.x + rect.width).min(viewport.window_size.0 as f64 / scale);
+        let mut y1 = (rect.y + rect.height).min(viewport.window_size.1 as f64 / scale);
+        let mut cursor = Some(id);
+        while let Some(node_id) = cursor {
+            let Some(node) = self.get_node(node_id) else { return false; };
+            if matches!(node.style().display, taffy::Display::None) { return false; }
+            if let Some(styles) = node.primary_styles() {
+                if styles.clone_visibility() != Visibility::Visible || styles.get_effects().opacity == 0.0 { return false; }
+                if node_id != id && let Some(clip) = self.get_client_bounding_rect(node_id) {
+                    if styles.get_box().overflow_x != Overflow::Visible { x0 = x0.max(clip.x); x1 = x1.min(clip.x + clip.width); }
+                    if styles.get_box().overflow_y != Overflow::Visible { y0 = y0.max(clip.y); y1 = y1.min(clip.y + clip.height); }
+                }
+            }
+            cursor = node.parent;
+        }
+        x1 > x0 && y1 > y0
+    }
+
     /// Computes the size and position of the `Node` relative to the viewport
     pub fn get_client_bounding_rect(&self, node_id: NodeId) -> Option<BoundingRect> {
         #[cfg(feature = "svg")]
