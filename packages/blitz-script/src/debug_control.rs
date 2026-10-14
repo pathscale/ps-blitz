@@ -4,14 +4,14 @@ use std::io;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::mpsc::{RecvTimeoutError, TryRecvError};
 use std::time::{Duration, Instant};
 
 use anyrender::render_to_buffer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
 use base64::Engine;
 use blitz_debug_control::{
-    CommandReceiver, ControlRequest, ControlResponse, DebugServer, ServerConfig,
+    CommandReceiver, ControlRequest, ControlResponse, DebugServer, RecvTimeoutError, ServerConfig,
+    TryRecvError,
 };
 use blitz_dom::Document;
 use blitz_dom::NodeId;

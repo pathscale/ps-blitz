@@ -7,7 +7,7 @@ readme = "README.md"
 # loopback debug transport, which changes on its own schedule and is nowhere
 # near the engine's 0.4 line; inheriting would republish it on every engine
 # release and claim a compatibility break it did not make.
-version = "0.3.8"
+version = "0.3.9"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
