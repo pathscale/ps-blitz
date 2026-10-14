@@ -1,8 +1,8 @@
 //! JavaScript execution on top of Blitz
 //!
-//! This crate implements a [`ScriptDocument`]: a wrapper around a [`BaseDocument`](blitz_dom::BaseDocument)
+//! This crate implements a `ScriptDocument`: a wrapper around a [`BaseDocument`](blitz_dom::BaseDocument)
 //! which can execute the JavaScript contained in (or referenced by) the document's `<script>` tags
-//! using the [Boa](https://boajs.dev) JavaScript engine, and which exposes JavaScript DOM APIs
+//! using the optional [Boa](https://boajs.dev) JavaScript engine, and which exposes JavaScript DOM APIs
 //! (`document`, elements, events, timers, etc) backed by `blitz-dom` to the scripts it runs.
 //!
 //! It is capable of running real-world JavaScript frameworks such as [Preact](https://preactjs.com/).
@@ -19,6 +19,8 @@
 //! ### Example
 //!
 //! ```rust
+//! # #[cfg(feature = "boa")]
+//! # {
 //! use blitz_script::ScriptDocument;
 //! use blitz_dom::DocumentConfig;
 //!
@@ -34,45 +36,68 @@
 //!     DocumentConfig::default(),
 //! );
 //! doc.execute_scripts();
+//! # }
 //! ```
 
 #![allow(clippy::collapsible_if)]
 
 mod application_document;
-#[cfg(feature = "debug-control")]
+#[cfg(all(feature = "boa", feature = "debug-control"))]
 mod debug_control;
+mod diagnostics;
+#[cfg(feature = "boa")]
 mod document;
+#[cfg(feature = "boa")]
 mod docwrite;
+#[cfg(feature = "boa")]
 mod dom;
+#[cfg(feature = "boa")]
 pub mod dom_exception;
+#[cfg(feature = "boa")]
 mod domc;
 pub mod engine;
+#[cfg(feature = "boa")]
 mod event_handler;
 mod fetch;
+#[cfg(feature = "boa")]
 mod fonts;
 mod job_budget;
+#[cfg(feature = "boa")]
 pub mod media;
+#[cfg(feature = "boa")]
 mod module;
+#[cfg(feature = "boa")]
 mod raster;
+#[cfg(feature = "boa")]
 mod runtime;
 pub mod script_stats;
+#[cfg(feature = "boa")]
 mod state;
+#[cfg(feature = "boa")]
 mod timers;
 
 // Embedders extending the native script surface must use the same Boa types
 // and registry dependencies as this engine.
+#[cfg(feature = "boa")]
 pub use boa_engine;
+#[cfg(feature = "boa")]
 pub use boa_runtime;
 
-/// Drop-context collection on its current owner thread.
+/// Collect retired Boa realms on the current owner thread.
+///
+/// Does nothing when the `boa` feature is disabled.
 pub fn collect_retired_realms() {
+    #[cfg(feature = "boa")]
     boa_gc::force_collect();
 }
 
 pub use application_document::{ApplicationDocument, ScriptBackend, ScriptDocumentBackend};
-#[cfg(feature = "debug-control")]
+#[cfg(all(feature = "boa", feature = "debug-control"))]
 pub use debug_control::DebugController;
+pub use diagnostics::{DiagnosticBatch, DiagnosticEntry, DiagnosticStreamBatch};
+#[cfg(feature = "boa")]
 pub use document::ScriptDocument;
 pub use fetch::{DefaultScriptFetcher, FetchError, ScriptFetcher};
+#[cfg(feature = "boa")]
 pub use raster::raster_image_for_attribute;
-pub use runtime::{DiagnosticBatch, DiagnosticEntry, DiagnosticStreamBatch};
+

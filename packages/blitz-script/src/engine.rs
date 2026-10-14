@@ -8,8 +8,9 @@ use url::Url;
 use web_time::{Duration, Instant};
 
 pub use crate::job_budget::{JobBudget, JobSlice};
+#[cfg(feature = "boa")]
 use crate::runtime::BoaScriptEngine;
-use crate::runtime::{DiagnosticBatch, DiagnosticEntry};
+use crate::{DiagnosticBatch, DiagnosticEntry};
 
 /// Operations used by the document and event driver to enter script execution.
 ///
@@ -229,6 +230,7 @@ impl<E: ScriptEngine> DerefMut for Engine<E> {
     }
 }
 
+#[cfg(feature = "boa")]
 impl ScriptEngine for BoaScriptEngine {
     type JobScope = JobSlice;
 
@@ -359,3 +361,4 @@ impl ScriptEngine for BoaScriptEngine {
         BoaScriptEngine::diagnostic_batch(self, console_after, errors_after, limit)
     }
 }
+
