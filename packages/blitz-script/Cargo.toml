@@ -15,6 +15,11 @@ name = "solid-debug-harness"
 path = "src/bin/solid_debug_harness.rs"
 required-features = ["debug-control"]
 
+[[bin]]
+name = "native-page-host"
+path = "src/bin/native_page_host.rs"
+required-features = ["ekojit-page-witness"]
+
 [features]
 default = ["shadow-dom"]
 # Native roots, slots, scoped styles and composed event dispatch.
@@ -47,6 +52,8 @@ debug-control = [
 intl = ["boa_engine/intl_bundled"]
 system-fonts = ["blitz-dom/system-fonts"]
 tracing = ["dep:tracing", "blitz-dom/tracing"]
+# Linked native page gate with the real renderer and machine font catalogue.
+ekojit-page-witness = ["ekojit", "debug-control", "system-fonts"]
 
 [lib]
 name = "blitz_script"
