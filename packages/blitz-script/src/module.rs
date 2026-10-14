@@ -105,6 +105,11 @@ impl BlitzModuleLoader {
         }
     }
 
+    pub(crate) fn retire(&self) {
+        self.cache.borrow_mut().clear();
+        *self.import_map.borrow_mut() = ImportMap::default();
+    }
+
     pub(crate) fn has_pending_loads(&self) -> bool {
         self.pending_loads.get() != 0
     }

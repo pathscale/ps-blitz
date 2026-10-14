@@ -88,6 +88,7 @@ data-url = { workspace = true }
 web-time = { workspace = true }
 tracing = { workspace = true, optional = true }
 serde_json = { workspace = true }
+zeroize = "^1.8"
 getrandom = { workspace = true }
 nagoya = { workspace = true }
 bytes = { workspace = true }
