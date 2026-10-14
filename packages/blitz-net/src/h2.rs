@@ -551,7 +551,10 @@ async fn exchange(
         if buffer.len() + chunk.len() > MAX_BODY_BYTES {
             return Err(Failure::Local(Error::TooLarge));
         }
-        request.initiator.charge(chunk.len()).map_err(|reason| Failure::Local(Error::Blocked(reason)))?;
+        request
+            .initiator
+            .charge(chunk.len())
+            .map_err(|reason| Failure::Local(Error::Blocked(reason)))?;
         buffer.extend_from_slice(&chunk);
     }
     let _ = recv.trailers().await.map_err(Failure::After)?;

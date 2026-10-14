@@ -142,7 +142,9 @@ fn paint_scene_region_at_time(
     #[allow(unused_mut)]
     let mut custom_widget_scenes: CustomWidgetSceneMap = HashMap::new();
     #[cfg(feature = "custom-widget")]
-    if !doc.stash_paint { build_custom_widget_scenes(&mut custom_widget_scenes, doc, scene, region.scale); }
+    if !doc.stash_paint {
+        build_custom_widget_scenes(&mut custom_widget_scenes, doc, scene, region.scale);
+    }
 
     let generator = BlitzDomPainter::new_with_clip(
         doc,

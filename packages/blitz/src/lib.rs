@@ -65,7 +65,10 @@ pub fn launch_url(url: &str) {
     let resource_policy = Arc::new(blitz_traits::net::ResourcePolicy::default());
     let navigation = resource_policy.browser(url.clone());
     let (url, bytes) = rt
-        .block_on(net_provider.fetch_async(blitz_traits::net::Request::get(url).initiator(navigation.clone())))
+        .block_on(
+            net_provider
+                .fetch_async(blitz_traits::net::Request::get(url).initiator(navigation.clone())),
+        )
         .unwrap();
     let document_url = url::Url::parse(&url).expect("provider returned a URL");
     let net_provider = net_provider.for_scope(resource_policy.document(document_url, &navigation));

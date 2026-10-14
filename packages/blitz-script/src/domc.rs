@@ -104,7 +104,13 @@ pub(crate) fn install(context: &mut Context) {
         context,
     );
     define_accessor(&document_proto, "hidden", Some(hidden), None, context);
-    define_accessor(&document_proto, "wasDiscarded", Some(was_discarded), None, context);
+    define_accessor(
+        &document_proto,
+        "wasDiscarded",
+        Some(was_discarded),
+        None,
+        context,
+    );
     define_accessor(
         &document_proto,
         "characterSet",

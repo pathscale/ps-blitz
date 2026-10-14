@@ -55,7 +55,9 @@ impl BaseDocument {
         let net_provider = if inherit_origin {
             Arc::clone(&self.net_provider)
         } else {
-            base_url.as_ref().and_then(|url| Url::parse(url).ok())
+            base_url
+                .as_ref()
+                .and_then(|url| Url::parse(url).ok())
                 .and_then(|url| self.net_provider.for_child_document(url))
                 .unwrap_or_else(|| Arc::clone(&self.net_provider))
         };

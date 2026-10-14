@@ -179,7 +179,10 @@ fn info(message: std::fmt::Arguments<'_>) {
     eprintln!("info: {message}");
 }
 
-pub(super) async fn resolve_addresses(origin: &Origin, initiator: &blitz_traits::net::Initiator) -> Result<Vec<nagoya::reactor::socket::Addr>, Error> {
+pub(super) async fn resolve_addresses(
+    origin: &Origin,
+    initiator: &blitz_traits::net::Initiator,
+) -> Result<Vec<nagoya::reactor::socket::Addr>, Error> {
     let host = origin.host.clone();
     let port = origin.port;
     let addresses = nagoya::spawn(async move {
@@ -200,7 +203,11 @@ pub(super) async fn resolve_addresses(origin: &Origin, initiator: &blitz_traits:
     Ok(addresses)
 }
 
-async fn connect(origin: &Origin, handle: &Handle, addresses: &[nagoya::reactor::socket::Addr]) -> Result<TcpStream, Error> {
+async fn connect(
+    origin: &Origin,
+    handle: &Handle,
+    addresses: &[nagoya::reactor::socket::Addr],
+) -> Result<TcpStream, Error> {
     let stats = update(&origin.host, |stats| stats.connections += 1);
     info(format_args!(
         "net {}: new connection #{} (tls {})",

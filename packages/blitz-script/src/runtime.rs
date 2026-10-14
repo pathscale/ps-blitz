@@ -233,11 +233,18 @@ pub(crate) struct BoaScriptEngine {
 impl BoaScriptEngine {
     pub(crate) fn retire(&mut self) {
         use zeroize::Zeroize;
-        self.job_executor.get_cancellation_token().store(true, std::sync::atomic::Ordering::Release);
-        let _ = boa_engine::job::JobExecutor::run_jobs(Rc::clone(&self.job_executor), &mut self.context);
+        self.job_executor
+            .get_cancellation_token()
+            .store(true, std::sync::atomic::Ordering::Release);
+        let _ = boa_engine::job::JobExecutor::run_jobs(
+            Rc::clone(&self.job_executor),
+            &mut self.context,
+        );
         self.pending_modules.clear();
         self.domc_polls.take();
-        if let Some((_, mut text)) = self.focussed_text_value.take() { text.zeroize(); }
+        if let Some((_, mut text)) = self.focussed_text_value.take() {
+            text.zeroize();
+        }
         self.module_loader.retire();
         crate::docwrite::retire(&self.context);
         self.context.clear_kept_objects();
@@ -1826,9 +1833,16 @@ impl BoaScriptEngine {
     pub(crate) fn dispatch_lifecycle_event(&mut self, name: &str) {
         let root_id = self.ctx.doc.borrow().root_node().id;
         let mut event_state = EventState::default();
-        let ran = self.dispatch_event_inner(&[root_id], name, false,
-            |ctx, target, context| create_event(ctx, name, false, false, target, context), &mut event_state);
-        if ran { self.run_jobs("lifecycle microtasks"); }
+        let ran = self.dispatch_event_inner(
+            &[root_id],
+            name,
+            false,
+            |ctx, target, context| create_event(ctx, name, false, false, target, context),
+            &mut event_state,
+        );
+        if ran {
+            self.run_jobs("lifecycle microtasks");
+        }
     }
 
     /// Dispatch a simple event (e.g. `DOMContentLoaded`) targeting the document node

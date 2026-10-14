@@ -30,11 +30,11 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 mod handoff;
-pub use handoff::{
-    CommandReceiver, IntoValueIter, RecvError, RecvTimeoutError, TryRecvError,
-    TryValueIter, ValueIter, ValueReceiver,
-};
 use handoff::{CommandQueue, QueueError, Reply, ResponseWait};
+pub use handoff::{
+    CommandReceiver, IntoValueIter, RecvError, RecvTimeoutError, TryRecvError, TryValueIter,
+    ValueIter, ValueReceiver,
+};
 
 const PROTOCOL_VERSION: u32 = 1;
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
@@ -241,11 +241,8 @@ impl DebugServer {
         token: impl Into<String>,
     ) -> io::Result<(Self, CommandReceiver)> {
         let queue = CommandQueue::new(MAX_PENDING_COMMANDS);
-        let server = Self::start_with_sink_and_token(
-            config,
-            CommandSink(Arc::clone(&queue)),
-            token.into(),
-        )?;
+        let server =
+            Self::start_with_sink_and_token(config, CommandSink(Arc::clone(&queue)), token.into())?;
         Ok((server, CommandReceiver(queue)))
     }
 

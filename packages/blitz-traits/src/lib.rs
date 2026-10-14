@@ -6,10 +6,10 @@ pub mod events;
 pub mod handoff;
 pub mod navigation;
 pub mod net;
-pub mod resource_policy;
 pub mod node_id;
 pub mod platform;
 pub mod profiling;
+pub mod resource_policy;
 pub mod shell;
 pub mod tls_policy;
 

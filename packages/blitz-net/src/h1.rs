@@ -22,7 +22,9 @@ mod tls;
 pub use tls::{HostStats, connection_stats};
 
 pub(super) fn prepare_native_tls() -> Result<(), String> {
-    tls::default_config().map(|_| ()).map_err(|error| error.to_string())
+    tls::default_config()
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 use blitz_traits::net::{
@@ -158,7 +160,10 @@ impl H1Client {
     /// including redirects and errors, is delivered to the cookie jar before
     /// any subsequent hop.
     pub async fn fetch(&self, request: FetchRequest) -> Result<FetchResponse, Error> {
-        request.initiator.check_url(&request.url).map_err(Error::Blocked)?;
+        request
+            .initiator
+            .check_url(&request.url)
+            .map_err(Error::Blocked)?;
         let mut scoped = self.clone();
         if request.initiator.restrict_network() {
             // A browser socket to a private peer must never enter this pool.
@@ -191,12 +196,21 @@ impl H1Client {
         validate_request(&request)?;
         for hop in 0..=MAX_REDIRECTS {
             if hop != 0 {
-                request.initiator.begin(&request.url).map_err(Error::Blocked)?;
+                request
+                    .initiator
+                    .begin(&request.url)
+                    .map_err(Error::Blocked)?;
                 if let Some(body) = &request.body {
-                    request.initiator.charge(body.len()).map_err(Error::Blocked)?;
+                    request
+                        .initiator
+                        .charge(body.len())
+                        .map_err(Error::Blocked)?;
                 }
             }
-            request.initiator.check_url(&request.url).map_err(Error::Blocked)?;
+            request
+                .initiator
+                .check_url(&request.url)
+                .map_err(Error::Blocked)?;
             let key = Origin::from_url(&request.url)?;
             let addresses = tls::resolve_addresses(&key, &request.initiator).await?;
             let headers = match initial_headers.take() {
@@ -206,7 +220,14 @@ impl H1Client {
             let handle = self.reactor.handle();
             let opened = match self
                 .h2
-                .route(&key, &request, &headers, &handle, &self.tls_config, &addresses)
+                .route(
+                    &key,
+                    &request,
+                    &headers,
+                    &handle,
+                    &self.tls_config,
+                    &addresses,
+                )
                 .await?
             {
                 http2::Route::H2(wire) => {
@@ -227,8 +248,13 @@ impl H1Client {
             let mut reused = lease.connection.is_some();
             let wire = loop {
                 if lease.connection.is_none() {
-                    let transport =
-                        tls::open(&key, &self.reactor.handle(), self.tls_config.clone(), &addresses).await?;
+                    let transport = tls::open(
+                        &key,
+                        &self.reactor.handle(),
+                        self.tls_config.clone(),
+                        &addresses,
+                    )
+                    .await?;
                     lease.connection = Some(Connection::new(transport));
                 }
                 let result = lease
@@ -275,7 +301,9 @@ impl H1Client {
         hop: usize,
         key: &Origin,
     ) -> Result<Option<FetchResponse>, Error> {
-        if request.initiator.allows_credentials(&request.url, request.credentials)
+        if request
+            .initiator
+            .allows_credentials(&request.url, request.credentials)
             && let Some(jar) = &self.cookies
         {
             jar.store_from_response(&request.url, &wire.headers);
@@ -394,8 +422,13 @@ impl H1Client {
 
         // No caller-supplied cookie or authorization bypasses the browser's
         // credential ceiling. Check again for each redirect hop.
-        for name in ["cookie", "cookie2", "proxy-authorization"] { headers.remove(name); }
-        if request.initiator.allows_credentials(&request.url, request.credentials) {
+        for name in ["cookie", "cookie2", "proxy-authorization"] {
+            headers.remove(name);
+        }
+        if request
+            .initiator
+            .allows_credentials(&request.url, request.credentials)
+        {
             if let Some(jar) = &self.cookies
                 && let Some(cookie) = jar.cookies_header(&request.url)
             {
@@ -523,14 +556,19 @@ impl Connection {
                 Framing::Chunked => self.read_chunked(&request.initiator).await?,
                 Framing::Eof => {
                     reusable = false;
-                    request.initiator.charge(self.buffer.len()).map_err(Error::Blocked)?;
+                    request
+                        .initiator
+                        .charge(self.buffer.len())
+                        .map_err(Error::Blocked)?;
                     loop {
                         if self.buffer.len() > MAX_BODY_BYTES {
                             return Err(Error::TooLarge);
                         }
                         let read = self.fill().await?;
                         request.initiator.charge(read).map_err(Error::Blocked)?;
-                        if read == 0 { break; }
+                        if read == 0 {
+                            break;
+                        }
                     }
                     self.buffer.split().freeze()
                 }
@@ -605,7 +643,10 @@ impl Connection {
         }
     }
 
-    async fn read_chunked(&mut self, initiator: &blitz_traits::net::Initiator) -> Result<Bytes, Error> {
+    async fn read_chunked(
+        &mut self,
+        initiator: &blitz_traits::net::Initiator,
+    ) -> Result<Bytes, Error> {
         let mut body = BytesMut::new();
         loop {
             let line = self.line(MAX_LINE).await?;
@@ -867,12 +908,20 @@ fn find(bytes: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 #[cfg(not(feature = "compression"))]
-fn decode_body(body: Bytes, _headers: &mut HeaderMap, _initiator: &blitz_traits::net::Initiator) -> Result<Bytes, Error> {
+fn decode_body(
+    body: Bytes,
+    _headers: &mut HeaderMap,
+    _initiator: &blitz_traits::net::Initiator,
+) -> Result<Bytes, Error> {
     Ok(body)
 }
 
 #[cfg(feature = "compression")]
-fn decode_body(mut body: Bytes, headers: &mut HeaderMap, initiator: &blitz_traits::net::Initiator) -> Result<Bytes, Error> {
+fn decode_body(
+    mut body: Bytes,
+    headers: &mut HeaderMap,
+    initiator: &blitz_traits::net::Initiator,
+) -> Result<Bytes, Error> {
     let mut encodings = Vec::new();
     for value in headers.get_all("content-encoding").iter() {
         let value = value
@@ -891,7 +940,9 @@ fn decode_body(mut body: Bytes, headers: &mut HeaderMap, initiator: &blitz_trait
     }
     let mut high_water = body.len();
     for encoding in encodings.iter().rev() {
-        let limit = high_water.saturating_add(initiator.remaining_bytes()).min(MAX_BODY_BYTES);
+        let limit = high_water
+            .saturating_add(initiator.remaining_bytes())
+            .min(MAX_BODY_BYTES);
         body = match encoding.as_str() {
             "identity" => body,
             "br" => bounded_decode(brotli::Decompressor::new(body.as_ref(), 16 * 1024), limit)?,
@@ -912,7 +963,9 @@ fn decode_body(mut body: Bytes, headers: &mut HeaderMap, initiator: &blitz_trait
             }
             _ => return Err(Error::Protocol("unsupported content coding")),
         };
-        initiator.charge(body.len().saturating_sub(high_water)).map_err(Error::Blocked)?;
+        initiator
+            .charge(body.len().saturating_sub(high_water))
+            .map_err(Error::Blocked)?;
         high_water = high_water.max(body.len());
     }
     // These described the encoded representation, not the returned bytes.

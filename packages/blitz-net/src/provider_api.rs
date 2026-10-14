@@ -1,7 +1,9 @@
 //! Stable 0.6 API over the policy-aware implementation.
 
 use blitz_traits::net::{Bytes, NetHandler, NetProvider, NetWaker, Request};
-use blitz_traits::platform::{FetchError, FetchHandler, FetchProvider, FetchRequest, FetchResponse, StatusCode};
+use blitz_traits::platform::{
+    FetchError, FetchHandler, FetchProvider, FetchRequest, FetchResponse, StatusCode,
+};
 use std::sync::Arc;
 
 /// The browser's document and script network provider.
@@ -9,7 +11,10 @@ pub struct Provider(crate::core::Provider);
 
 impl Provider {
     /// Bind a browser-issued principal before handing networking to a document.
-    pub fn for_scope(self: &Arc<Self>, initiator: blitz_traits::net::Initiator) -> Arc<crate::ScopedProvider> {
+    pub fn for_scope(
+        self: &Arc<Self>,
+        initiator: blitz_traits::net::Initiator,
+    ) -> Arc<crate::ScopedProvider> {
         Arc::new(crate::ScopedProvider::new(Arc::clone(self), initiator))
     }
 
@@ -27,10 +32,13 @@ impl Provider {
         user_agent: &str,
         cookie_provider: Arc<C>,
     ) -> Self
-    where C: crate::CookieJar,
+    where
+        C: crate::CookieJar,
     {
         Self(crate::core::Provider::with_user_agent_and_cookie_provider(
-            waker, user_agent, cookie_provider,
+            waker,
+            user_agent,
+            cookie_provider,
         ))
     }
 
@@ -41,7 +49,8 @@ impl Provider {
 
     #[cfg(all(feature = "cache", not(target_arch = "wasm32")))]
     pub async fn with_cache_directory(
-        self, directory: impl AsRef<std::path::Path>,
+        self,
+        directory: impl AsRef<std::path::Path>,
     ) -> std::io::Result<Self> {
         self.0.with_cache_directory(directory).await.map(Self)
     }
@@ -51,17 +60,26 @@ impl Provider {
     }
 
     pub fn shared_with_user_agent(
-        waker: Option<Arc<dyn NetWaker>>, user_agent: &str,
+        waker: Option<Arc<dyn NetWaker>>,
+        user_agent: &str,
     ) -> Arc<dyn NetProvider> {
         crate::core::Provider::shared_with_user_agent(waker, user_agent)
     }
 
-    pub fn user_agent(&self) -> &str { self.0.user_agent() }
-    pub fn is_empty(&self) -> bool { self.0.is_empty() }
-    pub fn count(&self) -> usize { self.0.count() }
+    pub fn user_agent(&self) -> &str {
+        self.0.user_agent()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    pub fn count(&self) -> usize {
+        self.0.count()
+    }
 
     #[cfg(all(feature = "cache", not(target_arch = "wasm32")))]
-    pub async fn clear_cache(&self) { self.0.clear_cache().await; }
+    pub async fn clear_cache(&self) {
+        self.0.clear_cache().await;
+    }
 
     #[allow(clippy::type_complexity)]
     pub fn fetch_with_callback(
@@ -69,20 +87,35 @@ impl Provider {
         request: Request,
         callback: Box<dyn FnOnce(Result<(String, Bytes), ProviderError>) + Send + Sync + 'static>,
     ) {
-        self.0.fetch_with_callback(request, Box::new(move |result| {
-            callback(result.map_err(ProviderError::from));
-        }));
+        self.0.fetch_with_callback(
+            request,
+            Box::new(move |result| {
+                callback(result.map_err(ProviderError::from));
+            }),
+        );
     }
 
     pub async fn fetch_async(&self, request: Request) -> Result<(String, Bytes), ProviderError> {
-        self.0.fetch_async(request).await.map_err(ProviderError::from)
+        self.0
+            .fetch_async(request)
+            .await
+            .map_err(ProviderError::from)
     }
 
-    pub async fn fetch_response_async(&self, request: Request) -> Result<FetchResponse, ProviderError> {
-        self.0.fetch_response_async(request).await.map_err(ProviderError::from)
+    pub async fn fetch_response_async(
+        &self,
+        request: Request,
+    ) -> Result<FetchResponse, ProviderError> {
+        self.0
+            .fetch_response_async(request)
+            .await
+            .map_err(ProviderError::from)
     }
 
-    pub async fn fetch_platform_async(&self, request: FetchRequest) -> Result<FetchResponse, FetchError> {
+    pub async fn fetch_platform_async(
+        &self,
+        request: FetchRequest,
+    ) -> Result<FetchResponse, FetchError> {
         self.0.fetch_platform_async(request).await
     }
 }
@@ -142,7 +175,9 @@ impl std::fmt::Display for ProviderError {
             Self::Network(error) => write!(formatter, "network error: {error}"),
             Self::TlsPolicy(reason) => write!(formatter, "TLS policy: {reason}"),
             Self::InvalidRequest(error) => write!(formatter, "invalid request: {error}"),
-            Self::UnsupportedScheme(scheme) => write!(formatter, "unsupported URL scheme: {scheme}"),
+            Self::UnsupportedScheme(scheme) => {
+                write!(formatter, "unsupported URL scheme: {scheme}")
+            }
             Self::HttpStatus { status, url } => write!(formatter, "HTTP {status} for {url}"),
         }
     }
@@ -151,13 +186,19 @@ impl std::fmt::Display for ProviderError {
 impl std::error::Error for ProviderError {}
 
 impl From<std::io::Error> for ProviderError {
-    fn from(error: std::io::Error) -> Self { Self::Io(error) }
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
+    }
 }
 
 impl From<data_url::DataUrlError> for ProviderError {
-    fn from(error: data_url::DataUrlError) -> Self { Self::DataUrl(error) }
+    fn from(error: data_url::DataUrlError) -> Self {
+        Self::DataUrl(error)
+    }
 }
 
 impl From<data_url::forgiving_base64::InvalidBase64> for ProviderError {
-    fn from(error: data_url::forgiving_base64::InvalidBase64) -> Self { Self::DataUrlBase64(error) }
+    fn from(error: data_url::forgiving_base64::InvalidBase64) -> Self {
+        Self::DataUrlBase64(error)
+    }
 }

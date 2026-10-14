@@ -61,9 +61,9 @@ pub mod release;
 mod resolve;
 mod select;
 mod selection;
-pub mod stash_policy;
 #[cfg(feature = "shadow-dom")]
 mod shadow;
+pub mod stash_policy;
 /// Implementations that interact with servo's style engine
 mod stylo;
 mod stylo_to_cursor_icon;
