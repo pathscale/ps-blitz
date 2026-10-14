@@ -1262,10 +1262,7 @@ impl BaseDocument {
         let nodes: Vec<_> = self.sub_document_nodes.iter().copied().collect();
         let mut children = Vec::new();
         for id in nodes {
-            if let Some(document) = self.nodes.get_mut(id).and_then(|node| node.subdoc_mut()) {
-                document.prepare_teardown();
-                children.push(Arc::clone(&document.inner().teardown));
-            }
+            if let Some(receipt) = self.retire_sub_document(id) { children.push(receipt); }
         }
         #[cfg(feature = "custom-widget")]
         self.destroy_surfaces();

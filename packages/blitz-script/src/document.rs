@@ -874,7 +874,10 @@ impl ScriptDocument {
 }
 
 impl Drop for ScriptDocument {
-    fn drop(&mut self) { self.cancel_host_work(); }
+    fn drop(&mut self) {
+        self.cancel_host_work();
+        self.inner.borrow_mut().prepare_teardown();
+    }
 }
 
 impl Document for ScriptDocument {
