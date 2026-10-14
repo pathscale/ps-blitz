@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -162,6 +163,22 @@ impl DebugController {
             }
             Err(RecvTimeoutError::Disconnected) => Ok(false),
             Err(error) => Err(error),
+        }
+    }
+
+    /// Wait on queue readiness while servicing the document's timer wakes.
+    pub fn service_reactive(&mut self, document: &mut ScriptDocument) -> bool {
+        let request = {
+            let mut receive = std::pin::pin!(self.requests.recv());
+            document.wait_with(|_, cx| receive.as_mut().poll(cx))
+        };
+        match request {
+            Ok(request) => {
+                self.resolution_time = self.clock_started.elapsed().as_secs_f64();
+                self.handle(document, request);
+                true
+            }
+            Err(_) => false,
         }
     }
 
@@ -473,25 +490,27 @@ impl DebugController {
             return error("javascript error", message);
         }
 
-        let deadline = Instant::now() + ASYNC_SCRIPT_TIMEOUT;
-        loop {
-            document.poll(None);
+        let mut timeout = nagoya::time::sleep(ASYNC_SCRIPT_TIMEOUT);
+        document.wait_with(|document, cx| {
             match document.eval_json(&format!("globalThis.{result_name}")) {
                 Ok(state) if state.get("done").and_then(Value::as_bool) == Some(true) => {
                     let value = state.get("value").cloned().unwrap_or(Value::Null);
                     let _ = document.eval_json(&format!("delete globalThis.{result_name}"));
                     self.document_revision += 1;
-                    return success(value);
+                    return std::task::Poll::Ready(success(value));
                 }
                 Ok(_) => {}
-                Err(message) => return error("javascript error", message),
+                Err(message) => return std::task::Poll::Ready(error("javascript error", message)),
             }
-            if Instant::now() >= deadline {
+            if std::pin::Pin::new(&mut timeout).poll(cx).is_ready() {
                 let _ = document.eval_json(&format!("delete globalThis.{result_name}"));
-                return error("script timeout", "asynchronous script callback did not run");
+                return std::task::Poll::Ready(error(
+                    "script timeout",
+                    "asynchronous script callback did not run",
+                ));
             }
-            std::thread::yield_now();
-        }
+            std::task::Poll::Pending
+        })
     }
 
     fn console_entries(&self, document: &ScriptDocument, body: &Value) -> ControlResponse {

@@ -178,6 +178,22 @@ impl ScriptDocument {
         self.runtime.pending_task_count()
     }
 
+    /// Drive this document while a renderer-owned completion is pending.
+    #[cfg(feature = "debug-control")]
+    pub(crate) fn wait_with<T>(
+        &mut self,
+        mut wait: impl FnMut(&mut Self, &mut TaskContext<'_>) -> Poll<T>,
+    ) -> T {
+        let host_waker = self.waker.clone();
+        let result = nagoya::block_on(std::future::poll_fn(|cx| {
+            self.poll(Some(TaskContext::from_waker(cx.waker())));
+            wait(self, cx)
+        }));
+        self.waker = host_waker;
+        self.arm_timer_wake();
+        result
+    }
+
     /// Drive scripts and runnable event-loop work to quiescence.
     ///
     /// Starts document scripts if necessary, then polls until parsing,
