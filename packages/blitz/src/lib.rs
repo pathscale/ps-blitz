@@ -62,9 +62,13 @@ pub fn launch_url(url: &str) {
     let net_provider = create_net_provider(proxy.clone());
     let application = BlitzApplication::new(proxy, reciever);
 
+    let resource_policy = Arc::new(blitz_traits::net::ResourcePolicy::default());
+    let navigation = resource_policy.browser(url.clone());
     let (url, bytes) = rt
-        .block_on(net_provider.fetch_async(blitz_traits::net::Request::get(url)))
+        .block_on(net_provider.fetch_async(blitz_traits::net::Request::get(url).initiator(navigation.clone())))
         .unwrap();
+    let document_url = url::Url::parse(&url).expect("provider returned a URL");
+    let net_provider = net_provider.for_scope(resource_policy.document(document_url, &navigation));
     let html = std::str::from_utf8(bytes.as_ref()).unwrap();
 
     launch_internal(

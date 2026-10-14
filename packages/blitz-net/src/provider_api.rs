@@ -8,6 +8,11 @@ use std::sync::Arc;
 pub struct Provider(crate::core::Provider);
 
 impl Provider {
+    /// Bind a browser-issued principal before handing networking to a document.
+    pub fn for_scope(self: &Arc<Self>, initiator: blitz_traits::net::Initiator) -> Arc<crate::ScopedProvider> {
+        Arc::new(crate::ScopedProvider::new(Arc::clone(self), initiator))
+    }
+
     pub fn new(waker: Option<Arc<dyn NetWaker>>) -> Self {
         Self(crate::core::Provider::new(waker))
     }

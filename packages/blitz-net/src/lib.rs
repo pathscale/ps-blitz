@@ -24,6 +24,8 @@ mod local_fetch;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod h1;
+mod scoped_provider;
+pub use scoped_provider::ScopedProvider;
 
 mod provider_api;
 pub use provider_api::{Provider, ProviderError};
@@ -458,6 +460,7 @@ impl NetProvider for Provider {
         #[cfg(feature = "tracing")]
         tracing::info!(url = request.url.as_str(), "Fetching");
 
+        let request_url = request.url.to_string();
         let signal = request.signal.clone();
         let waker = self.waker.clone();
         spawn(async move {
@@ -482,6 +485,7 @@ impl NetProvider for Provider {
                     tracing::error!(url = url.as_str(), error = ?e, "Error fetching");
                     #[cfg(not(feature = "tracing"))]
                     let _ = e;
+                    handler.bytes(request_url, Bytes::new());
                 }
             };
             // Publish bytes before notifying the document that they exist.
