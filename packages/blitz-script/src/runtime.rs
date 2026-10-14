@@ -33,28 +33,7 @@ use crate::state::{DomCtx, Listener};
 
 const DIAGNOSTIC_CAPACITY: usize = 1_000;
 
-#[derive(Debug, Clone)]
-#[cfg_attr(not(feature = "debug-control"), allow(dead_code))]
-pub struct DiagnosticEntry {
-    pub sequence: u64,
-    pub order: u64,
-    pub level: String,
-    pub message: String,
-    pub stack: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct DiagnosticStreamBatch {
-    pub entries: Vec<DiagnosticEntry>,
-    pub lost: u64,
-    pub next_sequence: u64,
-}
-
-#[derive(Debug, Clone)]
-pub struct DiagnosticBatch {
-    pub console: DiagnosticStreamBatch,
-    pub errors: DiagnosticStreamBatch,
-}
+pub use crate::diagnostics::{DiagnosticBatch, DiagnosticEntry, DiagnosticStreamBatch};
 
 fn diagnostic_stream(
     queue: &VecDeque<DiagnosticEntry>,

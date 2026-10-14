@@ -13,10 +13,11 @@ rust-version.workspace = true
 [[bin]]
 name = "solid-debug-harness"
 path = "src/bin/solid_debug_harness.rs"
-required-features = ["debug-control"]
+required-features = ["boa", "debug-control"]
 
 [features]
-default = ["shadow-dom"]
+default = ["boa", "shadow-dom"]
+boa = ["dep:boa_engine", "dep:boa_runtime", "dep:boa_gc"]
 # Native roots, slots, scoped styles and composed event dispatch.
 shadow-dom = ["blitz-dom/shadow-dom", "blitz-html/shadow-dom", "dep:style"]
 # Per-DOM-call timing. Off by default: a shipping build has no reader for it
@@ -44,7 +45,7 @@ debug-control = [
 # builtins but supplies no data, and Boa then fails context construction with
 # "missing Intl provider for context" -- so it is not a smaller working
 # configuration, it is a broken one.
-intl = ["boa_engine/intl_bundled"]
+intl = ["boa", "boa_engine/intl_bundled"]
 system-fonts = ["blitz-dom/system-fonts"]
 tracing = ["dep:tracing", "blitz-dom/tracing"]
 
@@ -60,9 +61,9 @@ blitz-html = { workspace = true }
 blitz-traits = { workspace = true }
 
 # Boa (JavaScript engine)
-boa_engine = { workspace = true }
-boa_runtime = { workspace = true }
-boa_gc = { workspace = true }
+boa_engine = { workspace = true, optional = true }
+boa_runtime = { workspace = true, optional = true }
+boa_gc = { workspace = true, optional = true }
 
 # Servo dependencies
 markup5ever = { workspace = true }
@@ -107,3 +108,4 @@ url = { workspace = true }
 # of this crate -- shipped or under test -- links no system library at all.
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 blitz-dom = { workspace = true, features = ["system-fonts"] }
+

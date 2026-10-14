@@ -36,7 +36,7 @@ hot-reload = ["dioxus-native/hot-reload"]
 accessibility = ["dioxus-native/accessibility"]
 scrollbars = ["blitz-dom/scrollbars", "blitz-paint/scrollbars"]
 # Enable JavaScript execution for loaded pages (via blitz-script's Boa-based engine)
-javascript = ["dep:blitz-script"]
+javascript = ["dep:blitz-script", "blitz-script/boa"]
 mimalloc = ["dep:mimalloc"]
 font-embolden = ["dioxus-native/font-embolden"]
 apple-font-embolden = ["dioxus-native/apple-font-embolden"]
@@ -81,3 +81,4 @@ rfd = { workspace = true, features = ["xdg-portal"], optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity = { version = "0.6.0", features = ["native-activity"] }
+

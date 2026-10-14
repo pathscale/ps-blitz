@@ -19,7 +19,7 @@ accessibility = [
 ]
 clipboard = ["dep:arboard"]
 tracing = ["dep:tracing", "blitz-dom/tracing"]
-debug-control = ["dep:blitz-script", "blitz-script/debug-control"]
+debug-control = ["dep:blitz-script", "blitz-script/boa", "blitz-script/debug-control"]
 svg = ["blitz-paint/svg"]
 # Overlay scrollbars: the thumb painting in `blitz-paint` plus the drag and
 # hover tracking in `blitz-dom`. Off by default because a shell that draws no
@@ -81,11 +81,9 @@ android-activity = { version = "0.6.0" }
 
 [target.'cfg(any(target_os = "windows",target_os = "macos",target_os = "linux",target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))'.dependencies]
 arboard = { workspace = true, optional = true }
-
-
-[target.'cfg(any(target_os = "windows",target_os = "macos",target_os = "linux",target_os = "freebsd", target_os = "dragonfly", target_os = "netbsd", target_os = "openbsd"))'.dependencies]
 rfd = { workspace = true, optional = true, features = ["xdg-portal"] }
 
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
