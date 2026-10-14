@@ -1,18 +1,1 @@
-[package]
-name = "blitz-wasm-guest"
-description = "Safe guest-side bindings for the blitz-wasm host imports"
-publish = false
-version = "0.1.0"
-license = "MIT OR Apache-2.0"
-edition = "2024"
-rust-version = "1.89.0"
 
-[lib]
-name = "blitz_wasm_guest"
-
-[dependencies]
-# From crates.io, not by path, and that is the point rather than a detail.
-# A guest is written outside this repository, so the vocabulary it compiles
-# against has to be resolvable without cloning the engine. This crate is the
-# reference guest and it consumes `dom-abi` exactly as any other guest does.
-dom-abi = "0.1"
