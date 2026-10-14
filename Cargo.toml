@@ -209,7 +209,7 @@ keyboard-types = "^0.7"
 cursor-icon = "^1"
 
 # IO & Networking
-nagoya = { path = "../nagoya", version = "^0.1.16", features = ["reactor"] }
+nagoya = { version = "^0.1.18", features = ["reactor"] }
 spsc = { package = "ps-spsc", version = "^0.5.1" }
 url = "^2.5.0"
 http = "^1.1.0"
