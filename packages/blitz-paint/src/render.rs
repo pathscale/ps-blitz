@@ -308,7 +308,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         };
 
         if self.dom.stash_paint {
-            let opaque = matches!(node.local_name(), "canvas" | "video" | "iframe" | "web-view");
+            let opaque = matches!(node.local_name().as_ref(), "canvas" | "video" | "iframe" | "web-view");
             #[cfg(feature = "custom-widget")]
             let opaque = opaque || node.element_data().and_then(|el| el.custom_widget_data()).is_some();
             if opaque || self.dom.stash_sensitive(node_id) { return; }
