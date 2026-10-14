@@ -2065,24 +2065,76 @@ fn ipc_post_message(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
     Ok(JsValue::undefined())
 }
 
+fn is_secure_clipboard_url(url: &Url) -> bool {
+    match url.scheme() {
+        "https" => true,
+        "http" => match url.host() {
+            Some(url::Host::Domain(host)) => host == "localhost" || host.ends_with(".localhost"),
+            Some(url::Host::Ipv4(address)) => address.is_loopback(),
+            Some(url::Host::Ipv6(address)) => address.is_loopback(),
+            None => false,
+        },
+        _ => false,
+    }
+}
+
+fn clipboard_access_allowed(context: &mut Context) -> JsResult<bool> {
+    let ctx = dom_ctx(context)?;
+    let eligible = {
+        let document = ctx.doc.borrow();
+        document.window_focused()
+            && document.page_visible
+            && !document.page_frozen
+            && !document.page_retiring
+            && !document.page_input_blocked
+            && is_secure_clipboard_url(document.url())
+    };
+    if !eligible {
+        return Ok(false);
+    }
+
+    let mut state = ctx.state.borrow_mut();
+    match state.transient_activation_deadline {
+        Some(deadline) if deadline > Instant::now() => {
+            state.transient_activation_deadline = None;
+            Ok(true)
+        }
+        Some(_) => {
+            state.transient_activation_deadline = None;
+            Ok(false)
+        }
+        None => Ok(false),
+    }
+}
+
+fn rejected_clipboard_access(context: &mut Context) -> JsResult<JsValue> {
+    let error = crate::dom_exception::error(
+        "NotAllowedError",
+        "clipboard access requires a secure focused document and user activation",
+        context,
+    );
+    Ok(JsValue::from(JsPromise::reject(error, context)?))
+}
+
 /// `navigator.clipboard.writeText(text)`.
 ///
 /// The spec returns a promise, and callers await it, so a plain value would be
 /// awaited as an already-resolved one and hide a failed write. Resolve on a
-/// successful shell write and reject otherwise, which is what the API's own
-/// error path looks like.
+/// successful shell write and reject otherwise.
 fn clipboard_write_text(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    if !clipboard_access_allowed(context)? {
+        return rejected_clipboard_access(context);
+    }
     let text = args
         .first()
         .unwrap_or(&JsValue::undefined())
         .to_string(context)?
         .to_std_string_lossy();
-    let wrote = dom_ctx(context)?
-        .doc
-        .borrow()
-        .shell_provider
-        .set_clipboard_text(text)
-        .is_ok();
+    let shell_provider = {
+        let ctx = dom_ctx(context)?;
+        ctx.doc.borrow().shell_provider.clone()
+    };
+    let wrote = shell_provider.set_clipboard_text(text).is_ok();
     let promise = if wrote {
         JsPromise::resolve(JsValue::undefined(), context)
     } else {
@@ -2094,14 +2146,16 @@ fn clipboard_write_text(_: &JsValue, args: &[JsValue], context: &mut Context) ->
 }
 
 /// `navigator.clipboard.readText()`. Rejects when the shell has no clipboard,
-/// rather than resolving to "" — an empty clipboard and an absent one are
-/// different answers and callers branch on them differently.
+/// rather than resolving to an empty string.
 fn clipboard_read_text(_: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let read = dom_ctx(context)?
-        .doc
-        .borrow()
-        .shell_provider
-        .get_clipboard_text();
+    if !clipboard_access_allowed(context)? {
+        return rejected_clipboard_access(context);
+    }
+    let shell_provider = {
+        let ctx = dom_ctx(context)?;
+        ctx.doc.borrow().shell_provider.clone()
+    };
+    let read = shell_provider.get_clipboard_text();
     let promise = match read {
         Ok(text) => JsPromise::resolve(JsValue::from(JsString::from(text)), context),
         Err(_) => {

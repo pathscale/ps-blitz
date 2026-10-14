@@ -7,8 +7,37 @@
 use crate::node::{ImageData, NodeData, SpecialElementData};
 use crate::{document::BaseDocument, dom_node_id, node::Node, taffy_node_id};
 use markup5ever::local_name;
-use std::cell::Ref;
+use std::cell::{Cell, Ref};
+use std::collections::HashSet;
 use std::sync::Arc;
+
+pub(crate) const RUNAWAY_DEPTH: usize = 512;
+
+thread_local! {
+    static LAYOUT_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+pub(super) struct LayoutDepthGuard;
+
+impl LayoutDepthGuard {
+    pub(super) fn enter() -> Option<Self> {
+        LAYOUT_DEPTH.with(|depth| {
+            let current = depth.get();
+            if current >= RUNAWAY_DEPTH {
+                None
+            } else {
+                depth.set(current + 1);
+                Some(Self)
+            }
+        })
+    }
+}
+
+impl Drop for LayoutDepthGuard {
+    fn drop(&mut self) {
+        LAYOUT_DEPTH.with(|depth| depth.set(depth.get() - 1));
+    }
+}
 use style::Atom;
 use style::values::computed::CSSPixelLength;
 use style::values::computed::length_percentage::CalcLengthPercentage;
@@ -37,6 +66,8 @@ use taffy::{
 pub(crate) mod layout_panic_probe {
     use std::cell::RefCell;
     use std::sync::OnceLock;
+
+    use super::RUNAWAY_DEPTH;
 
     thread_local! {
         static IN_FLIGHT: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
@@ -78,10 +109,6 @@ pub(crate) mod layout_panic_probe {
             previous(info);
         }));
     }
-
-    /// Deeper than any real document nests. A page that reaches this is
-    /// recursing, not laying out.
-    const RUNAWAY_DEPTH: usize = 512;
 
     /// The node whose layout was in flight when everything stopped, so the
     /// caller that still holds the document can serialize its markup.
@@ -790,6 +817,42 @@ impl BaseDocument {
     }
 }
 
+impl BaseDocument {
+    fn clear_layout_of_subtree(&mut self, root_id: blitz_traits::node_id::NodeId) {
+        let mut stack = vec![root_id];
+        let mut visited = HashSet::new();
+
+        while let Some(id) = stack.pop() {
+            if !visited.insert(id) {
+                continue;
+            }
+
+            let Some(node) = self.nodes.get(id) else {
+                continue;
+            };
+            let mut children = node.children.clone();
+            if let Some(layout_children) = node.layout_children.borrow().as_ref() {
+                children.extend(layout_children.iter().copied());
+            }
+            stack.extend(children);
+
+            let Some(node) = self.nodes.get_mut(id) else {
+                continue;
+            };
+            if matches!(
+                &node.data,
+                NodeData::Element(_) | NodeData::AnonymousBlock(_) | NodeData::Document(_)
+            ) {
+                *node.unrounded_layout_mut() = taffy::Layout::with_order(0);
+                *node.final_layout_mut() = taffy::Layout::with_order(0);
+                node.cache_mut().clear();
+            }
+            node.layout_children.get_mut().take();
+            node.layout_parent.set(None);
+        }
+    }
+}
+
 impl TraversePartialTree for BaseDocument {
     type ChildIter<'a> = RefCellChildIter<'a>;
 
@@ -851,6 +914,11 @@ impl LayoutPartialTree for BaseDocument {
         node_id: NodeId,
         inputs: taffy::LayoutInput,
     ) -> taffy::LayoutOutput {
+        let Some(_depth_guard) = LayoutDepthGuard::enter() else {
+            self.clear_layout_of_subtree(dom_node_id(node_id));
+            return taffy::LayoutOutput::HIDDEN;
+        };
+
         #[cfg(not(target_arch = "wasm32"))]
         let probing = layout_panic_probe::enabled();
         #[cfg(not(target_arch = "wasm32"))]
@@ -942,6 +1010,11 @@ impl taffy::LayoutBlockContainer for BaseDocument {
         inputs: taffy::LayoutInput,
         block_ctx: Option<&mut BlockContext<'_>>,
     ) -> taffy::LayoutOutput {
+        let Some(_depth_guard) = LayoutDepthGuard::enter() else {
+            self.clear_layout_of_subtree(dom_node_id(node_id));
+            return taffy::LayoutOutput::HIDDEN;
+        };
+
         compute_cached_layout(self, node_id, inputs, |tree, node_id, inputs| {
             tree.compute_child_layout_internal(node_id, inputs, block_ctx)
         })

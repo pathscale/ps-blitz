@@ -19,10 +19,10 @@ use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Poll, Waker};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures_util::{Stream, stream::FuturesUnordered};
 use nagoya::reactor::{Addr, Reactor, TcpListener, TcpStream};
@@ -38,40 +38,75 @@ pub use handoff::{
 
 const PROTOCOL_VERSION: u32 = 1;
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
+const MAX_HEADER_BYTES: usize = 16 * 1024;
+const MAX_SESSION_REQUEST_BYTES: usize = 16 * 1024;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+const HEADER_TIMEOUT: Duration = Duration::from_secs(1);
+const SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 const MAX_PENDING_COMMANDS: usize = 64;
 const MAX_CONNECTIONS: usize = 64;
 
+struct Session {
+    id: String,
+    last_used: Instant,
+}
+
 #[derive(Default)]
-struct ActiveSession(AtomicU64);
+struct ActiveSession(Mutex<Option<Session>>);
 
 impl ActiveSession {
     fn create(&self) -> io::Result<Option<String>> {
-        let value = loop {
-            let mut bytes = [0_u8; 8];
-            getrandom::fill(&mut bytes).map_err(io::Error::other)?;
-            let value = u64::from_ne_bytes(bytes);
-            if value != 0 {
-                break value;
-            }
-        };
-        match self
-            .0
-            .compare_exchange(0, value, Ordering::AcqRel, Ordering::Acquire)
-        {
-            Ok(_) => Ok(Some(format!("{value:016x}"))),
-            Err(_) => Ok(None),
+        let mut active = self.0.lock().unwrap();
+        let now = Instant::now();
+        let expired = active
+            .as_ref()
+            .is_some_and(|session| now.duration_since(session.last_used) >= SESSION_IDLE_TIMEOUT);
+        if expired {
+            *active = None;
         }
+        if active.is_some() {
+            return Ok(None);
+        }
+        let id = random_hex(32)?;
+        let session = Session {
+            id,
+            last_used: Instant::now(),
+        };
+        let id = session.id.clone();
+        *active = Some(session);
+        Ok(Some(id))
     }
 
     fn matches(&self, supplied: &str) -> bool {
-        u64::from_str_radix(supplied, 16)
-            .ok()
-            .is_some_and(|value| value != 0 && self.0.load(Ordering::Acquire) == value)
+        let mut active = self.0.lock().unwrap();
+        let now = Instant::now();
+        let expired = active
+            .as_ref()
+            .is_some_and(|session| now.duration_since(session.last_used) >= SESSION_IDLE_TIMEOUT);
+        if expired {
+            *active = None;
+            return false;
+        }
+        if supplied.len() != 64
+            || !supplied
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return false;
+        }
+        let Some(session) = active.as_mut() else {
+            return false;
+        };
+        if token_matches(Some(supplied), &session.id) {
+            session.last_used = now;
+            true
+        } else {
+            false
+        }
     }
 
     fn clear(&self) {
-        self.0.store(0, Ordering::Release);
+        *self.0.lock().unwrap() = None;
     }
 }
 
@@ -493,7 +528,7 @@ async fn serve_connection(mut stream: TcpStream, state: Arc<ServerState>, limite
     let response = if limited {
         webdriver_error("unknown error", "debug-control connection limit reached")
     } else {
-        match read_request(&mut stream).await {
+        match read_request(&mut stream, &state).await {
             Ok(request) => route(request, &state).await,
             Err(error) => webdriver_error("invalid argument", error.to_string()),
         }
@@ -508,100 +543,374 @@ struct HttpRequest {
     body: Value,
 }
 
-async fn read_request(stream: &mut TcpStream) -> io::Result<HttpRequest> {
-    read_request_within(stream, COMMAND_TIMEOUT).await
+async fn read_request(stream: &mut TcpStream, state: &ServerState) -> io::Result<HttpRequest> {
+    read_request_within(stream, state, COMMAND_TIMEOUT).await
 }
 
-async fn read_request_within(stream: &mut TcpStream, within: Duration) -> io::Result<HttpRequest> {
-    nagoya::time::timeout(within, read_request_inner(stream))
+async fn read_request_within(
+    stream: &mut TcpStream,
+    state: &ServerState,
+    within: Duration,
+) -> io::Result<HttpRequest> {
+    nagoya::time::timeout(within, read_request_inner(stream, state))
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "request timed out"))?
 }
 
-async fn read_request_inner(stream: &mut TcpStream) -> io::Result<HttpRequest> {
-    // Read directly into uninitialised receive storage, with a fixed bound.
-    let mut bytes = bytes::BytesMut::with_capacity(MAX_REQUEST_BYTES);
-    let mut scan_from = 0;
-    let header_end = loop {
-        if bytes.len() >= MAX_REQUEST_BYTES {
+async fn read_request_inner(
+    stream: &mut TcpStream,
+    state: &ServerState,
+) -> io::Result<HttpRequest> {
+    let mut bytes = bytes::BytesMut::new();
+    let mut scratch = [0_u8; 4096];
+    let header_end = nagoya::time::timeout(
+        HEADER_TIMEOUT,
+        read_headers(stream, &mut bytes, &mut scratch),
+    )
+    .await
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "header timed out"))??;
+    let headers = std::str::from_utf8(&bytes[..header_end - 4])
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "headers are not valid UTF-8"))?;
+    let mut lines = headers.split("\r\n");
+    let request_line = lines.next().unwrap_or_default();
+    let (method, path) = parse_request_line(request_line)?;
+
+    let mut header_fields = Vec::new();
+    for line in lines {
+        let Some((name, value)) = line.split_once(':') else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "request is too large",
+                "invalid header line",
             ));
-        }
-        let prior_len = bytes.len();
-        let count = stream.read_buf(&mut bytes).await.map_err(reactor_error)?;
-        if count == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "connection closed before headers",
-            ));
-        }
-        scan_from = scan_from.min(prior_len.saturating_sub(3));
-        if let Some(index) = bytes[scan_from..]
-            .windows(4)
-            .position(|window| window == b"\r\n\r\n")
+        };
+        if !is_http_token(name)
+            || value
+                .bytes()
+                .any(|byte| byte == 0x7f || (byte < 0x20 && byte != b'\t'))
         {
-            break scan_from + index + 4;
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid header line",
+            ));
         }
-        scan_from = bytes.len().saturating_sub(3);
+        let value = value.trim_matches(|character| character == ' ' || character == '\t');
+        header_fields.push((name, value));
+    }
+
+    let mut host: Option<&str> = None;
+    for (name, value) in &header_fields {
+        if name.eq_ignore_ascii_case("host") && host.replace(*value).is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "exactly one Host header is required",
+            ));
+        }
+    }
+    let Some(host) = host else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "exactly one Host header is required",
+        ));
+    };
+    if !valid_loopback_host(host) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Host must be a loopback address",
+        ));
+    }
+
+    let mut content_length = None;
+    for (name, value) in &header_fields {
+        if name.eq_ignore_ascii_case("origin") {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Origin headers are not supported",
+            ));
+        }
+        if name.eq_ignore_ascii_case("transfer-encoding") {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Transfer-Encoding is not supported",
+            ));
+        }
+        if name.eq_ignore_ascii_case("content-length") {
+            if content_length.is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "duplicate Content-Length header",
+                ));
+            }
+            if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid Content-Length header",
+                ));
+            }
+            content_length = Some(value.parse::<usize>().map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "invalid Content-Length header")
+            })?);
+        }
+    }
+    let content_length = content_length.unwrap_or(0);
+
+    let authorized_session = if let Some((session_id, _)) = session_path(&path) {
+        if !state.active_session.matches(session_id) {
+            return Ok(HttpRequest {
+                method,
+                path,
+                body: Value::Null,
+            });
+        }
+        true
+    } else {
+        false
     };
 
-    let headers = std::str::from_utf8(&bytes[..header_end])
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    let mut lines = headers.split("\r\n");
-    let mut request_line = lines.next().unwrap_or_default().split_whitespace();
-    let method = request_line.next().unwrap_or_default().to_string();
-    let path = request_line.next().unwrap_or_default().to_string();
-    if method.is_empty() || path.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid request line",
-        ));
-    }
-    let header_fields: Vec<_> = lines.filter_map(|line| line.split_once(':')).collect();
-    let content_length = header_fields
-        .iter()
-        .copied()
-        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
-        .map(|(_, value)| value.trim().parse::<usize>())
-        .transpose()
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
-        .unwrap_or(0);
-    if header_fields.iter().any(|(name, value)| {
-        name.eq_ignore_ascii_case("transfer-encoding")
-            && !value.trim().eq_ignore_ascii_case("identity")
-    }) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "transfer-encoding is unsupported; send Content-Length",
-        ));
-    }
     let body_end = header_end
         .checked_add(content_length)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "request size overflow"))?;
-    if body_end > MAX_REQUEST_BYTES {
+    let max_request_bytes = if authorized_session {
+        MAX_REQUEST_BYTES
+    } else {
+        MAX_SESSION_REQUEST_BYTES
+    };
+    if body_end > max_request_bytes {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "request is too large",
         ));
     }
+    if bytes.len() > body_end {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "request contains bytes after body",
+        ));
+    }
     while bytes.len() < body_end {
-        let count = stream.read_buf(&mut bytes).await.map_err(reactor_error)?;
-        if count == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "connection closed before body",
-            ));
-        }
+        let chunk_limit = scratch.len();
+        read_more(
+            stream,
+            &mut bytes,
+            &mut scratch,
+            body_end,
+            chunk_limit,
+            "connection closed before body",
+        )
+        .await?;
     }
     let body = if content_length == 0 {
         Value::Null
     } else {
-        serde_json::from_slice(&bytes[header_end..body_end])
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+        serde_json::from_slice(&bytes[header_end..body_end]).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "request body is not valid JSON")
+        })?
     };
     Ok(HttpRequest { method, path, body })
+}
+
+async fn read_headers(
+    stream: &mut TcpStream,
+    bytes: &mut bytes::BytesMut,
+    scratch: &mut [u8; 4096],
+) -> io::Result<usize> {
+    loop {
+        if bytes.ends_with(b"\r\n\r\n") {
+            let header_end = bytes.len();
+            if header_end > MAX_HEADER_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "request headers are too large",
+                ));
+            }
+            return Ok(header_end);
+        }
+        if bytes.len() >= MAX_HEADER_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "request headers are too large",
+            ));
+        }
+        read_more(
+            stream,
+            bytes,
+            scratch,
+            MAX_HEADER_BYTES,
+            1,
+            "connection closed before headers",
+        )
+        .await?;
+    }
+}
+
+async fn read_more(
+    stream: &mut TcpStream,
+    bytes: &mut bytes::BytesMut,
+    scratch: &mut [u8; 4096],
+    stage_limit: usize,
+    chunk_limit: usize,
+    eof_message: &'static str,
+) -> io::Result<usize> {
+    let remaining = stage_limit
+        .checked_sub(bytes.len())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "request is too large"))?;
+    if remaining == 0 || chunk_limit == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "request is too large",
+        ));
+    }
+    let allowed = remaining.min(chunk_limit).min(scratch.len());
+    let count = std::future::poll_fn(|cx| stream.poll_read(cx, &mut scratch[..allowed]))
+        .await
+        .map_err(reactor_error)?;
+    if count == 0 {
+        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, eof_message));
+    }
+    bytes.extend_from_slice(&scratch[..count]);
+    Ok(count)
+}
+
+fn parse_request_line(line: &str) -> io::Result<(String, String)> {
+    let mut parts = line.split(' ');
+    let method = parts.next().unwrap_or_default();
+    let path = parts.next().unwrap_or_default();
+    let version = parts.next().unwrap_or_default();
+    if parts.next().is_some()
+        || !is_http_token(method)
+        || !valid_origin_target(path)
+        || (version != "HTTP/1.0" && version != "HTTP/1.1")
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid request line",
+        ));
+    }
+    Ok((method.to_string(), path.to_string()))
+}
+
+fn is_http_token(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'!' | b'#'
+                        | b'$'
+                        | b'%'
+                        | b'&'
+                        | b'\''
+                        | b'*'
+                        | b'+'
+                        | b'-'
+                        | b'.'
+                        | b'^'
+                        | b'_'
+                        | b'`'
+                        | b'|'
+                        | b'~'
+                )
+        })
+}
+
+fn valid_origin_target(target: &str) -> bool {
+    if !target.starts_with('/') || !target.is_ascii() {
+        return false;
+    }
+    let bytes = target.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte == b'%' {
+            if index + 2 >= bytes.len()
+                || !bytes[index + 1].is_ascii_hexdigit()
+                || !bytes[index + 2].is_ascii_hexdigit()
+            {
+                return false;
+            }
+            index += 3;
+            continue;
+        }
+        if !(byte.is_ascii_alphanumeric()
+            || matches!(
+                byte,
+                b'-' | b'.'
+                    | b'_'
+                    | b'~'
+                    | b'!'
+                    | b'$'
+                    | b'&'
+                    | b'\''
+                    | b'('
+                    | b')'
+                    | b'*'
+                    | b'+'
+                    | b','
+                    | b';'
+                    | b'='
+                    | b':'
+                    | b'@'
+                    | b'/'
+                    | b'?'
+            ))
+        {
+            return false;
+        }
+        index += 1;
+    }
+    true
+}
+
+fn valid_loopback_host(value: &str) -> bool {
+    if value.is_empty()
+        || !value.is_ascii()
+        || value.bytes().any(|byte| {
+            byte.is_ascii_whitespace() || matches!(byte, b',' | b'/' | b'\\' | b'@' | b'?' | b'#')
+        })
+    {
+        return false;
+    }
+    if let Some(bracketed) = value.strip_prefix('[') {
+        let Some((address, suffix)) = bracketed.split_once(']') else {
+            return false;
+        };
+        if address.contains('[') || suffix.contains(']') {
+            return false;
+        }
+        let valid_port = if suffix.is_empty() {
+            true
+        } else {
+            suffix.strip_prefix(':').is_some_and(valid_decimal_port)
+        };
+        return valid_port
+            && address
+                .parse::<std::net::Ipv6Addr>()
+                .is_ok_and(|address| address.is_loopback());
+    }
+    if value.contains('[') || value.contains(']') {
+        return false;
+    }
+    let (host, port) = match value.split_once(':') {
+        Some((host, port)) => {
+            if host.contains(':') || port.contains(':') {
+                return false;
+            }
+            (host, Some(port))
+        }
+        None => (value, None),
+    };
+    if port.is_some_and(|port| !valid_decimal_port(port)) {
+        return false;
+    }
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::Ipv4Addr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
+fn valid_decimal_port(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| byte.is_ascii_digit())
+        && value.parse::<u16>().is_ok()
 }
 
 async fn route(request: HttpRequest, state: &ServerState) -> Value {

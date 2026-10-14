@@ -37,7 +37,7 @@ use boa_engine::module::{ModuleLoader, ModuleRequest, Referrer, SyntheticModuleI
 use boa_engine::{Context, JsNativeError, JsResult, JsString, JsValue, Module, Source, js_string};
 use url::Url;
 
-use crate::fetch::ScriptFetcher;
+use crate::fetch::{MAX_SCRIPT_BYTES, ScriptFetcher, authorize_script_url};
 
 /// The fetcher shared between a [`ScriptDocument`](crate::ScriptDocument) and
 /// its module loader.
@@ -141,6 +141,13 @@ impl BlitzModuleLoader {
         Url::parse(module_path?.to_str()?).ok()
     }
 
+    fn authorize_url(&self, url: Url) -> JsResult<Url> {
+        authorize_script_url(&url, self.base_url.as_ref()).map_err(|error| {
+            JsNativeError::typ().with_message(format!("refusing module URL {url}: {error}"))
+        })?;
+        Ok(url)
+    }
+
     /// Resolve a specifier the way the web does: against the importing
     /// module's URL, falling back to the document's base URL for a module that
     /// has none (an inline `<script type="module">` in a document parsed from a
@@ -157,13 +164,13 @@ impl BlitzModuleLoader {
             .borrow()
             .resolve(&specifier, referrer_url.as_ref().or(self.base_url.as_ref()))
         {
-            return Ok(url);
+            return self.authorize_url(url);
         }
 
         // An absolute specifier needs no base at all, which is also the only
         // form that works when neither the referrer nor the document has a URL.
         if let Ok(url) = Url::parse(&specifier) {
-            return Ok(url);
+            return self.authorize_url(url);
         }
 
         let base = referrer_url.or_else(|| self.base_url.clone());
@@ -187,13 +194,12 @@ impl BlitzModuleLoader {
                 .into());
         }
 
-        base.join(&specifier).map_err(|error| {
-            JsNativeError::typ()
-                .with_message(format!(
-                    "cannot resolve module specifier {specifier:?} against {base}: {error}"
-                ))
-                .into()
-        })
+        let url = base.join(&specifier).map_err(|error| {
+            JsNativeError::typ().with_message(format!(
+                "cannot resolve module specifier {specifier:?} against {base}: {error}"
+            ))
+        })?;
+        self.authorize_url(url)
     }
 
     /// Fetch and parse one module. Separated from the async hook so the whole
@@ -204,7 +210,7 @@ impl BlitzModuleLoader {
         request: &ModuleRequest,
         context: &mut Context,
     ) -> JsResult<Module> {
-        let url = self.resolve(referrer, request.specifier())?;
+        let url = self.authorize_url(self.resolve(referrer, request.specifier())?)?;
 
         if let Some(module) = self.cache.borrow().get(url.as_str()) {
             return Ok(module.clone());
@@ -227,9 +233,18 @@ impl BlitzModuleLoader {
         // the deepest import chain: embedders that cannot afford that should
         // prefetch and serve from memory through their own `ScriptFetcher`.
         let fetcher = Rc::clone(&self.fetcher.borrow());
-        let source = fetcher.fetch(&url).map_err(|error| {
-            JsNativeError::typ().with_message(format!("failed to fetch module {url}: {error}"))
-        })?;
+        let source = fetcher
+            .fetch_for_document(&url, self.base_url.as_ref())
+            .map_err(|error| {
+                JsNativeError::typ().with_message(format!("failed to fetch module {url}: {error}"))
+            })?;
+        if source.len() > MAX_SCRIPT_BYTES {
+            return Err(JsNativeError::typ()
+                .with_message(format!(
+                    "refusing module {url}: source exceeds {MAX_SCRIPT_BYTES} bytes"
+                ))
+                .into());
+        }
 
         let path = url.as_str().to_owned();
         let module = if requests_json(request) {
