@@ -25,6 +25,23 @@ mod local_fetch;
 #[cfg(not(target_arch = "wasm32"))]
 mod h1;
 
+mod provider_api;
+pub use provider_api::{Provider, ProviderError};
+pub use core::{DEFAULT_USER_AGENT, TlsPolicyError};
+#[cfg(feature = "cookies")]
+pub use core::CookieJar;
+#[cfg(all(feature = "cache", not(target_arch = "wasm32")))]
+pub use core::PrivateCache;
+#[cfg(not(target_arch = "wasm32"))]
+pub use core::{HostStats, connection_stats};
+
+// Keep enriched implementation errors private so an exhaustive 0.6 match
+// remains source compatible. Both public APIs still use the same choke point.
+mod core {
+use super::{abort, local_fetch};
+#[cfg(not(target_arch = "wasm32"))]
+use super::h1;
+
 use blitz_traits::net::{
     Body, Bytes, CookieJar as CookieStorage, NetHandler, NetProvider, NetWaker, Request,
     http::{HeaderValue, header::CONTENT_TYPE},
@@ -643,4 +660,5 @@ fn multipart_parameter(value: &str) -> String {
 struct DummyNetWaker;
 impl NetWaker for DummyNetWaker {
     fn wake(&self, _client_id: usize) {}
+}
 }

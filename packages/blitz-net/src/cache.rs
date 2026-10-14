@@ -293,6 +293,9 @@ impl PrivateCache {
         if !valid_file_name(&row.file) || row.body_length > MAX_BODY_BYTES as u64 {
             return Err(io::Error::other("invalid cache body metadata"));
         }
+        if row.body_length > request.initiator.remaining_bytes() as u64 {
+            return Err(io::Error::other("resource-byte-cap"));
+        }
         let file = File::open(self.bodies.join(&row.file))?;
         if file.metadata()?.len() != row.body_length {
             return Err(io::Error::other("incomplete cache body"));
