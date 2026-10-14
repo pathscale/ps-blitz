@@ -213,7 +213,7 @@ cursor-icon = "^1"
 
 # IO & Networking
 nagoya = { version = "^0.1.16", features = ["reactor"] }
-spsc = { package = "ps-spsc", version = "^0.5.1", path = "../ps-spsc" }
+spsc = { package = "ps-spsc", version = "^0.5.1" }
 url = "^2.5.0"
 http = "^1.1.0"
 data-url = "^0.3.1"
