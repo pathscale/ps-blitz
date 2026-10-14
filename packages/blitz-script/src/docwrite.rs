@@ -395,7 +395,7 @@ fn execute_written(id: NodeId, context: &mut Context) -> JsResult<()> {
             .clone()
             .expect("script fetcher missing");
         let fetcher = Rc::clone(&shared.borrow());
-        match fetcher.fetch(&url) {
+        match fetcher.fetch_for_document(&url, Some(&base)) {
             Ok(code) => (code, url),
             Err(error) => {
                 eprintln!("blitz-script: written script fetch failed: {error}");

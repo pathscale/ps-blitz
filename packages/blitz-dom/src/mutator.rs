@@ -910,6 +910,9 @@ impl DocumentMutator<'_> {
 
     pub fn remove_sub_document(&mut self, node_id: NodeId) {
         let node_is_in_document = self.doc.nodes[node_id].flags.is_in_document();
+        if let Some(load) = self.doc.iframe_loads.remove(&node_id) {
+            load.abort_controller.abort();
+        }
         self.doc.remove_sub_document(node_id);
         self.mutations_occurred |= node_is_in_document;
     }
@@ -1871,6 +1874,10 @@ impl<'doc> DocumentMutator<'doc> {
                 doc.nodes[node_id]
                     .flags
                     .set(NodeFlags::IS_IN_DOCUMENT, false);
+
+                if let Some(load) = doc.iframe_loads.remove(&node_id) {
+                    load.abort_controller.abort();
+                }
 
                 // Clear any interaction state that references this node, running
                 // the usual teardown steps (unhover/unactive the surviving

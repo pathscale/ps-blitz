@@ -401,6 +401,7 @@ impl DebugController {
         let Some(sources) = body.get("actions").and_then(Value::as_array) else {
             return invalid("actions must be an array");
         };
+        self.resolve(document);
         for source in sources {
             let source_type = source.get("type").and_then(Value::as_str).unwrap_or("");
             let Some(actions) = source.get("actions").and_then(Value::as_array) else {
@@ -773,27 +774,27 @@ impl DebugController {
         }
         let x = (rect.x + rect.width / 2.0) as f32;
         let y = (rect.y + rect.height / 2.0) as f32;
-        let (hit_node_id, path, document_node_id) = {
+        let (path, document_node_id) = {
             let inner = document.inner();
-            let hit_node_id = inner.hit(x, y).map(|hit| hit.node_id).unwrap_or(node_id);
-            (
-                hit_node_id,
-                inner.node_chain(hit_node_id),
-                inner.root_node().id,
-            )
+            (inner.node_chain(node_id), inner.root_node().id)
         };
-        let pointer = pointer_event(x, y);
-        document.handle_ui_event(UiEvent::PointerMove(pointer.clone()));
-        document.handle_ui_event(UiEvent::PointerDown(pointer.clone()));
-        document.handle_ui_event(UiEvent::PointerUp(pointer));
+        document.handle_ui_event_to_node(
+            UiEvent::PointerMove(action_pointer_event((x, y), MouseEventButtons::default())),
+            node_id,
+        );
+        document.handle_ui_event_to_node(UiEvent::PointerDown(pointer_event(x, y)), node_id);
+        document.handle_ui_event_to_node(
+            UiEvent::PointerUp(action_pointer_event((x, y), MouseEventButtons::default())),
+            node_id,
+        );
         self.push_event_trace(json!({
             "sequence": self.next_event_sequence,
             "event": "click",
             "requestedNodeId": node_id,
-            "targetNodeId": hit_node_id,
+            "targetNodeId": node_id,
             "path": path,
             "includedDocument": path.contains(&document_node_id),
-            "inputPath": "pointer-hit-test",
+            "inputPath": "pointer-semantic-node",
         }));
         self.document_revision += 1;
         success(Value::Null)

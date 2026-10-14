@@ -12,6 +12,7 @@
   "devDependencies": {
     "@rsbuild/core": "latest",
     "@rsbuild/plugin-babel": "latest",
-    "@rsbuild/plugin-solid": "latest"
+    "@rsbuild/plugin-solid": "latest",
+    "babel-preset-solid": "next"
   }
 }

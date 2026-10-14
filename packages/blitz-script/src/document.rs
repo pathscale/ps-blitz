@@ -12,7 +12,7 @@ use blitz_dom::{
 };
 use blitz_html::stream::StreamingParser;
 use blitz_html::{DocumentHtmlParser, HtmlProvider};
-use blitz_traits::events::{BlitzPointerEvent, DomEvent, UiEvent};
+use blitz_traits::events::{BlitzPointerEvent, DomEvent, MouseEventButton, UiEvent};
 use url::Url;
 use web_time::{Duration, Instant};
 
@@ -671,7 +671,7 @@ impl ScriptDocument {
                         continue;
                     };
                     let fetcher = Rc::clone(&self.fetcher.borrow());
-                    match fetcher.fetch(&url) {
+                    match fetcher.fetch_for_document(&url, self.base_url.as_ref()) {
                         Ok(code) => {
                             if script.kind == ScriptKind::Module {
                                 self.runtime.eval_module(&code, Some(&url), url.as_str());
@@ -959,6 +959,7 @@ impl Document for ScriptDocument {
         {
             return;
         }
+        self.note_user_activation(&event);
         let _execution = self.enter_execution_time_limit();
         let profiling_boundary = self.runtime.ctx.enter_profiling_boundary();
         let profiling = profiling_boundary.enabled();
@@ -984,6 +985,51 @@ impl Document for ScriptDocument {
 }
 
 impl ScriptDocument {
+    fn note_user_activation(&self, event: &UiEvent) {
+        let focused_and_visible = {
+            let document = self.inner.borrow();
+            document.window_focused() && document.page_visible
+        };
+        let mut state = self.runtime.ctx.state.borrow_mut();
+        match event {
+            UiEvent::PointerCancel(_) => {
+                state.transient_activation_deadline = None;
+            }
+            UiEvent::PointerDown(pointer)
+                if pointer.is_primary
+                    && pointer.button == MouseEventButton::Main
+                    && focused_and_visible =>
+            {
+                state.transient_activation_deadline = Some(Instant::now() + Duration::from_secs(5));
+            }
+            UiEvent::KeyDown(key)
+                if !key.is_auto_repeating
+                    && focused_and_visible
+                    && !matches!(
+                        &key.key,
+                        keyboard_types::Key::Escape
+                            | keyboard_types::Key::Alt
+                            | keyboard_types::Key::AltGraph
+                            | keyboard_types::Key::CapsLock
+                            | keyboard_types::Key::Control
+                            | keyboard_types::Key::Fn
+                            | keyboard_types::Key::FnLock
+                            | keyboard_types::Key::Hyper
+                            | keyboard_types::Key::Meta
+                            | keyboard_types::Key::NumLock
+                            | keyboard_types::Key::ScrollLock
+                            | keyboard_types::Key::Shift
+                            | keyboard_types::Key::Super
+                            | keyboard_types::Key::Symbol
+                            | keyboard_types::Key::SymbolLock
+                    ) =>
+            {
+                state.transient_activation_deadline = Some(Instant::now() + Duration::from_secs(5));
+            }
+            _ => {}
+        }
+    }
+
     /// `None` preserves normal polling; `Some` selects a settle pass's policy.
     fn poll_with_timer_policy(
         &mut self,
@@ -1042,6 +1088,7 @@ impl ScriptDocument {
         {
             return;
         }
+        self.note_user_activation(&event);
         let _execution = self.enter_execution_time_limit();
         let profiling_boundary = self.runtime.ctx.enter_profiling_boundary();
         let profiling = profiling_boundary.enabled();

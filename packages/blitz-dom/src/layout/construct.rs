@@ -477,6 +477,10 @@ fn classify_flow_children(
     children: &[NodeId],
     classification: &mut FlowClassification,
 ) {
+    let Some(_depth_guard) = super::LayoutDepthGuard::enter() else {
+        return;
+    };
+
     for child_id in children.iter().copied() {
         let child = &doc.nodes[child_id];
 
@@ -1079,6 +1083,10 @@ fn collect_complex_layout_children_inner(
     hide_whitespace: bool,
     needs_wrap: &dyn Fn(NodeKind, DisplayOutside) -> bool,
 ) {
+    let Some(_depth_guard) = super::LayoutDepthGuard::enter() else {
+        return;
+    };
+
     doc.iter_layout_children_and_pseudos_mut(container_node_id, |child_id, doc| {
         // Get node kind (text, element, comment, etc)
         let child_node_kind = doc.nodes[child_id].data.kind();

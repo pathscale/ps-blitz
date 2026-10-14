@@ -113,6 +113,8 @@ pub(crate) struct RuntimeState {
     pub window_listeners: ListenerMap,
     /// Active Pointer Events capture target, keyed by the web-facing pointer id.
     pub pointer_capture: FxHashMap<u64, NodeId>,
+    /// Transient activation granted by native input.
+    pub transient_activation_deadline: Option<web_time::Instant>,
     /// Host callback backing `window.ipc.postMessage`, installed by an embedder.
     pub ipc_handler: Option<IpcHandler>,
     /// Pending timers (`setTimeout`/`setInterval`/`requestAnimationFrame`)
@@ -144,9 +146,9 @@ pub(crate) struct DomCtx {
     pub state: Rc<RefCell<RuntimeState>>,
     /// Whether the DOM has been mutated since layout last ran.
     ///
-    /// Browsers flush layout synchronously when script reads geometry, which
-    /// is why `element.scrollHeight` immediately after an insertion returns
-    /// the new height. Blitz read `final_layout` directly, so the same read
+    /// Browsers flush layout synchronously when script reads geometry, which is
+    /// why `element.scrollHeight` immediately after an insertion returns the
+    /// new height. Blitz read `final_layout` directly, so the same read
     /// returned the height from *before* the mutation. Code that measures,
     /// mutates, then re-measures to restore scroll position therefore did its
     /// arithmetic on stale numbers and put the viewport in the wrong place,

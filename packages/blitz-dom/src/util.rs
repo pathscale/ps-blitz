@@ -182,10 +182,11 @@ pub fn walk_tree(indent: usize, node: &Node) {
 /// Parse an SVG image.
 #[cfg(feature = "svg")]
 pub(crate) fn parse_svg_image(source: &[u8]) -> Result<crate::node::SvgImageData, usvg::Error> {
-    let options = usvg::Options {
+    let mut options = usvg::Options {
         fontdb: Arc::clone(&*FONT_DB),
         ..Default::default()
     };
+    options.image_href_resolver.resolve_string = Box::new(|_, _| None);
     let tree = usvg::Tree::from_data(source, &options)?;
     Ok(crate::node::SvgImageData {
         tree: Arc::new(tree),

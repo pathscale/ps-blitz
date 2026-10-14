@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 
 const ELEMENT_KEY: &str = "element-6066-11e4-a52e-4f735466cecf";
 const DEADLINE: Duration = Duration::from_secs(10);
+const TEST_TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 struct ChildGuard {
     child: Child,
@@ -109,6 +110,7 @@ fn separate_process_controls_solid_without_fixed_sleeps() {
         child: Command::new(env!("CARGO_BIN_EXE_solid-debug-harness"))
             .env("TAURI_BLITZ_DRIVER", "127.0.0.1:0")
             .env("TAURI_BLITZ_DRIVER_DESCRIPTOR", &descriptor_path)
+            .env("TAURI_BLITZ_DRIVER_TOKEN", TEST_TOKEN)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
@@ -120,7 +122,13 @@ fn separate_process_controls_solid_without_fixed_sleeps() {
     let descriptor = wait_for_descriptor(&descriptor_path, &mut child.child);
     assert_eq!(descriptor["pid"].as_u64(), Some(child.child.id() as u64));
     let address: SocketAddr = descriptor["address"].as_str().unwrap().parse().unwrap();
-    let token = descriptor["token"].as_str().unwrap();
+    assert!(descriptor.get("token").is_none());
+    assert!(
+        !fs::read_to_string(&descriptor_path)
+            .unwrap()
+            .contains(TEST_TOKEN)
+    );
+    let token = TEST_TOKEN;
 
     assert_eq!(
         request(address, "GET", "/status", Value::Null)["value"]["ready"],
@@ -261,7 +269,8 @@ fn separate_process_controls_solid_without_fixed_sleeps() {
             .iter()
             .any(|entry| entry["event"] == "click"
                 && entry["includedDocument"] == true
-                && entry["inputPath"] == "pointer-hit-test")
+                && entry["inputPath"] == "pointer-semantic-node"
+                && entry["requestedNodeId"] == entry["targetNodeId"])
     );
     let idle = session_request(address, &session, "POST", "blitz/waitForIdle", json!({}));
     assert!(idle["value"]["layoutRevision"].as_u64().unwrap() > 0);

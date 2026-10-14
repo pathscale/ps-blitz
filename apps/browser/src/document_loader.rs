@@ -220,6 +220,8 @@ async fn build_page_document(
     use blitz_traits::net::RequestDestination;
     use std::collections::HashMap;
 
+    const MAX_PREFETCHED_SCRIPT_BYTES: usize = 16 * 1024 * 1024;
+
     let document = ScriptDocument::from_html(html, config);
 
     // The `ScriptFetcher` API is synchronous, so prefetch external script
@@ -234,6 +236,10 @@ async fn build_page_document(
             .signal(signal.clone());
         match net_provider.fetch_async(request).await {
             Ok((_, bytes)) => {
+                if bytes.len() > MAX_PREFETCHED_SCRIPT_BYTES {
+                    tracing::error!("Refusing oversized script {url}: {} bytes", bytes.len());
+                    continue;
+                }
                 scripts.insert(url, String::from_utf8_lossy(&bytes).into_owned());
             }
             Err(err) => tracing::error!("Failed to fetch script {url}: {err:?}"),
@@ -254,8 +260,8 @@ async fn build_page_document(
     (SubDocumentAttr::new(document), title, favicon_url)
 }
 
-/// A [`blitz_script::ScriptFetcher`] which serves prefetched script sources from
-/// memory, falling back to the default fetcher (`file:` and `data:` URLs)
+/// A [`blitz_script::ScriptFetcher`] which serves network-prefetched script
+/// sources from memory and rejects any URL that was not prefetched.
 #[cfg(feature = "javascript")]
 struct PrefetchedScriptFetcher {
     scripts: std::collections::HashMap<Url, String>,
@@ -267,6 +273,8 @@ impl blitz_script::ScriptFetcher for PrefetchedScriptFetcher {
         if let Some(source) = self.scripts.get(url) {
             return Ok(source.clone());
         }
-        blitz_script::DefaultScriptFetcher.fetch(url)
+        Err(blitz_script::FetchError::InvalidData(format!(
+            "script was not prefetched: {url}"
+        )))
     }
 }
