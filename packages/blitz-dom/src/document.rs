@@ -160,6 +160,22 @@ pub trait Document: Any + 'static {
         self.poll(task_context)
     }
 
+    /// Revoke child work before ownership is dropped. Completion is separate.
+    fn prepare_teardown(&mut self) {
+        self.inner_mut().prepare_teardown();
+    }
+
+    fn dispose(mut self: Box<Self>) -> Arc<crate::release::Teardown> {
+        self.prepare_teardown();
+        let receipt = Arc::clone(&self.inner().teardown);
+        drop(self);
+        receipt
+    }
+
+    fn set_page_visible(&mut self, visible: bool) { self.inner_mut().page_visible = visible; }
+    fn freeze(&mut self) { self.inner_mut().page_frozen = true; }
+    fn resume(&mut self) { self.inner_mut().page_frozen = false; }
+
     /// Get the [`Document`]'s id
     fn id(&self) -> usize {
         self.inner().id
@@ -489,6 +505,12 @@ pub struct BaseDocument {
     /// Nodes that contain sub documents
     pub(crate) sub_document_nodes: HashSet<NodeId>,
     pub stash_policy: crate::stash_policy::StashPolicy,
+    pub teardown: Arc<crate::release::Teardown>,
+    _dom_lease: crate::release::ReleaseLease,
+    pub page_visible: bool,
+    pub page_frozen: bool,
+    pub page_retiring: bool,
+    pub was_discarded: bool,
     /// Load state (abort controller and in-flight request id) for each
     /// `<iframe>` element whose sub-document is loaded automatically
     pub(crate) iframe_loads: HashMap<NodeId, crate::iframe::IframeLoad>,
@@ -624,6 +646,7 @@ impl BaseDocument {
         static ID_GENERATOR: AtomicUsize = AtomicUsize::new(1);
 
         let id = ID_GENERATOR.fetch_add(1, Ordering::SeqCst);
+        let teardown = crate::release::Teardown::new();
 
         let font_ctx = config
             .font_ctx
@@ -769,6 +792,12 @@ impl BaseDocument {
             has_canvas: false,
             sub_document_nodes: HashSet::new(),
             stash_policy: Default::default(),
+            teardown: Arc::clone(&teardown),
+            _dom_lease: teardown.lease(),
+            page_visible: false,
+            page_frozen: false,
+            page_retiring: false,
+            was_discarded: false,
             iframe_loads: HashMap::new(),
 
             #[cfg(feature = "custom-widget")]
@@ -1211,6 +1240,34 @@ impl BaseDocument {
             .unwrap()
             .set_sub_document(sub_document);
         self.sub_document_nodes.insert(node_id);
+    }
+
+    pub fn prepare_teardown(&mut self) {
+        if self.page_retiring { return; }
+        self.page_retiring = true;
+        self.page_visible = false;
+        self.page_frozen = true;
+        let nodes: Vec<_> = self.sub_document_nodes.iter().copied().collect();
+        let mut children = Vec::new();
+        for id in nodes {
+            if let Some(document) = self.nodes.get_mut(id).and_then(|node| node.subdoc_mut()) {
+                document.prepare_teardown();
+                children.push(Arc::clone(&document.inner().teardown));
+            }
+        }
+        #[cfg(feature = "custom-widget")]
+        self.destroy_surfaces();
+        for load in self.iframe_loads.values() { load.abort_controller.abort(); }
+        self.teardown.retire(children);
+    }
+
+    /// Detach the complete owner, rather than leaving a frozen runtime mounted.
+    pub fn take_sub_document(&mut self, node_id: NodeId) -> Option<Box<dyn Document>> {
+        let element = self.nodes.get_mut(node_id)?.element_data_mut()?;
+        let crate::node::SpecialElementData::SubDocument(document) = element.special_data.take() else { return None; };
+        self.sub_document_nodes.remove(&node_id);
+        if let Some(load) = self.iframe_loads.remove(&node_id) { load.abort_controller.abort(); }
+        Some(document)
     }
 
     pub fn remove_sub_document(&mut self, node_id: NodeId) {

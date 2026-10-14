@@ -80,6 +80,8 @@ pub struct ScriptDocument {
     /// script it has run from one it has not without running anything twice.
     executed_scripts: std::collections::HashSet<NodeId>,
     poll_hook: Option<PollHook>,
+    teardown_hooks: Vec<Box<dyn FnOnce()>>,
+    _runtime_lease: blitz_dom::release::ReleaseLease,
 
     // The timer registry owns a clone of the current document waker.
     waker: Option<Waker>,
@@ -140,9 +142,12 @@ impl ScriptDocument {
         ));
         crate::docwrite::prepare(&runtime.context, html, Rc::clone(&fetcher), parser);
 
+        let runtime_lease = inner.borrow().teardown.lease();
         Self {
             inner,
             runtime,
+            teardown_hooks: Vec::new(),
+            _runtime_lease: runtime_lease,
             base_url,
             fetcher,
             scripts_executed: false,
@@ -153,6 +158,26 @@ impl ScriptDocument {
             waker: None,
             timer_wake: None,
         }
+    }
+
+    /// Host cancellation hooks run exactly once on retirement or ordinary drop.
+    pub fn add_teardown_hook(&mut self, hook: impl FnOnce() + 'static) {
+        self.teardown_hooks.push(Box::new(hook));
+    }
+
+    pub fn teardown_receipt(&self) -> Arc<blitz_dom::release::Teardown> {
+        Arc::clone(&self.inner.borrow().teardown)
+    }
+
+    pub fn set_was_discarded(&mut self, discarded: bool) {
+        assert!(!self.scripts_executed, "wasDiscarded must precede page bootstrap");
+        self.inner.borrow_mut().was_discarded = discarded;
+    }
+
+    fn cancel_host_work(&mut self) {
+        self.timer_wake.take();
+        self.waker.take();
+        for hook in std::mem::take(&mut self.teardown_hooks) { hook(); }
     }
 
     /// Set the microtask budget shared by all drains in one poll.
@@ -828,7 +853,48 @@ impl ScriptDocument {
     }
 }
 
+impl Drop for ScriptDocument {
+    fn drop(&mut self) { self.cancel_host_work(); }
+}
+
 impl Document for ScriptDocument {
+    fn prepare_teardown(&mut self) {
+        self.cancel_host_work();
+        self.inner.borrow_mut().prepare_teardown();
+    }
+
+    fn dispose(mut self: Box<Self>) -> Arc<blitz_dom::release::Teardown> {
+        self.prepare_teardown();
+        let receipt = self.teardown_receipt();
+        drop(self);
+        // Context drop removes its roots; collect wrappers which held Rc<DOM>.
+        boa_gc::force_collect();
+        receipt
+    }
+
+    fn set_page_visible(&mut self, visible: bool) {
+        let changed = self.inner.borrow().page_visible != visible;
+        self.inner.borrow_mut().page_visible = visible;
+        if changed { self.runtime.dispatch_document_event("visibilitychange"); }
+    }
+
+    fn freeze(&mut self) {
+        if self.inner.borrow().page_frozen { return; }
+        let _execution = self.enter_execution_time_limit();
+        self.runtime.dispatch_document_event("freeze");
+        self.inner.borrow_mut().page_frozen = true;
+        self.timer_wake.take();
+    }
+
+    fn resume(&mut self) {
+        if !self.inner.borrow().page_frozen || self.inner.borrow().page_retiring { return; }
+        self.inner.borrow_mut().page_frozen = false;
+        self.runtime.dispatch_document_event("resume");
+        self.arm_timer_wake();
+        self.request_redraw();
+    }
+
+
     fn inner(&self) -> DocGuard<'_> {
         DocGuard::RefCell(self.inner.borrow())
     }
@@ -838,6 +904,7 @@ impl Document for ScriptDocument {
     }
 
     fn handle_ui_event(&mut self, event: UiEvent) {
+        if self.inner.borrow().page_frozen || self.inner.borrow().page_retiring { return; }
         let _execution = self.enter_execution_time_limit();
         let profiling_boundary = self.runtime.ctx.enter_profiling_boundary();
         let profiling = profiling_boundary.enabled();
@@ -869,6 +936,7 @@ impl ScriptDocument {
         task_context: Option<TaskContext>,
         settle_timers: Option<bool>,
     ) -> bool {
+        if self.inner.borrow().page_frozen || self.inner.borrow().page_retiring { return false; }
         let _execution = self.enter_execution_time_limit();
         let profiling_boundary = self.runtime.ctx.enter_profiling_boundary();
         let profiling = profiling_boundary.enabled();
