@@ -9,16 +9,25 @@ use blitz_dom::{
     StyleThreading,
 };
 use blitz_html::DocumentHtmlParser;
+use blitz_script::engine::Engine;
 use ekojit::page::{NativeReceipt, PageError, PageSource};
-use markup5ever::namespace_url;
 
-use crate::engine::Engine;
 use crate::native::{EkojitScriptEngine, NativePageDefect};
 
 pub struct EkojitDocument {
     runtime: Engine<EkojitScriptEngine>,
     executed: HashSet<NodeId>,
     started: bool,
+}
+
+impl blitz_script::ScriptDocumentBackend for EkojitDocument {
+    fn from_html(html: Arc<str>, config: DocumentConfig) -> Result<Self, String> {
+        Self::from_html(html, config, NativePageDefect::None).map_err(|error| error.to_string())
+    }
+
+    fn execute_scripts(&mut self) -> Result<(), String> {
+        Self::execute_scripts(self).map_err(|error| error.to_string())
+    }
 }
 
 impl EkojitDocument {
@@ -60,39 +69,38 @@ impl EkojitDocument {
                 let Some(node) = document.get_node(id) else {
                     continue;
                 };
-                if let Some(element) = node.element_data() {
-                    if element.name.ns == markup5ever::ns!(html)
-                        && element.name.local == blitz_dom::local_name!("script")
+                if let Some(element) = node.element_data()
+                    && element.name.ns == markup5ever::ns!(html)
+                    && element.name.local == blitz_dom::local_name!("script")
+                {
+                    if node
+                        .flags
+                        .contains(blitz_dom::node::NodeFlags::IS_PARSER_INERT_SCRIPT)
                     {
-                        if node
-                            .flags
-                            .contains(blitz_dom::node::NodeFlags::IS_PARSER_INERT_SCRIPT)
-                        {
-                            continue;
-                        }
-                        let kind = element
-                            .attr(blitz_dom::local_name!("type"))
-                            .unwrap_or("")
-                            .trim()
-                            .to_ascii_lowercase();
-                        if kind == "module"
-                            || kind == "importmap"
-                            || element.attr(blitz_dom::local_name!("src")).is_some()
-                        {
-                            return Err(PageError(Arc::from(
-                                "EKO_PAGE_UNSUPPORTED: module, import map or external script",
-                            )));
-                        }
-                        if matches!(
-                            kind.as_str(),
-                            "" | "text/javascript" | "application/javascript"
-                        ) && element.attr(blitz_dom::local_name!("nomodule")).is_none()
-                            && !self.executed.contains(&id)
-                        {
-                            scripts.push((id, Arc::<str>::from(node.text_content())));
-                        }
                         continue;
                     }
+                    let kind = element
+                        .attr(blitz_dom::local_name!("type"))
+                        .unwrap_or("")
+                        .trim()
+                        .to_ascii_lowercase();
+                    if kind == "module"
+                        || kind == "importmap"
+                        || element.attr(blitz_dom::local_name!("src")).is_some()
+                    {
+                        return Err(PageError(Arc::from(
+                            "EKO_PAGE_UNSUPPORTED: module, import map or external script",
+                        )));
+                    }
+                    if matches!(
+                        kind.as_str(),
+                        "" | "text/javascript" | "application/javascript"
+                    ) && element.attr(blitz_dom::local_name!("nomodule")).is_none()
+                        && !self.executed.contains(&id)
+                    {
+                        scripts.push((id, Arc::<str>::from(node.text_content())));
+                    }
+                    continue;
                 }
                 stack.extend(node.children.iter().rev().copied());
             }
@@ -133,10 +141,10 @@ impl EkojitDocument {
     pub fn title(&self) -> String {
         self.runtime.backend().host.title_text()
     }
-    pub fn console_entries(&self) -> Vec<crate::DiagnosticEntry> {
+    pub fn console_entries(&self) -> Vec<blitz_script::DiagnosticEntry> {
         self.runtime.backend().console()
     }
-    pub fn runtime_errors(&self) -> Vec<crate::DiagnosticEntry> {
+    pub fn runtime_errors(&self) -> Vec<blitz_script::DiagnosticEntry> {
         self.runtime.backend().errors()
     }
     pub fn page_source(&self) -> String {

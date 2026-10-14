@@ -8,13 +8,13 @@ use std::sync::Arc;
 use blitz_dom::{BaseDocument, NodeId, local_name};
 use blitz_traits::events::{DomEvent, EventState};
 use ekojit::page::{HostString, NativePage, NativeReceipt, PageError, PageHost, PageSource};
-use markup5ever::namespace_url;
 use url::Url;
 use web_time::{Duration, Instant};
 
-use crate::engine::ScriptEngine;
-use crate::job_budget::{JobBudget, JobSlice};
-use crate::runtime::{DiagnosticBatch, DiagnosticEntry, DiagnosticStreamBatch};
+use blitz_script::DiagnosticEntry;
+use blitz_script::engine::ScriptEngine;
+use blitz_script::engine::{JobBudget, JobSlice};
+use blitz_script::{DiagnosticBatch, DiagnosticStreamBatch};
 
 /// The explicit defect changes the real host append, without changing errors
 /// or the witness verdict. Applications select None unless proving the gate.
@@ -170,7 +170,6 @@ pub(crate) struct EkojitScriptEngine {
     budget: Rc<JobBudget>,
     ready_state: Cell<&'static str>,
     receipts: Vec<Arc<NativeReceipt>>,
-    failed: bool,
 }
 
 impl EkojitScriptEngine {
@@ -185,7 +184,6 @@ impl EkojitScriptEngine {
             budget: Rc::new(JobBudget::default()),
             ready_state: Cell::new("loading"),
             receipts: Vec::new(),
-            failed: false,
         }
     }
 
@@ -205,7 +203,6 @@ impl EkojitScriptEngine {
                 Ok(receipt)
             }
             Err(error) => {
-                self.failed = true;
                 self.host
                     .diagnostics
                     .borrow_mut()
@@ -217,9 +214,6 @@ impl EkojitScriptEngine {
 
     pub(crate) fn receipts(&self) -> &[Arc<NativeReceipt>] {
         &self.receipts
-    }
-    pub(crate) fn failed(&self) -> bool {
-        self.failed
     }
     pub(crate) fn console(&self) -> Vec<DiagnosticEntry> {
         self.host
@@ -241,7 +235,6 @@ impl EkojitScriptEngine {
     }
 
     fn reject(&mut self, description: &str, capability: &str) {
-        self.failed = true;
         self.host.diagnostics.borrow_mut().push(
             format!("{description}: EKO_PAGE_UNSUPPORTED: {capability}"),
             true,
@@ -368,21 +361,18 @@ impl ScriptEngine for EkojitScriptEngine {
     fn poll_domc(&mut self) -> bool {
         self.run_jobs_with_progress("native host cleanup")
     }
-    #[cfg(feature = "debug-control")]
     fn console_entries_after(&self, after: u64) -> Vec<DiagnosticEntry> {
         self.console()
             .into_iter()
             .filter(|entry| entry.sequence > after)
             .collect()
     }
-    #[cfg(feature = "debug-control")]
     fn runtime_errors_after(&self, after: u64) -> Vec<DiagnosticEntry> {
         self.errors()
             .into_iter()
             .filter(|entry| entry.sequence > after)
             .collect()
     }
-    #[cfg(feature = "debug-control")]
     fn diagnostic_batch(
         &self,
         console_after: u64,

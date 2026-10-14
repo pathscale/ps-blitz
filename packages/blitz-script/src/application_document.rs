@@ -10,35 +10,44 @@ use crate::ScriptDocument;
 pub enum ScriptBackend {
     #[default]
     Boa,
-    Ekojit,
+    Custom,
+}
+
+/// A document backend selected before bootstrap or host installation.
+pub trait ScriptDocumentBackend: Document + Sized {
+    fn from_html(html: Arc<str>, config: DocumentConfig) -> Result<Self, String>;
+    fn execute_scripts(&mut self) -> Result<(), String>;
+}
+
+impl ScriptDocumentBackend for ScriptDocument {
+    fn from_html(html: Arc<str>, config: DocumentConfig) -> Result<Self, String> {
+        Ok(Self::from_html(&html, config))
+    }
+
+    fn execute_scripts(&mut self) -> Result<(), String> {
+        Self::execute_scripts(self);
+        Ok(())
+    }
 }
 
 /// Selection happens before either backend's bootstrap or host installers.
-pub enum ApplicationDocument {
-    Boa(ScriptDocument),
-    #[cfg(feature = "ekojit")]
-    Ekojit(crate::EkojitDocument),
+pub enum ApplicationDocument<D: ScriptDocumentBackend = ScriptDocument> {
+    Boa(Box<ScriptDocument>),
+    Custom(Box<D>),
 }
 
-impl ApplicationDocument {
+impl<D: ScriptDocumentBackend> ApplicationDocument<D> {
     pub fn from_html(
         html: Arc<str>,
         config: DocumentConfig,
         backend: ScriptBackend,
     ) -> Result<Self, String> {
         match backend {
-            ScriptBackend::Boa => Ok(Self::Boa(ScriptDocument::from_html(&html, config))),
-            ScriptBackend::Ekojit => {
-                #[cfg(feature = "ekojit")]
-                {
-                    crate::EkojitDocument::from_html(html, config, crate::NativePageDefect::None)
-                        .map(Self::Ekojit)
-                        .map_err(|error| error.to_string())
-                }
-                #[cfg(not(feature = "ekojit"))]
-                {
-                    Err("ekojit requires the blitz-script ekojit cargo feature".into())
-                }
+            ScriptBackend::Boa => Ok(Self::Boa(Box::new(ScriptDocument::from_html(
+                &html, config,
+            )))),
+            ScriptBackend::Custom => {
+                D::from_html(html, config).map(|document| Self::Custom(Box::new(document)))
             }
         }
     }
@@ -46,8 +55,7 @@ impl ApplicationDocument {
     pub fn backend(&self) -> ScriptBackend {
         match self {
             Self::Boa(_) => ScriptBackend::Boa,
-            #[cfg(feature = "ekojit")]
-            Self::Ekojit(_) => ScriptBackend::Ekojit,
+            Self::Custom(_) => ScriptBackend::Custom,
         }
     }
 
@@ -57,48 +65,40 @@ impl ApplicationDocument {
                 document.execute_scripts();
                 Ok(())
             }
-            #[cfg(feature = "ekojit")]
-            Self::Ekojit(document) => document
-                .execute_scripts()
-                .map_err(|error| error.to_string()),
+            Self::Custom(document) => document.execute_scripts(),
         }
     }
 }
 
-impl Document for ApplicationDocument {
+impl<D: ScriptDocumentBackend> Document for ApplicationDocument<D> {
     fn inner(&self) -> DocGuard<'_> {
         match self {
             Self::Boa(document) => document.inner(),
-            #[cfg(feature = "ekojit")]
-            Self::Ekojit(document) => document.inner(),
+            Self::Custom(document) => document.inner(),
         }
     }
     fn inner_mut(&mut self) -> DocGuardMut<'_> {
         match self {
             Self::Boa(document) => document.inner_mut(),
-            #[cfg(feature = "ekojit")]
-            Self::Ekojit(document) => document.inner_mut(),
+            Self::Custom(document) => document.inner_mut(),
         }
     }
     fn handle_ui_event(&mut self, event: UiEvent) {
         match self {
             Self::Boa(document) => document.handle_ui_event(event),
-            #[cfg(feature = "ekojit")]
-            Self::Ekojit(document) => document.handle_ui_event(event),
+            Self::Custom(document) => document.handle_ui_event(event),
         }
     }
     fn poll(&mut self, context: Option<Context>) -> bool {
         match self {
             Self::Boa(document) => document.poll(context),
-            #[cfg(feature = "ekojit")]
-            Self::Ekojit(document) => document.poll(context),
+            Self::Custom(document) => document.poll(context),
         }
     }
     fn poll_for_settle(&mut self, context: Option<Context>, timers: bool) -> bool {
         match self {
             Self::Boa(document) => document.poll_for_settle(context, timers),
-            #[cfg(feature = "ekojit")]
-            Self::Ekojit(document) => document.poll_for_settle(context, timers),
+            Self::Custom(document) => document.poll_for_settle(context, timers),
         }
     }
 }

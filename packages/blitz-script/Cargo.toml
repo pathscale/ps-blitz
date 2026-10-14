@@ -15,15 +15,8 @@ name = "solid-debug-harness"
 path = "src/bin/solid_debug_harness.rs"
 required-features = ["debug-control"]
 
-[[bin]]
-name = "native-page-host"
-path = "src/bin/native_page_host.rs"
-required-features = ["ekojit-page-witness"]
-
 [features]
 default = ["shadow-dom"]
-# Native capability pages are an opt-in until full realm parity.
-ekojit = ["dep:ekojit"]
 # Native roots, slots, scoped styles and composed event dispatch.
 shadow-dom = ["blitz-dom/shadow-dom", "blitz-html/shadow-dom", "dep:style"]
 # Per-DOM-call timing. Off by default: a shipping build has no reader for it
@@ -54,8 +47,6 @@ debug-control = [
 intl = ["boa_engine/intl_bundled"]
 system-fonts = ["blitz-dom/system-fonts"]
 tracing = ["dep:tracing", "blitz-dom/tracing"]
-# Linked native page gate with the real renderer and machine font catalogue.
-ekojit-page-witness = ["ekojit", "debug-control", "system-fonts"]
 
 [lib]
 name = "blitz_script"
@@ -67,9 +58,6 @@ blitz-debug-control = { workspace = true, optional = true }
 blitz-paint = { workspace = true, optional = true }
 blitz-html = { workspace = true }
 blitz-traits = { workspace = true }
-
-# Native page backend, beside ps-blitz in the owner's source workspace.
-ekojit = { path = "../../../ekojit/crates/ekojit", optional = true }
 
 # Boa (JavaScript engine)
 boa_engine = { workspace = true }
