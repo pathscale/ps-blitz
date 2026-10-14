@@ -571,8 +571,8 @@ impl ScriptDocument {
     /// simply never started.
     ///
     /// A `src` script reports `load` when it runs and `error` when it does not.
-    /// Loaders wait on those before continuing — nofilter.io keeps the body
-    /// hidden until the bundle's `load` arrives — so a script that ran silently
+    /// Loaders wait on those before continuing , nofilter.io keeps the body
+    /// hidden until the bundle's `load` arrives , so a script that ran silently
     /// would still leave the page blank.
     fn run_pending_scripts(&mut self) -> bool {
         let _slice = self.runtime.begin_job_slice();
