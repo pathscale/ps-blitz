@@ -1,10 +1,15 @@
 //! Consumer-owned event batches with typed pointer publication.
 
-use std::collections::{LinkedList, linked_list};
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, Weak};
 
+struct Segment<T> {
+    producer: spsc::Producer<Arc<T>>,
+    consumer: spsc::Consumer<Arc<T>>,
+}
+
 struct Pending<T> {
-    values: LinkedList<Arc<T>>,
+    segments: VecDeque<Segment<T>>,
     closed: bool,
 }
 
@@ -16,16 +21,18 @@ struct Queue<T> {
 /// The single owner of an unbounded FIFO of typed event pointers.
 ///
 /// Publication schedules the owner's wake callback on nagoya only when an
-/// empty batch becomes nonempty. Taking a batch is one atomic transfer, with
-/// no idle receive loop and no payload copies. Events published while a batch
-/// is being handled form another batch and schedule another wake.
+/// empty batch becomes nonempty. Producers share one serialized ring lane,
+/// following the debug-control handoff. Full rings append another segment so
+/// publication stays unbounded. Taking a batch transfers the ring handles in
+/// one operation, releasing the lock before any event is handled. There is no
+/// idle receive loop and no payload copying.
 pub struct EventQueue<T>(Arc<Queue<T>>);
 
 impl<T> EventQueue<T> {
     pub fn new(wake: impl Fn() + Send + Sync + 'static) -> Self {
         Self(Arc::new(Queue {
             pending: Mutex::new(Pending {
-                values: LinkedList::new(),
+                segments: VecDeque::new(),
                 closed: false,
             }),
             wake: Arc::new(wake),
@@ -39,8 +46,10 @@ impl<T> EventQueue<T> {
 
     /// Take the current batch in publication order, releasing the lock before
     /// the caller handles any event or drops any payload.
-    pub fn take_pending(&mut self) -> linked_list::IntoIter<Arc<T>> {
-        std::mem::take(&mut self.0.pending.lock().unwrap().values).into_iter()
+    pub fn take_pending(&mut self) -> EventBatch<T> {
+        EventBatch(std::mem::take(
+            &mut self.0.pending.lock().unwrap().segments,
+        ))
     }
 }
 
@@ -49,9 +58,26 @@ impl<T> Drop for EventQueue<T> {
         let pending = {
             let mut state = self.0.pending.lock().unwrap();
             state.closed = true;
-            std::mem::take(&mut state.values)
+            std::mem::take(&mut state.segments)
         };
         drop(pending);
+    }
+}
+
+/// A finite batch of already published event pointers, owned by the consumer.
+pub struct EventBatch<T>(VecDeque<Segment<T>>);
+
+impl<T> Iterator for EventBatch<T> {
+    type Item = Arc<T>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some(segment) = self.0.front() {
+            if let Some(value) = segment.consumer.try_pop() {
+                return Some(value);
+            }
+            self.0.pop_front();
+        }
+        None
     }
 }
 
@@ -76,14 +102,23 @@ impl<T> EventTarget<T> {
             if pending.closed {
                 return Err(value);
             }
-            let empty = pending.values.is_empty();
-            pending.values.push_back(value);
+            let empty = pending.segments.is_empty();
+            let value = match pending.segments.back() {
+                Some(segment) => match segment.producer.try_push(value) {
+                    None => return Ok(()),
+                    Some(value) => value,
+                },
+                None => value,
+            };
+            let (producer, consumer) = spsc::make(64);
+            assert!(producer.try_push(value).is_none());
+            pending.segments.push_back(Segment { producer, consumer });
             empty
         };
         if needs_wake {
             let wake = Arc::clone(&queue.wake);
             // Dropping nagoya's JoinHandle detaches this finite wake task.
-            let _ = nagoya::spawn(async move { wake() });
+            drop(nagoya::spawn(async move { wake() }));
         }
         Ok(())
     }
