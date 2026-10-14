@@ -940,13 +940,18 @@ fn decode_body(
     }
     let mut high_water = body.len();
     for encoding in encodings.iter().rev() {
-        let limit = high_water
-            .saturating_add(initiator.remaining_bytes())
-            .min(MAX_BODY_BYTES);
         body = match encoding.as_str() {
             "identity" => body,
-            "br" => bounded_decode(brotli::Decompressor::new(body.as_ref(), 16 * 1024), limit)?,
-            "gzip" => bounded_decode(flate2::read::MultiGzDecoder::new(body.as_ref()), limit)?,
+            "br" => bounded_decode(
+                brotli::Decompressor::new(body.as_ref(), 16 * 1024),
+                initiator,
+                &mut high_water,
+            )?,
+            "gzip" => bounded_decode(
+                flate2::read::MultiGzDecoder::new(body.as_ref()),
+                initiator,
+                &mut high_water,
+            )?,
             "deflate" => {
                 // HTTP deflate is zlib wrapped, but older servers send raw
                 // DEFLATE. Recognise a zlib header without retrying corrupt
@@ -956,17 +961,21 @@ fn decode_body(
                     && body[0] >> 4 <= 7
                     && u16::from_be_bytes([body[0], body[1]]).is_multiple_of(31);
                 if wrapped {
-                    bounded_decode(flate2::read::ZlibDecoder::new(body.as_ref()), limit)?
+                    bounded_decode(
+                        flate2::read::ZlibDecoder::new(body.as_ref()),
+                        initiator,
+                        &mut high_water,
+                    )?
                 } else {
-                    bounded_decode(flate2::read::DeflateDecoder::new(body.as_ref()), limit)?
+                    bounded_decode(
+                        flate2::read::DeflateDecoder::new(body.as_ref()),
+                        initiator,
+                        &mut high_water,
+                    )?
                 }
             }
             _ => return Err(Error::Protocol("unsupported content coding")),
         };
-        initiator
-            .charge(body.len().saturating_sub(high_water))
-            .map_err(Error::Blocked)?;
-        high_water = high_water.max(body.len());
     }
     // These described the encoded representation, not the returned bytes.
     headers.remove("content-encoding");
@@ -975,15 +984,36 @@ fn decode_body(
 }
 
 #[cfg(feature = "compression")]
-fn bounded_decode(reader: impl std::io::Read, limit: usize) -> Result<Bytes, Error> {
+fn bounded_decode(
+    mut reader: impl std::io::Read,
+    initiator: &blitz_traits::net::Initiator,
+    high_water: &mut usize,
+) -> Result<Bytes, Error> {
     use std::io::Read;
+    let credited = *high_water;
+    let mut charged_through = credited;
     let mut output = Vec::new();
-    reader
-        .take(limit as u64 + 1)
-        .read_to_end(&mut output)
-        .map_err(|error| Error::Io(error.to_string()))?;
-    if output.len() > limit {
-        return Err(Error::Blocked("resource-byte-cap".into()));
+    let mut scratch = [0u8; 16 * 1024];
+    loop {
+        let read = loop {
+            match reader.read(&mut scratch) {
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                result => break result.map_err(|error| Error::Io(error.to_string()))?,
+            }
+        };
+        if read == 0 {
+            break;
+        }
+        let next_len = output.len().checked_add(read).ok_or(Error::TooLarge)?;
+        if next_len > MAX_BODY_BYTES {
+            return Err(Error::TooLarge);
+        }
+        initiator
+            .charge(next_len.saturating_sub(charged_through))
+            .map_err(Error::Blocked)?;
+        charged_through = charged_through.max(next_len);
+        output.extend_from_slice(&scratch[..read]);
     }
+    *high_water = (*high_water).max(output.len());
     Ok(Bytes::from(output))
 }

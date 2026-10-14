@@ -50,6 +50,7 @@ pub struct ResourceScope {
     policy: Arc<ResourcePolicy>,
     usage: Arc<Mutex<Usage>>,
     file_access: bool,
+    file_root: Option<std::path::PathBuf>,
     private_network: bool,
 }
 
@@ -65,9 +66,15 @@ pub enum Initiator {
 impl ResourcePolicy {
     /// Call only for a user navigation or a browser-owned load.
     pub fn browser(self: &Arc<Self>, url: Url) -> Initiator {
+        let file_root = if url.scheme() == "file" {
+            canonical_file_root(&url)
+        } else {
+            None
+        };
         Initiator::Browser(Arc::new(ResourceScope {
             origin: OriginKey::for_document(&url),
-            file_access: url.scheme() == "file",
+            file_access: file_root.is_some(),
+            file_root,
             private_network: true,
             url,
             policy: Arc::clone(self),
@@ -79,8 +86,14 @@ impl ResourcePolicy {
     /// a budget. A web navigation cannot mint a local-file capability.
     pub fn document(self: &Arc<Self>, url: Url, navigation: &Initiator) -> Initiator {
         let scope = navigation.scope();
-        let file_access = matches!(navigation, Initiator::Browser(_))
-            && scope.is_some_and(|scope| scope.file_access && scope.url == url);
+        let file_root = if matches!(navigation, Initiator::Browser(_)) {
+            scope
+                .filter(|scope| scope.file_access && scope.url == url)
+                .and_then(|scope| scope.file_root.clone())
+        } else {
+            None
+        };
+        let file_access = file_root.is_some();
         let private_network = local_host(&url) && scope.is_some_and(|scope| scope.private_network);
         Initiator::Document(Arc::new(ResourceScope {
             origin: OriginKey::for_document(&url),
@@ -91,6 +104,7 @@ impl ResourcePolicy {
                 |scope| Arc::clone(&scope.usage),
             ),
             file_access,
+            file_root,
             private_network,
         }))
     }
@@ -123,8 +137,26 @@ impl Initiator {
 
     pub fn check_url(&self, url: &Url) -> Result<(), String> {
         let scope = self.scope().ok_or("resource-initiator-unknown")?;
-        if url.scheme() == "file" && !scope.file_access {
-            return Err("resource-file-origin".into());
+        if url.scheme() == "file" {
+            if !scope.file_access {
+                return Err("resource-file-origin".into());
+            }
+            let root = scope.file_root.as_ref().ok_or("resource-file-scope")?;
+            let path = local_file_path(url).ok_or("resource-file-scope")?;
+            let path = std::fs::canonicalize(path).map_err(|_| "resource-file-scope")?;
+            if !path.starts_with(root) {
+                return Err("resource-file-scope".into());
+            }
+            let metadata = std::fs::metadata(path).map_err(|_| "resource-file-scope")?;
+            if !metadata.is_file() {
+                return Err("resource-file-scope".into());
+            }
+            return Ok(());
+        }
+        if matches!(self, Self::Document(document) if document.url.scheme() == "file")
+            && matches!(url.scheme(), "http" | "https")
+        {
+            return Err("resource-file-network".into());
         }
         if matches!(url.scheme(), "http" | "https") && local_host(url) && !scope.private_network {
             return Err("resource-private-address".into());
@@ -206,6 +238,26 @@ impl Initiator {
     }
 }
 
+fn local_file_path(url: &Url) -> Option<std::path::PathBuf> {
+    if url.scheme() != "file"
+        || url
+            .host_str()
+            .is_some_and(|host| !host.eq_ignore_ascii_case("localhost"))
+    {
+        return None;
+    }
+    url.to_file_path().ok()
+}
+
+fn canonical_file_root(url: &Url) -> Option<std::path::PathBuf> {
+    let path = std::fs::canonicalize(local_file_path(url)?).ok()?;
+    let metadata = std::fs::metadata(&path).ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    path.parent().map(|parent| parent.to_path_buf())
+}
+
 /// Conservative local origin recognition. DNS names other than localhost and
 /// .local remain public principals even when the user navigates to them.
 fn local_host(url: &Url) -> bool {
@@ -226,7 +278,7 @@ fn local_host(url: &Url) -> bool {
 pub fn private_address(address: IpAddr) -> bool {
     match address {
         IpAddr::V4(ip) => {
-            let [a, b, _, _] = ip.octets();
+            let [a, b, c, _] = ip.octets();
             a == 0
                 || a == 127
                 || a == 10
@@ -234,6 +286,8 @@ pub fn private_address(address: IpAddr) -> bool {
                 || a == 192 && b == 168
                 || a == 169 && b == 254
                 || a == 100 && (64..=127).contains(&b)
+                || a == 198 && (18..=19).contains(&b)
+                || a == 192 && b == 0 && c == 0
                 || a >= 224
         }
         IpAddr::V6(ip) => {
@@ -242,6 +296,8 @@ pub fn private_address(address: IpAddr) -> bool {
             }
             let octets = ip.octets();
             ip.is_unspecified() || ip.is_loopback() || ip.is_multicast()
+                || octets[..12].iter().all(|byte| *byte == 0)
+                || octets[0] == 0xfe && octets[1] & 0xc0 == 0xc0
                 || octets[0] & 0xfe == 0xfc
                 || octets[0] == 0xfe && octets[1] & 0xc0 == 0x80
                 // Embedded IPv4 transition addresses cannot bypass the v4 rule.
