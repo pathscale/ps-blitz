@@ -904,6 +904,8 @@ impl Document for ScriptDocument {
         self.timer_wake.take();
     }
 
+    fn finish_restore(&mut self) { self.before_script_hook.take(); }
+
     fn resume(&mut self) {
         if !self.inner.borrow().page_frozen || self.inner.borrow().page_retiring { return; }
         self.inner.borrow_mut().page_frozen = false;

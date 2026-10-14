@@ -319,6 +319,10 @@ impl BaseDocument {
         }
 
         self.clamp_scroll_offsets();
+        if let Some(scroll) = self.restore_scroll.take() {
+            let current = self.viewport_scroll();
+            self.scroll_viewport_by(current.x - scroll.x, current.y - scroll.y);
+        }
         self.resolve_hoisted_positions();
         self.correct_hoisted_fixed_positions();
         self.resolve_hoisted_clips();
