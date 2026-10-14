@@ -652,7 +652,7 @@ impl BaseDocument {
         static ID_GENERATOR: AtomicUsize = AtomicUsize::new(1);
 
         let id = ID_GENERATOR.fetch_add(1, Ordering::SeqCst);
-        let teardown = crate::release::Teardown::new();
+        let teardown = config.teardown.unwrap_or_else(crate::release::Teardown::new);
 
         let font_ctx = config
             .font_ctx
