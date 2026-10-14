@@ -40,7 +40,12 @@
 
 #[cfg(feature = "debug-control")]
 mod debug_control;
+mod application_document;
 mod document;
+#[cfg(feature = "ekojit")]
+mod native;
+#[cfg(feature = "ekojit")]
+mod native_document;
 mod docwrite;
 mod dom;
 pub mod dom_exception;
@@ -66,6 +71,13 @@ pub use boa_runtime;
 #[cfg(feature = "debug-control")]
 pub use debug_control::DebugController;
 pub use document::ScriptDocument;
+pub use application_document::{ApplicationDocument, ScriptBackend};
+#[cfg(feature = "ekojit")]
+pub use native::NativePageDefect;
+#[cfg(feature = "ekojit")]
+pub use native_document::EkojitDocument;
+#[cfg(feature = "ekojit")]
+pub use ekojit::page::{NativeReceipt, PageError, PageSource};
 pub use fetch::{DefaultScriptFetcher, FetchError, ScriptFetcher};
 pub use raster::raster_image_for_attribute;
 pub use runtime::{DiagnosticBatch, DiagnosticEntry, DiagnosticStreamBatch};
