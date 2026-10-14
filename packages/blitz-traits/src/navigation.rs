@@ -64,6 +64,8 @@ impl NavigationOptions {
             body: self.document_resource,
             signal: None,
             destination: RequestDestination::Document,
+            initiator: crate::net::Initiator::default(),
+            credentials: crate::net::Credentials::default(),
         }
     }
 }

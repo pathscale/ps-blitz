@@ -88,6 +88,7 @@ use blitz_traits::platform::{
 };
 
 use crate::fetch::{InFlight, Slot};
+pub use blitz_traits::resource_policy::{Credentials, Initiator, ResourcePolicy, ResourceScope};
 
 /// Called when a fetch completes, so an embedder knows to drain the queue.
 ///
@@ -102,6 +103,7 @@ pub type ReadyWaker = Arc<dyn Fn() + Send + Sync + 'static>;
 /// and drain it with [`take_ready`](PlatformHost::take_ready).
 pub struct PlatformHost {
     origin: OriginKey,
+    initiator: Initiator,
     fetch_provider: Arc<dyn FetchProvider>,
     storage_provider: Arc<dyn StorageProvider>,
     /// `Arc` because completion handlers hold `Weak`s to it, and those outlive
@@ -119,12 +121,20 @@ impl PlatformHost {
     ) -> Self {
         Self {
             origin,
+            initiator: Initiator::Unknown,
             fetch_provider,
             storage_provider,
             inflight: Arc::new(Mutex::new(InFlight::default())),
             waker: None,
             counters: Mutex::new(PlatformCounters::default()),
         }
+    }
+
+    /// Bind the browser-issued principal, including its held opaque origin.
+    pub fn with_initiator(mut self, initiator: Initiator) -> Self {
+        if let Some(origin) = initiator.origin() { self.origin = origin.clone(); }
+        self.initiator = initiator;
+        self
     }
 
     /// Install the callback that says "a response is ready to drain".
@@ -154,7 +164,8 @@ impl PlatformHost {
     /// called on it. It is *not* a promise and it does not carry a result: the
     /// result arrives in the ready queue, which is the only place a completion
     /// is ever observed.
-    pub fn start_fetch(&self, request: FetchRequest) -> RequestId {
+    pub fn start_fetch(&self, mut request: FetchRequest) -> RequestId {
+        request.initiator = self.initiator.clone();
         let sent = request.body.as_ref().map(|body| body.len()).unwrap_or(0);
 
         let id = {
