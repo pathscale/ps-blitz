@@ -798,7 +798,11 @@ impl DocumentMutator<'_> {
 
         if *attr == local_name!("style") {
             element.flush_style_attribute(&self.doc.guard, &self.doc.url.url_extra_data());
-            node.mark_style_attr_updated();
+            if node_is_in_document {
+                node.mark_style_attr_updated_without_propagation();
+            } else {
+                node.mark_style_attr_updated();
+            }
             return;
         }
 
@@ -1004,7 +1008,11 @@ impl DocumentMutator<'_> {
 
         if *attr == local_name!("style") {
             element.flush_style_attribute(&self.doc.guard, &self.doc.url.url_extra_data());
-            node.mark_style_attr_updated();
+            if node_is_in_document {
+                node.mark_style_attr_updated_without_propagation();
+            } else {
+                node.mark_style_attr_updated();
+            }
         } else if node_is_in_document
             && *tag == local_name!("img")
             && (*attr == local_name!("srcset")
