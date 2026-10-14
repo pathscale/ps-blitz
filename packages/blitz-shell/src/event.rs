@@ -2,7 +2,7 @@ use blitz_traits::navigation::NavigationOptions;
 use blitz_traits::net::NetWaker;
 use futures_util::task::ArcWake;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use blitz_traits::handoff::{EventQueue, EventTarget};
 use std::{any::Any, sync::Arc};
 use winit::{event_loop::EventLoopProxy, window::WindowId};
 
@@ -68,21 +68,24 @@ impl BlitzShellEvent {
     }
 }
 
+pub type BlitzShellEventQueue = EventQueue<BlitzShellEvent>;
+
 #[derive(Clone)]
 pub struct BlitzShellProxy(Arc<BlitzShellProxyInner>);
 pub struct BlitzShellProxyInner {
     winit_proxy: EventLoopProxy,
-    sender: Sender<BlitzShellEvent>,
+    target: EventTarget<BlitzShellEvent>,
 }
 
 impl BlitzShellProxy {
-    pub fn new(winit_proxy: EventLoopProxy) -> (Self, Receiver<BlitzShellEvent>) {
-        let (sender, receiver) = channel();
+    pub fn new(winit_proxy: EventLoopProxy) -> (Self, BlitzShellEventQueue) {
+        let wake_proxy = winit_proxy.clone();
+        let queue = EventQueue::new(move || wake_proxy.wake_up());
         let proxy = Self(Arc::new(BlitzShellProxyInner {
             winit_proxy,
-            sender,
+            target: queue.target(),
         }));
-        (proxy, receiver)
+        (proxy, queue)
     }
 
     pub fn wake_up(&self) {
@@ -92,8 +95,7 @@ impl BlitzShellProxy {
         self.send_event_impl(event.into());
     }
     fn send_event_impl(&self, event: BlitzShellEvent) {
-        let _ = self.0.sender.send(event);
-        self.wake_up();
+        let _ = self.0.target.publish(Arc::new(event));
     }
 }
 
@@ -107,7 +109,7 @@ impl NetWaker for BlitzShellProxy {
 ///
 /// This lets the VirtualDom "come up for air" and process events while the main thread is blocked by the WebView.
 ///
-/// All other IO lives in the Tokio runtime,
+/// Queue publication wakes the event loop through nagoya.
 ///
 /// The request is a flag the window owns rather than a queued event, because
 /// wanting a poll is an edge and not a message: two wakes before the loop comes

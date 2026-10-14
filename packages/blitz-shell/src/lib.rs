@@ -19,7 +19,7 @@ mod window;
 mod accessibility;
 
 pub use crate::application::BlitzApplication;
-pub use crate::event::{BlitzShellEvent, BlitzShellProxy};
+pub use crate::event::{BlitzShellEvent, BlitzShellEventQueue, BlitzShellProxy};
 pub use crate::frame_stats::{
     FrameStatsSnapshot, FrameTimings, TimingStats, clear_frame_stats, latest_frame_stats,
 };

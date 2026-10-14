@@ -33,7 +33,7 @@ pub struct ReadmeApplication {
 impl ReadmeApplication {
     pub fn new(
         proxy: BlitzShellProxy,
-        event_queue: std::sync::mpsc::Receiver<BlitzShellEvent>,
+        event_queue: blitz_shell::BlitzShellEventQueue,
         raw_url: String,
         net_provider: Arc<Provider>,
         navigation_provider: Arc<dyn NavigationProvider>,
@@ -188,7 +188,9 @@ impl ApplicationHandler for ReadmeApplication {
     }
 
     fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
-        while let Ok(event) = self.inner.event_queue.try_recv() {
+        for event in self.inner.event_queue.take_pending() {
+            let event = Arc::try_unwrap(event)
+                .unwrap_or_else(|_| panic!("shell event has one consumer"));
             match event {
                 BlitzShellEvent::Embedder(event) => {
                     if let Some(_event) = event.downcast_ref::<ReadmeEvent>() {

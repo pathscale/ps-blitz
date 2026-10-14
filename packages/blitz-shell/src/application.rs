@@ -1,8 +1,8 @@
-use crate::event::{BlitzShellEvent, BlitzShellProxy};
+use crate::event::{BlitzShellEvent, BlitzShellEventQueue, BlitzShellProxy};
 
 use anyrender::WindowRenderer;
 use std::collections::HashMap;
-use std::sync::mpsc::Receiver;
+use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
@@ -18,13 +18,13 @@ pub struct BlitzApplication<Rend: WindowRenderer> {
     pub windows: HashMap<WindowId, View<Rend>>,
     pub pending_windows: Vec<WindowConfig<Rend>>,
     pub proxy: BlitzShellProxy,
-    pub event_queue: Receiver<BlitzShellEvent>,
+    pub event_queue: BlitzShellEventQueue,
     #[cfg(feature = "debug-control")]
     debug_controller: Option<blitz_script::DebugController>,
 }
 
 impl<Rend: WindowRenderer> BlitzApplication<Rend> {
-    pub fn new(proxy: BlitzShellProxy, event_queue: Receiver<BlitzShellEvent>) -> Self {
+    pub fn new(proxy: BlitzShellProxy, event_queue: BlitzShellEventQueue) -> Self {
         BlitzApplication {
             windows: HashMap::new(),
             pending_windows: Vec::new(),
@@ -252,7 +252,9 @@ impl<Rend: WindowRenderer> ApplicationHandler for BlitzApplication<Rend> {
     }
 
     fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
-        while let Ok(event) = self.event_queue.try_recv() {
+        for event in self.event_queue.take_pending() {
+            let event = Arc::try_unwrap(event)
+                .unwrap_or_else(|_| panic!("shell event has one consumer"));
             self.handle_blitz_shell_event(event_loop, event);
         }
         #[cfg(feature = "debug-control")]
