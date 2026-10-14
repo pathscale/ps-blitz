@@ -81,6 +81,7 @@ pub struct ScriptDocument {
     executed_scripts: std::collections::HashSet<NodeId>,
     poll_hook: Option<PollHook>,
     teardown_hooks: Vec<Box<dyn FnOnce()>>,
+    before_script_hook: Option<Box<dyn FnMut(&mut BaseDocument)>>,
     _runtime_lease: blitz_dom::release::ReleaseLease,
 
     // The timer registry owns a clone of the current document waker.
@@ -147,6 +148,7 @@ impl ScriptDocument {
             inner,
             runtime,
             teardown_hooks: Vec::new(),
+            before_script_hook: None,
             _runtime_lease: runtime_lease,
             base_url,
             fetcher,
@@ -157,6 +159,18 @@ impl ScriptDocument {
             poll_hook: None,
             waker: None,
             timer_wake: None,
+        }
+    }
+
+    pub fn set_before_script_hook(&mut self, hook: impl FnMut(&mut BaseDocument) + 'static) {
+        assert!(!self.scripts_executed, "restore precedes bootstrap");
+        self.before_script_hook = Some(Box::new(hook));
+    }
+
+    fn prepare_native_restore(&mut self) {
+        if let Some(mut hook) = self.before_script_hook.take() {
+            hook(&mut self.inner.borrow_mut());
+            self.before_script_hook = Some(hook);
         }
     }
 
@@ -568,6 +582,7 @@ impl ScriptDocument {
         }
         let parsed = crate::docwrite::advance(&mut self.runtime.context);
         let generation = crate::docwrite::generation(&self.runtime.context);
+        self.prepare_native_restore();
         if parsed {
             self.runtime.ctx.mark_layout_dirty();
         }
@@ -624,6 +639,7 @@ impl ScriptDocument {
             // Marked before running, not after: a script that appends another
             // copy of itself, or that throws, must not be retried on every
             // poll for the life of the page.
+            self.prepare_native_restore();
             self.executed_scripts.insert(script.node_id);
             if script.kind == ScriptKind::ImportMap {
                 continue;
@@ -880,8 +896,10 @@ impl Document for ScriptDocument {
 
     fn freeze(&mut self) {
         if self.inner.borrow().page_frozen { return; }
+        self.runtime.context.set_execution_time_limit(Some(std::time::Duration::from_millis(50)));
         let _execution = self.enter_execution_time_limit();
         self.runtime.dispatch_document_event("freeze");
+        self.runtime.run_jobs_with_progress("freeze microtasks");
         self.inner.borrow_mut().page_frozen = true;
         self.timer_wake.take();
     }
