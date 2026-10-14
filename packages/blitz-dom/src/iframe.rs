@@ -50,12 +50,20 @@ impl BaseDocument {
         node_id: NodeId,
         base_url: Option<String>,
         abort_signal: AbortSignal,
+        inherit_origin: bool,
     ) -> DocumentConfig {
+        let net_provider = if inherit_origin {
+            Arc::clone(&self.net_provider)
+        } else {
+            base_url.as_ref().and_then(|url| Url::parse(url).ok())
+                .and_then(|url| self.net_provider.for_child_document(url))
+                .unwrap_or_else(|| Arc::clone(&self.net_provider))
+        };
         DocumentConfig {
             viewport: None,
             base_url,
             ua_stylesheets: None,
-            net_provider: Some(self.net_provider.clone()),
+            net_provider: Some(net_provider),
             navigation_provider: Some(Arc::new(IframeNavigationProvider {
                 node_id,
                 tx: self.tx.clone(),
@@ -100,8 +108,9 @@ impl BaseDocument {
         html: &str,
         base_url: Option<String>,
         abort_signal: AbortSignal,
+        inherit_origin: bool,
     ) {
-        let config = self.iframe_document_config(node_id, base_url, abort_signal);
+        let config = self.iframe_document_config(node_id, base_url, abort_signal, inherit_origin);
         let sub_doc = self
             .html_parser_provider
             .clone()
@@ -116,7 +125,7 @@ impl BaseDocument {
     pub(crate) fn load_iframe_srcdoc(&mut self, node_id: NodeId, srcdoc: &str) {
         let signal = self.new_iframe_generation(node_id, None);
         let base_url = Some(self.url.to_string());
-        self.attach_iframe_document(node_id, srcdoc, base_url, signal);
+        self.attach_iframe_document(node_id, srcdoc, base_url, signal, true);
     }
 
     /// Start fetching HTML for an iframe from `url`. The parsed document is
@@ -177,6 +186,6 @@ impl BaseDocument {
             return;
         }
 
-        self.attach_iframe_document(node_id, html, resolved_url, signal);
+        self.attach_iframe_document(node_id, html, resolved_url, signal, false);
     }
 }
