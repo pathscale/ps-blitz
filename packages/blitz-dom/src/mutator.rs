@@ -27,11 +27,112 @@ macro_rules! tag_and_attr {
     };
 }
 
-/// Select density candidates for the device scale, or the largest width candidate.
-/// This bounded fallback does not evaluate `sizes` or `<picture>` sources.
+/** Match a single width condition. Unsupported media syntax does not match. */
+fn image_media_matches(media: &str, viewport_width: f32) -> bool {
+    let media = media.trim();
+    if media.is_empty() {
+        return true;
+    }
+    let Some(condition) = media
+        .strip_prefix('(')
+        .and_then(|condition| condition.strip_suffix(')'))
+    else {
+        return false;
+    };
+    let Some((feature, length)) = condition.split_once(':') else {
+        return false;
+    };
+    let length = length.trim().to_ascii_lowercase();
+    let Some(width) = length
+        .strip_suffix("px")
+        .and_then(|number| number.parse::<f32>().ok())
+        .filter(|width| width.is_finite() && *width >= 0.0)
+    else {
+        return false;
+    };
+    let feature = feature.trim();
+    if feature.eq_ignore_ascii_case("max-width") {
+        viewport_width <= width
+    } else if feature.eq_ignore_ascii_case("min-width") {
+        viewport_width >= width
+    } else {
+        false
+    }
+}
+
+fn parse_image_size_length(length: &str, viewport_width: f32) -> Option<f32> {
+    let length = length.trim().to_ascii_lowercase();
+    let (number, factor) = if let Some(number) = length.strip_suffix("px") {
+        (number, 1.0)
+    } else if let Some(number) = length.strip_suffix("vw") {
+        (number, viewport_width / 100.0)
+    } else {
+        let number = length
+            .strip_suffix("rem")
+            .or_else(|| length.strip_suffix("em"))?;
+        // Font-relative sizes use a fixed 16px approximation.
+        (number, 16.0)
+    };
+    let number = number
+        .parse::<f32>()
+        .ok()
+        .filter(|number| number.is_finite() && *number >= 0.0)?;
+    let width = number * factor;
+    (width.is_finite() && width >= 0.0).then_some(width)
+}
+
+fn parse_sizes_effective_width(sizes: Option<&str>, viewport_width: f32) -> f32 {
+    for entry in sizes.unwrap_or("").split(',') {
+        let entry = entry.trim();
+        let length = if entry.starts_with('(') {
+            let Some(end) = entry.find(')') else {
+                continue;
+            };
+            let (media, length) = entry.split_at(end + 1);
+            if !image_media_matches(media, viewport_width) {
+                continue;
+            }
+            length
+        } else {
+            entry
+        };
+        if let Some(width) = parse_image_size_length(length, viewport_width) {
+            return width;
+        }
+    }
+    viewport_width
+}
+
+#[allow(clippy::match_like_matches_macro)]
+fn image_source_type_supported(mime: Option<&str>) -> bool {
+    let mime = mime
+        .unwrap_or("")
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    match mime.as_str() {
+        "" => true,
+        "image/svg+xml" => cfg!(feature = "svg"),
+        "image/png"
+        | "image/jpeg"
+        | "image/gif"
+        | "image/webp"
+        | "image/bmp"
+        | "image/x-ms-bmp"
+        | "image/x-icon"
+        | "image/vnd.microsoft.icon"
+        | "image/jxl" => cfg!(feature = "image-formats"),
+        _ => false,
+    }
+}
+
+/// Select density or width candidates for the device scale and effective width.
 fn select_image_source<'a>(
     src: Option<&'a str>,
     srcset: Option<&'a str>,
+    effective_width: f32,
     scale: f32,
     is_valid_url: impl Fn(&str) -> bool,
 ) -> Option<&'a str> {
@@ -44,6 +145,7 @@ fn select_image_source<'a>(
     } else {
         1.0
     };
+    let target_width = f64::from(effective_width) * target;
     let mut best_density: Option<(&'a str, f64)> = None;
     let mut best_width: Option<(&'a str, f64)> = None;
     let mut has_one_x = false;
@@ -117,7 +219,14 @@ fn select_image_source<'a>(
         }
 
         if is_width {
-            if best_width.is_none_or(|(_, current)| value > current) {
+            let better = best_width.is_none_or(|(_, current)| {
+                if value >= target_width {
+                    current < target_width || value < current
+                } else {
+                    current < target_width && value > current
+                }
+            });
+            if better {
                 best_width = Some((url, value));
             }
         } else {
@@ -219,17 +328,14 @@ impl DocumentMutator<'_> {
         }
     }
 
-    // Attribute changes can affect sibling and :has() matches on the parent.
-    // Keep the wide hint conditional so unrelated siblings need not restyle.
+    // Snapshots handle ordinary descendant and sibling selector invalidation.
+    // Keep the subtree fallback for filtered nth-child and relative selectors.
     fn restyle_parent_for_attribute_change(&mut self, parent_id: Option<NodeId>) {
         let Some(parent_id) = parent_id else {
             return;
         };
         let flags = self.doc.nodes[parent_id].selector_flags().get();
-        let child_dependent = ElementSelectorFlags::HAS_SLOW_SELECTOR
-            | ElementSelectorFlags::HAS_SLOW_SELECTOR_LATER_SIBLINGS
-            | ElementSelectorFlags::HAS_EDGE_CHILD_SELECTOR
-            | ElementSelectorFlags::HAS_EMPTY_SELECTOR
+        let child_dependent = ElementSelectorFlags::HAS_SLOW_SELECTOR_NTH_OF
             | ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_ANCESTOR
             | ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_SIBLING
             | ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_ANCESTOR_SIBLING;
@@ -673,50 +779,14 @@ impl DocumentMutator<'_> {
             let node = &mut self.doc.nodes[node_id];
             node.set_dirty_descendants();
             if let Some(mut data) = node.stylo_element_data_opt_mut().and_then(|s| s.get_mut()) {
-                data.hint |= RestyleHint::restyle_subtree();
+                data.hint |= RestyleHint::RESTYLE_SELF;
                 if renders_from_attributes {
                     data.damage.insert(ALL_DAMAGE);
                 }
             }
 
-            // The parent is restyled only when a selector says it depends on
-            // its children.
-            //
-            // It used to be restyled unconditionally, which meant a class
-            // toggle on one row restyled every sibling of that row: on a
-            // 40-row list, a colour-only change cost 773us of style against
-            // 15us for a frame that changed nothing, while layout recomputed
-            // four nodes. Style was half of the whole resolve, for one
-            // element's colour.
-            //
-            // The flags say exactly when the wide hint is needed, because
-            // `apply_selector_flags` deposits them on the parent while matching:
-            // `:empty` and `:only-child` on the parent, `:nth-child` and the
-            // sibling combinators on the siblings, `:has()` through the
-            // relative-selector directions. A parent carrying none of them has
-            // no rule whose match can change because a child's attribute did.
-            let parent = node.parent;
-            if let Some(parent_id) = parent {
-                let parent = &self.doc.nodes[parent_id];
-                let flags = parent.selector_flags().get();
-                let child_dependent = ElementSelectorFlags::HAS_SLOW_SELECTOR
-                    | ElementSelectorFlags::HAS_SLOW_SELECTOR_LATER_SIBLINGS
-                    | ElementSelectorFlags::HAS_EDGE_CHILD_SELECTOR
-                    | ElementSelectorFlags::HAS_EMPTY_SELECTOR
-                    | ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_ANCESTOR
-                    | ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_SIBLING
-                    | ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_ANCESTOR_SIBLING;
-
-                if flags.intersects(child_dependent) {
-                    let parent = &mut self.doc.nodes[parent_id];
-                    if let Some(mut data) = parent
-                        .stylo_element_data_opt_mut()
-                        .and_then(|s| s.get_mut())
-                    {
-                        data.hint |= RestyleHint::restyle_subtree();
-                    }
-                }
-            }
+            let parent_id = node.parent;
+            self.restyle_parent_for_attribute_change(parent_id);
 
             // Mark ancestors dirty so the style traversal visits this subtree.
             // Without this, the traversal may skip nodes with pending RestyleHint/damage
@@ -840,10 +910,13 @@ impl DocumentMutator<'_> {
 
         if (tag, attr) == tag_and_attr!("input", "checked") {
             set_input_checked_state(element, value.to_string());
-        } else if (tag, attr) == tag_and_attr!("img", "src")
-            || (tag, attr) == tag_and_attr!("img", "srcset")
+        } else if *tag == local_name!("img") && matches!(attr.as_ref(), "src" | "srcset" | "sizes")
         {
             self.load_image(node_id);
+        } else if *tag == local_name!("source")
+            && matches!(attr.as_ref(), "srcset" | "media" | "sizes" | "type")
+        {
+            self.reload_picture_images(node_id);
         } else if (tag, attr) == tag_and_attr!("canvas", "src") {
             self.load_custom_paint_src(node_id);
         } else if (tag, attr) == tag_and_attr!("link", "href") {
@@ -940,7 +1013,7 @@ impl DocumentMutator<'_> {
                 node.set_dirty_descendants();
                 if let Some(mut data) = node.stylo_element_data_opt_mut().and_then(|s| s.get_mut())
                 {
-                    data.hint |= RestyleHint::restyle_subtree();
+                    data.hint |= RestyleHint::RESTYLE_SELF;
                     data.damage.insert(ALL_DAMAGE);
                 }
                 // Make pending restyle hints reachable by traversal.
@@ -1038,10 +1111,14 @@ impl DocumentMutator<'_> {
             }
         } else if node_is_in_document
             && *tag == local_name!("img")
-            && (*attr == local_name!("srcset")
-                || (*attr == local_name!("src") && element.attr(local_name!("srcset")).is_some()))
+            && matches!(attr.as_ref(), "src" | "srcset" | "sizes")
         {
             self.load_image(node_id);
+        } else if node_is_in_document
+            && *tag == local_name!("source")
+            && matches!(attr.as_ref(), "srcset" | "media" | "sizes" | "type")
+        {
+            self.reload_picture_images(node_id);
         } else if (tag, attr) == tag_and_attr!("canvas", "src") {
             self.recompute_is_animating = true;
         } else if (tag, attr) == tag_and_attr!("link", "href") {
@@ -2253,14 +2330,101 @@ impl<'doc> DocumentMutator<'doc> {
             .force_stylesheet_origins_dirty(OriginSet::all());
     }
 
-    fn load_image(&mut self, target_id: NodeId) {
+    fn reload_picture_images(&mut self, source_id: NodeId) {
+        let Some(parent_id) = self.doc.nodes[source_id].parent else {
+            return;
+        };
+        let parent = &self.doc.nodes[parent_id];
+        let Some(element) = parent.element_data() else {
+            return;
+        };
+        if element.name.ns != ns!(html) || element.name.local != local_name!("picture") {
+            return;
+        }
+        let image_ids: Vec<NodeId> = parent
+            .children
+            .iter()
+            .copied()
+            .skip_while(|id| *id != source_id)
+            .skip(1)
+            .filter(|id| {
+                let node = &self.doc.nodes[*id];
+                node.flags.is_in_document()
+                    && node.element_data().is_some_and(|element| {
+                        element.name.ns == ns!(html) && element.name.local == local_name!("img")
+                    })
+            })
+            .collect();
+        for image_id in image_ids {
+            self.load_image(image_id);
+        }
+    }
+
+    fn selected_image_source(&self, target_id: NodeId) -> Option<&str> {
         let node = &self.doc.nodes[target_id];
-        if let Some(raw_src) = select_image_source(
+        let scale = self.doc.viewport.scale();
+        let scale = if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        };
+        let viewport_width = self.doc.viewport.window_size.0 as f32 / scale;
+        let viewport_width = if viewport_width.is_finite() {
+            viewport_width
+        } else {
+            0.0
+        };
+
+        if let Some(parent_id) = node.parent {
+            let parent = &self.doc.nodes[parent_id];
+            if parent.element_data().is_some_and(|element| {
+                element.name.ns == ns!(html) && element.name.local == local_name!("picture")
+            }) {
+                for &child_id in &parent.children {
+                    if child_id == target_id {
+                        break;
+                    }
+                    let source = &self.doc.nodes[child_id];
+                    let Some(element) = source.element_data() else {
+                        continue;
+                    };
+                    if element.name.ns != ns!(html)
+                        || element.name.local != local_name!("source")
+                        || !image_media_matches(
+                            source.attr(local_name!("media")).unwrap_or(""),
+                            viewport_width,
+                        )
+                        || !image_source_type_supported(source.attr(local_name!("type")))
+                    {
+                        continue;
+                    }
+                    if let Some(src) = select_image_source(
+                        None,
+                        source.attr(local_name!("srcset")),
+                        parse_sizes_effective_width(
+                            source.attr(local_name!("sizes")),
+                            viewport_width,
+                        ),
+                        scale,
+                        |raw| self.doc.url.resolve_relative(raw).is_some(),
+                    ) {
+                        return Some(src);
+                    }
+                }
+            }
+        }
+
+        select_image_source(
             node.attr(local_name!("src")),
             node.attr(local_name!("srcset")),
-            self.doc.viewport.scale(),
+            parse_sizes_effective_width(node.attr(local_name!("sizes")), viewport_width),
+            scale,
             |raw| self.doc.url.resolve_relative(raw).is_some(),
-        ) {
+        )
+    }
+
+    fn load_image(&mut self, target_id: NodeId) {
+        if let Some(raw_src) = self.selected_image_source(target_id) {
             if !raw_src.is_empty() {
                 let src = self.doc.resolve_url(raw_src);
                 let src_string = src.as_str();
