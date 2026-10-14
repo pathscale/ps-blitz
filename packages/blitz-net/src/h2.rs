@@ -264,6 +264,7 @@ impl H2Pool {
         headers: &HeaderMap,
         handle: &Handle,
         config: &Arc<nago_rustls::rustls::ClientConfig>,
+        addresses: &[Addr],
     ) -> Result<Route, Error> {
         if !origin.tls || self.lock().h1_only.contains(origin) {
             return Ok(Route::Http1(None));
@@ -274,7 +275,7 @@ impl H2Pool {
             attempts += 1;
             let live = match self.current(origin) {
                 Some(live) => live,
-                None => match self.dial(origin, handle, config).await? {
+                None => match self.dial(origin, handle, config, addresses).await? {
                     Ok(live) => live,
                     Err(transport) => return Ok(Route::Http1(transport)),
                 },
@@ -314,6 +315,7 @@ impl H2Pool {
         origin: &Origin,
         handle: &Handle,
         config: &Arc<nago_rustls::rustls::ClientConfig>,
+        addresses: &[Addr],
     ) -> Result<Result<Arc<Live>, Option<tls::Transport>>, Error> {
         let gate = self
             .lock()
@@ -329,10 +331,10 @@ impl H2Pool {
         if self.lock().h1_only.contains(origin) {
             return Ok(Err(None));
         }
-        if let Some(live) = self.coalesce(origin).await {
+        if let Some(live) = self.coalesce(origin, addresses).await {
             return Ok(Ok(live));
         }
-        let transport = tls::open(origin, handle, config.clone()).await?;
+        let transport = tls::open(origin, handle, config.clone(), addresses).await?;
         let session = match transport {
             tls::Transport::Tls(session) if session.alpn_protocol() == Some(b"h2") => session,
             other => {
@@ -395,7 +397,7 @@ impl H2Pool {
 
     /// RFC 9113 section 9.1.1: reuse a connection whose certificate covers
     /// `origin` and whose peer address is among the addresses it resolves to.
-    async fn coalesce(&self, origin: &Origin) -> Option<Arc<Live>> {
+    async fn coalesce(&self, origin: &Origin, addresses: &[Addr]) -> Option<Arc<Live>> {
         let candidates: Vec<Arc<Live>> = {
             let state = self.lock();
             if state.no_coalesce.contains(origin) {
@@ -411,11 +413,7 @@ impl H2Pool {
         if candidates.is_empty() {
             return None;
         }
-        let host = origin.host.clone();
-        let port = origin.port;
-        let addresses = nagoya::spawn(async move { nagoya::net::resolve(&host, port).ok() })
-            .await
-            .flatten()?;
+
         let name = ServerName::try_from(origin.host.to_string()).ok()?;
         let live = candidates.into_iter().find(|live| {
             live.peer.is_some_and(|peer| addresses.contains(&peer))
@@ -553,6 +551,7 @@ async fn exchange(
         if buffer.len() + chunk.len() > MAX_BODY_BYTES {
             return Err(Failure::Local(Error::TooLarge));
         }
+        request.initiator.charge(chunk.len()).map_err(|reason| Failure::Local(Error::Blocked(reason)))?;
         buffer.extend_from_slice(&chunk);
     }
     let _ = recv.trailers().await.map_err(Failure::After)?;

@@ -20,6 +20,7 @@
 //! transport does not provide HTTP.
 
 mod abort;
+mod local_fetch;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod h1;
@@ -31,7 +32,7 @@ use blitz_traits::net::{
 use blitz_traits::platform::{
     FetchError, FetchHandler, FetchProvider, FetchRequest, FetchResponse, HeaderMap, StatusCode,
 };
-use data_url::DataUrl;
+
 use std::sync::Arc;
 
 /// Cookie storage supplied to [`Provider::with_user_agent_and_cookie_provider`].
@@ -308,73 +309,34 @@ impl Provider {
         client: Client,
         request: Request,
     ) -> Result<FetchResponse, ProviderError> {
-        let url = request.url.clone();
-        match url.scheme() {
-            "data" => {
-                // Scoped so the borrow of `url` ends before it is moved into
-                // the response.
-                let (body, headers) = {
-                    let data_url = DataUrl::process(url.as_str())?;
-                    let decoded = data_url.decode_to_vec()?;
-                    let mut headers = HeaderMap::new();
-                    if let Ok(value) = data_url.mime_type().to_string().parse() {
-                        headers.insert(CONTENT_TYPE, value);
-                    }
-                    (Bytes::from(decoded.0), headers)
-                };
-                Ok(FetchResponse::new(url, StatusCode::OK)
-                    .headers(headers)
-                    .body(body))
-            }
-            "file" => {
-                let file_content = std::fs::read(url.path())?;
-                Ok(FetchResponse::new(url, StatusCode::OK).body(Bytes::from(file_content)))
-            }
-            "http" | "https" => {
-                let mut wire_request = FetchRequest::get(request.url).method(request.method);
-                wire_request.headers = request.headers;
-                wire_request.signal = request.signal;
-                let content_type = request.content_type.or_else(|| {
-                    wire_request
-                        .headers
-                        .get(CONTENT_TYPE)
-                        .and_then(|value| value.to_str().ok())
-                        .map(str::to_owned)
-                });
-                if let Some(content_type) = &content_type {
-                    let value = HeaderValue::from_str(content_type)
-                        .map_err(|error| ProviderError::InvalidRequest(error.to_string()))?;
-                    wire_request.headers.insert(CONTENT_TYPE, value);
-                }
-                wire_request.body = encode_body(
-                    request.body,
-                    content_type.as_deref(),
-                    &mut wire_request.headers,
-                )?;
-                let response = client.fetch(wire_request).await.map_err(|error| {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if let h1::Error::TlsPolicy(reason) = &error {
-                        return ProviderError::TlsPolicy(*reason);
-                    }
-                    ProviderError::Network(error.to_string())
-                })?;
-
-                if !response.status.is_success() {
-                    #[cfg(feature = "tracing")]
-                    tracing::warn!(
-                        url = response.url.as_str(),
-                        status = response.status.as_u16(),
-                        "HTTP error status"
-                    );
-                    return Err(ProviderError::HttpStatus {
-                        status: response.status,
-                        url: response.url.to_string(),
-                    });
-                }
-                Ok(response)
-            }
-            scheme => Err(ProviderError::UnsupportedScheme(scheme.to_owned())),
+        let mut wire = FetchRequest::get(request.url).method(request.method);
+        wire.headers = request.headers;
+        wire.signal = request.signal;
+        wire.initiator = request.initiator;
+        wire.credentials = request.credentials;
+        let content_type = request.content_type.or_else(|| {
+            wire.headers.get(CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()).map(str::to_owned)
+        });
+        if let Some(content_type) = &content_type {
+            wire.headers.insert(CONTENT_TYPE, HeaderValue::from_str(content_type)
+                .map_err(|error| ProviderError::InvalidRequest(error.to_string()))?);
         }
+        wire.body = encode_body(request.body, content_type.as_deref(), &mut wire.headers)?;
+        let response = Self::platform_fetch_inner(client, wire).await.map_err(|error| {
+            match error {
+                FetchError::Abort => ProviderError::Abort,
+                FetchError::Blocked(reason) => ProviderError::Blocked(reason),
+                FetchError::TlsPolicy(reason) => ProviderError::TlsPolicy(reason),
+                error => ProviderError::Network(error.to_string()),
+            }
+        })?;
+        if !response.status.is_success() {
+            return Err(ProviderError::HttpStatus {
+                status: response.status, url: response.url.to_string(),
+            });
+        }
+        Ok(response)
     }
 }
 
@@ -413,13 +375,21 @@ impl Provider {
         client: Client,
         request: FetchRequest,
     ) -> Result<FetchResponse, FetchError> {
+        request.initiator.begin(&request.url).map_err(FetchError::Blocked)?;
+        if let Some(body) = &request.body {
+            request.initiator.charge(body.len()).map_err(FetchError::Blocked)?;
+        }
         match request.url.scheme() {
-            "data" => Self::platform_fetch_data(request),
-            "file" => Self::platform_fetch_file(request),
+            "data" | "file" => local_fetch::fetch(request),
             "http" | "https" => client.fetch(request).await.map_err(|error| {
                 #[cfg(not(target_arch = "wasm32"))]
-                if let h1::Error::TlsPolicy(reason) = &error {
-                    return FetchError::TlsPolicy(*reason);
+                {
+                    if let h1::Error::TlsPolicy(reason) = &error {
+                        return FetchError::TlsPolicy(*reason);
+                    }
+                    if let h1::Error::Blocked(reason) = &error {
+                        return FetchError::Blocked(reason.clone());
+                    }
                 }
                 FetchError::Network(error.to_string())
             }),
@@ -427,52 +397,7 @@ impl Provider {
         }
     }
 
-    /// A `data:` URL, answered as a synthetic 200.
-    ///
-    /// The status and the `Content-Type` are invented, because a data URL has
-    /// no server to supply them, and inventing them is what the fetch
-    /// specification requires: a `data:` response is a 200 whose content type
-    /// is the one encoded in the URL.
-    fn platform_fetch_data(request: FetchRequest) -> Result<FetchResponse, FetchError> {
-        let data_url = DataUrl::process(request.url.as_str())
-            .map_err(|err| FetchError::InvalidRequest(format!("{err:?}")))?;
-        let mime = data_url.mime_type().to_string();
-        let (body, _) = data_url
-            .decode_to_vec()
-            .map_err(|err| FetchError::InvalidRequest(format!("{err:?}")))?;
 
-        let mut headers = HeaderMap::new();
-        if let Ok(value) = mime.parse() {
-            headers.insert(CONTENT_TYPE, value);
-        }
-
-        Ok(FetchResponse::new(request.url, StatusCode::OK)
-            .headers(headers)
-            .body(Bytes::from(body)))
-    }
-
-    /// A `file:` URL, answered as a synthetic 200.
-    ///
-    /// Goes through [`Url::to_file_path`] rather than `Url::path`, which is
-    /// what [`Provider::fetch_inner`] uses. `path` hands back the URL's
-    /// percent-encoded path component as a string, so a file whose name
-    /// contains a space or a `#` is looked up under the wrong name, and on
-    /// Windows the leading slash makes it wrong outright. `to_file_path`
-    /// decodes and refuses a URL that does not name a local path.
-    ///
-    /// **This is not access control, and it is not claiming to be.** Whether a
-    /// document may read local files at all is an origin question, and origins
-    /// are not visible here; see `blitz-platform-api`, which holds the origin
-    /// and is where such a policy belongs.
-    fn platform_fetch_file(request: FetchRequest) -> Result<FetchResponse, FetchError> {
-        let path = request.url.to_file_path().map_err(|()| {
-            FetchError::InvalidRequest(format!("not a local path: {}", request.url))
-        })?;
-
-        let body = std::fs::read(path).map_err(|err| FetchError::Network(err.to_string()))?;
-
-        Ok(FetchResponse::new(request.url, StatusCode::OK).body(Bytes::from(body)))
-    }
 }
 
 impl FetchProvider for Provider {
@@ -552,6 +477,7 @@ pub enum ProviderError {
     DataUrl(data_url::DataUrlError),
     DataUrlBase64(data_url::forgiving_base64::InvalidBase64),
     Network(String),
+    Blocked(String),
     TlsPolicy(TlsPolicyError),
     InvalidRequest(String),
     UnsupportedScheme(String),
@@ -566,6 +492,7 @@ impl std::fmt::Display for ProviderError {
             Self::DataUrl(e) => write!(f, "data url error: {e:?}"),
             Self::DataUrlBase64(e) => write!(f, "data url base64 error: {e:?}"),
             Self::Network(e) => write!(f, "network error: {e}"),
+            Self::Blocked(reason) => write!(f, "blocked: {reason}"),
             Self::TlsPolicy(reason) => write!(f, "TLS policy: {reason}"),
             Self::InvalidRequest(e) => write!(f, "invalid request: {e}"),
             Self::UnsupportedScheme(scheme) => write!(f, "unsupported URL scheme: {scheme}"),
