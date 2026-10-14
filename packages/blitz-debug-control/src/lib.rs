@@ -181,7 +181,6 @@ impl ControlResponse {
 struct Descriptor<'a> {
     pid: u32,
     address: String,
-    token: &'a str,
     protocol_version: u32,
     renderer: &'static str,
     renderer_revision: &'a str,
@@ -236,7 +235,35 @@ impl DebugServer {
         Ok((server, CommandReceiver(queue)))
     }
 
+    /// Bind a loopback port with an authentication token supplied by the embedding process.
+    pub fn start_typed_with_token(
+        config: ServerConfig,
+        token: impl Into<String>,
+    ) -> io::Result<(Self, CommandReceiver)> {
+        let queue = CommandQueue::new(MAX_PENDING_COMMANDS);
+        let server = Self::start_with_sink_and_token(
+            config,
+            CommandSink(Arc::clone(&queue)),
+            token.into(),
+        )?;
+        Ok((server, CommandReceiver(queue)))
+    }
+
     fn start_with_sink(config: ServerConfig, commands: CommandSink) -> io::Result<Self> {
+        Self::start_with_sink_and_token(config, commands, random_hex(32)?)
+    }
+
+    fn start_with_sink_and_token(
+        config: ServerConfig,
+        commands: CommandSink,
+        token: String,
+    ) -> io::Result<Self> {
+        if token.len() < 32 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "debug-control token must contain at least 32 bytes",
+            ));
+        }
         if !config.bind_address.ip().is_loopback() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -247,7 +274,6 @@ impl DebugServer {
         let listener = TcpListener::bind(reactor_addr(config.bind_address), &reactor.handle())
             .map_err(reactor_error)?;
         let address = socket_addr(listener.local_addr().map_err(reactor_error)?)?;
-        let token = random_hex(32)?;
         let waker = ServiceWaker::default();
         let state = Arc::new(ServerState {
             token: Arc::new(token.clone()),
@@ -257,7 +283,7 @@ impl DebugServer {
             shutdown: AtomicBool::new(false),
             stop_waker: Mutex::new(None),
         });
-        write_descriptor(&config, address, &token)?;
+        write_descriptor(&config, address)?;
         let task = nagoya::runtime::background().spawn(server_loop(listener, Arc::clone(&state)));
         Ok(Self {
             address,
@@ -350,16 +376,23 @@ fn random_hex(byte_len: usize) -> io::Result<String> {
     Ok(output)
 }
 
-fn write_descriptor(config: &ServerConfig, address: SocketAddr, token: &str) -> io::Result<()> {
+fn write_descriptor(config: &ServerConfig, address: SocketAddr) -> io::Result<()> {
     let descriptor = Descriptor {
         pid: std::process::id(),
         address: address.to_string(),
-        token,
         protocol_version: PROTOCOL_VERSION,
         renderer: "blitz",
         renderer_revision: &config.renderer_revision,
     };
     let bytes = serde_json::to_vec_pretty(&descriptor).map_err(io::Error::other)?;
+    if contains_environment_secret(config.descriptor_path.to_string_lossy().as_bytes())
+        || contains_environment_secret(&bytes)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "refusing to write a debug-control descriptor containing an environment secret",
+        ));
+    }
     if let Some(parent) = config.descriptor_path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -383,6 +416,46 @@ fn write_descriptor(config: &ServerConfig, address: SocketAddr, token: &str) -> 
         let _ = fs::remove_file(&temporary);
     }
     result
+}
+
+fn contains_environment_secret(content: &[u8]) -> bool {
+    std::env::vars_os().any(|(name, value)| {
+        let name = name.to_string_lossy().to_ascii_uppercase();
+        if !is_secret_environment_name(&name) {
+            return false;
+        }
+        let value = value.to_string_lossy();
+        if value.is_empty() {
+            return false;
+        }
+        let raw = value.as_bytes();
+        let encoded = serde_json::to_vec(value.as_ref()).unwrap_or_default();
+        content.windows(raw.len()).any(|part| part == raw)
+            || (!encoded.is_empty()
+                && content
+                    .windows(encoded.len())
+                    .any(|part| part == encoded.as_slice()))
+    })
+}
+
+fn is_secret_environment_name(name: &str) -> bool {
+    [
+        "PASSWORD",
+        "PASSWD",
+        "TOKEN",
+        "SECRET",
+        "SEED",
+        "PRIVATE_KEY",
+        "ACCESS_KEY",
+        "CREDENTIAL",
+        "COOKIE",
+        "JWT",
+        "SESSION",
+    ]
+    .iter()
+    .any(|needle| name.contains(needle))
+        || name.contains("_KEY")
+        || name.ends_with("KEY")
 }
 
 async fn server_loop(listener: TcpListener, state: Arc<ServerState>) {

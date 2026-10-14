@@ -57,7 +57,16 @@ pub struct DebugController {
 impl DebugController {
     pub fn start(config: ServerConfig) -> io::Result<Self> {
         let (server, requests) = DebugServer::start_typed(config)?;
-        Ok(Self {
+        Ok(Self::from_server(server, requests))
+    }
+
+    fn start_with_token(config: ServerConfig, token: String) -> io::Result<Self> {
+        let (server, requests) = DebugServer::start_typed_with_token(config, token)?;
+        Ok(Self::from_server(server, requests))
+    }
+
+    fn from_server(server: DebugServer, requests: CommandReceiver) -> Self {
+        Self {
             server,
             requests,
             active_document_id: None,
@@ -76,7 +85,7 @@ impl DebugController {
             exit_requested: false,
             clock_started: Instant::now(),
             resolution_time: 0.0,
-        })
+        }
     }
 
     /// Tell the server how to wake the thread that calls `service_pending`.
@@ -95,7 +104,7 @@ impl DebugController {
         self
     }
 
-    /// Start only when both debug-control environment settings are present.
+    /// Start only when the debug-control address, descriptor path, and token are present.
     pub fn start_from_env(renderer_revision: impl Into<String>) -> io::Result<Option<Self>> {
         let Some(address) = std::env::var_os("TAURI_BLITZ_DRIVER") else {
             return Ok(None);
@@ -106,17 +115,26 @@ impl DebugController {
                 "TAURI_BLITZ_DRIVER_DESCRIPTOR is required",
             ));
         };
+        let token = std::env::var("TAURI_BLITZ_DRIVER_TOKEN").map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "TAURI_BLITZ_DRIVER_TOKEN is required",
+            )
+        })?;
         let bind_address: SocketAddr = address.to_string_lossy().parse().map_err(|error| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("invalid TAURI_BLITZ_DRIVER address: {error}"),
             )
         })?;
-        Self::start(ServerConfig {
-            bind_address,
-            descriptor_path: PathBuf::from(descriptor),
-            renderer_revision: renderer_revision.into(),
-        })
+        Self::start_with_token(
+            ServerConfig {
+                bind_address,
+                descriptor_path: PathBuf::from(descriptor),
+                renderer_revision: renderer_revision.into(),
+            },
+            token,
+        )
         .map(Some)
     }
 
