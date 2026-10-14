@@ -490,6 +490,8 @@ pub struct BaseDocument {
     // TODO: collapse animating state into a bitflags
     /// Whether there are active CSS animations/transitions (so we should re-render every frame)
     pub(crate) has_active_animations: bool,
+    /// Host permission to tick CSS animations and transitions.
+    pub(crate) css_animation_ticks_enabled: bool,
     /// Whether there is a `<canvas>` element in the DOM (so we should re-render every frame)
     pub(crate) has_canvas: bool,
     /// The most urgent animation cadence required by any subdocument.
@@ -809,6 +811,7 @@ impl BaseDocument {
             active_node_id: None,
             mousedown_node_id: None,
             has_active_animations: false,
+            css_animation_ticks_enabled: true,
             subdoc_animation_pacing: AnimationPacing::Idle,
             has_canvas: false,
             sub_document_nodes: HashSet::new(),
@@ -1218,6 +1221,16 @@ impl BaseDocument {
         &self.document_content_type
     }
 
+    /// Control CSS frame ticks without freezing scripts or resource loading.
+    pub fn set_css_animation_ticks_enabled(&mut self, enabled: bool) {
+        self.css_animation_ticks_enabled = enabled;
+        for id in self.sub_document_node_ids() {
+            if let Some(child) = self.subdoc_mut(id) {
+                child.inner_mut().set_css_animation_ticks_enabled(enabled);
+            }
+        }
+    }
+
     pub fn window_focused(&self) -> bool {
         self.document_window_focused
     }
@@ -1262,6 +1275,11 @@ impl BaseDocument {
         sub_document
             .inner_mut()
             .set_window_focused(self.document_window_focused);
+        if !self.css_animation_ticks_enabled {
+            sub_document
+                .inner_mut()
+                .set_css_animation_ticks_enabled(false);
+        }
         self.nodes[node_id]
             .element_data_mut()
             .unwrap()
@@ -3185,20 +3203,15 @@ impl BaseDocument {
                     .collect()
             });
 
-            let changed_attrs = attrs
-                .as_ref()
-                .map(|attrs| attrs.iter().map(|attr| attr.0.name.clone()).collect())
-                .unwrap_or_default();
-
             self.snapshots.insert(
                 opaque_node_id,
                 ServoElementSnapshot {
                     state: Some(*node.element_state()),
                     attrs,
-                    changed_attrs,
-                    class_changed: true,
-                    id_changed: true,
-                    other_attributes_changed: true,
+                    changed_attrs: Vec::new(),
+                    class_changed: false,
+                    id_changed: false,
+                    other_attributes_changed: false,
                 },
             );
         }
@@ -3212,6 +3225,13 @@ impl BaseDocument {
             let changed_attr = GenericAtomIdent(name.clone());
             if !snapshot.changed_attrs.contains(&changed_attr) {
                 snapshot.changed_attrs.extend(std::iter::once(changed_attr));
+            }
+            if name == &local_name!("id") {
+                snapshot.id_changed = true;
+            } else if name == &local_name!("class") {
+                snapshot.class_changed = true;
+            } else {
+                snapshot.other_attributes_changed = true;
             }
         }
     }
@@ -3703,7 +3723,7 @@ impl BaseDocument {
         let custom_widget_is_animating = false;
 
         let animating = self.has_canvas
-            | self.has_active_animations
+            | (self.css_animation_ticks_enabled && self.has_active_animations)
             | (self.subdoc_animation_pacing != AnimationPacing::Idle)
             | custom_widget_is_animating
             | (self.scroll_animation != ScrollAnimationState::None)
@@ -3752,7 +3772,7 @@ impl BaseDocument {
             || self.scrollbars_animating()
         {
             AnimationPacing::Interactive
-        } else if self.has_active_animations {
+        } else if self.css_animation_ticks_enabled && self.has_active_animations {
             const SLOW_ANIMATION_SECONDS: f64 = 2.0;
             let sets = self.animations.sets.read();
             let has_fast_animation_or_transition = sets.values().any(|set| {
