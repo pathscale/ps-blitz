@@ -1,8 +1,8 @@
+use blitz_traits::handoff::{EventQueue, EventTarget};
 use blitz_traits::navigation::NavigationOptions;
 use blitz_traits::net::NetWaker;
 use futures_util::task::ArcWake;
 use std::sync::atomic::{AtomicBool, Ordering};
-use blitz_traits::handoff::{EventQueue, EventTarget};
 use std::{any::Any, sync::Arc};
 use winit::{event_loop::EventLoopProxy, window::WindowId};
 

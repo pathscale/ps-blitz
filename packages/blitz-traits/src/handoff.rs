@@ -47,9 +47,7 @@ impl<T> EventQueue<T> {
     /// Take the current batch in publication order, releasing the lock before
     /// the caller handles any event or drops any payload.
     pub fn take_pending(&mut self) -> EventBatch<T> {
-        EventBatch(std::mem::take(
-            &mut self.0.pending.lock().unwrap().segments,
-        ))
+        EventBatch(std::mem::take(&mut self.0.pending.lock().unwrap().segments))
     }
 }
 

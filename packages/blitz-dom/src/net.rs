@@ -169,7 +169,9 @@ impl<T: Send + Sync + 'static> ResourceHandler<T> {
             resolved_url: Some(resolved_url),
             result,
         };
-        let _ = self.tx.publish(Arc::new(DocumentEvent::ResourceLoad(response)));
+        let _ = self
+            .tx
+            .publish(Arc::new(DocumentEvent::ResourceLoad(response)));
     }
 }
 
@@ -178,14 +180,14 @@ impl<T: Send + Sync + 'static> Drop for ResourceHandler<T> {
         if self.settled.load(Ao::Acquire) {
             return;
         }
-        let _ = self
-            .tx
-            .publish(Arc::new(DocumentEvent::ResourceLoad(ResourceLoadResponse {
+        let _ = self.tx.publish(Arc::new(DocumentEvent::ResourceLoad(
+            ResourceLoadResponse {
                 request_id: self.request_id,
                 node_id: self.node_id,
                 resolved_url: None,
                 result: Err(String::from("resource fetch failed")),
-            })));
+            },
+        )));
     }
 }
 
