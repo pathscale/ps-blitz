@@ -1,0 +1,24 @@
+[
+    (
+        id: "resource-policy-ready",
+        group: "resource-policy",
+        what: "the served browser page starts and paints its witness",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "RESOURCE_POLICY_STARTED",
+        expect: PaintsNamed,
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "resource-policy-file-allowed",
+        group: "resource-policy",
+        what: "a native top-level file navigation can fetch its local canary",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "READY: RESOURCE_POLICY file-allowed PASS",
+        expect: PaintsNamed,
+        outcome_timeout_ms: 10000,
+    ),
+]

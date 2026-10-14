@@ -1,0 +1,24 @@
+[
+    (
+        id: "resource-policy-ready",
+        group: "resource-policy",
+        what: "the served browser page starts and paints its witness",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "RESOURCE_POLICY_STARTED",
+        expect: PaintsNamed,
+        outcome_timeout_ms: 10000,
+    ),
+    (
+        id: "resource-policy-byte-cap",
+        group: "resource-policy",
+        what: "a positive small response fits and a later large response exceeds the cumulative document byte cap",
+        open: None,
+        hover: None,
+        click: None,
+        subject: "READY: RESOURCE_POLICY byte-cap PASS",
+        expect: PaintsNamed,
+        outcome_timeout_ms: 10000,
+    ),
+]
