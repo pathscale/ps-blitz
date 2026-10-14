@@ -1,8 +1,8 @@
+use std::sync::Arc;
 use color::{palette::css::WHITE, parse_color};
 use dioxus_native::prelude::*;
 use dioxus_native::CustomWidgetAttr;
 use std::any::Any;
-use std::sync::Arc;
 
 use crate::{limits, Color, DemoMessage, DemoWidget, FEATURES, STYLES};
 
