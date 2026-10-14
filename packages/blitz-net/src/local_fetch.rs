@@ -17,22 +17,22 @@ pub(crate) fn fetch(request: FetchRequest) -> Result<FetchResponse, FetchError> 
             read_file(&mut file, &request.initiator)?
         }
         "data" => {
-            // Bound the decoding allocation before accepting attacker input.
-            // Three URL bytes can encode one decoded byte. The fixed allowance
-            // covers the media type; decoded bytes are charged below.
-            if request.url.as_str().len() > request.initiator.remaining_bytes()
-                .saturating_mul(3).saturating_add(4096)
-            {
-                return Err(FetchError::Blocked("resource-byte-cap".into()));
-            }
             let data = DataUrl::process(request.url.as_str())
                 .map_err(|error| FetchError::InvalidRequest(format!("{error:?}")))?;
             let mime = data.mime_type().to_string();
-            let (body, _) = data.decode_to_vec()
-                .map_err(|error| FetchError::InvalidRequest(format!("{error:?}")))?;
-            request.initiator.charge(body.len()).map_err(FetchError::Blocked)?;
+            let mut body = BytesMut::new();
+            data.decode(|bytes| {
+                request.initiator.charge(bytes.len()).map_err(FetchError::Blocked)?;
+                body.extend_from_slice(bytes);
+                Ok::<(), FetchError>(())
+            }).map_err(|error| match error {
+                data_url::forgiving_base64::DecodeError::WriteError(error) => error,
+                data_url::forgiving_base64::DecodeError::InvalidBase64(error) => {
+                    FetchError::InvalidRequest(format!("{error:?}"))
+                }
+            })?;
             if let Ok(value) = mime.parse() { headers.insert("content-type", value); }
-            Bytes::from(body)
+            body.freeze()
         }
         scheme => return Err(FetchError::UnsupportedScheme(scheme.into())),
     };
