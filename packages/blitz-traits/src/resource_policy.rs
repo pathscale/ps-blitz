@@ -156,7 +156,6 @@ impl Initiator {
     }
 
     pub fn begin(&self, url: &Url) -> Result<(), String> {
-        self.check_url(url)?;
         let scope = self.scope().ok_or("resource-initiator-unknown")?;
         let mut usage = scope.usage.lock().unwrap_or_else(|error| error.into_inner());
         if usage.requests >= scope.policy.max_requests {
@@ -166,7 +165,8 @@ impl Initiator {
         if usage.requests == scope.policy.warn_requests {
             eprintln!("resource-request-warning: {} ({})", usage.requests, scope.url);
         }
-        Ok(())
+        drop(usage);
+        self.check_url(url)
     }
 
     /// Monotonic accounting includes redirects, failures and bytes from cache.
