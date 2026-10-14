@@ -2,6 +2,7 @@ use color::{palette::css::WHITE, parse_color};
 use dioxus_native::prelude::*;
 use dioxus_native::CustomWidgetAttr;
 use std::any::Any;
+use std::sync::Arc;
 
 use crate::{limits, Color, DemoMessage, DemoWidget, FEATURES, STYLES};
 
@@ -71,15 +72,17 @@ fn ColorControl(label: &'static str, color_str: Signal<String>) -> Element {
 
 #[component]
 fn SpinningCube(color: Memo<Color>) -> Element {
-    let (sender, demo_widget_attr) = use_hook(|| {
-        let demo_widget = DemoWidget::new();
-        let sender = demo_widget.sender();
+    let (target, demo_widget_attr) = use_hook(|| {
+        let wake = schedule_update();
+        let demo_widget = DemoWidget::new(move || wake());
+        let target = demo_widget.target();
         let attr = CustomWidgetAttr::new(demo_widget);
-        (sender, attr)
+        (target, attr)
     });
 
     use_effect(move || {
-        sender.send(DemoMessage::SetColor(color())).unwrap();
+        target.publish(Arc::new(DemoMessage::SetColor(color())))
+            .unwrap_or_else(|_| panic!("demo widget is attached"));
     });
 
     rsx!(
