@@ -59,6 +59,8 @@ pub struct DocumentConfig {
     /// document will carry this signal. Aborting it cancels every in-flight
     /// fetch tied to this document.
     pub abort_signal: Option<AbortSignal>,
+    /// Host receipt established before parsing or resource initiation.
+    pub teardown: Option<Arc<crate::release::Teardown>>,
     /// How deeply this document is nested within other documents
     /// (0 for a root document). Used to limit `<iframe>` nesting depth.
     pub subdocument_depth: usize,
