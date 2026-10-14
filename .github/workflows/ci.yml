@@ -64,6 +64,8 @@ jobs:
     runs-on: ubicloud-standard-8
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.91
@@ -83,6 +85,8 @@ jobs:
     runs-on: ubicloud-standard-8
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       # Restore the compiled dependency graph rather than rebuilding the
       # whole workspace from source on every run.
@@ -100,6 +104,8 @@ jobs:
     runs-on: ubicloud-standard-8
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       # Restore the compiled dependency graph rather than rebuilding the
       # whole workspace from source on every run.
@@ -129,6 +135,8 @@ jobs:
     runs-on: ubicloud-standard-2
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@cargo-deny
       - run: cargo deny check bans
@@ -152,6 +160,8 @@ jobs:
     runs-on: ubicloud-standard-8
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
@@ -176,6 +186,8 @@ jobs:
     runs-on: ubicloud-standard-8
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
@@ -194,6 +206,8 @@ jobs:
     runs-on: ubicloud-standard-8
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
@@ -224,6 +238,8 @@ jobs:
     runs-on: ubicloud-standard-8
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       # Restore the compiled dependency graph rather than rebuilding the
       # whole workspace from source on every run.
@@ -301,6 +317,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: install stable
         uses: dtolnay/rust-toolchain@master
         with:
@@ -356,6 +374,8 @@ jobs:
     runs-on: ubicloud-standard-8
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: oven-sh/setup-bun@v2
       - uses: Swatinem/rust-cache@v2
@@ -378,6 +398,7 @@ jobs:
       # engine, so the published binary drives whatever host it is given.
       - uses: actions/checkout@v5
         with:
+          persist-credentials: false
           repository: pathscale/ps-observability
           # blitz-control-protocol 0.5.3 and ps-qa 0.7.4, the versions izumo 0.4.1
           # and the chuzz ref below are built against.
@@ -388,6 +409,7 @@ jobs:
       # headless browser"; `chuzz-headless` replaced it, and it lives here.
       - uses: actions/checkout@v5
         with:
+          persist-credentials: false
           repository: pathscale/chuzz
           # The first chuzz that takes izumo rather than tauri-runtime-blitz
           # (pathscale/chuzz#48), so the izumo patch below reaches it.
@@ -395,6 +417,7 @@ jobs:
           path: .chuzz
       - uses: actions/checkout@v5
         with:
+          persist-credentials: false
           repository: pathscale/izumo
           # izumo 0.4.1, the first release under that name.
           ref: 908675a8fa5fb8e311ddb6010af647e98d7c6791
