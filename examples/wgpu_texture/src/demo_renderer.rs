@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: MIT
 use crate::Color;
 use anyrender::{PaintRef, PaintScene, ResourceId};
-use blitz_dom::node::ComputedStyles;
 use blitz_dom::Widget;
+use blitz_dom::node::ComputedStyles;
+use blitz_traits::handoff::{EventQueue, EventTarget};
 use peniko::kurbo::{Affine, Rect};
 use peniko::{Fill, ImageBrush, ImageSampler};
-use blitz_traits::handoff::{EventQueue, EventTarget};
 use std::sync::Arc;
 use std::time::Instant;
 use wgpu_context::DeviceHandle;
@@ -123,8 +123,8 @@ impl DemoWidget {
 
     fn process_messages(&mut self) {
         for msg in self.messages.take_pending() {
-            let msg = Arc::try_unwrap(msg)
-                .unwrap_or_else(|_| panic!("demo message has one consumer"));
+            let msg =
+                Arc::try_unwrap(msg).unwrap_or_else(|_| panic!("demo message has one consumer"));
             match msg {
                 DemoMessage::SetColor(color) => self.color = color,
             }

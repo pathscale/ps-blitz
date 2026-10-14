@@ -201,8 +201,8 @@ impl ApplicationHandler for DioxusNativeApplication {
 
     fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
         for event in self.inner.event_queue.take_pending() {
-            let event = Arc::try_unwrap(event)
-                .unwrap_or_else(|_| panic!("shell event has one consumer"));
+            let event =
+                Arc::try_unwrap(event).unwrap_or_else(|_| panic!("shell event has one consumer"));
             match event {
                 BlitzShellEvent::Embedder(event) => {
                     if let Some(event) = event.downcast_ref::<DioxusNativeEvent>() {

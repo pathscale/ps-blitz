@@ -22,6 +22,7 @@ use crate::{
 };
 use blitz_traits::devtools::DevtoolSettings;
 use blitz_traits::events::{BlitzScrollEvent, DomEvent, DomEventData, HitResult, UiEvent};
+use blitz_traits::handoff::{EventQueue, EventTarget};
 use blitz_traits::navigation::{DummyNavigationProvider, NavigationProvider};
 use blitz_traits::net::{AbortSignal, DummyNetProvider, NetProvider, Request, RequestDestination};
 use blitz_traits::node_id::NodeId;
@@ -40,7 +41,6 @@ use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use blitz_traits::handoff::{EventQueue, EventTarget};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLockReadGuard, RwLockWriteGuard};
 use std::task::{Context as TaskContext, Waker};
 use style::Atom;
@@ -2739,8 +2739,8 @@ impl BaseDocument {
 
     pub fn handle_messages(&mut self) {
         for msg in self.rx.take_pending() {
-            let msg = Arc::try_unwrap(msg)
-                .unwrap_or_else(|_| panic!("document event has one consumer"));
+            let msg =
+                Arc::try_unwrap(msg).unwrap_or_else(|_| panic!("document event has one consumer"));
             self.handle_message(msg);
         }
     }

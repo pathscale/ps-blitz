@@ -1,8 +1,8 @@
 use blitz_dom::DocumentConfig;
 use blitz_html::HtmlDocument;
-use blitz_shell::{create_default_event_loop, BlitzApplication, BlitzShellProxy, WindowConfig};
+use blitz_shell::{BlitzApplication, BlitzShellProxy, WindowConfig, create_default_event_loop};
 
-use crate::{limits, DemoWidget, FEATURES, STYLES};
+use crate::{DemoWidget, FEATURES, STYLES, limits};
 
 #[cfg(feature = "vello")]
 /// Create renderer

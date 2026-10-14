@@ -1,7 +1,7 @@
 //! Loading of `<iframe>` elements into sub-documents.
 
-use std::sync::Arc;
 use blitz_traits::handoff::EventTarget;
+use std::sync::Arc;
 
 use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use blitz_traits::net::{AbortController, AbortSignal, RequestDestination, Url};

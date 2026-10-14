@@ -1,11 +1,11 @@
-use std::sync::Arc;
 use color::{palette::css::WHITE, parse_color};
-use dioxus_native::prelude::*;
-use dioxus_native::prelude::dioxus_core::schedule_update;
 use dioxus_native::CustomWidgetAttr;
+use dioxus_native::prelude::dioxus_core::schedule_update;
+use dioxus_native::prelude::*;
 use std::any::Any;
+use std::sync::Arc;
 
-use crate::{limits, Color, DemoMessage, DemoWidget, FEATURES, STYLES};
+use crate::{Color, DemoMessage, DemoWidget, FEATURES, STYLES, limits};
 
 pub fn launch_dx_native() {
     let config: Vec<Box<dyn Any>> = vec![Box::new(FEATURES), Box::new(limits())];
@@ -82,7 +82,8 @@ fn SpinningCube(color: Memo<Color>) -> Element {
     });
 
     use_effect(move || {
-        target.publish(Arc::new(DemoMessage::SetColor(color())))
+        target
+            .publish(Arc::new(DemoMessage::SetColor(color())))
             .unwrap_or_else(|_| panic!("demo widget is attached"));
     });
 
