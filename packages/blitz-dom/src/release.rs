@@ -46,6 +46,8 @@ impl Teardown {
         let mut children_ready = true;
         for child in self.children.lock().unwrap().iter() { children_ready &= child.poll_release(cx).is_ready(); }
         if children_ready && self.retiring.load(Ordering::Acquire) && self.owners.load(Ordering::Acquire) == 0 {
+            let readers = std::mem::take(&mut *self.readers.lock().unwrap());
+            drop(readers);
             Poll::Ready(())
         } else { Poll::Pending }
     }

@@ -2531,6 +2531,7 @@ impl BaseDocument {
 
         // Create new node
         let new_node_id = self.create_node(data);
+        self.inherit_stash_classification(node_id, new_node_id);
         self.nodes[new_node_id].owner_document = owner_document;
         self.nodes[new_node_id].markup = markup;
         self.nodes[new_node_id]
