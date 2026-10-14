@@ -60,7 +60,7 @@ impl BaseDocument {
             attr.name.ns.as_ref().is_empty() && match attr.name.local.as_ref() {
                 "data-chuzz-sensitive" => true,
                 "autocomplete" => forbidden_autocomplete(&attr.value),
-                "type" => ["password", "file", "hidden"].iter().any(|kind| attr.value.eq_ignore_ascii_case(kind)),
+                "type" => ["password", "file", "hidden"].iter().any(|kind| str::eq_ignore_ascii_case(attr.value.as_ref(), kind)),
                 _ => false,
             }
         });
@@ -72,7 +72,7 @@ impl BaseDocument {
     /// Mutations visit only the affected subtree and associated form controls.
     pub(crate) fn note_stash_subtree(&mut self, id: NodeId) {
         if self.stash_policy.no_stash { return; }
-        let associated: Vec<_> = self.get_node(id).filter(|node| node.local_name() == "form")
+        let associated: Vec<_> = self.get_node(id).filter(|node| node.element_data().is_some_and(|element| element.name.local.as_ref() == "form"))
             .and_then(|node| node.attr(crate::local_name!("id"))).map_or_else(Vec::new, |name| {
                 self.nodes.iter().filter_map(|(control, node)| {
                     (node.attr(crate::local_name!("form")) == Some(name) || self.controls_to_form.get(&control) == Some(&id)).then_some(control)
