@@ -235,6 +235,11 @@ async fn handshake(
             "peer negotiated an unsupported ALPN protocol".to_owned(),
         ));
     }
+    #[cfg(feature = "sandbox2-witness")]
+    if std::env::var("SANDBOX2_TLS_DEFECT").ok().as_deref() == Some("chacha-load") {
+        // Plant the acceptance defect after a real successful handshake.
+        return Err(Error::TlsPolicy(TlsPolicyError::CipherSuite));
+    }
     Ok(Box::new(tls))
 }
 
