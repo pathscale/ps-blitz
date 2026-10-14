@@ -9,6 +9,7 @@ use serde::{
 use std::sync::{Arc, Mutex};
 use std::{ops::Deref, path::PathBuf};
 pub use url::Url;
+pub use crate::resource_policy::{Credentials, Initiator, ResourcePolicy, ResourceScope};
 
 /// A cookie jar used by network providers to supply request cookies and store
 /// cookies received in response headers.
@@ -25,6 +26,11 @@ pub trait CookieJar: Send + Sync + 'static {
 /// This may be over the network via http(s), via the filesystem, or some other method.
 pub trait NetProvider: Send + Sync + 'static {
     fn fetch(&self, doc_id: usize, request: Request, handler: Box<dyn NetHandler>);
+
+    /// Bind a child browsing context. srcdoc inherits the existing principal.
+    fn for_child_document(&self, _url: Url) -> Option<Arc<dyn NetProvider>> {
+        None
+    }
 
     /// Whether this provider is a no-op (e.g. `DummyNetProvider`) that will never
     /// deliver resources. When true, callers must NOT register resources as
@@ -100,6 +106,9 @@ pub struct Request {
     pub body: Body,
     pub signal: Option<AbortSignal>,
     pub destination: RequestDestination,
+    /// Browser-issued principal. Constructors fail closed until it is supplied.
+    pub initiator: Initiator,
+    pub credentials: Credentials,
 }
 impl Request {
     /// A get request to the specified Url and an empty body
@@ -112,7 +121,14 @@ impl Request {
             body: Body::Empty,
             signal: None,
             destination: RequestDestination::default(),
+            initiator: Initiator::default(),
+            credentials: Credentials::default(),
         }
+    }
+
+    pub fn initiator(mut self, initiator: Initiator) -> Self {
+        self.initiator = initiator;
+        self
     }
 
     pub fn destination(mut self, d: RequestDestination) -> Self {

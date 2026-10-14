@@ -72,6 +72,8 @@ pub struct FetchRequest {
     pub body: Option<Bytes>,
     /// Cancellation shared with the request's issuer.
     pub signal: Option<crate::net::AbortSignal>,
+    pub initiator: crate::resource_policy::Initiator,
+    pub credentials: crate::resource_policy::Credentials,
 }
 
 impl FetchRequest {
@@ -83,7 +85,14 @@ impl FetchRequest {
             headers: HeaderMap::new(),
             body: None,
             signal: None,
+            initiator: crate::resource_policy::Initiator::default(),
+            credentials: crate::resource_policy::Credentials::default(),
         }
+    }
+
+    pub fn initiator(mut self, initiator: crate::resource_policy::Initiator) -> Self {
+        self.initiator = initiator;
+        self
     }
 
     /// Attach the signal owned by this request's issuer.
