@@ -163,6 +163,7 @@ thread_local! {
 
 /// Record one string crossing. Gated on the same switch as [`Timed`], so a
 /// build that is not profiling pays one relaxed atomic load and nothing else.
+#[cfg_attr(not(feature = "boa"), allow(dead_code))]
 pub(crate) fn record_boundary_string(bytes: usize) {
     if !blitz_traits::profiling::deep_profiling_enabled() {
         return;
@@ -334,6 +335,7 @@ pub struct Timed {
 
 #[cfg(feature = "dom-stats")]
 impl Timed {
+    #[cfg(feature = "boa")]
     #[must_use]
     pub(crate) fn new(ctx: &crate::state::DomCtx, label: &'static str) -> Self {
         Self {
@@ -415,6 +417,7 @@ pub struct Timed;
 
 #[cfg(not(feature = "dom-stats"))]
 impl Timed {
+    #[cfg(feature = "boa")]
     #[must_use]
     #[inline(always)]
     pub(crate) fn new(_ctx: &crate::state::DomCtx, _label: &'static str) -> Self {
@@ -434,7 +437,7 @@ mod tests {
     /// The serial lock, and a consumer holding sampling open for the test.
     ///
     /// Both are returned because both have to outlive the body: recording now
-    /// needs permission *and* an attached consumer, so a profiling guard
+    /// needs permission and an attached consumer, so a profiling guard
     /// created and dropped inside this helper would stop collection before the
     /// caller records anything.
     struct TestCapture {
@@ -578,3 +581,4 @@ mod tests {
         assert!(latest_script_stats().is_none());
     }
 }
+
