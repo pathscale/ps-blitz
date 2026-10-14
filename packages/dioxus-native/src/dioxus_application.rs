@@ -41,7 +41,7 @@ pub struct DioxusNativeApplication {
 impl DioxusNativeApplication {
     pub fn new(
         proxy: BlitzShellProxy,
-        event_queue: std::sync::mpsc::Receiver<BlitzShellEvent>,
+        event_queue: blitz_shell::BlitzShellEventQueue,
         config: WindowConfig<DioxusNativeWindowRenderer>,
     ) -> Self {
         Self {
@@ -200,7 +200,9 @@ impl ApplicationHandler for DioxusNativeApplication {
     }
 
     fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
-        while let Ok(event) = self.inner.event_queue.try_recv() {
+        for event in self.inner.event_queue.take_pending() {
+            let event = Arc::try_unwrap(event)
+                .unwrap_or_else(|_| panic!("shell event has one consumer"));
             match event {
                 BlitzShellEvent::Embedder(event) => {
                     if let Some(event) = event.downcast_ref::<DioxusNativeEvent>() {
