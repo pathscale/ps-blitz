@@ -115,6 +115,7 @@ pub struct View<Rend: WindowRenderer> {
     pub active_events: Arc<AtomicRefCell<Vec<BlitzPointerEvent>>>,
     pub animation_timer: Option<Instant>,
     pub is_visible: bool,
+    pub submitted_paint: u64,
     pub safe_area_insets: PhysicalInsets<u32>,
 
     /// Whether a platform redraw has already been requested and has not yet
@@ -325,6 +326,7 @@ impl<Rend: WindowRenderer> View<Rend> {
             resize_timer_scheduled: false,
             pointer_pos: Default::default(),
             is_visible: winit_window.is_visible().unwrap_or(true),
+            submitted_paint: 0,
             redraw_pending: std::cell::Cell::new(false),
             frame_stats: FrameStats::new(&*winit_window),
             #[cfg(feature = "accessibility")]
@@ -562,6 +564,12 @@ impl<Rend: WindowRenderer> View<Rend> {
             self.renderer.unregister_resource(id);
         }
 
+        #[cfg(feature = "custom-widget")]
+        for retirement in inner.take_retired_resources() {
+            for id in &retirement.resources { self.renderer.unregister_resource(*id); }
+            drop(retirement);
+        }
+
         let (width, height) = inner.viewport().window_size;
         let scale = inner.viewport().scale_f64();
         let animation_pacing = inner.animation_pacing();
@@ -576,7 +584,7 @@ impl<Rend: WindowRenderer> View<Rend> {
 
         let mut paint_time = Duration::ZERO;
         let render_started = profiling.then(Instant::now);
-        let committed = !is_blocked && is_visible;
+        let committed = !is_blocked && is_visible && self.renderer.is_active();
         if committed {
             self.renderer.render(|scene| {
                 let paint_started = profiling.then(Instant::now);
@@ -598,6 +606,7 @@ impl<Rend: WindowRenderer> View<Rend> {
             .saturating_sub(paint_time);
 
         drop(inner);
+        if committed { self.submitted_paint = self.submitted_paint.saturating_add(1); }
 
         if profiling {
             self.frame_stats

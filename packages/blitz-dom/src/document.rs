@@ -511,6 +511,10 @@ pub struct BaseDocument {
     pub page_frozen: bool,
     pub page_retiring: bool,
     pub was_discarded: bool,
+    pub paint_revision: std::cell::Cell<u64>,
+    pub stash_paint: bool,
+    #[cfg(feature = "custom-widget")]
+    retired_resources: Vec<crate::release::ResourceRetirement>,
     /// Load state (abort controller and in-flight request id) for each
     /// `<iframe>` element whose sub-document is loaded automatically
     pub(crate) iframe_loads: HashMap<NodeId, crate::iframe::IframeLoad>,
@@ -798,6 +802,10 @@ impl BaseDocument {
             page_frozen: false,
             page_retiring: false,
             was_discarded: false,
+            paint_revision: std::cell::Cell::new(0),
+            stash_paint: false,
+            #[cfg(feature = "custom-widget")]
+            retired_resources: Vec::new(),
             iframe_loads: HashMap::new(),
 
             #[cfg(feature = "custom-widget")]
@@ -1270,15 +1278,44 @@ impl BaseDocument {
         Some(document)
     }
 
-    pub fn remove_sub_document(&mut self, node_id: NodeId) {
-        self.nodes[node_id]
-            .element_data_mut()
-            .unwrap()
-            .remove_sub_document();
-        self.sub_document_nodes.remove(&node_id);
-        if let Some(load) = self.iframe_loads.remove(&node_id) {
-            load.abort_controller.abort();
+    pub fn retire_sub_document(&mut self, node_id: NodeId) -> Option<Arc<crate::release::Teardown>> {
+        let mut document = self.take_sub_document(node_id)?;
+        document.prepare_teardown();
+        #[cfg(feature = "custom-widget")]
+        {
+            let receipt = Arc::clone(&document.inner().teardown);
+            let resources = document.inner_mut().retire_render_resources();
+            if !resources.is_empty() {
+                self.retired_resources.push(crate::release::ResourceRetirement { resources, lease: receipt.lease() });
+            }
         }
+        Some(document.dispose())
+    }
+
+    #[cfg(feature = "custom-widget")]
+    fn retire_render_resources(&mut self) -> Vec<anyrender::ResourceId> {
+        let mut resources = self.take_pending_resource_deallocations();
+        for retirement in self.retired_resources.drain(..) { resources.extend(retirement.resources); }
+        for id in self.custom_widget_nodes.iter().copied() {
+            if let Some(data) = self.nodes.get_mut(id).and_then(|node| node.element_data_mut()).and_then(|el| el.custom_widget_data_mut()) {
+                resources.append(&mut data.active_resource_ids);
+            }
+        }
+        for id in self.sub_document_nodes.iter().copied() {
+            if let Some(document) = self.nodes.get_mut(id).and_then(|node| node.subdoc_mut()) {
+                resources.extend(document.inner_mut().retire_render_resources());
+            }
+        }
+        resources
+    }
+
+    #[cfg(feature = "custom-widget")]
+    pub fn take_retired_resources(&mut self) -> Vec<crate::release::ResourceRetirement> {
+        std::mem::take(&mut self.retired_resources)
+    }
+
+    pub fn remove_sub_document(&mut self, node_id: NodeId) {
+        let _ = self.retire_sub_document(node_id);
     }
 
     /// Poll all sub-documents (see [`Document::poll`]), allowing them to make progress
