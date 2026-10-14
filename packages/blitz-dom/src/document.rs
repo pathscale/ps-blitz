@@ -135,6 +135,7 @@ pub trait Document: Any + 'static {
 
     /// Update the [`Document`] in response to a [`UiEvent`] (click, keypress, etc)
     fn handle_ui_event(&mut self, event: UiEvent) {
+        if self.inner().page_frozen || self.inner().page_retiring || self.inner().page_input_blocked { return; }
         let mut doc = self.inner_mut();
         let mut driver = EventDriver::new(&mut *doc, NoopEventHandler);
         driver.handle_ui_event(event);
@@ -174,7 +175,7 @@ pub trait Document: Any + 'static {
 
     fn set_page_visible(&mut self, visible: bool) { self.inner_mut().page_visible = visible; }
     fn freeze(&mut self) { self.inner_mut().page_frozen = true; }
-    fn finish_restore(&mut self) {}
+    fn finish_restore(&mut self) { self.inner_mut().page_input_blocked = false; }
     fn resume(&mut self) { self.inner_mut().page_frozen = false; }
 
     /// Get the [`Document`]'s id
@@ -510,6 +511,7 @@ pub struct BaseDocument {
     _dom_lease: crate::release::ReleaseLease,
     pub page_visible: bool,
     pub page_frozen: bool,
+    pub page_input_blocked: bool,
     pub page_retiring: bool,
     pub was_discarded: bool,
     pub paint_revision: std::cell::Cell<u64>,
@@ -802,6 +804,7 @@ impl BaseDocument {
             _dom_lease: teardown.lease(),
             page_visible: false,
             page_frozen: false,
+            page_input_blocked: false,
             page_retiring: false,
             was_discarded: false,
             paint_revision: std::cell::Cell::new(0),
