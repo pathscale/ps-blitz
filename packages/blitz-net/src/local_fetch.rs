@@ -5,7 +5,10 @@ use data_url::DataUrl;
 use std::io::Read;
 
 pub(crate) fn fetch(request: FetchRequest) -> Result<FetchResponse, FetchError> {
-    request.initiator.check_url(&request.url).map_err(FetchError::Blocked)?;
+    request
+        .initiator
+        .check_url(&request.url)
+        .map_err(FetchError::Blocked)?;
     let mut headers = HeaderMap::new();
     let body = match request.url.scheme() {
         "file" => {
@@ -22,21 +25,29 @@ pub(crate) fn fetch(request: FetchRequest) -> Result<FetchResponse, FetchError> 
             let mime = data.mime_type().to_string();
             let mut body = BytesMut::new();
             data.decode(|bytes| {
-                request.initiator.charge(bytes.len()).map_err(FetchError::Blocked)?;
+                request
+                    .initiator
+                    .charge(bytes.len())
+                    .map_err(FetchError::Blocked)?;
                 body.extend_from_slice(bytes);
                 Ok::<(), FetchError>(())
-            }).map_err(|error| match error {
+            })
+            .map_err(|error| match error {
                 data_url::forgiving_base64::DecodeError::WriteError(error) => error,
                 data_url::forgiving_base64::DecodeError::InvalidBase64(error) => {
                     FetchError::InvalidRequest(format!("{error:?}"))
                 }
             })?;
-            if let Ok(value) = mime.parse() { headers.insert("content-type", value); }
+            if let Ok(value) = mime.parse() {
+                headers.insert("content-type", value);
+            }
             body.freeze()
         }
         scheme => return Err(FetchError::UnsupportedScheme(scheme.into())),
     };
-    Ok(FetchResponse::new(request.url, StatusCode::OK).headers(headers).body(body))
+    Ok(FetchResponse::new(request.url, StatusCode::OK)
+        .headers(headers)
+        .body(body))
 }
 
 fn read_file(file: &mut std::fs::File, initiator: &Initiator) -> Result<Bytes, FetchError> {
@@ -45,10 +56,13 @@ fn read_file(file: &mut std::fs::File, initiator: &Initiator) -> Result<Bytes, F
         let capacity = initiator.remaining_bytes().clamp(1, 16 * 1024);
         let start = body.len();
         body.resize(start + capacity, 0);
-        let read = file.read(&mut body[start..])
+        let read = file
+            .read(&mut body[start..])
             .map_err(|error| FetchError::Network(error.to_string()))?;
         body.truncate(start + read);
         initiator.charge(read).map_err(FetchError::Blocked)?;
-        if read == 0 { return Ok(body.freeze()); }
+        if read == 0 {
+            return Ok(body.freeze());
+        }
     }
 }

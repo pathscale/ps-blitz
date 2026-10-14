@@ -1,5 +1,6 @@
 //! Abstractions of networking so that custom networking implementations can be provided
 
+pub use crate::resource_policy::{Credentials, Initiator, ResourcePolicy, ResourceScope};
 pub use bytes::Bytes;
 pub use http::{self, HeaderMap, HeaderValue, Method};
 use serde::{
@@ -9,7 +10,6 @@ use serde::{
 use std::sync::{Arc, Mutex};
 use std::{ops::Deref, path::PathBuf};
 pub use url::Url;
-pub use crate::resource_policy::{Credentials, Initiator, ResourcePolicy, ResourceScope};
 
 /// A cookie jar used by network providers to supply request cookies and store
 /// cookies received in response headers.

@@ -132,7 +132,9 @@ impl PlatformHost {
 
     /// Bind the browser-issued principal, including its held opaque origin.
     pub fn with_initiator(mut self, initiator: Initiator) -> Self {
-        if let Some(origin) = initiator.origin() { self.origin = origin.clone(); }
+        if let Some(origin) = initiator.origin() {
+            self.origin = origin.clone();
+        }
         self.initiator = initiator;
         self
     }

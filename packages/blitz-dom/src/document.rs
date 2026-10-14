@@ -135,7 +135,10 @@ pub trait Document: Any + 'static {
 
     /// Update the [`Document`] in response to a [`UiEvent`] (click, keypress, etc)
     fn handle_ui_event(&mut self, event: UiEvent) {
-        if self.inner().page_frozen || self.inner().page_retiring || self.inner().page_input_blocked { return; }
+        if self.inner().page_frozen || self.inner().page_retiring || self.inner().page_input_blocked
+        {
+            return;
+        }
         let mut doc = self.inner_mut();
         let mut driver = EventDriver::new(&mut *doc, NoopEventHandler);
         driver.handle_ui_event(event);
@@ -173,10 +176,18 @@ pub trait Document: Any + 'static {
         receipt
     }
 
-    fn set_page_visible(&mut self, visible: bool) { self.inner_mut().page_visible = visible; }
-    fn freeze(&mut self) { self.inner_mut().page_frozen = true; }
-    fn finish_restore(&mut self) { self.inner_mut().page_input_blocked = false; }
-    fn resume(&mut self) { self.inner_mut().page_frozen = false; }
+    fn set_page_visible(&mut self, visible: bool) {
+        self.inner_mut().page_visible = visible;
+    }
+    fn freeze(&mut self) {
+        self.inner_mut().page_frozen = true;
+    }
+    fn finish_restore(&mut self) {
+        self.inner_mut().page_input_blocked = false;
+    }
+    fn resume(&mut self) {
+        self.inner_mut().page_frozen = false;
+    }
 
     /// Get the [`Document`]'s id
     fn id(&self) -> usize {
@@ -654,7 +665,9 @@ impl BaseDocument {
         static ID_GENERATOR: AtomicUsize = AtomicUsize::new(1);
 
         let id = ID_GENERATOR.fetch_add(1, Ordering::SeqCst);
-        let teardown = config.teardown.unwrap_or_else(crate::release::Teardown::new);
+        let teardown = config
+            .teardown
+            .unwrap_or_else(crate::release::Teardown::new);
 
         let font_ctx = config
             .font_ctx
@@ -1257,32 +1270,51 @@ impl BaseDocument {
     }
 
     pub fn prepare_teardown(&mut self) {
-        if self.page_retiring { return; }
+        if self.page_retiring {
+            return;
+        }
         self.page_retiring = true;
-        if let Some(signal) = &self.abort_signal { blitz_traits::net::AbortController { signal: signal.clone() }.abort(); }
+        if let Some(signal) = &self.abort_signal {
+            blitz_traits::net::AbortController {
+                signal: signal.clone(),
+            }
+            .abort();
+        }
         self.page_visible = false;
         self.page_frozen = true;
         let nodes: Vec<_> = self.sub_document_nodes.iter().copied().collect();
         let mut children = Vec::new();
         for id in nodes {
-            if let Some(receipt) = self.retire_sub_document(id) { children.push(receipt); }
+            if let Some(receipt) = self.retire_sub_document(id) {
+                children.push(receipt);
+            }
         }
         #[cfg(feature = "custom-widget")]
         self.destroy_surfaces();
-        for (_, load) in std::mem::take(&mut self.iframe_loads) { load.abort_controller.abort(); }
+        for (_, load) in std::mem::take(&mut self.iframe_loads) {
+            load.abort_controller.abort();
+        }
         self.teardown.retire(children);
     }
 
     /// Detach the complete owner, rather than leaving a frozen runtime mounted.
     pub fn take_sub_document(&mut self, node_id: NodeId) -> Option<Box<dyn Document>> {
         let element = self.nodes.get_mut(node_id)?.element_data_mut()?;
-        let crate::node::SpecialElementData::SubDocument(document) = element.special_data.take() else { return None; };
+        let crate::node::SpecialElementData::SubDocument(document) = element.special_data.take()
+        else {
+            return None;
+        };
         self.sub_document_nodes.remove(&node_id);
-        if let Some(load) = self.iframe_loads.remove(&node_id) { load.abort_controller.abort(); }
+        if let Some(load) = self.iframe_loads.remove(&node_id) {
+            load.abort_controller.abort();
+        }
         Some(document)
     }
 
-    pub fn retire_sub_document(&mut self, node_id: NodeId) -> Option<Arc<crate::release::Teardown>> {
+    pub fn retire_sub_document(
+        &mut self,
+        node_id: NodeId,
+    ) -> Option<Arc<crate::release::Teardown>> {
         let mut document = self.take_sub_document(node_id)?;
         document.prepare_teardown();
         #[cfg(feature = "custom-widget")]
@@ -1291,25 +1323,40 @@ impl BaseDocument {
             let (resources, mut leases) = document.inner_mut().retire_render_resources();
             if !resources.is_empty() {
                 leases.push(receipt.lease());
-                self.retired_resources.push(crate::release::ResourceRetirement { resources, leases });
+                self.retired_resources
+                    .push(crate::release::ResourceRetirement { resources, leases });
             }
         }
         Some(document.dispose())
     }
 
     #[cfg(feature = "custom-widget")]
-    fn retire_render_resources(&mut self) -> (Vec<anyrender::ResourceId>, Vec<crate::release::ReleaseLease>) {
+    fn retire_render_resources(
+        &mut self,
+    ) -> (
+        Vec<anyrender::ResourceId>,
+        Vec<crate::release::ReleaseLease>,
+    ) {
         let mut resources = self.take_pending_resource_deallocations();
         let mut leases = Vec::new();
-        for retirement in self.retired_resources.drain(..) { resources.extend(retirement.resources); leases.extend(retirement.leases); }
+        for retirement in self.retired_resources.drain(..) {
+            resources.extend(retirement.resources);
+            leases.extend(retirement.leases);
+        }
         for id in self.custom_widget_nodes.iter().copied() {
-            if let Some(data) = self.nodes.get_mut(id).and_then(|node| node.element_data_mut()).and_then(|el| el.custom_widget_data_mut()) {
+            if let Some(data) = self
+                .nodes
+                .get_mut(id)
+                .and_then(|node| node.element_data_mut())
+                .and_then(|el| el.custom_widget_data_mut())
+            {
                 resources.append(&mut data.active_resource_ids);
             }
         }
         for id in self.sub_document_nodes.iter().copied() {
             if let Some(document) = self.nodes.get_mut(id).and_then(|node| node.subdoc_mut()) {
-                let (child_resources, child_leases) = document.inner_mut().retire_render_resources();
+                let (child_resources, child_leases) =
+                    document.inner_mut().retire_render_resources();
                 resources.extend(child_resources);
                 leases.extend(child_leases);
             }
@@ -4434,7 +4481,9 @@ impl BaseDocument {
     /// Geometry, ancestor clipping and computed visibility, in CSS viewport units.
     pub fn surface_on_screen(&self, id: NodeId) -> bool {
         use style::computed_values::visibility::T as Visibility;
-        let Some(rect) = self.get_client_bounding_rect(id) else { return false; };
+        let Some(rect) = self.get_client_bounding_rect(id) else {
+            return false;
+        };
         let viewport = self.viewport();
         let scale = viewport.scale_f64();
         let mut x0 = rect.x.max(0.0);
@@ -4443,13 +4492,29 @@ impl BaseDocument {
         let mut y1 = (rect.y + rect.height).min(viewport.window_size.1 as f64 / scale);
         let mut cursor = Some(id);
         while let Some(node_id) = cursor {
-            let Some(node) = self.get_node(node_id) else { return false; };
-            if matches!(node.style().display, taffy::Display::None) { return false; }
+            let Some(node) = self.get_node(node_id) else {
+                return false;
+            };
+            if matches!(node.style().display, taffy::Display::None) {
+                return false;
+            }
             if let Some(styles) = node.primary_styles() {
-                if styles.clone_visibility() != Visibility::Visible || styles.get_effects().opacity == 0.0 { return false; }
-                if node_id != id && let Some(clip) = self.get_client_bounding_rect(node_id) {
-                    if styles.get_box().overflow_x != Overflow::Visible { x0 = x0.max(clip.x); x1 = x1.min(clip.x + clip.width); }
-                    if styles.get_box().overflow_y != Overflow::Visible { y0 = y0.max(clip.y); y1 = y1.min(clip.y + clip.height); }
+                if styles.clone_visibility() != Visibility::Visible
+                    || styles.get_effects().opacity == 0.0
+                {
+                    return false;
+                }
+                if node_id != id
+                    && let Some(clip) = self.get_client_bounding_rect(node_id)
+                {
+                    if styles.get_box().overflow_x != Overflow::Visible {
+                        x0 = x0.max(clip.x);
+                        x1 = x1.min(clip.x + clip.width);
+                    }
+                    if styles.get_box().overflow_y != Overflow::Visible {
+                        y0 = y0.max(clip.y);
+                        y1 = y1.min(clip.y + clip.height);
+                    }
                 }
             }
             cursor = node.parent;

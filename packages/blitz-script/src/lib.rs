@@ -38,14 +38,10 @@
 
 #![allow(clippy::collapsible_if)]
 
+mod application_document;
 #[cfg(feature = "debug-control")]
 mod debug_control;
-mod application_document;
 mod document;
-#[cfg(feature = "ekojit")]
-mod native;
-#[cfg(feature = "ekojit")]
-mod native_document;
 mod docwrite;
 mod dom;
 pub mod dom_exception;
@@ -57,6 +53,10 @@ mod fonts;
 mod job_budget;
 pub mod media;
 mod module;
+#[cfg(feature = "ekojit")]
+mod native;
+#[cfg(feature = "ekojit")]
+mod native_document;
 mod raster;
 mod runtime;
 pub mod script_stats;
@@ -69,18 +69,20 @@ pub use boa_engine;
 pub use boa_runtime;
 
 /// Drop-context collection on its current owner thread.
-pub fn collect_retired_realms() { boa_gc::force_collect(); }
+pub fn collect_retired_realms() {
+    boa_gc::force_collect();
+}
 
+pub use application_document::{ApplicationDocument, ScriptBackend};
 #[cfg(feature = "debug-control")]
 pub use debug_control::DebugController;
 pub use document::ScriptDocument;
-pub use application_document::{ApplicationDocument, ScriptBackend};
+#[cfg(feature = "ekojit")]
+pub use ekojit::page::{NativeReceipt, PageError, PageSource};
+pub use fetch::{DefaultScriptFetcher, FetchError, ScriptFetcher};
 #[cfg(feature = "ekojit")]
 pub use native::NativePageDefect;
 #[cfg(feature = "ekojit")]
 pub use native_document::EkojitDocument;
-#[cfg(feature = "ekojit")]
-pub use ekojit::page::{NativeReceipt, PageError, PageSource};
-pub use fetch::{DefaultScriptFetcher, FetchError, ScriptFetcher};
 pub use raster::raster_image_for_attribute;
 pub use runtime::{DiagnosticBatch, DiagnosticEntry, DiagnosticStreamBatch};

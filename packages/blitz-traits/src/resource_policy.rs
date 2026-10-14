@@ -81,8 +81,7 @@ impl ResourcePolicy {
         let scope = navigation.scope();
         let file_access = matches!(navigation, Initiator::Browser(_))
             && scope.is_some_and(|scope| scope.file_access && scope.url == url);
-        let private_network = local_host(&url)
-            && scope.is_some_and(|scope| scope.private_network);
+        let private_network = local_host(&url) && scope.is_some_and(|scope| scope.private_network);
         Initiator::Document(Arc::new(ResourceScope {
             origin: OriginKey::for_document(&url),
             url,
@@ -127,9 +126,7 @@ impl Initiator {
         if url.scheme() == "file" && !scope.file_access {
             return Err("resource-file-origin".into());
         }
-        if matches!(url.scheme(), "http" | "https")
-            && local_host(url) && !scope.private_network
-        {
+        if matches!(url.scheme(), "http" | "https") && local_host(url) && !scope.private_network {
             return Err("resource-private-address".into());
         }
         Ok(())
@@ -149,21 +146,29 @@ impl Initiator {
     }
 
     pub fn allows_credentials(&self, url: &Url, mode: Credentials) -> bool {
-        let Some(scope) = self.scope() else { return false; };
-        mode != Credentials::Omit && (scope.origin.is_persistable()
-            && scope.origin == OriginKey::for_document(url)
-            || mode == Credentials::Include && scope.policy.cross_origin_credentials)
+        let Some(scope) = self.scope() else {
+            return false;
+        };
+        mode != Credentials::Omit
+            && (scope.origin.is_persistable() && scope.origin == OriginKey::for_document(url)
+                || mode == Credentials::Include && scope.policy.cross_origin_credentials)
     }
 
     pub fn begin(&self, url: &Url) -> Result<(), String> {
         let scope = self.scope().ok_or("resource-initiator-unknown")?;
-        let mut usage = scope.usage.lock().unwrap_or_else(|error| error.into_inner());
+        let mut usage = scope
+            .usage
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if usage.requests >= scope.policy.max_requests {
             return Err("resource-request-cap".into());
         }
         usage.requests += 1;
         if usage.requests == scope.policy.warn_requests {
-            eprintln!("resource-request-warning: {} ({})", usage.requests, scope.url);
+            eprintln!(
+                "resource-request-warning: {} ({})",
+                usage.requests, scope.url
+            );
         }
         drop(usage);
         self.check_url(url)
@@ -173,7 +178,10 @@ impl Initiator {
     /// Workers and child documents share this counter with their owner.
     pub fn charge(&self, bytes: usize) -> Result<(), String> {
         let scope = self.scope().ok_or("resource-initiator-unknown")?;
-        let mut usage = scope.usage.lock().unwrap_or_else(|error| error.into_inner());
+        let mut usage = scope
+            .usage
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let bytes = bytes as u64;
         if bytes > scope.policy.max_bytes.saturating_sub(usage.bytes) {
             return Err("resource-byte-cap".into());
@@ -188,7 +196,10 @@ impl Initiator {
 
     pub fn remaining_bytes(&self) -> usize {
         self.scope().map_or(0, |scope| {
-            let usage = scope.usage.lock().unwrap_or_else(|error| error.into_inner());
+            let usage = scope
+                .usage
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             usize::try_from(scope.policy.max_bytes.saturating_sub(usage.bytes))
                 .unwrap_or(usize::MAX)
         })
@@ -203,8 +214,10 @@ fn local_host(url: &Url) -> bool {
         Some(url::Host::Ipv6(ip)) => private_address(ip.into()),
         Some(url::Host::Domain(host)) => {
             let host = host.trim_end_matches('.').to_ascii_lowercase();
-            host == "localhost" || host.ends_with(".localhost")
-                || host == "local" || host.ends_with(".local")
+            host == "localhost"
+                || host.ends_with(".localhost")
+                || host == "local"
+                || host.ends_with(".local")
         }
         None => false,
     }
@@ -214,12 +227,19 @@ pub fn private_address(address: IpAddr) -> bool {
     match address {
         IpAddr::V4(ip) => {
             let [a, b, _, _] = ip.octets();
-            a == 0 || a == 127 || a == 10 || a == 172 && (16..=31).contains(&b)
-                || a == 192 && b == 168 || a == 169 && b == 254
-                || a == 100 && (64..=127).contains(&b) || a >= 224
+            a == 0
+                || a == 127
+                || a == 10
+                || a == 172 && (16..=31).contains(&b)
+                || a == 192 && b == 168
+                || a == 169 && b == 254
+                || a == 100 && (64..=127).contains(&b)
+                || a >= 224
         }
         IpAddr::V6(ip) => {
-            if let Some(v4) = ip.to_ipv4_mapped() { return private_address(v4.into()); }
+            if let Some(v4) = ip.to_ipv4_mapped() {
+                return private_address(v4.into());
+            }
             let octets = ip.octets();
             ip.is_unspecified() || ip.is_loopback() || ip.is_multicast()
                 || octets[0] & 0xfe == 0xfc

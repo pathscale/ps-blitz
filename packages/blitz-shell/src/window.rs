@@ -503,7 +503,9 @@ impl<Rend: WindowRenderer> View<Rend> {
             let changed = self.doc.poll(Some(cx));
             #[cfg(feature = "custom-widget")]
             for retirement in self.doc.inner_mut().take_retired_resources() {
-                for id in &retirement.resources { self.renderer.unregister_resource(*id); }
+                for id in &retirement.resources {
+                    self.renderer.unregister_resource(*id);
+                }
                 drop(retirement);
             }
             if changed {
@@ -572,7 +574,9 @@ impl<Rend: WindowRenderer> View<Rend> {
 
         #[cfg(feature = "custom-widget")]
         for retirement in inner.take_retired_resources() {
-            for id in &retirement.resources { self.renderer.unregister_resource(*id); }
+            for id in &retirement.resources {
+                self.renderer.unregister_resource(*id);
+            }
             drop(retirement);
         }
 
@@ -612,7 +616,9 @@ impl<Rend: WindowRenderer> View<Rend> {
             .saturating_sub(paint_time);
 
         drop(inner);
-        if committed { self.submitted_paint = self.submitted_paint.saturating_add(1); }
+        if committed {
+            self.submitted_paint = self.submitted_paint.saturating_add(1);
+        }
 
         if profiling {
             self.frame_stats

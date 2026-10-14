@@ -14,8 +14,12 @@ pub struct Teardown {
 
 impl Teardown {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self { owners: AtomicUsize::new(0), retiring: AtomicBool::new(false),
-            readers: Mutex::new(Vec::new()), children: Mutex::new(Vec::new()) })
+        Arc::new(Self {
+            owners: AtomicUsize::new(0),
+            retiring: AtomicBool::new(false),
+            readers: Mutex::new(Vec::new()),
+            children: Mutex::new(Vec::new()),
+        })
     }
 
     pub fn lease(self: &Arc<Self>) -> ReleaseLease {
@@ -30,36 +34,57 @@ impl Teardown {
     }
 
     fn wake(&self) {
-        for reader in std::mem::take(&mut *self.readers.lock().unwrap()) { reader.wake(); }
+        for reader in std::mem::take(&mut *self.readers.lock().unwrap()) {
+            reader.wake();
+        }
     }
 
     pub fn complete(&self) -> bool {
-        self.retiring.load(Ordering::Acquire) && self.owners.load(Ordering::Acquire) == 0
-            && self.children.lock().unwrap().iter().all(|child| child.complete())
+        self.retiring.load(Ordering::Acquire)
+            && self.owners.load(Ordering::Acquire) == 0
+            && self
+                .children
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|child| child.complete())
     }
 
     fn poll_release(&self, cx: &mut Context<'_>) -> Poll<()> {
         {
             let mut readers = self.readers.lock().unwrap();
-            if !readers.iter().any(|reader| reader.will_wake(cx.waker())) { readers.push(cx.waker().clone()); }
+            if !readers.iter().any(|reader| reader.will_wake(cx.waker())) {
+                readers.push(cx.waker().clone());
+            }
         }
         let mut children_ready = true;
-        for child in self.children.lock().unwrap().iter() { children_ready &= child.poll_release(cx).is_ready(); }
-        if children_ready && self.retiring.load(Ordering::Acquire) && self.owners.load(Ordering::Acquire) == 0 {
+        for child in self.children.lock().unwrap().iter() {
+            children_ready &= child.poll_release(cx).is_ready();
+        }
+        if children_ready
+            && self.retiring.load(Ordering::Acquire)
+            && self.owners.load(Ordering::Acquire) == 0
+        {
             let readers = std::mem::take(&mut *self.readers.lock().unwrap());
             drop(readers);
             Poll::Ready(())
-        } else { Poll::Pending }
+        } else {
+            Poll::Pending
+        }
     }
 
-    pub fn released(self: Arc<Self>) -> Released { Released(self) }
+    pub fn released(self: Arc<Self>) -> Released {
+        Released(self)
+    }
 }
 
 pub struct ReleaseLease(Arc<Teardown>);
 
 impl Drop for ReleaseLease {
     fn drop(&mut self) {
-        if self.0.owners.fetch_sub(1, Ordering::AcqRel) == 1 { self.0.wake(); }
+        if self.0.owners.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.0.wake();
+        }
     }
 }
 
@@ -73,5 +98,7 @@ pub struct Released(Arc<Teardown>);
 
 impl Future for Released {
     type Output = ();
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> { self.0.poll_release(cx) }
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        self.0.poll_release(cx)
+    }
 }
