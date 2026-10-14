@@ -1,12 +1,11 @@
 //! Loading of `<iframe>` elements into sub-documents.
 
 use std::sync::Arc;
-use std::sync::mpsc::Sender;
+use blitz_traits::handoff::EventTarget;
 
 use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use blitz_traits::net::{AbortController, AbortSignal, RequestDestination, Url};
 use blitz_traits::node_id::NodeId;
-use blitz_traits::shell::ShellProvider;
 
 use crate::document::DocumentEvent;
 use crate::net::{DocumentSrcHandler, ResourceHandler, stamped_request};
@@ -31,17 +30,15 @@ pub(crate) struct IframeLoad {
 /// document, which reloads the iframe's sub-document with the new URL.
 struct IframeNavigationProvider {
     node_id: NodeId,
-    tx: Sender<DocumentEvent>,
-    shell_provider: Arc<dyn ShellProvider>,
+    tx: EventTarget<DocumentEvent>,
 }
 
 impl NavigationProvider for IframeNavigationProvider {
     fn navigate_to(&self, options: NavigationOptions) {
-        let _ = self.tx.send(DocumentEvent::NavigateIframe {
+        let _ = self.tx.publish(Arc::new(DocumentEvent::NavigateIframe {
             node_id: self.node_id,
             url: options.url,
-        });
-        self.shell_provider.request_redraw();
+        }));
     }
 }
 
@@ -62,7 +59,6 @@ impl BaseDocument {
             navigation_provider: Some(Arc::new(IframeNavigationProvider {
                 node_id,
                 tx: self.tx.clone(),
-                shell_provider: self.shell_provider.clone(),
             })),
             shell_provider: Some(self.shell_provider.clone()),
             html_parser_provider: Some(self.html_parser_provider.clone()),

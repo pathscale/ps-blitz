@@ -1,6 +1,7 @@
 #[path = "web_fonts.rs"]
 pub mod web_fonts;
 
+use blitz_traits::handoff::EventTarget;
 use blitz_traits::node_id::NodeId;
 use selectors::context::QuirksMode;
 use std::sync::atomic::Ordering as Ao;
@@ -9,7 +10,6 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize},
-        mpsc::Sender,
     },
 };
 use style::{
@@ -115,7 +115,7 @@ pub(crate) struct ResourceHandler<T: Send + Sync + 'static> {
     doc_id: usize,
     request_id: usize,
     node_id: Option<NodeId>,
-    tx: Sender<DocumentEvent>,
+    tx: EventTarget<DocumentEvent>,
     shell_provider: Arc<dyn ShellProvider>,
     /// Set once `respond` has delivered a result. A fetch that never calls
     /// `bytes` drops the handler; without this the critical-resource id stays
@@ -126,7 +126,7 @@ pub(crate) struct ResourceHandler<T: Send + Sync + 'static> {
 
 impl<T: Send + Sync + 'static> ResourceHandler<T> {
     pub(crate) fn new(
-        tx: Sender<DocumentEvent>,
+        tx: EventTarget<DocumentEvent>,
         doc_id: usize,
         node_id: Option<NodeId>,
         shell_provider: Arc<dyn ShellProvider>,
@@ -145,7 +145,7 @@ impl<T: Send + Sync + 'static> ResourceHandler<T> {
     }
 
     pub(crate) fn boxed(
-        tx: Sender<DocumentEvent>,
+        tx: EventTarget<DocumentEvent>,
         doc_id: usize,
         node_id: Option<NodeId>,
         shell_provider: Arc<dyn ShellProvider>,
@@ -169,8 +169,7 @@ impl<T: Send + Sync + 'static> ResourceHandler<T> {
             resolved_url: Some(resolved_url),
             result,
         };
-        let _ = self.tx.send(DocumentEvent::ResourceLoad(response));
-        self.shell_provider.request_redraw();
+        let _ = self.tx.publish(Arc::new(DocumentEvent::ResourceLoad(response)));
     }
 }
 
@@ -181,13 +180,12 @@ impl<T: Send + Sync + 'static> Drop for ResourceHandler<T> {
         }
         let _ = self
             .tx
-            .send(DocumentEvent::ResourceLoad(ResourceLoadResponse {
+            .publish(Arc::new(DocumentEvent::ResourceLoad(ResourceLoadResponse {
                 request_id: self.request_id,
                 node_id: self.node_id,
                 resolved_url: None,
                 result: Err(String::from("resource fetch failed")),
-            }));
-        self.shell_provider.request_redraw();
+            })));
     }
 }
 
@@ -242,7 +240,7 @@ impl NetHandler for ResourceHandler<StylesheetHandler> {
 
 #[derive(Clone)]
 pub(crate) struct StylesheetLoader {
-    pub(crate) tx: Sender<DocumentEvent>,
+    pub(crate) tx: EventTarget<DocumentEvent>,
     pub(crate) doc_id: usize,
     pub(crate) net_provider: Arc<dyn NetProvider>,
     pub(crate) shell_provider: Arc<dyn ShellProvider>,
@@ -443,7 +441,7 @@ impl FontFaceHandler {
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn fetch_font_face(
-    tx: Sender<DocumentEvent>,
+    tx: EventTarget<DocumentEvent>,
     doc_id: usize,
     node_id: Option<NodeId>,
     sheet: &Stylesheet,
