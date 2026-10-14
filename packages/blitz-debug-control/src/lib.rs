@@ -20,7 +20,6 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Poll, Waker};
 use std::time::Duration;
@@ -31,7 +30,10 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 mod handoff;
-pub use handoff::CommandReceiver;
+pub use handoff::{
+    CommandReceiver, IntoValueIter, RecvError, RecvTimeoutError, TryRecvError,
+    TryValueIter, ValueIter, ValueReceiver,
+};
 use handoff::{CommandQueue, QueueError, Reply, ResponseWait};
 
 const PROTOCOL_VERSION: u32 = 1;
@@ -196,35 +198,18 @@ pub struct DebugServer {
     reactor: Option<Reactor>,
 }
 
-enum CommandSink {
-    Typed(Arc<CommandQueue>),
-    // Keep the published Receiver<ControlRequest> API for existing consumers.
-    Compatible(SyncSender<ControlRequest>),
-}
+struct CommandSink(Arc<CommandQueue>);
 
 impl CommandSink {
     fn enqueue(&self, request: Arc<ControlRequest>) -> Result<(), &'static str> {
-        match self {
-            Self::Typed(queue) => queue.enqueue(request).map_err(|error| match error {
-                QueueError::Full => "renderer command queue is full",
-                QueueError::Closed => "renderer command channel is closed",
-            }),
-            Self::Compatible(sender) => {
-                // The legacy adapter takes the uniquely owned value without
-                // copying any request data. It creates no response channel.
-                let request = Arc::try_unwrap(request).expect("unqueued request has one owner");
-                sender.try_send(request).map_err(|error| match error {
-                    TrySendError::Full(_) => "renderer command queue is full",
-                    TrySendError::Disconnected(_) => "renderer command channel is closed",
-                })
-            }
-        }
+        self.0.enqueue(request).map_err(|error| match error {
+            QueueError::Full => "renderer command queue is full",
+            QueueError::Closed => "renderer command channel is closed",
+        })
     }
 
     fn close(&self) {
-        if let Self::Typed(queue) = self {
-            queue.close();
-        }
+        self.0.close();
     }
 }
 
@@ -238,17 +223,16 @@ struct ServerState {
 }
 
 impl DebugServer {
-    /// Bind a loopback port and retain the published value-receiver adapter.
-    pub fn start(config: ServerConfig) -> io::Result<(Self, Receiver<ControlRequest>)> {
-        let (command_tx, command_rx) = mpsc::sync_channel(MAX_PENDING_COMMANDS);
-        let server = Self::start_with_sink(config, CommandSink::Compatible(command_tx))?;
-        Ok((server, command_rx))
+    /// Bind a loopback port and deliver owned values through the typed ring.
+    pub fn start(config: ServerConfig) -> io::Result<(Self, ValueReceiver)> {
+        let (server, receiver) = Self::start_typed(config)?;
+        Ok((server, ValueReceiver(receiver)))
     }
 
     /// Bind a loopback port and hand typed request pointers to the renderer.
     pub fn start_typed(config: ServerConfig) -> io::Result<(Self, CommandReceiver)> {
         let queue = CommandQueue::new(MAX_PENDING_COMMANDS);
-        let server = Self::start_with_sink(config, CommandSink::Typed(Arc::clone(&queue)))?;
+        let server = Self::start_with_sink(config, CommandSink(Arc::clone(&queue)))?;
         Ok((server, CommandReceiver(queue)))
     }
 
@@ -597,7 +581,7 @@ async fn route(request: HttpRequest, state: &ServerState) -> Value {
     }
 
     let reply = Reply::new();
-    let response = ResponseWait(Arc::clone(&reply));
+    let response = ResponseWait::new(&reply);
     let control_request = Arc::new(ControlRequest {
         method: request.method,
         path: command_path.to_string(),

@@ -1,11 +1,136 @@
 use std::future::{Future, poll_fn};
 use std::pin::Pin;
-use std::sync::mpsc::{RecvTimeoutError, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use super::{ControlRequest, ControlResponse};
+
+/// A command was not immediately available.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TryRecvError {
+    Empty,
+    Disconnected,
+}
+
+impl std::fmt::Display for TryRecvError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Empty => "renderer command queue is empty",
+            Self::Disconnected => "renderer command queue is closed",
+        })
+    }
+}
+
+impl std::error::Error for TryRecvError {}
+
+/// A blocking command receive outlived its deadline or server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecvTimeoutError {
+    Timeout,
+    Disconnected,
+}
+
+impl std::fmt::Display for RecvTimeoutError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Timeout => "renderer command receive timed out",
+            Self::Disconnected => "renderer command queue is closed",
+        })
+    }
+}
+
+impl std::error::Error for RecvTimeoutError {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecvError;
+
+impl std::fmt::Display for RecvError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("renderer command queue is closed")
+    }
+}
+
+impl std::error::Error for RecvError {}
+
+/// Value-delivery adapter over the consumer-owned typed command ring.
+pub struct ValueReceiver(pub(crate) CommandReceiver);
+
+impl ValueReceiver {
+    pub fn try_recv(&self) -> Result<ControlRequest, TryRecvError> {
+        self.0.try_recv().map(Self::into_value)
+    }
+
+    pub fn recv(&self) -> Result<ControlRequest, RecvError> {
+        nagoya::block_on(self.0.recv())
+            .map(Self::into_value)
+            .map_err(|_| RecvError)
+    }
+
+    pub fn recv_timeout(&self, timeout: Duration) -> Result<ControlRequest, RecvTimeoutError> {
+        self.0.recv_timeout(timeout).map(Self::into_value)
+    }
+
+    pub fn iter(&self) -> ValueIter<'_> {
+        ValueIter(self)
+    }
+
+    pub fn try_iter(&self) -> TryValueIter<'_> {
+        TryValueIter(self)
+    }
+
+    fn into_value(request: Arc<ControlRequest>) -> ControlRequest {
+        Arc::try_unwrap(request).expect("queued request has one consumer")
+    }
+}
+
+pub struct ValueIter<'a>(&'a ValueReceiver);
+
+impl Iterator for ValueIter<'_> {
+    type Item = ControlRequest;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.recv().ok()
+    }
+}
+
+pub struct TryValueIter<'a>(&'a ValueReceiver);
+
+impl Iterator for TryValueIter<'_> {
+    type Item = ControlRequest;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.try_recv().ok()
+    }
+}
+
+impl<'a> IntoIterator for &'a ValueReceiver {
+    type Item = ControlRequest;
+    type IntoIter = ValueIter<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+pub struct IntoValueIter(ValueReceiver);
+
+impl Iterator for IntoValueIter {
+    type Item = ControlRequest;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.recv().ok()
+    }
+}
+
+impl IntoIterator for ValueReceiver {
+    type Item = ControlRequest;
+    type IntoIter = IntoValueIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        IntoValueIter(self)
+    }
+}
 
 struct Ring<T> {
     producer: spsc::Producer<Arc<T>>,
@@ -156,7 +281,7 @@ impl Reply {
         Ok(())
     }
 
-    fn close_sender(&self) {
+    pub(crate) fn close_sender(&self) {
         let wake = {
             let mut state = self.0.lock().unwrap();
             state.sender_closed = true;
