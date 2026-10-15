@@ -86,4 +86,3 @@ rfd = { workspace = true, optional = true, features = ["xdg-portal"] }
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
-
