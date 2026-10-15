@@ -1,6 +1,7 @@
 use blitz_traits::net::RequestDestination;
 use blitz_traits::node_id::NodeId;
 use rustc_hash::FxHashSet;
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::mem;
 use std::ops::{Deref, DerefMut};
@@ -1615,7 +1616,7 @@ impl DocumentMutator<'_> {
         // The fragment is emptied as it is expanded, which is what the spec
         // requires: after insertion a fragment has no children, and leaving
         // them behind would give every child two parents.
-        let child_ids: Vec<NodeId> = if child_ids
+        let child_ids: Cow<'_, [NodeId]> = if child_ids
             .iter()
             .any(|id| matches!(self.doc.nodes[*id].data, NodeData::DocumentFragment))
         {
@@ -1634,11 +1635,11 @@ impl DocumentMutator<'_> {
                     flattened.push(id);
                 }
             }
-            flattened
+            Cow::Owned(flattened)
         } else {
-            child_ids.to_vec()
+            Cow::Borrowed(child_ids)
         };
-        let child_ids = child_ids.as_slice();
+        let child_ids = child_ids.as_ref();
 
         let new_parent_is_in_document = self.doc.nodes[parent_id].flags.is_in_document();
         self.mutations_occurred |= new_parent_is_in_document && !child_ids.is_empty();
@@ -1730,7 +1731,20 @@ impl DocumentMutator<'_> {
             }
         }
 
-        self.doc.note_stash_subtree(parent_id);
+        // Only added subtrees need reclassification after an insertion. Walking
+        // the whole parent subtree here revisits existing siblings on every
+        // append. A form parent also needs the associated-control scan performed
+        // by note_stash_subtree.
+        let parent_is_form = self.doc.nodes[parent_id]
+            .element_data()
+            .is_some_and(|element| element.name.local.as_ref() == "form");
+        if parent_is_form {
+            self.doc.note_stash_subtree(parent_id);
+        } else {
+            for child_id in child_ids.iter().copied() {
+                self.doc.note_stash_subtree(child_id);
+            }
+        }
         self.maybe_record_node(parent_id);
     }
 

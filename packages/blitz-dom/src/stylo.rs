@@ -63,6 +63,7 @@ static PARALLEL_STYLO_TRAVERSAL: Mutex<()> = Mutex::new(());
 
 impl crate::document::BaseDocument {
     pub fn resolve_stylist(&mut self, now: f64) {
+        self.ensure_default_ua_stylesheet();
         style::thread_state::enter(ThreadState::LAYOUT);
 
         #[cfg(feature = "shadow-dom")]
