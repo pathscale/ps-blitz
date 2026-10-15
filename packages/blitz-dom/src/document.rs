@@ -1,4 +1,5 @@
 use crate::NodeTree;
+use crate::deferred_font_context::DeferredFontContext;
 use crate::events::{DragMode, ScrollAnimationState, handle_dom_event};
 use crate::font_metrics::BlitzFontMetricsProvider;
 use crate::layout::construct::ConstructionTask;
@@ -30,7 +31,7 @@ use blitz_traits::shell::{ColorScheme, DummyShellProvider, ShellProvider, Viewpo
 use cursor_icon::CursorIcon;
 use linebender_resource_handle::Blob;
 use markup5ever::{local_name, ns};
-use parley::{FontContext, PlainEditorDriver};
+use parley::PlainEditorDriver;
 use rustc_hash::FxHashSet;
 use selectors::{Element, matching::QuirksMode};
 use smallvec::SmallVec;
@@ -41,7 +42,7 @@ use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, MutexGuard, OnceLock, RwLockReadGuard, RwLockWriteGuard};
 use std::task::{Context as TaskContext, Waker};
 use style::Atom;
 use style::animation::{AnimationState, DocumentAnimationSet};
@@ -436,10 +437,10 @@ pub struct BaseDocument {
 
     // Parley contexts
     /// A Parley font context
-    pub(crate) font_ctx: Arc<Mutex<parley::FontContext>>,
+    pub(crate) font_ctx: Arc<DeferredFontContext>,
     #[cfg(feature = "parallel-construct")]
     /// Thread-and-document-local copies to the font context
-    pub(crate) thread_font_contexts: ThreadLocal<RefCell<Box<FontContext>>>,
+    pub(crate) thread_font_contexts: ThreadLocal<RefCell<Box<parley::FontContext>>>,
     /// A Parley layout context
     pub(crate) layout_ctx: parley::LayoutContext<TextBrush>,
 
@@ -614,7 +615,7 @@ pub struct BaseDocument {
 pub(crate) fn make_device(
     viewport: &Viewport,
     media_type: MediaType,
-    font_ctx: Arc<Mutex<FontContext>>,
+    font_ctx: Arc<DeferredFontContext>,
 ) -> Device {
     let width = viewport.window_size.0 as f32 / viewport.scale();
     let height = viewport.window_size.1 as f32 / viewport.scale();
@@ -670,31 +671,24 @@ impl BaseDocument {
             .teardown
             .unwrap_or_else(crate::release::Teardown::new);
 
-        let font_ctx = config
-            .font_ctx
-            .map(|mut font_ctx| {
+        let defer_system_fonts = config.defer_system_fonts;
+        let (font_ctx, use_system_font_template) = match config.font_ctx {
+            Some(mut font_ctx) => {
                 font_ctx.source_cache.make_shared();
                 // font_ctx.collection.make_shared();
-                font_ctx
-            })
-            .unwrap_or_else(|| {
-                use parley::fontique::{Collection, CollectionOptions, SourceCache};
-                let mut font_ctx = FontContext {
-                    source_cache: SourceCache::new_shared(),
-                    collection: Collection::new(CollectionOptions {
-                        shared: false,
-                        system_fonts: cfg!(all(
-                            feature = "system-fonts",
-                            not(target_arch = "wasm32")
-                        )),
-                    }),
-                };
-                font_ctx
-                    .collection
-                    .register_fonts(Blob::new(Arc::new(crate::BULLET_FONT) as _), None);
-                font_ctx
-            });
-        let font_ctx = Arc::new(Mutex::new(font_ctx));
+                (font_ctx, false)
+            }
+            None => {
+                let system_fonts = cfg!(all(feature = "system-fonts", not(target_arch = "wasm32")))
+                    && !defer_system_fonts;
+                (crate::build_font_context(system_fonts), defer_system_fonts)
+            }
+        };
+        let font_ctx = Arc::new(DeferredFontContext::new(
+            font_ctx,
+            defer_system_fonts,
+            use_system_font_template,
+        ));
         if let Some(fallback) = config.family_fallback {
             crate::font_fallback::set(fallback);
         }

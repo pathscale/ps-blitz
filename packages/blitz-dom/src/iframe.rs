@@ -93,6 +93,7 @@ impl BaseDocument {
             let url = Url::parse(base_url).ok()?;
             self.net_provider.for_child_document(url)?
         };
+        let (font_ctx, defer_system_fonts) = self.font_ctx.cloned_config();
         Some(DocumentConfig {
             viewport: None,
             base_url,
@@ -104,7 +105,8 @@ impl BaseDocument {
             })),
             shell_provider: Some(self.shell_provider.clone()),
             html_parser_provider: Some(self.html_parser_provider.clone()),
-            font_ctx: Some(self.font_ctx.lock().unwrap().clone()),
+            font_ctx,
+            defer_system_fonts,
             media_type: Some(self.media_type.clone()),
             style_threading: self.style_threading,
             incremental: Some(self.incremental_layout),

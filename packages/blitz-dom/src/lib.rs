@@ -41,6 +41,7 @@ pub mod node;
 
 mod config;
 mod debug;
+mod deferred_font_context;
 mod events;
 pub mod font_fallback;
 mod font_metrics;
@@ -144,6 +145,28 @@ pub type SelectorList = selectors::SelectorList<style::selector_parser::Selector
 pub use events::{EventDriver, EventHandler, NoopEventHandler};
 pub use html::{DummyHtmlParserProvider, HtmlParserProvider};
 pub use util::{Point, decode_font_bytes};
+
+/// Create an independent Parley font context with the embedded bullet font.
+///
+/// `system_fonts` controls whether the initial collection enumerates system
+/// fonts. The collection stays unshared so document font registrations remain
+/// isolated. Use `false` when system discovery will be deferred.
+pub fn build_font_context(system_fonts: bool) -> FontContext {
+    use linebender_resource_handle::Blob;
+    use parley::fontique::{Collection, CollectionOptions, SourceCache};
+
+    let mut font_ctx = FontContext {
+        source_cache: SourceCache::new_shared(),
+        collection: Collection::new(CollectionOptions {
+            shared: false,
+            system_fonts,
+        }),
+    };
+    font_ctx
+        .collection
+        .register_fonts(Blob::new(std::sync::Arc::new(BULLET_FONT) as _), None);
+    font_ctx
+}
 
 /// Convenience builder for the one-font case: produces a [`FontContext`] with
 /// system-font discovery disabled and the supplied font registered as the
