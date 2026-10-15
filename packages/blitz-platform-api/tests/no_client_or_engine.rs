@@ -50,6 +50,7 @@ const HTTP_CLIENTS: &[&str] = &[
 /// crate compiled to wasm32.
 const SCRIPT_ENGINES: &[&str] = &[
     "boa",
+    "ps-boa",
     "wasmi",
     "wasmtime",
     "wasmer",
@@ -189,7 +190,12 @@ fn the_detector_catches_the_real_names_and_leaves_the_graph_alone() {
         "reqwest-middleware v0.4.0",
         HTTP_CLIENTS
     ));
+    assert!(names_a_banned_crate("boa v0.20.0", SCRIPT_ENGINES));
     assert!(names_a_banned_crate("boa_engine v0.20.0", SCRIPT_ENGINES));
+    assert!(names_a_banned_crate("boa-engine v0.20.0", SCRIPT_ENGINES));
+    assert!(names_a_banned_crate("ps-boa v0.3.0", SCRIPT_ENGINES));
+    assert!(names_a_banned_crate("ps-boa_engine v0.3.0", SCRIPT_ENGINES));
+    assert!(names_a_banned_crate("ps-boa-engine v0.3.0", SCRIPT_ENGINES));
     assert!(names_a_banned_crate("wasmi v1.1.0", SCRIPT_ENGINES));
     assert!(names_a_banned_crate("WASMI v1.1.0", SCRIPT_ENGINES));
 
@@ -202,6 +208,7 @@ fn the_detector_catches_the_real_names_and_leaves_the_graph_alone() {
         "keyboard-types v0.7.0",
         SCRIPT_ENGINES
     ));
+    assert!(!names_a_banned_crate("board-game v1.0.0", SCRIPT_ENGINES));
     assert!(!names_a_banned_crate(
         "ps-blitz-traits v0.3.0-beta.3 (/path)",
         HTTP_CLIENTS
@@ -227,6 +234,10 @@ fn the_family_matcher_needs_a_separator() {
     assert!(is_family("boa_engine", "boa"));
     assert!(is_family("boa-engine", "boa"));
     assert!(!is_family("board-game", "boa"));
+    assert!(is_family("ps-boa", "ps-boa"));
+    assert!(is_family("ps-boa_engine", "ps-boa"));
+    assert!(is_family("ps-boa-engine", "ps-boa"));
+    assert!(!is_family("ps-board-game", "ps-boa"));
     assert!(!is_family("v8ify", "v8"));
     assert!(!is_family("curling", "curl"));
 }

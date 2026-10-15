@@ -4,8 +4,8 @@
 //! present. Script execution had none, so a profile could show a 4ms frame and
 //! a UI that still felt slow, with nothing in between to look at. Every
 //! reactive update, event handler, timer callback and microtask drain runs
-//! through `ScriptDocument::poll`, so timing that one boundary accounts for the
-//! whole language runtime without threading a clock through Boa.
+//! through a document's poll boundary, so timing that boundary accounts for the
+//! whole language runtime without passing a clock through every operation.
 //!
 //! Deliberately mirrors `blitz_shell::frame_stats`: a bounded ring, means and
 //! tails rather than a running average, and no data reported as zero when there
@@ -134,21 +134,13 @@ fn drain_local_statics(log: &mut Log) {
     });
 }
 
-/// What crossed from JavaScript into the host, in bytes.
+/// What crossed from the guest runtime into the host, in bytes.
 ///
-/// Every DOM binding that takes a string reaches `dom::to_rust_string`, and
-/// nothing else converts a `JsValue` into an owned Rust `String` on the way
-/// into the DOM. So one counter there accounts for the whole guest-to-host
-/// string traffic, which is the quantity a boundary design changes and a
-/// timing number cannot isolate.
-///
-/// Deliberately *not* interned, because Boa is not: a binding receives a
-/// `JsString` and copies it out on every call, so `createElement("tr")` pays
-/// for `"tr"` a thousand times in a thousand-row build. That repetition is the
-/// measurement, not an inefficiency in the counter.
+/// The runtime adapter records each string conversion at the boundary. Repeated
+/// values count separately because each copied string is part of the traffic.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct BoundaryCounters {
-    /// Strings converted out of the JavaScript heap.
+    /// Strings copied from the guest runtime into the host.
     pub strings_crossed: u64,
     /// Their total length in UTF-8 bytes.
     pub bytes_copied: u64,
@@ -161,10 +153,11 @@ thread_local! {
         const { std::cell::Cell::new(BoundaryCounters { strings_crossed: 0, bytes_copied: 0 }) };
 }
 
-/// Record one string crossing. Gated on the same switch as [`Timed`], so a
-/// build that is not profiling pays one relaxed atomic load and nothing else.
-#[cfg_attr(not(feature = "boa"), allow(dead_code))]
-pub(crate) fn record_boundary_string(bytes: usize) {
+/// Record one guest-to-host string conversion, using its UTF-8 byte length.
+///
+/// Gated on the same switch as [`Timed`], so a build that is not profiling pays
+/// one relaxed atomic load and nothing else.
+pub fn record_boundary_string(bytes: usize) {
     if !blitz_traits::profiling::deep_profiling_enabled() {
         return;
     }
@@ -335,12 +328,12 @@ pub struct Timed {
 
 #[cfg(feature = "dom-stats")]
 impl Timed {
-    #[cfg(feature = "boa")]
     #[must_use]
-    pub(crate) fn new(ctx: &crate::state::DomCtx, label: &'static str) -> Self {
+    /// Use the profiling mode selected at the start of the enclosing job slice.
+    pub fn new(profiling: bool, label: &'static str) -> Self {
         Self {
             label,
-            started: ctx.deep_profiling_enabled().then(std::time::Instant::now),
+            started: profiling.then(std::time::Instant::now),
         }
     }
 }
@@ -417,10 +410,9 @@ pub struct Timed;
 
 #[cfg(not(feature = "dom-stats"))]
 impl Timed {
-    #[cfg(feature = "boa")]
     #[must_use]
     #[inline(always)]
-    pub(crate) fn new(_ctx: &crate::state::DomCtx, _label: &'static str) -> Self {
+    pub fn new(_profiling: bool, _label: &'static str) -> Self {
         Self
     }
 }
@@ -436,10 +428,9 @@ mod tests {
 
     /// The serial lock, and a consumer holding sampling open for the test.
     ///
-    /// Both are returned because both have to outlive the body: recording now
-    /// needs permission and an attached consumer, so a profiling guard
-    /// created and dropped inside this helper would stop collection before the
-    /// caller records anything.
+    /// Both have to outlive the body because recording needs permission and an
+    /// attached consumer, so a profiling guard created and dropped inside this helper
+    /// would stop collection before the caller records anything.
     struct TestCapture {
         _serial: std::sync::MutexGuard<'static, ()>,
         _sampling: blitz_traits::profiling::DeepProfilingGuard,
@@ -530,55 +521,4 @@ mod tests {
         assert_eq!(stats.total_polls, 11);
         assert_eq!(stats.productive_polls, 1);
     }
-
-    #[cfg(feature = "dom-stats")]
-    #[test]
-    fn poll_keeps_its_selected_mode_when_the_global_flag_changes_inside_it() {
-        use blitz_dom::{Document, DocumentConfig};
-
-        let _serial = reset();
-        let mut document =
-            crate::ScriptDocument::from_html("<body></body>", DocumentConfig::default());
-        document.set_poll_hook(|document, _| {
-            // The poll selected profiling before this hook. Inner collectors
-            // must keep that selection rather than rereading the global.
-            blitz_traits::profiling::set_deep_profiling_permitted(false);
-            document.eval("document.body.appendChild(document.createElement('div'))");
-            true
-        });
-
-        assert!(document.poll(None));
-        blitz_traits::profiling::set_deep_profiling_permitted(true);
-
-        assert!(
-            work_breakdown()
-                .iter()
-                .any(|(label, ..)| label == "dom:createElement"),
-            "DOM attribution follows the enclosing poll mode"
-        );
-        assert!(latest_script_stats().is_some());
-    }
-
-    #[cfg(feature = "dom-stats")]
-    #[test]
-    fn disabled_poll_does_not_start_collecting_if_the_global_turns_on_inside_it() {
-        use blitz_dom::{Document, DocumentConfig};
-
-        let _serial = reset();
-        clear();
-        blitz_traits::profiling::set_deep_profiling_permitted(false);
-        let mut document =
-            crate::ScriptDocument::from_html("<body></body>", DocumentConfig::default());
-        document.set_poll_hook(|document, _| {
-            blitz_traits::profiling::set_deep_profiling_permitted(true);
-            document.eval("document.body.appendChild(document.createElement('div'))");
-            true
-        });
-
-        assert!(document.poll(None));
-
-        assert!(work_breakdown().is_empty());
-        assert!(latest_script_stats().is_none());
-    }
 }
-

@@ -14,13 +14,16 @@ use winit::platform::macos::ApplicationHandlerExtMacOS;
 
 use crate::{View, WindowConfig};
 
+#[cfg(feature = "debug-control")]
+type DebugService<Rend> = fn(&mut View<Rend>, &mut blitz_script::DebugController) -> bool;
+
 pub struct BlitzApplication<Rend: WindowRenderer> {
     pub windows: HashMap<WindowId, View<Rend>>,
     pub pending_windows: Vec<WindowConfig<Rend>>,
     pub proxy: BlitzShellProxy,
     pub event_queue: BlitzShellEventQueue,
     #[cfg(feature = "debug-control")]
-    debug_controller: Option<blitz_script::DebugController>,
+    debug_controller: Option<(blitz_script::DebugController, DebugService<Rend>)>,
 }
 
 impl<Rend: WindowRenderer> BlitzApplication<Rend> {
@@ -40,7 +43,10 @@ impl<Rend: WindowRenderer> BlitzApplication<Rend> {
     }
 
     #[cfg(feature = "debug-control")]
-    pub fn set_debug_controller(&mut self, controller: blitz_script::DebugController) {
+    pub fn set_debug_controller_for<D: blitz_script::DebugDocument + 'static>(
+        &mut self,
+        controller: blitz_script::DebugController,
+    ) {
         // The server thread wakes the loop when a request lands, the same way
         // everything else here does. Before this the loop woke itself every
         // 10ms to look: 100 wakeups a second at idle, up to 10ms of latency on
@@ -48,25 +54,30 @@ impl<Rend: WindowRenderer> BlitzApplication<Rend> {
         // driver attached, which is most of them.
         let proxy = self.proxy.clone();
         controller.set_waker(move || proxy.wake_up());
-        self.debug_controller = Some(controller);
+        let service: DebugService<Rend> = |view, controller| {
+            let animation_time = view.current_animation_time();
+            let Some(document) = view.try_downcast_doc_mut::<D>() else {
+                return false;
+            };
+            controller.service_pending_at(document, animation_time);
+            true
+        };
+        self.debug_controller = Some((controller, service));
     }
 
     #[cfg(feature = "debug-control")]
     fn service_debug_controller(&mut self, event_loop: &dyn ActiveEventLoop) {
-        let (Some(controller), windows) = (self.debug_controller.as_mut(), &mut self.windows)
+        let (Some((controller, service)), windows) =
+            (self.debug_controller.as_mut(), &mut self.windows)
         else {
             return;
         };
-        let Some((animation_time, document)) = windows.values_mut().find_map(|view| {
-            let animation_time = view.current_animation_time();
-            view.try_downcast_doc_mut::<blitz_script::ScriptDocument>()
-                .map(|document| (animation_time, document))
-        }) else {
+        let serviced = windows.values_mut().any(|view| service(view, controller));
+        if !serviced {
             // No document to run against yet. The request stays queued, and
             // whatever creates the window brings the loop round again.
             return;
-        };
-        controller.service_pending_at(document, animation_time);
+        }
         if controller.exit_requested() {
             event_loop.exit();
         }
@@ -113,7 +124,7 @@ impl<Rend: WindowRenderer> BlitzApplication<Rend> {
                     false
                 };
                 #[cfg(feature = "debug-control")]
-                if _paint_committed && let Some(controller) = self.debug_controller.as_mut() {
+                if _paint_committed && let Some((controller, _)) = self.debug_controller.as_mut() {
                     controller.note_paint_committed();
                 }
             }
@@ -177,8 +188,8 @@ impl<Rend: WindowRenderer> ApplicationHandler for BlitzApplication<Rend> {
             }
         }
 
-        // Initialise pending windows. The renderer's resume is non-blocking —
-        // on native it finishes inline, on wasm32 it spawns a future that will
+        // Initialise pending windows. The renderer's resume is non-blocking. On
+        // native it finishes inline; on wasm32 it spawns a future that will
         // dispatch BlitzShellEvent::ResumeReady when init completes. Either way
         // we insert the view immediately so the event handler can find it.
         for window_config in self.pending_windows.drain(..) {
@@ -196,7 +207,7 @@ impl<Rend: WindowRenderer> ApplicationHandler for BlitzApplication<Rend> {
             self.windows.insert(view.window_id(), view);
         }
         #[cfg(feature = "debug-control")]
-        if let Some(controller) = self.debug_controller.as_mut() {
+        if let Some((controller, _)) = self.debug_controller.as_mut() {
             for _ in 0..committed_frames {
                 controller.note_paint_committed();
             }
@@ -246,7 +257,7 @@ impl<Rend: WindowRenderer> ApplicationHandler for BlitzApplication<Rend> {
             false
         };
         #[cfg(feature = "debug-control")]
-        if _paint_committed && let Some(controller) = self.debug_controller.as_mut() {
+        if _paint_committed && let Some((controller, _)) = self.debug_controller.as_mut() {
             controller.note_paint_committed();
         }
     }

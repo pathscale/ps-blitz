@@ -4,6 +4,7 @@ use std::io;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use anyrender::render_to_buffer;
@@ -22,7 +23,26 @@ use blitz_traits::events::{
 use keyboard_types::{Code, Key, Location, Modifiers};
 use serde_json::{Value, json};
 
-use crate::ScriptDocument;
+/// Engine-facing operations required by the debug controller.
+pub trait DebugDocument: Document {
+    /// Return this document's URL, or `None` when it has no URL.
+    fn current_url(&self) -> Option<String>;
+
+    /// Evaluate source and convert its result to JSON.
+    fn eval_json(&mut self, code: &str) -> Result<Value, String>;
+
+    /// Drive document work while waiting for an operation to complete.
+    fn wait_with<T>(&mut self, wait: impl FnMut(&mut Self, &mut Context<'_>) -> Poll<T>) -> T;
+
+    /// Return console entries after the supplied sequence number.
+    fn console_entries_after(&self, sequence: u64) -> Vec<crate::DiagnosticEntry>;
+
+    /// Return runtime errors after the supplied sequence number.
+    fn runtime_errors_after(&self, sequence: u64) -> Vec<crate::DiagnosticEntry>;
+
+    /// Deliver automation input to the exact semantic node selected by the controller.
+    fn handle_ui_event_to_node(&mut self, event: UiEvent, node_id: NodeId);
+}
 
 const ELEMENT_KEY: &str = "element-6066-11e4-a52e-4f735466cecf";
 const MAX_IDLE_TURNS: usize = 1_000;
@@ -31,8 +51,7 @@ const EVENT_TRACE_CAPACITY: usize = 256;
 
 /// Renderer half of the typed debug-control queue.
 ///
-/// Reactor tasks enqueue request pointers. Service them on the lane that owns
-/// the ScriptDocument.
+/// Service queued requests on the document's owning execution lane.
 pub struct DebugController {
     server: DebugServer,
     requests: CommandReceiver,
@@ -139,7 +158,7 @@ impl DebugController {
     }
 
     /// Service every request currently queued without blocking.
-    pub fn service_pending(&mut self, document: &mut ScriptDocument) -> usize {
+    pub fn service_pending(&mut self, document: &mut impl DebugDocument) -> usize {
         self.resolution_time = self.clock_started.elapsed().as_secs_f64();
         self.service_pending_at(document, self.resolution_time)
     }
@@ -151,7 +170,7 @@ impl DebugController {
     /// frame the user is looking at.
     pub fn service_pending_at(
         &mut self,
-        document: &mut ScriptDocument,
+        document: &mut impl DebugDocument,
         animation_time: f64,
     ) -> usize {
         self.resolution_time = animation_time;
@@ -170,7 +189,7 @@ impl DebugController {
     /// Wait for and service one request. Useful for headless harnesses.
     pub fn service_one(
         &mut self,
-        document: &mut ScriptDocument,
+        document: &mut impl DebugDocument,
         timeout: Duration,
     ) -> Result<bool, RecvTimeoutError> {
         self.resolution_time = self.clock_started.elapsed().as_secs_f64();
@@ -185,7 +204,7 @@ impl DebugController {
     }
 
     /// Wait on queue readiness while servicing the document's timer wakes.
-    pub fn service_reactive(&mut self, document: &mut ScriptDocument) -> bool {
+    pub fn service_reactive(&mut self, document: &mut impl DebugDocument) -> bool {
         let request = {
             let mut receive = std::pin::pin!(self.requests.recv());
             document.wait_with(|_, cx| receive.as_mut().poll(cx))
@@ -205,13 +224,13 @@ impl DebugController {
         self.exit_requested
     }
 
-    fn handle(&mut self, document: &mut ScriptDocument, request: Arc<ControlRequest>) {
+    fn handle(&mut self, document: &mut impl DebugDocument, request: Arc<ControlRequest>) {
         self.observe_document(document);
         let response = self.route(document, &request);
         let _ = request.respond_arc(Arc::new(response));
     }
 
-    fn observe_document(&mut self, document: &ScriptDocument) {
+    fn observe_document(&mut self, document: &impl Document) {
         let document_id = document.inner().id();
         match self.active_document_id.replace(document_id) {
             Some(previous) if previous != document_id => {
@@ -226,7 +245,7 @@ impl DebugController {
         }
     }
 
-    fn resolve(&mut self, document: &mut ScriptDocument) {
+    fn resolve(&mut self, document: &mut impl DebugDocument) {
         let mut inner = document.inner_mut();
         inner.set_paint_damage_tracking(true);
         inner.resolve(self.resolution_time);
@@ -241,17 +260,12 @@ impl DebugController {
 
     fn route(
         &mut self,
-        document: &mut ScriptDocument,
+        document: &mut impl DebugDocument,
         request: &ControlRequest,
     ) -> ControlResponse {
         match (request.method.as_str(), request.path.as_str()) {
-            ("GET", "url") => success(json!(
-                document
-                    .current_url()
-                    .map(ToString::to_string)
-                    .unwrap_or_default()
-            )),
-            ("GET", "source") => success(json!(document.page_source())),
+            ("GET", "url") => success(json!(document.current_url().unwrap_or_default())),
+            ("GET", "source") => success(json!(document.inner().root_element().outer_html())),
             ("GET", "screenshot") => self.screenshot(document),
             ("GET", "window") => success(json!("blitz-main")),
             ("GET", "window/handles") => success(json!(["blitz-main"])),
@@ -288,7 +302,11 @@ impl DebugController {
         }
     }
 
-    fn computed_style(&mut self, document: &mut ScriptDocument, body: &Value) -> ControlResponse {
+    fn computed_style(
+        &mut self,
+        document: &mut impl DebugDocument,
+        body: &Value,
+    ) -> ControlResponse {
         let Some(reference) = body.get("element").and_then(Value::as_str) else {
             return invalid("blitz/getComputedStyle requires an element reference");
         };
@@ -312,7 +330,7 @@ impl DebugController {
         }))
     }
 
-    fn layout_tree(&mut self, document: &mut ScriptDocument) -> ControlResponse {
+    fn layout_tree(&mut self, document: &mut impl DebugDocument) -> ControlResponse {
         self.resolve(document);
         let inner = document.inner();
         let nodes = inner
@@ -343,7 +361,7 @@ impl DebugController {
         }))
     }
 
-    fn svg_diagnostics(&mut self, document: &mut ScriptDocument) -> ControlResponse {
+    fn svg_diagnostics(&mut self, document: &mut impl DebugDocument) -> ControlResponse {
         self.resolve(document);
         let inner = document.inner();
         let entries = inner
@@ -397,7 +415,11 @@ impl DebugController {
         success(json!({"entries": entries}))
     }
 
-    fn perform_actions(&mut self, document: &mut ScriptDocument, body: &Value) -> ControlResponse {
+    fn perform_actions(
+        &mut self,
+        document: &mut impl DebugDocument,
+        body: &Value,
+    ) -> ControlResponse {
         let Some(sources) = body.get("actions").and_then(Value::as_array) else {
             return invalid("actions must be an array");
         };
@@ -470,7 +492,7 @@ impl DebugController {
         success(Value::Null)
     }
 
-    fn execute_sync(&mut self, document: &mut ScriptDocument, body: &Value) -> ControlResponse {
+    fn execute_sync(&mut self, document: &mut impl DebugDocument, body: &Value) -> ControlResponse {
         let Some(script) = body.get("script").and_then(Value::as_str) else {
             return invalid("missing script");
         };
@@ -488,7 +510,11 @@ impl DebugController {
         }
     }
 
-    fn execute_async(&mut self, document: &mut ScriptDocument, body: &Value) -> ControlResponse {
+    fn execute_async(
+        &mut self,
+        document: &mut impl DebugDocument,
+        body: &Value,
+    ) -> ControlResponse {
         let Some(script) = body.get("script").and_then(Value::as_str) else {
             return invalid("missing script");
         };
@@ -532,7 +558,7 @@ impl DebugController {
         })
     }
 
-    fn console_entries(&self, document: &ScriptDocument, body: &Value) -> ControlResponse {
+    fn console_entries(&self, document: &impl DebugDocument, body: &Value) -> ControlResponse {
         let after = body.get("after").and_then(Value::as_u64).unwrap_or(0);
         let entries = document.console_entries_after(after);
         let overflowed = entries
@@ -549,7 +575,7 @@ impl DebugController {
         }))
     }
 
-    fn runtime_errors(&self, document: &ScriptDocument, body: &Value) -> ControlResponse {
+    fn runtime_errors(&self, document: &impl DebugDocument, body: &Value) -> ControlResponse {
         let after = body.get("after").and_then(Value::as_u64).unwrap_or(0);
         let entries = document.runtime_errors_after(after);
         let overflowed = entries
@@ -581,7 +607,7 @@ impl DebugController {
         success(json!({"after": after, "entries": entries}))
     }
 
-    fn find(&self, document: &ScriptDocument, body: &Value, many: bool) -> ControlResponse {
+    fn find(&self, document: &impl DebugDocument, body: &Value, many: bool) -> ControlResponse {
         if body.get("using").and_then(Value::as_str) != Some("css selector") {
             return invalid("only the css selector locator strategy is supported");
         }
@@ -619,7 +645,7 @@ impl DebugController {
 
     fn element_command(
         &mut self,
-        document: &mut ScriptDocument,
+        document: &mut impl DebugDocument,
         request: &ControlRequest,
     ) -> ControlResponse {
         let Some(rest) = request.path.strip_prefix("element/") else {
@@ -690,7 +716,7 @@ impl DebugController {
 
     fn element_attribute(
         &self,
-        document: &ScriptDocument,
+        document: &impl DebugDocument,
         node_id: NodeId,
         name: &str,
     ) -> ControlResponse {
@@ -709,7 +735,7 @@ impl DebugController {
 
     fn element_property(
         &self,
-        document: &ScriptDocument,
+        document: &impl DebugDocument,
         node_id: NodeId,
         name: &str,
     ) -> ControlResponse {
@@ -741,7 +767,7 @@ impl DebugController {
         success(value)
     }
 
-    fn resolve_element(&self, document: &ScriptDocument, reference: &str) -> Option<NodeId> {
+    fn resolve_element(&self, document: &impl Document, reference: &str) -> Option<NodeId> {
         let mut parts = reference.split(':');
         let generation = parts.next()?;
         let node_id = parts.next()?;
@@ -761,7 +787,7 @@ impl DebugController {
             .map(|_| node_id)
     }
 
-    fn click(&mut self, document: &mut ScriptDocument, node_id: NodeId) -> ControlResponse {
+    fn click(&mut self, document: &mut impl DebugDocument, node_id: NodeId) -> ControlResponse {
         self.resolve(document);
         let Some(rect) = document.inner().get_client_bounding_rect(node_id) else {
             return error("element not interactable", "element has no layout box");
@@ -802,7 +828,7 @@ impl DebugController {
 
     fn send_keys(
         &mut self,
-        document: &mut ScriptDocument,
+        document: &mut impl DebugDocument,
         node_id: NodeId,
         body: &Value,
     ) -> ControlResponse {
@@ -833,7 +859,7 @@ impl DebugController {
         self.next_event_sequence += 1;
     }
 
-    fn wait_for_idle(&mut self, document: &mut ScriptDocument) -> ControlResponse {
+    fn wait_for_idle(&mut self, document: &mut impl DebugDocument) -> ControlResponse {
         let mut turns = 0;
         while document.poll(None) {
             turns += 1;
@@ -857,7 +883,7 @@ impl DebugController {
         }))
     }
 
-    fn screenshot(&mut self, document: &mut ScriptDocument) -> ControlResponse {
+    fn screenshot(&mut self, document: &mut impl DebugDocument) -> ControlResponse {
         if let ControlResponse::Error {
             error,
             message,
@@ -876,7 +902,10 @@ impl DebugController {
         }
     }
 
-    fn commit_cpu_frame(&mut self, document: &mut ScriptDocument) -> Result<(), ControlResponse> {
+    fn commit_cpu_frame(
+        &mut self,
+        document: &mut impl DebugDocument,
+    ) -> Result<(), ControlResponse> {
         let Some((width, height)) = self.screenshot_size else {
             return Ok(());
         };
@@ -965,7 +994,7 @@ impl DebugController {
         Ok(())
     }
 
-    fn dom_snapshot(&self, document: &ScriptDocument) -> ControlResponse {
+    fn dom_snapshot(&self, document: &impl DebugDocument) -> ControlResponse {
         let inner = document.inner();
         let nodes = inner
             .tree()
@@ -1078,6 +1107,7 @@ fn error(error: impl Into<String>, message: impl Into<String>) -> ControlRespons
 mod tests {
     use super::*;
     use blitz_dom::DocumentConfig;
+    use blitz_html::HtmlDocument;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn controller() -> DebugController {
@@ -1096,10 +1126,9 @@ mod tests {
     #[test]
     fn replacing_the_document_invalidates_old_element_handles() {
         let mut controller = controller();
-        let first =
-            ScriptDocument::from_html("<main id='first'></main>", DocumentConfig::default());
+        let first = HtmlDocument::from_html("<main id='first'></main>", DocumentConfig::default());
         let second =
-            ScriptDocument::from_html("<main id='second'></main>", DocumentConfig::default());
+            HtmlDocument::from_html("<main id='second'></main>", DocumentConfig::default());
 
         controller.observe_document(&first);
         let first_id = first.inner().query_selector("#first").unwrap().unwrap();
