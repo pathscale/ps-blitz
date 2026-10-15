@@ -518,6 +518,12 @@ pub struct BaseDocument {
     /// Stylesheets added by the useragent
     /// where the key is the hashed CSS
     pub(crate) ua_stylesheets: HashMap<String, DocumentStyleSheet>,
+    /// Whether the built-in user-agent stylesheet has not yet been created or installed.
+    pub(crate) default_ua_stylesheet_pending: bool,
+    /// Enumeration can initialize the document-owned sheet before insertion.
+    default_ua_stylesheet_cache: OnceLock<DocumentStyleSheet>,
+    /// Constructor-owned insertion anchor, stable until the first UA mutation.
+    default_ua_stylesheet_before: Option<DocumentStyleSheet>,
     /// Map from form control node ID's to their associated forms node ID's
     pub(crate) controls_to_form: HashMap<NodeId, NodeId>,
     /// Nodes that contain sub documents
@@ -710,6 +716,7 @@ impl BaseDocument {
         style_config::set_pref!("layout.css.basic-shape-shape.enabled", true);
         style_config::set_pref!("layout.threads", -1);
 
+        let default_ua_stylesheet_pending = config.ua_stylesheets.is_none();
         let viewport = config.viewport.unwrap_or_default();
         let media_type = config.media_type.unwrap_or_else(MediaType::screen);
         let device = make_device(&viewport, media_type.clone(), font_ctx.clone());
@@ -798,6 +805,9 @@ impl BaseDocument {
             url: base_url,
             selector_cache: RefCell::new(crate::query_selector::SelectorCache::default()),
             ua_stylesheets: HashMap::new(),
+            default_ua_stylesheet_pending,
+            default_ua_stylesheet_cache: OnceLock::new(),
+            default_ua_stylesheet_before: None,
             nodes_to_stylesheet: BTreeMap::new(),
             document_sheet_nodes: HashSet::new(),
             #[cfg(feature = "shadow-dom")]
@@ -889,13 +899,28 @@ impl BaseDocument {
         doc.root_node_id = doc.create_node(NodeData::Document(Box::default()));
         doc.root_node_mut().flags.insert(NodeFlags::IS_IN_DOCUMENT);
 
-        match config.ua_stylesheets {
-            Some(stylesheets) => {
-                for ss in &stylesheets {
+        // The built-in sheet is parsed and installed on the first style query
+        // or resolution. Explicit sheets retain their insertion order.
+        if let Some(stylesheets) = config.ua_stylesheets {
+            for ss in &stylesheets {
+                if ss == DEFAULT_CSS
+                    && !doc.default_ua_stylesheet_pending
+                    && !doc.ua_stylesheets.contains_key(DEFAULT_CSS)
+                {
+                    doc.default_ua_stylesheet_pending = true;
+                } else if ss == DEFAULT_CSS {
+                    // Repeated defaults preserve their original separate sheet
+                    // identities and positions, just like explicit additions.
                     doc.add_user_agent_stylesheet(ss);
+                } else {
+                    let sheet = doc.append_user_agent_stylesheet(ss);
+                    if doc.default_ua_stylesheet_pending
+                        && doc.default_ua_stylesheet_before.is_none()
+                    {
+                        doc.default_ua_stylesheet_before = Some(sheet);
+                    }
                 }
             }
-            None => doc.add_user_agent_stylesheet(DEFAULT_CSS),
         }
         timer.record_time("ua-sheet");
 
@@ -2797,8 +2822,19 @@ impl BaseDocument {
     }
 
     pub fn remove_user_agent_stylesheet(&mut self, contents: &str) {
+        if contents == DEFAULT_CSS && self.default_ua_stylesheet_pending {
+            self.default_ua_stylesheet_pending = false;
+            self.default_ua_stylesheet_cache.take();
+            self.default_ua_stylesheet_before = None;
+            return;
+        }
+        // Install before an explicit mutation can remove the insertion anchor.
+        self.ensure_default_ua_stylesheet();
         if let Some(sheet) = self.ua_stylesheets.remove(contents) {
             self.stylist.remove_stylesheet(sheet, &self.guard.read());
+        }
+        if contents == DEFAULT_CSS {
+            self.default_ua_stylesheet_cache.take();
         }
     }
 
@@ -2826,17 +2862,48 @@ impl BaseDocument {
 
     /// Iterate over the user-agent stylesheets currently associated with this document
     pub fn useragent_stylesheets(&self) -> impl Iterator<Item = &DocumentStyleSheet> {
-        self.ua_stylesheets.values()
+        let pending = self.default_ua_stylesheet_pending.then(|| {
+            self.default_ua_stylesheet_cache
+                .get_or_init(|| self.default_css_stylesheet())
+        });
+        self.ua_stylesheets.values().chain(pending)
     }
 
     pub fn add_user_agent_stylesheet(&mut self, css: &str) {
+        self.ensure_default_ua_stylesheet();
+        self.append_user_agent_stylesheet(css);
+    }
+
+    fn append_user_agent_stylesheet(&mut self, css: &str) -> DocumentStyleSheet {
         let sheet = if css == DEFAULT_CSS {
             self.default_css_stylesheet()
         } else {
             self.make_stylesheet(css, Origin::UserAgent)
         };
         self.ua_stylesheets.insert(css.to_string(), sheet.clone());
-        self.stylist.append_stylesheet(sheet, &self.guard.read());
+        self.stylist
+            .append_stylesheet(sheet.clone(), &self.guard.read());
+        sheet
+    }
+
+    pub(crate) fn ensure_default_ua_stylesheet(&mut self) {
+        if !self.default_ua_stylesheet_pending {
+            return;
+        }
+
+        let sheet = self
+            .default_ua_stylesheet_cache
+            .get_or_init(|| self.default_css_stylesheet())
+            .clone();
+        self.ua_stylesheets
+            .insert(DEFAULT_CSS.to_string(), sheet.clone());
+        if let Some(before) = self.default_ua_stylesheet_before.take() {
+            self.stylist
+                .insert_stylesheet_before(sheet, before, &self.guard.read());
+        } else {
+            self.stylist.append_stylesheet(sheet, &self.guard.read());
+        }
+        self.default_ua_stylesheet_pending = false;
     }
 
     fn default_css_stylesheet(&self) -> DocumentStyleSheet {
