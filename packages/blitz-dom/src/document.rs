@@ -41,7 +41,7 @@ use std::collections::{BTreeMap, Bound, HashMap, HashSet};
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, MutexGuard, OnceLock, RwLockReadGuard, RwLockWriteGuard};
 use std::task::{Context as TaskContext, Waker};
 use style::Atom;
@@ -71,6 +71,8 @@ use style::{
 };
 use url::Url;
 use web_time::Instant;
+
+static DEFAULT_CSS_TEMPLATE: OnceLock<Stylesheet> = OnceLock::new();
 
 #[cfg(feature = "parallel-construct")]
 use thread_local::ThreadLocal;
@@ -665,6 +667,12 @@ fn incremental_layout_default() -> bool {
 impl BaseDocument {
     /// Create a new (empty) [`BaseDocument`] with the specified configuration
     pub fn new(config: DocumentConfig) -> Self {
+        #[cfg(feature = "log-phase-times")]
+        let mut timer =
+            debug_timer::RealDebugTimer::init_if(blitz_traits::profiling::deep_profiling_enabled());
+        #[cfg(not(feature = "log-phase-times"))]
+        let mut timer = debug_timer::DummyDebugTimer::init();
+
         static ID_GENERATOR: AtomicUsize = AtomicUsize::new(1);
 
         let id = ID_GENERATOR.fetch_add(1, Ordering::SeqCst);
@@ -693,6 +701,7 @@ impl BaseDocument {
         if let Some(fallback) = config.family_fallback {
             crate::font_fallback::set(fallback);
         }
+        timer.record_time("fonts");
 
         // Make sure we turn on stylo features *before* creating the Stylist
         style_config::set_pref!("layout.grid.enabled", true);
@@ -705,6 +714,7 @@ impl BaseDocument {
         let media_type = config.media_type.unwrap_or_else(MediaType::screen);
         let device = make_device(&viewport, media_type.clone(), font_ctx.clone());
         let stylist = Stylist::new(device, QuirksMode::NoQuirks);
+        timer.record_time("device-stylist");
         let snapshots = SnapshotMap::new();
         let nodes = Box::new(NodeTree::new());
         let guard = SharedRwLock::new();
@@ -873,6 +883,7 @@ impl BaseDocument {
             scroll_animation: ScrollAnimationState::None,
             text_selection: TextSelection::default(),
         };
+        timer.record_time("core-state");
 
         // Initialise document with root Document node
         doc.root_node_id = doc.create_node(NodeData::Document(Box::default()));
@@ -886,6 +897,7 @@ impl BaseDocument {
             }
             None => doc.add_user_agent_stylesheet(DEFAULT_CSS),
         }
+        timer.record_time("ua-sheet");
 
         // Stylo data on the root node container is needed to render the node
         let stylo_element_data = StyloElementData {
@@ -900,6 +912,8 @@ impl BaseDocument {
         };
         let stylo_data = doc.root_node_mut().stylo_element_data_mut();
         *stylo_data.ensure_init_mut() = stylo_element_data;
+        timer.record_time("root-style");
+        timer.print_times("[blitz] document construction ");
 
         doc
     }
@@ -2788,6 +2802,17 @@ impl BaseDocument {
         }
     }
 
+    /// Whether ranges or selection endpoints can observe text replacement.
+    pub fn has_live_text_references(&self) -> bool {
+        self.dom_selection.is_some()
+            || self.text_selection.anchor.is_some()
+            || self.text_selection.focus.is_some()
+            || self
+                .live_ranges
+                .iter()
+                .any(|range| range.strong_count() != 0)
+    }
+
     /// The document's base URL
     pub fn url(&self) -> &url::Url {
         &self.url
@@ -2805,9 +2830,49 @@ impl BaseDocument {
     }
 
     pub fn add_user_agent_stylesheet(&mut self, css: &str) {
-        let sheet = self.make_stylesheet(css, Origin::UserAgent);
+        let sheet = if css == DEFAULT_CSS {
+            self.default_css_stylesheet()
+        } else {
+            self.make_stylesheet(css, Origin::UserAgent)
+        };
         self.ua_stylesheets.insert(css.to_string(), sheet.clone());
         self.stylist.append_stylesheet(sheet, &self.guard.read());
+    }
+
+    fn default_css_stylesheet(&self) -> DocumentStyleSheet {
+        let template = DEFAULT_CSS_TEMPLATE.get_or_init(|| {
+            let template_lock = SharedRwLock::new();
+            let neutral_url = DocumentUrl::default();
+            // DEFAULT_CSS uses absolute namespace URLs and a data: font source,
+            // with no relative URLs or imports, so the cached parse is document-neutral.
+            Stylesheet::from_str(
+                DEFAULT_CSS,
+                neutral_url.url_extra_data(),
+                Origin::UserAgent,
+                ServoArc::new(template_lock.wrap(MediaList::empty())),
+                template_lock,
+                None,
+                None,
+                QuirksMode::NoQuirks,
+                AllowImportRules::No,
+            )
+        });
+
+        let template_guard = template.shared_lock.read();
+        let url_data = self.url.url_extra_data();
+        let contents = template.contents.read_with(&template_guard).deep_clone(
+            &self.guard,
+            Some(&url_data),
+            &template_guard,
+        );
+        let media = template.media.read_with(&template_guard).clone();
+
+        DocumentStyleSheet(ServoArc::new(Stylesheet {
+            contents: self.guard.wrap(contents),
+            media: ServoArc::new(self.guard.wrap(media)),
+            shared_lock: self.guard.clone(),
+            disabled: AtomicBool::new(false),
+        }))
     }
 
     pub fn make_stylesheet(&self, css: impl AsRef<str>, origin: Origin) -> DocumentStyleSheet {
