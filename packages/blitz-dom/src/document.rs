@@ -2596,7 +2596,11 @@ impl BaseDocument {
     }
 
     pub fn create_text_node(&mut self, text: &str) -> NodeId {
-        let content = text.to_string();
+        self.create_text_node_owned(text.to_string())
+    }
+
+    /// Create a text node using an existing string allocation.
+    pub fn create_text_node_owned(&mut self, content: String) -> NodeId {
         let data = NodeData::Text(TextNodeData::new(content));
         self.create_node(data)
     }

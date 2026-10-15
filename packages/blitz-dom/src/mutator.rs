@@ -392,13 +392,21 @@ impl DocumentMutator<'_> {
     // Node creation methods
 
     pub fn create_comment_node(&mut self, contents: &str) -> NodeId {
-        self.doc.create_node(NodeData::Comment {
-            contents: contents.to_string(),
-        })
+        self.create_comment_node_owned(contents.to_string())
+    }
+
+    /// Create a comment node using an existing string allocation.
+    pub fn create_comment_node_owned(&mut self, contents: String) -> NodeId {
+        self.doc.create_node(NodeData::Comment { contents })
     }
 
     pub fn create_text_node(&mut self, text: &str) -> NodeId {
         self.doc.create_text_node(text)
+    }
+
+    /// Create a text node using an existing string allocation.
+    pub fn create_text_node_owned(&mut self, text: String) -> NodeId {
+        self.doc.create_text_node_owned(text)
     }
 
     /// A `DocumentFragment`: a parentless container that never appears in a box
