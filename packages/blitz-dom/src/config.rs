@@ -49,6 +49,12 @@ pub struct DocumentConfig {
     pub html_parser_provider: Option<Arc<dyn HtmlParserProvider>>,
     /// Parley `FontContext`
     pub font_ctx: Option<FontContext>,
+    /// Defer system-font discovery until this document first accesses its font context.
+    ///
+    /// The default is `false`, preserving eager system-font loading behavior.
+    /// When no custom font context is supplied, deferred documents share a
+    /// process-local system-font template while keeping document registrations isolated.
+    pub defer_system_fonts: bool,
     /// The CSS media type used to evaluate `@media` rules.
     /// Defaults to [`MediaType::screen`].
     pub media_type: Option<MediaType>,
