@@ -51,7 +51,8 @@ impl BaseDocument {
 
     /// Find the first of `candidates` in tree order
     fn first_in_tree_order(&self, candidates: &[NodeId]) -> Option<NodeId> {
-        let mut stack = vec![self.root_node_id];
+        let mut stack: SmallVec<[NodeId; 32]> = SmallVec::new();
+        stack.push(self.root_node_id);
         while let Some(node_id) = stack.pop() {
             if candidates.contains(&node_id) {
                 return Some(node_id);
@@ -352,7 +353,7 @@ fn query_dom_descendants(
         .as_element()
         .map(|element| selectors::Element::opaque(&element));
     let mut results = SmallVec::new();
-    let mut stack: Vec<_> = scope.children.iter().rev().copied().collect();
+    let mut stack: SmallVec<[NodeId; 32]> = scope.children.iter().rev().copied().collect();
     while let Some(id) = stack.pop() {
         let node = scope.with(id);
         if node.is_element() && matches_selector_list(selector_list, &node, &mut context) {
