@@ -277,6 +277,7 @@ pub struct BaseDocument {
     // Config
     /// Base url for resolving linked resources (stylesheets, images, fonts, etc)
     pub(crate) url: DocumentUrl,
+    pub(crate) selector_cache: RefCell<crate::query_selector::SelectorCache>,
     // Devtool settings. Currently used to render debug overlays
     pub(crate) devtool_settings: DevtoolSettings,
     // Viewport details such as the dimensions, HiDPI scale, and zoom factor,
@@ -785,6 +786,7 @@ impl BaseDocument {
             live_ranges: Vec::new(),
             dom_selection: None,
             url: base_url,
+            selector_cache: RefCell::new(crate::query_selector::SelectorCache::default()),
             ua_stylesheets: HashMap::new(),
             nodes_to_stylesheet: BTreeMap::new(),
             document_sheet_nodes: HashSet::new(),
@@ -925,6 +927,7 @@ impl BaseDocument {
     /// Set base url for resolving linked resources (stylesheets, images, fonts, etc)
     pub fn set_base_url(&mut self, url: &str) {
         self.url = DocumentUrl::from(Url::parse(url).unwrap());
+        self.selector_cache.borrow_mut().clear();
     }
 
     pub fn guard(&self) -> &SharedRwLock {
