@@ -284,12 +284,19 @@ impl BaseDocument {
                 cache.context = Some(self.url.clone());
             }
 
+            if let Some(entry) = cache.entries.front()
+                && entry.input.as_ref() == input
+            {
+                return Ok(Arc::clone(&entry.selector_list));
+            }
+
             if let Some(index) = cache
                 .entries
                 .iter()
+                .skip(1)
                 .position(|entry| entry.input.as_ref() == input)
             {
-                let entry = cache.entries.remove(index).unwrap();
+                let entry = cache.entries.remove(index + 1).unwrap();
                 let selector_list = Arc::clone(&entry.selector_list);
                 cache.entries.push_front(entry);
                 return Ok(selector_list);
