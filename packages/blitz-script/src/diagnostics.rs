@@ -20,4 +20,3 @@ pub struct DiagnosticBatch {
     pub console: DiagnosticStreamBatch,
     pub errors: DiagnosticStreamBatch,
 }
-

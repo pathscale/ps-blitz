@@ -10,7 +10,7 @@
 
 use std::process::Command;
 
-/// Whether a `cargo tree` line names a Boa crate.
+/// Whether a `cargo tree` line names an upstream Boa crate or a `ps-boa` crate.
 ///
 /// A substring search for "boa" is not good enough in either direction: it
 /// matches `keyboard-types` (which is in this graph, via `blitz-traits`) and
@@ -21,7 +21,12 @@ fn names_a_boa_crate(line: &str) -> bool {
         return false;
     };
     let name = name.to_ascii_lowercase();
-    name == "boa" || name.starts_with("boa_") || name.starts_with("boa-")
+    name == "boa"
+        || name.starts_with("boa_")
+        || name.starts_with("boa-")
+        || name == "ps-boa"
+        || name.starts_with("ps-boa_")
+        || name.starts_with("ps-boa-")
 }
 
 /// Every package in the graph, one per line.
@@ -109,12 +114,18 @@ fn the_manifest_names_no_boa_crate() {
 /// `keyboard-types` is the real line that a substring search got wrong.
 #[test]
 fn the_detector_finds_boa_and_leaves_keyboard_types_alone() {
+    assert!(names_a_boa_crate("boa v0.20.0"));
     assert!(names_a_boa_crate("boa_engine v0.20.0"));
     assert!(names_a_boa_crate("boa_runtime v0.20.0 (*)"));
     assert!(names_a_boa_crate("boa_gc v0.20.0"));
     assert!(names_a_boa_crate("boa-engine v0.20.0"));
     assert!(names_a_boa_crate("BOA_ENGINE v0.20.0"));
+    assert!(names_a_boa_crate("ps-boa v0.3.0"));
+    assert!(names_a_boa_crate("ps-boa-engine v0.3.0"));
+    assert!(names_a_boa_crate("ps-boa_runtime v0.3.0"));
+    assert!(names_a_boa_crate("PS-BOA_ENGINE v0.3.0"));
     assert!(!names_a_boa_crate("keyboard-types v0.7.0"));
+    assert!(!names_a_boa_crate("board-game v1.0.0"));
     assert!(!names_a_boa_crate("ps-blitz-dom v0.3.0-beta.3 (/path)"));
     assert!(!names_a_boa_crate(""));
 }

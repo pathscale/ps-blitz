@@ -14,24 +14,19 @@ part every binding would otherwise write for itself.
   blitz-platform-api   this crate: origin scoping, the in-flight table,
         |              the completion queue, the counters
   blitz-wasm           binds it for a WebAssembly guest
-  blitz-script         can bind the same thing for JavaScript
+  runtime adapter      binds the same host for JavaScript
 ```
 
 ## Why it is not inside `blitz-wasm`
 
-Because JavaScript has no `fetch()` either.
+Classic script resource loading and the Fetch API have separate contracts.
 
 `blitz-script/src/fetch.rs` is synchronous `<script src>` loading and nothing
 more: a `ScriptFetcher` trait over `file:` and `data:` URLs, because classic
 scripts must execute in document order and block the parser. It is not a
-`fetch()` and was never meant to be one. Meanwhile chuzz's `WEB_API_SHIM`
-supplies an in-memory `localStorage`, an in-memory `sessionStorage`, and a
-`URL` its own comment describes as not WHATWG-conformant.
-
-So there are two runtimes with the same hole. Written inside the wasm binding,
-all of this would have to be written a second time for Boa, and the second one
-would differ. Written here, Boa's binding is argument coercion over the same
-host.
+`fetch()` and was never meant to be one. `ps-blitz-script` now contains neutral
+contracts; runtime adapters bind platform operations to their own guest values.
+Keeping these operations here lets adapters share the same host behavior.
 
 ## What is deliberately absent
 
@@ -51,6 +46,8 @@ arrive is a feature flag enabled three crates away. Same technique and the same
 reasoning as `blitz-dom-api`'s `no_boa.rs`, including a self-test of the
 detector: `http` is in this graph legitimately and must not be mistaken for an
 HTTP client, exactly as `keyboard-types` must not be mistaken for Boa.
+The engine detector rejects both upstream Boa packages and the `ps-boa` family,
+including hyphenated and underscored package names.
 
 The resolved graph today is `blitz-traits` plus what `blitz-traits` already
 pulls: `http`, `url`, `bytes`, `serde`, `keyboard-types`, `smol_str`,
