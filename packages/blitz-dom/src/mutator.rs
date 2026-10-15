@@ -2104,110 +2104,155 @@ impl<'doc> DocumentMutator<'doc> {
     fn process_removed_subtree(&mut self, node_id: NodeId) {
         let mut removed = FxHashSet::default();
         let mut parents = FxHashSet::default();
-        self.doc
-            .iter_shadow_including_subtree_mut(node_id, |node_id, doc| {
-                removed.insert(node_id);
-                let node = &doc.nodes[node_id];
-                parents.extend(
-                    [node.parent, node.layout_parent.get()]
-                        .into_iter()
-                        .flatten(),
-                );
-                doc.nodes[node_id]
-                    .flags
-                    .set(NodeFlags::IS_IN_DOCUMENT, false);
+        if self.doc.nodes[node_id].children.is_empty()
+            && matches!(
+                &self.doc.nodes[node_id].data,
+                NodeData::Text(_) | NodeData::Comment { .. }
+            )
+        {
+            // These node kinds have no element attributes (including id/class),
+            // special-element resources, custom-element definitions, or stash
+            // attributes. Keep the node in `removed`: layout caches can point
+            // to text nodes, and interaction state can target either leaf kind.
+            removed.insert(node_id);
+            let node = &self.doc.nodes[node_id];
+            parents.extend(
+                [node.parent, node.layout_parent.get()]
+                    .into_iter()
+                    .flatten(),
+            );
+            self.doc.nodes[node_id]
+                .flags
+                .set(NodeFlags::IS_IN_DOCUMENT, false);
 
-                if let Some(load) = doc.iframe_loads.remove(&node_id) {
-                    load.abort_controller.abort();
-                }
+            if let Some(load) = self.doc.iframe_loads.remove(&node_id) {
+                load.abort_controller.abort();
+            }
 
-                // Clear any interaction state that references this node, running
-                // the usual teardown steps (unhover/unactive the surviving
-                // ancestor chain, IME disable on blur of a focused input).
-                doc.clear_interaction_state_for_removed_node(node_id);
+            self.doc.clear_interaction_state_for_removed_node(node_id);
+            if self.doc.focus_node_id == Some(node_id) {
+                self.doc.focus_node_id = None;
+            }
+            if self.doc.mousedown_node_id == Some(node_id) {
+                self.doc.mousedown_node_id = None;
+            }
+            if self.doc.text_selection.anchor.node_or_parent == Some(node_id)
+                || self.doc.text_selection.focus.node_or_parent == Some(node_id)
+            {
+                self.doc.text_selection.clear();
+            }
 
-                let node = &mut doc.nodes[node_id];
+            if self.doc.nodes[node_id].has_snapshot() {
+                let opaque_id = style::dom::TNode::opaque(&&self.doc.nodes[node_id]);
+                self.doc.snapshots.remove(&opaque_id);
+                self.doc.nodes[node_id].set_has_snapshot(false);
+            }
+        } else {
+            self.doc
+                .iter_shadow_including_subtree_mut(node_id, |node_id, doc| {
+                    removed.insert(node_id);
+                    let node = &doc.nodes[node_id];
+                    parents.extend(
+                        [node.parent, node.layout_parent.get()]
+                            .into_iter()
+                            .flatten(),
+                    );
+                    doc.nodes[node_id]
+                        .flags
+                        .set(NodeFlags::IS_IN_DOCUMENT, false);
 
-                // Same for focus and for the node the last press landed on.
-                //
-                // These two were missed, and they are the two most likely to point
-                // at a node that is being removed: dismissing a panel is a click on
-                // a control *inside* it, so that control is both the focused node
-                // and the mousedown node at the moment its subtree goes away.
-                //
-                // A stale id here is not inert. The next click calls `set_focus_to`,
-                // which blurs the old node by indexing it, and indexing a dropped
-                // id panics inside the event handler. The window then stops
-                // responding to clicks until something forces a full rebuild.
-                //
-                // The upstream fix carried a second failure mode, the blur landing
-                // on whatever node had taken the recycled slot. That one cannot
-                // happen here: `NodeId` is versioned, so a dropped id resolves to
-                // nothing rather than aliasing its successor.
-                if doc.focus_node_id == Some(node_id) {
-                    doc.focus_node_id = None;
-                }
-                if doc.mousedown_node_id == Some(node_id) {
-                    doc.mousedown_node_id = None;
-                }
-
-                // Clear the text selection if one of its endpoints references this node.
-                // This prevents stale selection endpoint references.
-                if doc.text_selection.anchor.node_or_parent == Some(node_id)
-                    || doc.text_selection.focus.node_or_parent == Some(node_id)
-                {
-                    doc.text_selection.clear();
-                }
-
-                // Remove any snapshot for this node to prevent stale snapshot references
-                // during style invalidation.
-                if node.has_snapshot() {
-                    let opaque_id = style::dom::TNode::opaque(&&*node);
-                    doc.snapshots.remove(&opaque_id);
-                    node.set_has_snapshot(false);
-                }
-
-                // If the node has an "id" attribute remove it from the ID map.
-                if let Some(id_attr) = node.attr(local_name!("id")).map(ToString::to_string) {
-                    doc.remove_from_id_map(&id_attr, node_id);
-                }
-
-                let node = &mut doc.nodes[node_id];
-                let NodeData::Element(ref mut element) = node.data else {
-                    return;
-                };
-
-                match &element.special_data {
-                    SpecialElementData::SubDocument(_) => {
-                        self.eager_op_queue
-                            .push(SpecialOp::UnloadSubDocument(node_id));
+                    if let Some(load) = doc.iframe_loads.remove(&node_id) {
+                        load.abort_controller.abort();
                     }
-                    #[cfg(feature = "custom-widget")]
-                    SpecialElementData::CustomWidget(_) => {
-                        self.eager_op_queue
-                            .push(SpecialOp::UnloadCustomWidget(node_id));
+
+                    // Clear any interaction state that references this node, running
+                    // the usual teardown steps (unhover/unactive the surviving
+                    // ancestor chain, IME disable on blur of a focused input).
+                    doc.clear_interaction_state_for_removed_node(node_id);
+
+                    let node = &mut doc.nodes[node_id];
+
+                    // Same for focus and for the node the last press landed on.
+                    //
+                    // These two were missed, and they are the two most likely to point
+                    // at a node that is being removed: dismissing a panel is a click on
+                    // a control *inside* it, so that control is both the focused node
+                    // and the mousedown node at the moment its subtree goes away.
+                    //
+                    // A stale id here is not inert. The next click calls `set_focus_to`,
+                    // which blurs the old node by indexing it, and indexing a dropped
+                    // id panics inside the event handler. The window then stops
+                    // responding to clicks until something forces a full rebuild.
+                    //
+                    // The upstream fix carried a second failure mode, the blur landing
+                    // on whatever node had taken the recycled slot. That one cannot
+                    // happen here: `NodeId` is versioned, so a dropped id resolves to
+                    // nothing rather than aliasing its successor.
+                    if doc.focus_node_id == Some(node_id) {
+                        doc.focus_node_id = None;
                     }
-                    #[cfg(feature = "shadow-dom")]
-                    SpecialElementData::CustomElement(_) => {
-                        self.eager_op_queue
-                            .push(SpecialOp::DisconnectCustomElement(node_id));
+                    if doc.mousedown_node_id == Some(node_id) {
+                        doc.mousedown_node_id = None;
                     }
-                    SpecialElementData::Stylesheet(_) => self
-                        .eager_op_queue
-                        .push(SpecialOp::UnloadStylesheet(node_id)),
-                    SpecialElementData::Image(_) => {}
-                    SpecialElementData::Canvas(_) => {
-                        self.recompute_is_animating = true;
+
+                    // Clear the text selection if one of its endpoints references this node.
+                    // This prevents stale selection endpoint references.
+                    if doc.text_selection.anchor.node_or_parent == Some(node_id)
+                        || doc.text_selection.focus.node_or_parent == Some(node_id)
+                    {
+                        doc.text_selection.clear();
                     }
-                    SpecialElementData::TableRoot(_) => {}
-                    SpecialElementData::TextInput(_) => {}
-                    SpecialElementData::CheckboxInput(_) => {}
-                    SpecialElementData::Select(_) => {}
-                    #[cfg(feature = "file-input")]
-                    SpecialElementData::FileInput(_) => {}
-                    SpecialElementData::None => {}
-                }
-            });
+
+                    // Remove any snapshot for this node to prevent stale snapshot references
+                    // during style invalidation.
+                    if node.has_snapshot() {
+                        let opaque_id = style::dom::TNode::opaque(&&*node);
+                        doc.snapshots.remove(&opaque_id);
+                        node.set_has_snapshot(false);
+                    }
+
+                    // If the node has an "id" attribute remove it from the ID map.
+                    if let Some(id_attr) = node.attr(local_name!("id")).map(ToString::to_string) {
+                        doc.remove_from_id_map(&id_attr, node_id);
+                    }
+
+                    let node = &mut doc.nodes[node_id];
+                    let NodeData::Element(ref mut element) = node.data else {
+                        return;
+                    };
+
+                    match &element.special_data {
+                        SpecialElementData::SubDocument(_) => {
+                            self.eager_op_queue
+                                .push(SpecialOp::UnloadSubDocument(node_id));
+                        }
+                        #[cfg(feature = "custom-widget")]
+                        SpecialElementData::CustomWidget(_) => {
+                            self.eager_op_queue
+                                .push(SpecialOp::UnloadCustomWidget(node_id));
+                        }
+                        #[cfg(feature = "shadow-dom")]
+                        SpecialElementData::CustomElement(_) => {
+                            self.eager_op_queue
+                                .push(SpecialOp::DisconnectCustomElement(node_id));
+                        }
+                        SpecialElementData::Stylesheet(_) => self
+                            .eager_op_queue
+                            .push(SpecialOp::UnloadStylesheet(node_id)),
+                        SpecialElementData::Image(_) => {}
+                        SpecialElementData::Canvas(_) => {
+                            self.recompute_is_animating = true;
+                        }
+                        SpecialElementData::TableRoot(_) => {}
+                        SpecialElementData::TextInput(_) => {}
+                        SpecialElementData::CheckboxInput(_) => {}
+                        SpecialElementData::Select(_) => {}
+                        #[cfg(feature = "file-input")]
+                        SpecialElementData::FileInput(_) => {}
+                        SpecialElementData::None => {}
+                    }
+                });
+        }
 
         // Detachment must remove published paint edges even while script
         // still owns wrappers. The later drop also invalidates references to
