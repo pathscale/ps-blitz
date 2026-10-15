@@ -19,7 +19,7 @@ accessibility = [
 ]
 clipboard = ["dep:arboard"]
 tracing = ["dep:tracing", "blitz-dom/tracing"]
-debug-control = ["dep:blitz-script", "blitz-script/boa", "blitz-script/debug-control"]
+debug-control = ["dep:blitz-script", "blitz-script/debug-control"]
 svg = ["blitz-paint/svg"]
 # Overlay scrollbars: the thumb painting in `blitz-paint` plus the drag and
 # hover tracking in `blitz-dom`. Off by default because a shell that draws no

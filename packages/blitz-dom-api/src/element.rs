@@ -88,6 +88,16 @@ pub fn tag_name(doc: &BaseDocument, node: NodeId) -> Result<String> {
         .unwrap_or_default())
 }
 
+/// Read a node's decoded raster without performing layout.
+///
+/// Cloning shares the decoded pixel allocation with the document.
+pub fn raster_image(doc: &BaseDocument, node: NodeId) -> Option<blitz_dom::node::RasterImageData> {
+    doc.get_node(node)?
+        .element_data()?
+        .raster_image_data()
+        .cloned()
+}
+
 // === Attributes ===
 
 /// `element.getAttribute(name)`.

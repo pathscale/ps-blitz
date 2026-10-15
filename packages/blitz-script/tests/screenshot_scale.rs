@@ -23,8 +23,8 @@
 use anyrender::render_to_buffer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
 use blitz_dom::{Document as _, DocumentConfig};
+use blitz_html::HtmlDocument;
 use blitz_paint::paint_scene;
-use blitz_script::ScriptDocument;
 use blitz_traits::shell::{ColorScheme, Viewport};
 
 /// A line of text in a box exactly as tall as the line, on white.
@@ -43,7 +43,7 @@ const LINE_HEIGHT: u32 = 24;
 
 /// Paint the document, laid out at `layout_scale`, using `paint_scale`.
 fn ink_below_the_line(layout_scale: f32, paint_scale: f64) -> usize {
-    let mut document = ScriptDocument::from_html(HTML, DocumentConfig::default());
+    let mut document = HtmlDocument::from_html(HTML, DocumentConfig::default());
     let (width, height) = (
         (f64::from(CSS_WIDTH) * paint_scale).round() as u32,
         (f64::from(CSS_HEIGHT) * paint_scale).round() as u32,
@@ -140,7 +140,7 @@ Hgjy Hgjy Hgjy Hgjy Hgjy Hgjy Hgjy Hgjy Hgjy Hgjy Hgjy Hgjy
 
     // Ink to the right of where a box laid out for `NARROW` could reach.
     let ink_right_of_the_box = |viewport_width: u32| {
-        let mut document = ScriptDocument::from_html(PARAGRAPH, DocumentConfig::default());
+        let mut document = HtmlDocument::from_html(PARAGRAPH, DocumentConfig::default());
         {
             let mut inner = document.inner_mut();
             inner.set_viewport(Viewport::new(viewport_width, 400, 1.0, ColorScheme::Light));
