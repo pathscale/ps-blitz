@@ -9,23 +9,34 @@ mod markdown {
     #[cfg(feature = "comrak")]
     pub(crate) use comrak::*;
 
-    #[cfg(feature = "pulldown_cmark")]
+    #[cfg(all(feature = "pulldown_cmark", not(feature = "comrak")))]
     mod pulldown_cmark;
-    #[cfg(feature = "pulldown_cmark")]
+    #[cfg(all(feature = "pulldown_cmark", not(feature = "comrak")))]
     pub(crate) use pulldown_cmark::*;
 }
 
-#[cfg(feature = "skia")]
+// Prefer GPU, then hybrid, then CPU when multiple renderer features are enabled.
+#[cfg(all(
+    feature = "skia",
+    not(any(
+        feature = "gpu",
+        feature = "hybrid",
+        feature = "cpu-base",
+        feature = "skia-pixels",
+        feature = "skia-softbuffer"
+    ))
+))]
 use anyrender_skia::SkiaWindowRenderer as WindowRenderer;
-#[cfg(feature = "skia-pixels")]
-use anyrender_skia::raster::SkiaRasterWindowRenderer as WindowRenderer;
-#[cfg(feature = "skia-softbuffer")]
+#[cfg(all(
+    any(feature = "skia-pixels", feature = "skia-softbuffer"),
+    not(any(feature = "gpu", feature = "hybrid", feature = "cpu-base"))
+))]
 use anyrender_skia::raster::SkiaRasterWindowRenderer as WindowRenderer;
 #[cfg(feature = "gpu")]
 use anyrender_vello::VelloWindowRenderer as WindowRenderer;
-#[cfg(feature = "cpu-base")]
+#[cfg(all(feature = "cpu-base", not(any(feature = "gpu", feature = "hybrid"))))]
 use anyrender_vello_cpu::VelloCpuWindowRenderer as WindowRenderer;
-#[cfg(feature = "hybrid")]
+#[cfg(all(feature = "hybrid", not(feature = "gpu")))]
 use anyrender_vello_hybrid::VelloHybridWindowRenderer as WindowRenderer;
 
 use blitz_dom::DocumentConfig;

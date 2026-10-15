@@ -172,8 +172,10 @@ fn a_hovered_transform_returns_to_the_original_neutral_pixels() {
     let after = render(&mut document);
 
     let changed = before
-        .chunks_exact(4)
-        .zip(after.chunks_exact(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(after.as_chunks::<4>().0)
         .filter(|(left, right)| {
             left[..3]
                 .iter()
