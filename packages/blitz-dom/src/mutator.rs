@@ -725,8 +725,11 @@ impl DocumentMutator<'_> {
                                     | "selected"
                             ))
                 });
-        self.doc.note_stash_subtree(node_id);
-        self.doc.note_stash_attribute(node_id, &name, value);
+        if name.ns.as_ref().is_empty() {
+            self.doc.note_stash_attribute(node_id, &name, value);
+        } else {
+            self.doc.note_stash_subtree(node_id);
+        }
         #[cfg(feature = "shadow-dom")]
         if name.local == local_name!("slot") || name.local == local_name!("name") {
             self.doc.note_shadow_tree_change(node_id);
