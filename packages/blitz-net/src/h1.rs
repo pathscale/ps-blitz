@@ -989,7 +989,6 @@ fn bounded_decode(
     initiator: &blitz_traits::net::Initiator,
     high_water: &mut usize,
 ) -> Result<Bytes, Error> {
-    use std::io::Read;
     let credited = *high_water;
     let mut charged_through = credited;
     let mut output = Vec::new();

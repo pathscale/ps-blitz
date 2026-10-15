@@ -106,7 +106,7 @@ impl ElementCx<'_, '_> {
             {
                 use style::properties::generated::longhands::mask_mode::single_value::computed_value::T as StyloMaskMode;
                 let mask_mode = &svg_styles.mask_mode.0;
-                if matches!(get_cyclic(&mask_mode, idx), StyloMaskMode::Luminance) {
+                if matches!(get_cyclic(mask_mode, idx), StyloMaskMode::Luminance) {
                     warn!("mask-mode: luminance is not supported (falling back to alpha)");
                 }
             }
