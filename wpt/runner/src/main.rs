@@ -1,5 +1,5 @@
 use anyrender::ImageRenderer as _;
-#[cfg(feature = "gpu")]
+#[cfg(all(feature = "gpu", not(feature = "cpu")))]
 use anyrender_vello::VelloImageRenderer;
 #[cfg(feature = "cpu")]
 use anyrender_vello_cpu::VelloCpuImageRenderer as VelloImageRenderer;

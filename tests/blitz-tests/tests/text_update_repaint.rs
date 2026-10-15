@@ -64,7 +64,9 @@ fn ink(doc: &mut HtmlDocument) -> usize {
         HEIGHT,
     );
     buffer
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .filter(|px| px[0] < 200 && px[1] < 200 && px[2] < 200)
         .count()
 }

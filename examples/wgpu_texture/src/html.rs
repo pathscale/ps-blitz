@@ -15,7 +15,7 @@ fn create_renderer() -> anyrender_vello::VelloWindowRenderer {
     )
 }
 
-#[cfg(feature = "vello-hybrid")]
+#[cfg(all(feature = "vello-hybrid", not(feature = "vello")))]
 /// Create renderer
 fn create_renderer() -> anyrender_vello_hybrid::VelloHybridWindowRenderer {
     use anyrender_vello_hybrid::{VelloHybridRendererOptions, VelloHybridWindowRenderer};

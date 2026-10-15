@@ -14,8 +14,8 @@
 
 #![cfg(feature = "counters")]
 
+use blitz_dom::DocumentConfig;
 use blitz_dom::layout_counters;
-use blitz_dom::{DocumentConfig, QualName, ns};
 use blitz_html::{HtmlDocument, HtmlProvider};
 use blitz_traits::shell::{ColorScheme, Viewport};
 use std::sync::Arc;
@@ -46,14 +46,6 @@ fn transcript() -> HtmlDocument {
     );
     doc.resolve(0.0);
     doc
-}
-
-fn qname(local: &str) -> QualName {
-    QualName {
-        prefix: None,
-        ns: ns!(html),
-        local: local.into(),
-    }
 }
 
 #[test]

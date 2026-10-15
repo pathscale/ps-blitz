@@ -173,7 +173,9 @@ skrifa = { version = "^0.42", default-features = false, features = [
 # repository gets the same range rather than a second copy of anyrender pinned
 # somewhere else in the graph.
 anyrender = { package = "ps-anyrender", version = "^0.13.0" }
-anyrender_serialize = { version = "^0.6.0" }
+# The registry serializer still takes upstream AnyRender, whose Scene is a
+# different type. Use the fork's serializer until it has a registry release.
+anyrender_serialize = { version = "^0.6.0", git = "https://github.com/pathscale/ps-anyrender", rev = "fa6f78d2b86c3713cbd762fbd911826c794fc494" }
 anyrender_skia = { version = "^0.10.0" }
 anyrender_vello = { package = "ps-anyrender-vello", version = "^0.14.0" }
 anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", version = "^0.17.0" }
@@ -250,6 +252,10 @@ bitflags = "^2.8.0"
 bytemuck = "^1"
 rayon = "^1"
 thread_local = "^1"
+
+[patch."https://github.com/pathscale/ps-anyrender"]
+# Keep the serializer's public Scene type identical to the renderers' type.
+ps-anyrender = { version = "^0.13.0" }
 
 [profile.profile]
 inherits = "release"
