@@ -10,6 +10,26 @@ pub trait ScriptDocumentBackend: Document + Sized {
     fn execute_scripts(&mut self) -> Result<(), String>;
 }
 
+/// Opt-in support for attaching an engine-native host to a script document.
+///
+/// Attachment is a separate, fallible step so callers can complete it after
+/// constructing the document and before calling `execute_scripts`. This
+/// extension does not change the requirements for [`ScriptDocumentBackend`].
+pub trait NativeHostDocumentBackend: ScriptDocumentBackend {
+    /// The engine-specific host owned by this backend after attachment.
+    type Host;
+
+    /// Attach `host` to this document before executing its scripts.
+    ///
+    /// Ownership of `host` transfers to the backend when this method is
+    /// called. On success, the backend keeps it for the attached document's
+    /// lifetime and is responsible for releasing it during teardown or
+    /// disposal. On failure, the backend must release any partially attached
+    /// resources and must not retain `host` as an attached host. This method
+    /// does not execute scripts.
+    fn attach_native_host(&mut self, host: Self::Host) -> Result<(), String>;
+}
+
 #[repr(transparent)]
 /// A statically dispatched document wrapper with the backend's layout and ownership.
 pub struct ApplicationDocument<D: ScriptDocumentBackend>(D);
@@ -33,6 +53,15 @@ impl<D: ScriptDocumentBackend> ApplicationDocument<D> {
 
     pub fn execute_scripts(&mut self) -> Result<(), String> {
         self.0.execute_scripts()
+    }
+}
+
+impl<D: NativeHostDocumentBackend> ApplicationDocument<D> {
+    /// Attaches the backend's native host before script execution.
+    ///
+    /// Ownership and failure cleanup follow [`NativeHostDocumentBackend`].
+    pub fn attach_native_host(&mut self, host: D::Host) -> Result<(), String> {
+        self.0.attach_native_host(host)
     }
 }
 
