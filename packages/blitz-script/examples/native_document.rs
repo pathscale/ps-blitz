@@ -1,6 +1,6 @@
 //! Document-driver witness with a synthetic compiled guest, not a JavaScript engine.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -79,6 +79,11 @@ impl NativeGuest for Guest {
 
 impl NativeHost for Guest {
     type Guest = Self;
+
+    fn guest(&self) -> &Self {
+        self
+    }
+
     fn guest_mut(&mut self) -> &mut Self {
         self
     }
@@ -229,9 +234,13 @@ impl std::task::Wake for WakeCount {
 fn main() {
     let trace = Rc::new(RefCell::new(Vec::new()));
     let html = Arc::from(
-        "<output id=subject>pending</output><template><script>inert</script></template><script nomodule>inert</script><script type=application/json>inert</script><script>paint()</script><script src='data:text/javascript,paint()'></script>",
+        "<output id=subject>pending</output><template><script src='inert.js'>inert</script></template><script nomodule src='legacy.js'>inert</script><script type=application/json>inert</script><script>paint()</script><script src='data:text/javascript,paint()'></script>",
     );
     let mut page = Page::from_html(html, DocumentConfig::default()).expect("parse fixture");
+    assert_eq!(
+        blitz_script::external_script_urls(&page.inner()),
+        vec![Url::parse("data:text/javascript,paint()").unwrap()]
+    );
     assert!(
         page.execute_scripts().is_err(),
         "unbound execution must fail"
@@ -288,6 +297,54 @@ fn main() {
     page.storage_set("seed", 3).unwrap();
     page.storage_clear().unwrap();
     assert_eq!(page.storage_get("seed").unwrap(), None);
+
+    page.with_guest_mut(|guest, document| {
+        assert!(guest.storage.is_empty());
+        assert_eq!(document.query_selector("#subject").unwrap(), Some(subject));
+    })
+    .unwrap();
+    let hook_order = Rc::new(RefCell::new(Vec::new()));
+    let nested_installed = Rc::new(Cell::new(false));
+    let retire = Rc::new(Cell::new(false));
+    let hook_wakes = Rc::new(Cell::new(0));
+    for index in [1, 2] {
+        let order = Rc::clone(&hook_order);
+        let installed = Rc::clone(&nested_installed);
+        let retire = Rc::clone(&retire);
+        let wakes = Rc::clone(&hook_wakes);
+        page.add_poll_hook(Box::new(move |document, context| {
+            order.borrow_mut().push(index);
+            if context.is_some() {
+                wakes.set(wakes.get() + 1);
+            }
+            if index == 1 && !installed.replace(true) {
+                let nested_order = Rc::clone(&order);
+                (document as &mut dyn std::any::Any)
+                    .downcast_mut::<Page>()
+                    .unwrap()
+                    .add_poll_hook(Box::new(move |_, _| {
+                        nested_order.borrow_mut().push(3);
+                        false
+                    }))
+                    .unwrap();
+            }
+            if index == 1 && retire.get() {
+                document.prepare_teardown();
+            }
+            index == 1
+        }))
+        .unwrap();
+    }
+    assert!(page.poll(None));
+    assert_eq!(&*hook_order.borrow(), &[1, 2]);
+    assert!(page.poll_for_settle(Some(Context::from_waker(&waker)), false));
+    assert_eq!(&*hook_order.borrow(), &[1, 2, 1, 2, 3]);
+    assert_eq!(hook_wakes.get(), 2);
+    retire.set(true);
+    assert!(!page.poll(None));
+    assert_eq!(&*hook_order.borrow(), &[1, 2, 1, 2, 3, 1]);
+    assert!(page.guest().is_none());
+    assert!(page.add_poll_hook(Box::new(|_, _| true)).is_err());
     page.prepare_teardown();
     let calls = trace.borrow().len();
     assert!(!page.poll(None));

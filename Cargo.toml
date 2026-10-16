@@ -102,7 +102,7 @@ style_config = { version = "^0.20.0", package = "stylo_static_prefs" }
 style_dom = { version = "^0.20.0", package = "stylo_dom" }
 selectors = { version = "^0.40.0", package = "selectors" }
 base64 = "^0.22"
-blitz-debug-control = { package = "ps-blitz-debug-control", version = "^0.3", path = "./packages/blitz-debug-control" }
+blitz-debug-control = { package = "ps-blitz-debug-control", version = "^0.3.9", path = "./packages/blitz-debug-control" }
 getrandom = "^0.4"
 serde_json = "^1"
 cssparser = { version = "^0.37.0" }

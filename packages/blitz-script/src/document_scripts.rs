@@ -20,6 +20,16 @@ pub enum ScriptKind {
     ImportMap,
 }
 
+/// Discover external executable sources using the same admission rules as
+/// document execution, including inert scripts and template subtrees.
+pub fn external_script_urls(document: &BaseDocument) -> Vec<url::Url> {
+    document_scripts(document)
+        .into_iter()
+        .filter_map(|script| script.src)
+        .filter_map(|source| document.url().join(&source).ok())
+        .collect()
+}
+
 /// Collect executable scripts from the document in DOM tree order.
 pub(crate) fn document_scripts(doc: &BaseDocument) -> Vec<DocumentScript> {
     let mut scripts = Vec::new();

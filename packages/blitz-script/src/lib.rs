@@ -22,6 +22,7 @@ mod fetch;
 mod job_budget;
 pub mod native_document;
 pub mod native_host;
+pub mod runtime_driver;
 pub mod script_stats;
 
 pub use application_document::{
@@ -30,6 +31,10 @@ pub use application_document::{
 #[cfg(feature = "debug-control")]
 pub use debug_control::{DebugController, DebugDocument};
 pub use diagnostics::{DiagnosticBatch, DiagnosticEntry, DiagnosticStreamBatch};
-pub use document_scripts::ScriptKind;
+pub use document_scripts::{ScriptKind, external_script_urls};
 pub use fetch::{DefaultScriptFetcher, FetchError, ScriptFetcher};
-pub use native_document::{BoundScriptDocument, DocumentHostExtension, TypedNativeGuest};
+pub use native_document::{
+    BoundScriptDocument, DocumentHostExtension, DocumentPollHook, NativeDocumentRuntime,
+    TypedNativeGuest,
+};
+pub use runtime_driver::RuntimeDriver;
