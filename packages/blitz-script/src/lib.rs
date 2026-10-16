@@ -16,9 +16,11 @@ mod application_document;
 #[cfg(feature = "debug-control")]
 mod debug_control;
 mod diagnostics;
+mod document_scripts;
 pub mod engine;
 mod fetch;
 mod job_budget;
+pub mod native_document;
 pub mod native_host;
 pub mod script_stats;
 
@@ -28,4 +30,6 @@ pub use application_document::{
 #[cfg(feature = "debug-control")]
 pub use debug_control::{DebugController, DebugDocument};
 pub use diagnostics::{DiagnosticBatch, DiagnosticEntry, DiagnosticStreamBatch};
+pub use document_scripts::ScriptKind;
 pub use fetch::{DefaultScriptFetcher, FetchError, ScriptFetcher};
+pub use native_document::{BoundScriptDocument, DocumentHostExtension, TypedNativeGuest};
