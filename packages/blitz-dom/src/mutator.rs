@@ -917,6 +917,9 @@ impl DocumentMutator<'_> {
         // If node if not in the document, then don't apply any special behaviours
         // and simply set the attribute value
         if !node.flags.is_in_document() {
+            if *tag == local_name!("img") && matches!(attr.as_ref(), "src" | "srcset" | "sizes") {
+                self.load_image(node_id);
+            }
             return;
         }
 
@@ -1121,9 +1124,7 @@ impl DocumentMutator<'_> {
             } else {
                 node.mark_style_attr_updated();
             }
-        } else if node_is_in_document
-            && *tag == local_name!("img")
-            && matches!(attr.as_ref(), "src" | "srcset" | "sizes")
+        } else if *tag == local_name!("img") && matches!(attr.as_ref(), "src" | "srcset" | "sizes")
         {
             self.load_image(node_id);
         } else if node_is_in_document
@@ -2494,53 +2495,78 @@ impl<'doc> DocumentMutator<'doc> {
     }
 
     fn load_image(&mut self, target_id: NodeId) {
-        if let Some(raw_src) = self.selected_image_source(target_id) {
-            if !raw_src.is_empty() {
-                let src = self.doc.resolve_url(raw_src);
-                let src_string = src.as_str();
-
-                // Check cache first
-                if let Some(cached_image) = self.doc.image_cache.get(src_string) {
-                    #[cfg(feature = "tracing")]
-                    tracing::info!("Loading image {src_string} from cache");
-                    let node = &mut self.doc.nodes[target_id];
-                    node.element_data_mut().unwrap().special_data =
-                        SpecialElementData::Image(Box::new(cached_image.clone()));
-                    node.cache_mut().clear();
-                    node.insert_damage(ALL_DAMAGE);
-                    return;
-                }
-
-                // Check if there's already a pending request for this URL
-                if let Some(waiting_list) = self.doc.pending_images.get_mut(src_string) {
-                    #[cfg(feature = "tracing")]
-                    tracing::info!("Image {src_string} already pending, queueing node {target_id}");
-                    waiting_list.push((target_id, ImageType::Image));
-                    return;
-                }
-
-                // Start fetch and track as pending
-                #[cfg(feature = "tracing")]
-                tracing::info!("Fetching image {src_string}");
-                self.doc
-                    .pending_images
-                    .insert(src_string.to_string(), vec![(target_id, ImageType::Image)]);
-
-                self.doc.net_provider.fetch(
-                    self.doc.id(),
-                    self.doc
-                        .build_request(src)
-                        .destination(RequestDestination::Image),
-                    ResourceHandler::boxed(
-                        self.doc.tx.clone(),
-                        self.doc.id(),
-                        None, // Don't pass node_id, we'll handle it via pending_images
-                        self.doc.shell_provider.clone(),
-                        ImageHandler::new(ImageType::Image),
-                    ),
-                );
-            }
+        let Some(raw_src) = self.selected_image_source(target_id) else {
+            self.doc.cancel_image_load(target_id);
+            let node = &mut self.doc.nodes[target_id];
+            node.element_data_mut().unwrap().special_data = SpecialElementData::None;
+            node.cache_mut().clear();
+            node.insert_damage(ALL_DAMAGE);
+            return;
+        };
+        if raw_src.is_empty() {
+            self.doc.cancel_image_load(target_id);
+            let node = &mut self.doc.nodes[target_id];
+            node.element_data_mut().unwrap().special_data = SpecialElementData::None;
+            node.cache_mut().clear();
+            node.insert_damage(ALL_DAMAGE);
+            return;
         }
+        let src = self.doc.resolve_url(raw_src);
+        let src_string = src.as_str();
+        self.doc.begin_image_load(target_id, src_string.to_owned());
+        let node = &mut self.doc.nodes[target_id];
+        node.element_data_mut().unwrap().special_data = SpecialElementData::None;
+        node.cache_mut().clear();
+        node.insert_damage(ALL_DAMAGE);
+
+        // Check cache first
+        if let Some(cached_image) = self.doc.image_cache.get(src_string) {
+            #[cfg(feature = "tracing")]
+            tracing::info!("Loading image {src_string} from cache");
+            let node = &mut self.doc.nodes[target_id];
+            node.element_data_mut().unwrap().special_data =
+                SpecialElementData::Image(Box::new(cached_image.clone()));
+            node.cache_mut().clear();
+            node.insert_damage(ALL_DAMAGE);
+            self.doc.finish_image_load(target_id, src_string, true);
+            return;
+        }
+
+        // Check if there's already a pending request for this URL
+        if let Some(waiting_list) = self.doc.pending_images.get_mut(src_string) {
+            #[cfg(feature = "tracing")]
+            tracing::info!("Image {src_string} already pending, queueing node {target_id}");
+            if !waiting_list
+                .iter()
+                .any(|(node, kind)| *node == target_id && matches!(kind, ImageType::Image))
+            {
+                waiting_list.push((target_id, ImageType::Image));
+            }
+            return;
+        }
+
+        // Start fetch and track as pending
+        #[cfg(feature = "tracing")]
+        tracing::info!("Fetching image {src_string}");
+        self.doc
+            .pending_images
+            .insert(src_string.to_string(), vec![(target_id, ImageType::Image)]);
+
+        let request_url = src_string.to_owned();
+        self.doc.net_provider.fetch(
+            self.doc.id(),
+            self.doc
+                .build_request(src)
+                .destination(RequestDestination::Image),
+            ResourceHandler::boxed_for_url(
+                self.doc.tx.clone(),
+                self.doc.id(),
+                None, // Don't pass node_id, we'll handle it via pending_images
+                self.doc.shell_provider.clone(),
+                ImageHandler::new(ImageType::Image),
+                request_url,
+            ),
+        );
     }
 
     fn load_iframe(&mut self, target_id: NodeId) {

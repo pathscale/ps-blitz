@@ -595,6 +595,10 @@ pub struct BaseDocument {
     /// Value is a list of (node_id, image_type) pairs waiting for the image.
     pub(crate) pending_images: HashMap<String, Vec<(NodeId, ImageType)>>,
 
+    /// Latest image request identity for script-visible `<img>` elements.
+    image_load_states: HashMap<NodeId, (String, u64)>,
+    image_load_outcomes: Vec<(NodeId, u64, bool)>,
+
     // Tracks in-flight "critical" resources (e.g. stylesheets linked from the `<head>`),
     // keyed by request id
     pub(crate) pending_critical_resources: HashSet<usize>,
@@ -620,6 +624,8 @@ pub struct BaseDocument {
     /// [`DocumentConfig::abort_signal`].
     pub(crate) abort_signal: Option<AbortSignal>,
 }
+
+const MAX_PENDING_IMAGE_OUTCOMES: usize = 4096;
 
 pub(crate) fn make_device(
     viewport: &Viewport,
@@ -872,6 +878,8 @@ impl BaseDocument {
             script_custom_elements: Default::default(),
             image_cache: HashMap::new(),
             pending_images: HashMap::new(),
+            image_load_states: HashMap::new(),
+            image_load_outcomes: Vec::new(),
             pending_critical_resources: HashSet::new(),
             web_fonts: Vec::new(),
             font_epoch: 0,
@@ -1303,6 +1311,8 @@ impl BaseDocument {
         self.reset_web_fonts();
         self.pending_critical_resources.clear();
         self.pending_images.clear();
+        self.image_load_states.clear();
+        self.image_load_outcomes.clear();
         self.set_document_quirks_mode(0);
     }
 
@@ -3038,7 +3048,8 @@ impl BaseDocument {
     }
 
     pub fn handle_messages(&mut self) {
-        for msg in self.rx.take_pending() {
+        let messages = self.rx.take_pending();
+        for msg in messages {
             let msg =
                 Arc::try_unwrap(msg).unwrap_or_else(|_| panic!("document event has one consumer"));
             self.handle_message(msg);
@@ -3067,6 +3078,46 @@ impl BaseDocument {
         self.pending_images.len()
     }
 
+    /// Take decoded image outcomes since the previous call.
+    pub fn take_image_load_outcomes(&mut self) -> Vec<(NodeId, u64, bool)> {
+        std::mem::take(&mut self.image_load_outcomes)
+            .into_iter()
+            .filter(|(node, generation, _)| {
+                self.image_load_states
+                    .get(node)
+                    .is_some_and(|(_, current)| current == generation)
+            })
+            .collect::<Vec<_>>()
+    }
+
+    pub(crate) fn begin_image_load(&mut self, node: NodeId, source: String) -> u64 {
+        let generation = self
+            .image_load_states
+            .get(&node)
+            .map_or(1, |(_, generation)| generation.wrapping_add(1).max(1));
+        self.image_load_states.insert(node, (source, generation));
+        generation
+    }
+
+    pub(crate) fn cancel_image_load(&mut self, node: NodeId) {
+        self.image_load_states.remove(&node);
+    }
+
+    pub(crate) fn finish_image_load(&mut self, node: NodeId, source: &str, loaded: bool) {
+        if let Some((current_source, generation)) = self.image_load_states.get(&node)
+            && current_source == source
+            && self.image_load_outcomes.len() < MAX_PENDING_IMAGE_OUTCOMES
+            && !self
+                .image_load_outcomes
+                .iter()
+                .any(|(queued_node, queued_generation, _)| {
+                    *queued_node == node && queued_generation == generation
+                })
+        {
+            self.image_load_outcomes.push((node, *generation, loaded));
+        }
+    }
+
     pub fn load_resource(&mut self, res: ResourceLoadResponse) {
         self.pending_critical_resources.remove(&res.request_id);
 
@@ -3075,6 +3126,11 @@ impl BaseDocument {
             Err(err) => {
                 if let Some(url) = res.resolved_url.as_ref() {
                     let waiting_nodes = self.pending_images.remove(url).unwrap_or_default();
+                    for (node, image_type) in waiting_nodes.iter() {
+                        if matches!(image_type, ImageType::Image) {
+                            self.finish_image_load(*node, url, false);
+                        }
+                    }
                     #[cfg(feature = "tracing")]
                     tracing::warn!(
                         url = url.as_str(),
@@ -3246,6 +3302,16 @@ impl BaseDocument {
 
         // Apply to all waiting nodes
         for (node_id, image_type) in waiting_nodes {
+            if matches!(image_type, ImageType::Image) {
+                if !self
+                    .image_load_states
+                    .get(&node_id)
+                    .is_some_and(|(current_source, _)| current_source == url)
+                {
+                    continue;
+                }
+                self.finish_image_load(node_id, url, true);
+            }
             let Some(node) = self.get_node_mut(node_id) else {
                 continue;
             };
