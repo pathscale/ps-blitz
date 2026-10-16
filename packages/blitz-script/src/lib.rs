@@ -20,6 +20,7 @@ mod document_scripts;
 pub mod engine;
 mod fetch;
 mod job_budget;
+pub mod native;
 pub mod native_document;
 pub mod native_host;
 pub mod runtime_driver;

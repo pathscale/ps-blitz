@@ -115,6 +115,7 @@ pub(crate) struct ResourceHandler<T: Send + Sync + 'static> {
     doc_id: usize,
     request_id: usize,
     node_id: Option<NodeId>,
+    request_url: Option<String>,
     tx: EventTarget<DocumentEvent>,
     shell_provider: Arc<dyn ShellProvider>,
     /// Set once `respond` has delivered a result. A fetch that never calls
@@ -132,11 +133,23 @@ impl<T: Send + Sync + 'static> ResourceHandler<T> {
         shell_provider: Arc<dyn ShellProvider>,
         data: T,
     ) -> Self {
+        Self::new_with_url(tx, doc_id, node_id, shell_provider, data, None)
+    }
+
+    fn new_with_url(
+        tx: EventTarget<DocumentEvent>,
+        doc_id: usize,
+        node_id: Option<NodeId>,
+        shell_provider: Arc<dyn ShellProvider>,
+        data: T,
+        request_url: Option<String>,
+    ) -> Self {
         static REQUEST_ID_COUNTER: AtomicUsize = AtomicUsize::new(0);
         Self {
             request_id: REQUEST_ID_COUNTER.fetch_add(1, Ao::Relaxed),
             doc_id,
             node_id,
+            request_url,
             tx,
             shell_provider,
             settled: AtomicBool::new(false),
@@ -155,6 +168,27 @@ impl<T: Send + Sync + 'static> ResourceHandler<T> {
         ResourceHandler<T>: NetHandler,
     {
         Box::new(Self::new(tx, doc_id, node_id, shell_provider, data)) as _
+    }
+
+    pub(crate) fn boxed_for_url(
+        tx: EventTarget<DocumentEvent>,
+        doc_id: usize,
+        node_id: Option<NodeId>,
+        shell_provider: Arc<dyn ShellProvider>,
+        data: T,
+        request_url: String,
+    ) -> Box<dyn NetHandler>
+    where
+        ResourceHandler<T>: NetHandler,
+    {
+        Box::new(Self::new_with_url(
+            tx,
+            doc_id,
+            node_id,
+            shell_provider,
+            data,
+            Some(request_url),
+        )) as _
     }
 
     pub(crate) fn request_id(&self) -> usize {
@@ -184,7 +218,7 @@ impl<T: Send + Sync + 'static> Drop for ResourceHandler<T> {
             ResourceLoadResponse {
                 request_id: self.request_id,
                 node_id: self.node_id,
-                resolved_url: None,
+                resolved_url: self.request_url.clone(),
                 result: Err(String::from("resource fetch failed")),
             },
         )));
