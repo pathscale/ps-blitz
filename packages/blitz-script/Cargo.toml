@@ -29,6 +29,9 @@ debug-control = [
     "dep:nagoya",
     "blitz-dom/svg",
 ]
+# Requires consumers to validate Intl support on the bound guest before execution.
+# This engine-neutral crate does not provide an Intl implementation.
+intl = []
 system-fonts = ["blitz-dom/system-fonts"]
 tracing = ["blitz-dom/tracing"]
 
