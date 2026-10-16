@@ -30,7 +30,7 @@ debug-control = [
     "blitz-dom/svg",
 ]
 # Requires consumers to validate Intl support on the bound guest before execution.
-# This engine-neutral crate does not provide an Intl implementation.
+# The native guest exposes the locale subset implemented by its web bindings.
 intl = []
 system-fonts = ["blitz-dom/system-fonts"]
 tracing = ["blitz-dom/tracing"]
@@ -41,6 +41,7 @@ name = "blitz_script"
 [dependencies]
 # Blitz dependencies
 blitz-dom = { workspace = true, features = ["autofocus"] }
+blitz-dom-api = { workspace = true }
 blitz-debug-control = { workspace = true, optional = true }
 blitz-paint = { workspace = true, optional = true }
 blitz-html = { workspace = true }
@@ -52,6 +53,7 @@ url = { workspace = true }
 data-url = { workspace = true }
 web-time = { workspace = true }
 serde_json = { workspace = true }
+regex = "^1.13"
 nagoya = { workspace = true, optional = true }
 anyrender = { workspace = true, optional = true }
 anyrender_vello_cpu = { workspace = true, optional = true }
