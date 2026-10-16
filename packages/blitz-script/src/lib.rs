@@ -19,9 +19,12 @@ mod diagnostics;
 pub mod engine;
 mod fetch;
 mod job_budget;
+pub mod native_host;
 pub mod script_stats;
 
-pub use application_document::{ApplicationDocument, ScriptDocumentBackend};
+pub use application_document::{
+    ApplicationDocument, NativeHostDocumentBackend, ScriptDocumentBackend,
+};
 #[cfg(feature = "debug-control")]
 pub use debug_control::{DebugController, DebugDocument};
 pub use diagnostics::{DiagnosticBatch, DiagnosticEntry, DiagnosticStreamBatch};
