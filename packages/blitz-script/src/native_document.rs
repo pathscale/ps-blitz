@@ -3,9 +3,9 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::task::Context;
 
-use blitz_dom::{BaseDocument, DocGuard, DocGuardMut, Document, DocumentConfig};
+use blitz_dom::{BaseDocument, DocGuard, DocGuardMut, Document, DocumentConfig, NodeId};
 use blitz_html::HtmlDocument;
-use blitz_traits::events::UiEvent;
+use blitz_traits::events::{BlitzPointerEvent, DomEvent, UiEvent};
 use url::Url;
 
 use crate::document_scripts::{DocumentScript, ScriptKind, document_scripts};
@@ -104,6 +104,69 @@ pub trait TypedNativeGuest: NativeGuest<Error: Debug> + 'static {
     fn storage_clear(&mut self) -> Result<(), Self::Error>;
 }
 
+/// Required runtime operations supplied by a native guest.
+///
+/// Basic document guests implement only `TypedNativeGuest`; executable
+/// application hosts additionally implement these runtime operations.
+pub trait NativeDocumentRuntime: TypedNativeGuest {
+    fn eval_named(
+        &mut self,
+        document: &mut BaseDocument,
+        source: &str,
+        name: &str,
+    ) -> Result<(), Self::Error>;
+
+    fn eval_json(
+        &mut self,
+        document: &mut BaseDocument,
+        source: &str,
+    ) -> Result<serde_json::Value, Self::Error>;
+
+    fn has_pending_jobs(&self) -> bool;
+
+    fn pending_task_count(&self) -> u64;
+
+    fn diagnostic_batch(
+        &self,
+        console_after: u64,
+        errors_after: u64,
+        limit: usize,
+    ) -> Result<crate::DiagnosticBatch, Self::Error>;
+
+    fn dispatch_dom_event(
+        &mut self,
+        document: &mut BaseDocument,
+        event: DomEvent,
+    ) -> Result<(), Self::Error>;
+
+    fn handle_pointer_move_to_node(
+        &mut self,
+        document: &mut BaseDocument,
+        event: BlitzPointerEvent,
+        node: NodeId,
+    ) -> Result<(), Self::Error>;
+
+    fn handle_ui_event_to_node(
+        &mut self,
+        document: &mut BaseDocument,
+        event: UiEvent,
+        node: NodeId,
+    ) -> Result<(), Self::Error>;
+
+    fn dispatch_node_event(
+        &mut self,
+        document: &mut BaseDocument,
+        node: NodeId,
+        name: &str,
+    ) -> Result<bool, Self::Error>;
+
+    fn set_ipc_handler(&mut self, handler: Box<dyn Fn(String)>) -> Result<(), Self::Error>;
+}
+
+/// Work invoked by a backend during its document poll, on the document thread.
+pub type DocumentPollHook =
+    Box<dyn FnMut(&mut dyn Document, Option<&Context<'_>>) -> bool + 'static>;
+
 /// The installed host extension owns a concrete native host, which in turn
 /// owns the guest used for all execution and document operations.
 pub struct DocumentHostExtension<G: TypedNativeGuest> {
@@ -130,6 +193,10 @@ impl<G: TypedNativeGuest> DocumentHostExtension<G> {
             .install_document(document)
             .map_err(|error| format!("failed to install native document: {error:?}"))?;
         Ok(())
+    }
+
+    fn guest(&self) -> &G {
+        self.host.guest()
     }
 
     fn guest_mut(&mut self) -> &mut G {
@@ -173,6 +240,7 @@ where
     extension: Option<DocumentHostExtension<G>>,
     last_error: Option<String>,
     execution: Option<Result<(), String>>,
+    poll_hooks: Vec<DocumentPollHook>,
     retired: bool,
     _host: PhantomData<fn() -> H>,
 }
@@ -205,6 +273,49 @@ where
     /// Return the most recent error from a Document callback, if any.
     pub fn last_error(&self) -> Option<&str> {
         self.last_error.as_deref()
+    }
+
+    /// Drain a callback failure so an application can publish it once.
+    pub fn take_last_error(&mut self) -> Option<String> {
+        self.last_error.take()
+    }
+
+    /// Add a poll hook without replacing hooks already registered.
+    pub fn add_poll_hook(&mut self, hook: DocumentPollHook) -> Result<(), String> {
+        self.ensure_live()?;
+        self.poll_hooks.push(hook);
+        Ok(())
+    }
+
+    /// Borrow the native guest while the document is live and attached.
+    pub fn guest(&self) -> Option<&G> {
+        if self.ensure_live().is_err() {
+            return None;
+        }
+        self.extension.as_ref().map(DocumentHostExtension::guest)
+    }
+
+    /// Mutably borrow the native guest while the document is live and attached.
+    pub fn guest_mut(&mut self) -> Option<&mut G> {
+        if self.ensure_live().is_err() {
+            return None;
+        }
+        self.extension
+            .as_mut()
+            .map(DocumentHostExtension::guest_mut)
+    }
+
+    /// Run a callback with mutable access to the guest and its document.
+    pub fn with_guest_mut<R>(
+        &mut self,
+        callback: impl FnOnce(&mut G, &mut BaseDocument) -> R,
+    ) -> Result<R, String> {
+        self.ensure_live()?;
+        let extension = self
+            .extension
+            .as_mut()
+            .ok_or_else(|| String::from("native host is not attached"))?;
+        Ok(callback(extension.guest_mut(), &mut self.document))
     }
 
     /// Read a native guest storage value.
@@ -271,6 +382,7 @@ where
             extension: None,
             last_error: None,
             execution: None,
+            poll_hooks: Vec::new(),
             retired: false,
             _host: PhantomData,
         })
@@ -362,6 +474,170 @@ where
             self.last_error = Some(format!("native document callback failed: {error:?}"));
         }
     }
+
+    fn run_poll_hooks(&mut self, context: Option<&Context<'_>>) -> bool {
+        if self.ensure_live().is_err() {
+            return false;
+        }
+        let mut hooks = std::mem::take(&mut self.poll_hooks);
+        let mut work_remains = false;
+        for hook in &mut hooks {
+            if self.document.page_frozen {
+                break;
+            }
+            work_remains |= hook(self, context);
+            if self.ensure_live().is_err() {
+                self.poll_hooks.clear();
+                return false;
+            }
+        }
+        hooks.append(&mut self.poll_hooks);
+        self.poll_hooks = hooks;
+        work_remains
+    }
+}
+
+impl<G, H> BoundScriptDocument<G, H>
+where
+    G: NativeDocumentRuntime,
+    H: NativeHost<Guest = G> + 'static,
+{
+    /// Evaluate source through the bound native guest.
+    pub fn eval(&mut self, source: &str) -> Result<(), String> {
+        self.eval_named(source, "<eval>")
+    }
+
+    /// Evaluate named source through the bound native guest.
+    pub fn eval_named(&mut self, source: &str, name: &str) -> Result<(), String> {
+        self.ensure_live()?;
+        let extension = self
+            .extension
+            .as_mut()
+            .ok_or_else(|| String::from("native host is not attached"))?;
+        extension
+            .guest_mut()
+            .eval_named(&mut self.document, source, name)
+            .map_err(|error| format!("native source evaluation failed: {error:?}"))
+    }
+
+    /// Evaluate source and return its JSON-compatible result.
+    pub fn eval_json(&mut self, source: &str) -> Result<serde_json::Value, String> {
+        self.ensure_live()?;
+        let extension = self
+            .extension
+            .as_mut()
+            .ok_or_else(|| String::from("native host is not attached"))?;
+        extension
+            .guest_mut()
+            .eval_json(&mut self.document, source)
+            .map_err(|error| format!("native JSON evaluation failed: {error:?}"))
+    }
+
+    /// Whether the live guest reports pending jobs for this document.
+    pub fn has_pending_jobs(&self) -> bool {
+        self.ensure_live().is_ok()
+            && self
+                .extension
+                .as_ref()
+                .is_some_and(|extension| extension.guest().has_pending_jobs())
+    }
+
+    /// Return the live guest's pending task count.
+    pub fn pending_task_count(&self) -> u64 {
+        if self.ensure_live().is_err() {
+            return 0;
+        }
+        self.extension
+            .as_ref()
+            .map_or(0, |extension| extension.guest().pending_task_count())
+    }
+
+    /// Return a bounded batch of diagnostics from the bound guest.
+    pub fn diagnostic_batch(
+        &self,
+        console_after: u64,
+        errors_after: u64,
+        limit: usize,
+    ) -> Result<crate::DiagnosticBatch, String> {
+        self.ensure_live()?;
+        let extension = self
+            .extension
+            .as_ref()
+            .ok_or_else(|| String::from("native host is not attached"))?;
+        extension
+            .guest()
+            .diagnostic_batch(console_after, errors_after, limit)
+            .map_err(|error| format!("native diagnostic read failed: {error:?}"))
+    }
+
+    /// Dispatch a DOM event through the bound native guest.
+    pub fn dispatch_dom_event(&mut self, event: DomEvent) -> Result<(), String> {
+        self.ensure_live()?;
+        let extension = self
+            .extension
+            .as_mut()
+            .ok_or_else(|| String::from("native host is not attached"))?;
+        extension
+            .guest_mut()
+            .dispatch_dom_event(&mut self.document, event)
+            .map_err(|error| format!("native DOM event dispatch failed: {error:?}"))
+    }
+
+    /// Move pointer state to a caller-resolved node through the bound guest.
+    pub fn handle_pointer_move_to_node(
+        &mut self,
+        event: BlitzPointerEvent,
+        node: NodeId,
+    ) -> Result<(), String> {
+        self.ensure_live()?;
+        let extension = self
+            .extension
+            .as_mut()
+            .ok_or_else(|| String::from("native host is not attached"))?;
+        extension
+            .guest_mut()
+            .handle_pointer_move_to_node(&mut self.document, event, node)
+            .map_err(|error| format!("native pointer dispatch failed: {error:?}"))
+    }
+
+    /// Dispatch UI input to a caller-resolved node through the bound guest.
+    pub fn handle_ui_event_to_node(&mut self, event: UiEvent, node: NodeId) -> Result<(), String> {
+        self.ensure_live()?;
+        let extension = self
+            .extension
+            .as_mut()
+            .ok_or_else(|| String::from("native host is not attached"))?;
+        extension
+            .guest_mut()
+            .handle_ui_event_to_node(&mut self.document, event, node)
+            .map_err(|error| format!("native UI event dispatch failed: {error:?}"))
+    }
+
+    /// Dispatch a named event at a node through the bound guest.
+    pub fn dispatch_node_event(&mut self, node: NodeId, name: &str) -> Result<bool, String> {
+        self.ensure_live()?;
+        let extension = self
+            .extension
+            .as_mut()
+            .ok_or_else(|| String::from("native host is not attached"))?;
+        extension
+            .guest_mut()
+            .dispatch_node_event(&mut self.document, node, name)
+            .map_err(|error| format!("native node event dispatch failed: {error:?}"))
+    }
+
+    /// Install an IPC handler through the bound native guest.
+    pub fn set_ipc_handler(&mut self, handler: Box<dyn Fn(String)>) -> Result<(), String> {
+        self.ensure_live()?;
+        let extension = self
+            .extension
+            .as_mut()
+            .ok_or_else(|| String::from("native host is not attached"))?;
+        extension
+            .guest_mut()
+            .set_ipc_handler(handler)
+            .map_err(|error| format!("native IPC handler installation failed: {error:?}"))
+    }
 }
 
 fn resolve_script_url(base_url: Option<&Url>, source: &str) -> Result<Url, String> {
@@ -447,39 +723,51 @@ where
         if self.ensure_live().is_err() || self.document.page_frozen {
             return false;
         }
-        let Some(extension) = self.extension.as_mut() else {
+        let guest_work = if let Some(extension) = self.extension.as_mut() {
+            let guest_context = context.as_ref().map(|ctx| Context::from_waker(ctx.waker()));
+            match extension
+                .guest_mut()
+                .poll(&mut self.document, guest_context)
+            {
+                Ok(work_remains) => work_remains,
+                Err(error) => {
+                    self.last_error = Some(format!("native document poll failed: {error:?}"));
+                    false
+                }
+            }
+        } else {
             return false;
         };
-        match extension.guest_mut().poll(&mut self.document, context) {
-            Ok(work_remains) => work_remains,
-            Err(error) => {
-                self.last_error = Some(format!("native document poll failed: {error:?}"));
-                false
-            }
-        }
+        let hook_work = self.run_poll_hooks(context.as_ref());
+        self.ensure_live().is_ok() && (hook_work | guest_work)
     }
 
     fn poll_for_settle(&mut self, context: Option<Context>, run_timers: bool) -> bool {
         if self.ensure_live().is_err() || self.document.page_frozen {
             return false;
         }
-        let Some(extension) = self.extension.as_mut() else {
+        let guest_work = if let Some(extension) = self.extension.as_mut() {
+            match extension.guest_mut().poll_for_settle(
+                &mut self.document,
+                context.as_ref().map(|ctx| Context::from_waker(ctx.waker())),
+                run_timers,
+            ) {
+                Ok(work_remains) => work_remains,
+                Err(error) => {
+                    self.last_error = Some(format!("native settle poll failed: {error:?}"));
+                    false
+                }
+            }
+        } else {
             return false;
         };
-        match extension
-            .guest_mut()
-            .poll_for_settle(&mut self.document, context, run_timers)
-        {
-            Ok(work_remains) => work_remains,
-            Err(error) => {
-                self.last_error = Some(format!("native settle poll failed: {error:?}"));
-                false
-            }
-        }
+        let hook_work = self.run_poll_hooks(context.as_ref());
+        self.ensure_live().is_ok() && (hook_work | guest_work)
     }
 
     fn prepare_teardown(&mut self) {
         self.retired = true;
+        self.poll_hooks.clear();
         if let Some(extension) = self.extension.as_mut() {
             if let Err(error) = extension.prepare_teardown(&mut self.document) {
                 self.last_error = Some(error);
