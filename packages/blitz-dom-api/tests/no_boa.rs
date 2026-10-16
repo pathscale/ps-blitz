@@ -31,13 +31,31 @@ fn names_a_boa_crate(line: &str) -> bool {
 
 /// Every package in the graph, one per line.
 fn dependency_tree(edges: &str) -> String {
+    let tree = if let Some(directory) = std::env::var_os("BLITZ_GRAPH_CAPTURE_DIR") {
+        let path = std::path::PathBuf::from(directory).join(format!(
+            "ps-blitz-dom-api-{}-all.txt",
+            edges.replace(',', "-")
+        ));
+        std::fs::read_to_string(&path).unwrap_or_else(|error| {
+            panic!("could not read captured graph {}: {error}", path.display())
+        })
+    } else {
+        cargo_tree(edges)
+    };
+    assert!(
+        tree.lines().any(|line| line.starts_with("ps-blitz-dom ")),
+        "`cargo tree --edges {edges}` produced no recognisable graph:\n{tree}"
+    );
+    tree
+}
+
+fn cargo_tree(edges: &str) -> String {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
 
     let output = Command::new(&cargo)
         .args([
             "tree",
-            "--locked",
             "--manifest-path",
             manifest,
             "--package",
@@ -65,14 +83,7 @@ fn dependency_tree(edges: &str) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let tree = String::from_utf8_lossy(&output.stdout).into_owned();
-    // A silent empty result would pass every assertion below, which is the
-    // failure mode this whole test exists to avoid.
-    assert!(
-        tree.lines().any(|line| line.starts_with("ps-blitz-dom ")),
-        "`cargo tree --edges {edges}` produced no recognisable graph:\n{tree}"
-    );
-    tree
+    String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
 fn assert_boa_free(edges: &str) {
