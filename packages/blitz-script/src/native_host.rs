@@ -152,6 +152,9 @@ pub trait NativeHost {
     /// The guest implementation owned by this host.
     type Guest: NativeGuest;
 
+    /// Borrow the guest immutably.
+    fn guest(&self) -> &Self::Guest;
+
     /// Borrow the guest for an invocation.
     fn guest_mut(&mut self) -> &mut Self::Guest;
 

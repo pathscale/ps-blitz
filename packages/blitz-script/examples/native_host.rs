@@ -83,6 +83,11 @@ impl Guest {
 
 impl NativeHost for Guest {
     type Guest = Self;
+
+    fn guest(&self) -> &Self {
+        self
+    }
+
     fn guest_mut(&mut self) -> &mut Self {
         self
     }
