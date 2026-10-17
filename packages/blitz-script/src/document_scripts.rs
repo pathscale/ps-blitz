@@ -21,10 +21,13 @@ pub enum ScriptKind {
 }
 
 /// Discover external executable sources using the same admission rules as
-/// document execution, including inert scripts and template subtrees.
+/// document execution. Parser-inert scripts and scripts inside template
+/// contents are excluded. Import maps are inline configuration, not external
+/// executable sources, so their `src` attributes are not returned.
 pub fn external_script_urls(document: &BaseDocument) -> Vec<url::Url> {
     document_scripts(document)
         .into_iter()
+        .filter(|script| script.kind != ScriptKind::ImportMap)
         .filter_map(|script| script.src)
         .filter_map(|source| document.url().join(&source).ok())
         .collect()
