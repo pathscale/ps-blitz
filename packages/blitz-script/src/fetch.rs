@@ -32,7 +32,11 @@ impl std::error::Error for FetchError {}
 /// Trait for synchronously fetching external script sources.
 ///
 /// Scripts are fetched synchronously because the HTML spec requires classic
-/// scripts to execute in document order, blocking parsing.
+/// scripts to execute in document order, blocking parsing. Implementations
+/// should provide [`Self::fetch`]. The default [`Self::fetch_for_document`]
+/// applies file-URL authorization and the source-size limit before returning
+/// source text. An override of `fetch_for_document` is responsible for
+/// preserving those checks (and any additional policy required by its host).
 pub trait ScriptFetcher: 'static {
     fn fetch(&self, url: &Url) -> Result<String, FetchError>;
 
@@ -41,6 +45,8 @@ pub trait ScriptFetcher: 'static {
         url: &Url,
         document_url: Option<&Url>,
     ) -> Result<String, FetchError> {
+        // Keep policy checks at the boundary used by document script loading;
+        // custom implementations overriding this method must preserve them.
         authorize_script_url(url, document_url)?;
         let source = self.fetch(url)?;
         if source.len() > MAX_SCRIPT_BYTES {
