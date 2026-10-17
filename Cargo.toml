@@ -101,11 +101,8 @@ style_atoms = { version = "^0.20.0", package = "stylo_atoms" }
 style_config = { version = "^0.20.0", package = "stylo_static_prefs" }
 style_dom = { version = "^0.20.0", package = "stylo_dom" }
 selectors = { version = "^0.40.0", package = "selectors" }
-boa_engine = { package = "ps-boa-engine", version = "^1.1.3", features = ["annex-b"] }
-boa_runtime = { package = "ps-boa-runtime", version = "^1.1.3" }
-boa_gc = { package = "ps-boa-gc", version = "^1.1.3" }
 base64 = "^0.22"
-blitz-debug-control = { package = "ps-blitz-debug-control", version = "^0.3", path = "./packages/blitz-debug-control" }
+blitz-debug-control = { package = "ps-blitz-debug-control", version = "^0.3.9", path = "./packages/blitz-debug-control" }
 getrandom = "^0.4"
 serde_json = "^1"
 cssparser = { version = "^0.37.0" }
@@ -176,7 +173,9 @@ skrifa = { version = "^0.42", default-features = false, features = [
 # repository gets the same range rather than a second copy of anyrender pinned
 # somewhere else in the graph.
 anyrender = { package = "ps-anyrender", version = "^0.13.0" }
-anyrender_serialize = { version = "^0.6.0" }
+# The registry serializer still takes upstream AnyRender, whose Scene is a
+# different type. Use the fork's serializer until it has a registry release.
+anyrender_serialize = { version = "^0.6.0", git = "https://github.com/pathscale/ps-anyrender", rev = "fa6f78d2b86c3713cbd762fbd911826c794fc494" }
 anyrender_skia = { version = "^0.10.0" }
 anyrender_vello = { package = "ps-anyrender-vello", version = "^0.14.0" }
 anyrender_vello_cpu = { package = "ps-anyrender-vello-cpu", version = "^0.17.0" }
@@ -254,6 +253,10 @@ bytemuck = "^1"
 rayon = "^1"
 thread_local = "^1"
 
+[patch."https://github.com/pathscale/ps-anyrender"]
+# Keep the serializer's public Scene type identical to the renderers' type.
+ps-anyrender = { version = "^0.13.0" }
+
 [profile.profile]
 inherits = "release"
 debug = true
@@ -314,7 +317,6 @@ log-frame-times = ["dioxus-native/log-frame-times"]
 log-phase-times = ["dioxus-native/log-phase-times"]
 
 [dev-dependencies]
-blitz-script = { workspace = true }
 url = { workspace = true }
 anyrender = { workspace = true }
 anyrender_vello = { workspace = true }
@@ -343,11 +345,3 @@ peniko = { workspace = true }
 color = { workspace = true }
 env_logger = "0.11"
 tracing-subscriber = "0.3"
-
-# Local Boa, until `JsObject::downgrade` is published.
-#
-# The DOM wrapper caches have to hold weak handles. A strong cache pins every
-# node script has ever touched, which is why a removed node could never be
-# freed: `createElement` caches a wrapper for all of them, so everything looked
-# reachable for ever.
-

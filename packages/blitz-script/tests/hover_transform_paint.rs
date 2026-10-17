@@ -4,9 +4,9 @@
 
 use anyrender::render_to_buffer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
-use blitz_dom::{Document as _, DocumentConfig};
+use blitz_dom::{Document as _, DocumentConfig, EventDriver, NoopEventHandler};
+use blitz_html::HtmlDocument;
 use blitz_paint::paint_scene;
-use blitz_script::ScriptDocument;
 use blitz_traits::{
     events::{BlitzPointerEvent, MouseEventButtons},
     shell::{ColorScheme, Viewport},
@@ -69,11 +69,11 @@ const HTML: &str = r#"<!doctype html>
 </div></div></body>
 </html>"#;
 
-fn resolve(document: &mut ScriptDocument, animation_time: f64) {
+fn resolve(document: &mut HtmlDocument, animation_time: f64) {
     document.inner_mut().resolve(animation_time);
 }
 
-fn render(document: &mut ScriptDocument) -> Vec<u8> {
+fn render(document: &mut HtmlDocument) -> Vec<u8> {
     let mut inner = document.inner_mut();
     render_to_buffer::<VelloCpuImageRenderer, _>(
         |scene| paint_scene(scene, &mut inner, 1.0, WIDTH, HEIGHT, 0, 0),
@@ -82,7 +82,7 @@ fn render(document: &mut ScriptDocument) -> Vec<u8> {
     )
 }
 
-fn paint_order(document: &ScriptDocument) -> Vec<(u64, Vec<(u64, i32)>)> {
+fn paint_order(document: &HtmlDocument) -> Vec<(u64, Vec<(u64, i32)>)> {
     document
         .inner()
         .tree()
@@ -104,7 +104,7 @@ fn paint_order(document: &ScriptDocument) -> Vec<(u64, Vec<(u64, i32)>)> {
 
 #[test]
 fn a_hovered_transform_returns_to_the_original_neutral_pixels() {
-    let mut document = ScriptDocument::from_html(HTML, DocumentConfig::default());
+    let mut document = HtmlDocument::from_html(HTML, DocumentConfig::default());
     document
         .inner_mut()
         .set_viewport(Viewport::new(WIDTH, HEIGHT, 1.0, ColorScheme::Dark));
@@ -136,14 +136,14 @@ fn a_hovered_transform_returns_to_the_original_neutral_pixels() {
         "an idle second resolve changed the initial neutral pixels"
     );
 
-    document.handle_pointer_move_to_node(
-        BlitzPointerEvent::at(126.0, 64.0, MouseEventButtons::empty()),
+    EventDriver::new(&mut document, NoopEventHandler).handle_pointer_move_to_node(
+        &BlitzPointerEvent::at(126.0, 64.0, MouseEventButtons::empty()),
         petal,
     );
     resolve(&mut document, 0.02);
     resolve(&mut document, 0.15);
-    document.handle_pointer_move_to_node(
-        BlitzPointerEvent::at(0.0, 0.0, MouseEventButtons::empty()),
+    EventDriver::new(&mut document, NoopEventHandler).handle_pointer_move_to_node(
+        &BlitzPointerEvent::at(0.0, 0.0, MouseEventButtons::empty()),
         root,
     );
     resolve(&mut document, 0.16);
@@ -172,8 +172,10 @@ fn a_hovered_transform_returns_to_the_original_neutral_pixels() {
     let after = render(&mut document);
 
     let changed = before
-        .chunks_exact(4)
-        .zip(after.chunks_exact(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(after.as_chunks::<4>().0)
         .filter(|(left, right)| {
             left[..3]
                 .iter()

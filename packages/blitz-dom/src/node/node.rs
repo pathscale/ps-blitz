@@ -20,7 +20,7 @@ use std::ops::{Deref, Range};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use style::Atom;
-use style::computed_values::isolation::T as Isolation;
+
 use style::invalidation::element::restyle_hints::RestyleHint;
 use style::properties::ComputedValues;
 use style::properties::generated::longhands::position::computed_value::T as Position;
@@ -30,9 +30,8 @@ use style::shared_lock::SharedRwLock;
 use style::stylesheets::UrlExtraData;
 use style::values::computed::CSSPixelLength;
 use style::values::computed::Display as StyloDisplay;
-use style::values::computed::Rotate;
-use style::values::generics::transform::{Scale, Translate};
-use style::values::specified::box_::{DisplayInside, DisplayOutside};
+use style::values::generics::image::GenericImage;
+use style::values::specified::box_::{Contain, DisplayInside, DisplayOutside, WillChangeBits};
 use style_dom::ElementState;
 use style_traits::values::ToCss;
 use taffy::prelude::{Layout, Style};
@@ -663,13 +662,18 @@ impl Node {
 
     /// Set appropriate damage for Stylo when an element's style attribute is updated
     pub(crate) fn mark_style_attr_updated(&mut self) {
+        self.mark_style_attr_updated_without_propagation();
+        self.mark_ancestors_dirty();
+    }
+
+    /// Marks a style attribute update after the caller has dirtied the current ancestors.
+    pub(crate) fn mark_style_attr_updated_without_propagation(&mut self) {
         if let Some(stylo_element_data) = self.stylo_element_data_opt_mut() {
             if let Some(mut data) = stylo_element_data.get_mut() {
                 data.hint |= RestyleHint::RESTYLE_STYLE_ATTRIBUTE;
             }
         }
         self.set_dirty_descendants();
-        self.mark_ancestors_dirty();
     }
 
     /// Marks all ancestors of this node as having dirty descendants.
@@ -1949,13 +1953,18 @@ impl Node {
             return false;
         };
 
-        let position = style.clone_position();
-        let has_z_index = !style.clone_z_index().is_auto();
+        let box_styles = style.get_box();
+        let effects = style.get_effects();
+        let will_change = box_styles.will_change.bits;
 
-        if style.clone_opacity() != 1.0 {
+        // Stylo covers opacity, mix-blend-mode, clip-path and isolation.
+        if style.guarantees_stacking_context() {
             return true;
         }
 
+        let position = style.clone_position();
+        let has_z_index =
+            !style.clone_z_index().is_auto() || will_change.intersects(WillChangeBits::Z_INDEX);
         let position_based = match position {
             Position::Fixed | Position::Sticky => true,
             Position::Relative | Position::Absolute => has_z_index,
@@ -1965,37 +1974,30 @@ impl Node {
             return true;
         }
 
-        // This runs while the stacking-context tree is built, before
-        // `resolve_transforms` populates the cached device-space matrix. Using
-        // that cache here makes the first frame treat a transformed node as an
-        // ordinary box, hoist its painted children into the parent, and only
-        // repair the tree after the first hover/restyle. The computed CSS value
-        // is already available and is the source of truth for whether the node
-        // establishes a stacking context.
-        let box_styles = style.get_box();
-        if !box_styles.transform.0.is_empty()
-            || !matches!(box_styles.translate, Translate::None)
-            || !matches!(box_styles.rotate, Rotate::None)
-            || !matches!(box_styles.scale, Scale::None)
+        // Read computed CSS before resolve_transforms populates the matrix cache.
+        if box_styles.has_transform_or_perspective()
+            || !effects.filter.0.is_empty()
+            || !effects.backdrop_filter.0.is_empty()
+            || box_styles
+                .contain
+                .intersects(Contain::LAYOUT | Contain::PAINT)
+            || will_change.intersects(
+                WillChangeBits::STACKING_CONTEXT_UNCONDITIONAL
+                    | WillChangeBits::OPACITY
+                    | WillChangeBits::TRANSFORM
+                    | WillChangeBits::PERSPECTIVE
+                    | WillChangeBits::CONTAIN,
+            )
         {
             return true;
         }
 
-        // `isolation: isolate` exists precisely to create a stacking context
-        // without any other visual effect. Ignoring it lets a negative z-index
-        // descendant escape to an ancestor context, where it is painted before
-        // (and so underneath) the backgrounds of the boxes in between.
-        if box_styles.isolation == Isolation::Isolate {
-            return true;
-        }
-
-        // TODO: mix-blend-mode
-        // TODO: filter
-        // TODO: clip-path
-        // TODO: mask
-        // TODO: contain
-
-        false
+        style
+            .get_svg()
+            .mask_image
+            .0
+            .iter()
+            .any(|image| !matches!(image, GenericImage::None))
     }
 
     /// Takes an (x, y) position (relative to the *parent's* top-left corner) and returns:
@@ -2004,8 +2006,9 @@ impl Node {
     ///    - The result of recursively calling child.hit() on the the child element that is
     ///      positioned at that position if there is one.
     ///
-    /// TODO: z-index
-    /// (If multiple children are positioned at the position then a random one will be recursed into)
+    /// Overlapping children are tested in reverse paint order, using the
+    /// stacking context's sorted z-index buckets and the regular paint list.
+    /// Equal z-index entries are visited in reverse of their stable paint order.
     pub fn hit(&self, x: f32, y: f32, scale: f64) -> Option<HitResult> {
         self.hit_inner(x, y, scale, &mut None)
     }
@@ -2123,7 +2126,10 @@ impl Node {
         // Child layouts and hoisted offsets use border-box coordinates.
         // Only glyph hit testing below uses the inline content-box origin.
 
-        // Positive z_index hoisted children
+        // Reverse the renderer's child order without allocating a hit list.
+        // Hoisted children are stably sorted by ascending z-index during layout.
+        // Reversing each bucket tests higher z-index first and reverses ties.
+        // Non-negative z-index hoisted children
         if matches_hoisted_content {
             if let Some(hoisted) = &self.stacking_context {
                 for hoisted_child in hoisted.pos_z_hoisted_children().rev() {
@@ -2144,7 +2150,8 @@ impl Node {
             }
         }
 
-        // Call `.hit()` on each child in turn. If any return `Some` then return that value. Else return `Some(self.id).
+        // Regular children are already sorted into paint order during layout.
+        // Test them from front to back, between the two hoisted z-index buckets.
         for child_id in self.paint_children.borrow().iter().flatten().rev() {
             if let Some(hit) = self
                 .with(*child_id)

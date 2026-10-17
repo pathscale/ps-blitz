@@ -1,6 +1,6 @@
 [package]
 name = "ps-blitz-script"
-description = "JavaScript execution for Blitz using the Boa engine"
+description = "Engine-neutral script execution and document contracts for Blitz"
 documentation = "https://docs.rs/ps-blitz-script"
 version.workspace = true
 license.workspace = true
@@ -10,15 +10,10 @@ categories.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
-[[bin]]
-name = "solid-debug-harness"
-path = "src/bin/solid_debug_harness.rs"
-required-features = ["debug-control"]
-
 [features]
 default = ["shadow-dom"]
 # Native roots, slots, scoped styles and composed event dispatch.
-shadow-dom = ["blitz-dom/shadow-dom", "blitz-html/shadow-dom", "dep:style"]
+shadow-dom = ["blitz-dom/shadow-dom", "blitz-html/shadow-dom"]
 # Per-DOM-call timing. Off by default: a shipping build has no reader for it
 # and the clock reads are a measurable share of a mount. See `script_stats`.
 dom-stats = []
@@ -30,23 +25,15 @@ debug-control = [
     "dep:blitz-debug-control",
     "dep:blitz-paint",
     "dep:image",
+    "dep:keyboard-types",
+    "dep:nagoya",
     "blitz-dom/svg",
 ]
-# `Intl`: locale-aware dates, numbers, sorting, plurals and segmentation.
-#
-# Off by default because it embeds CLDR data. The data is stored brotli'd and
-# decompressed per service on first use, so the cost is 3.2MB of binary and
-# nothing at runtime for a page that never calls `Intl` -- but 3.2MB is still
-# the wrong default for an embedder rendering its own UI, which is what most
-# consumers of this crate are. A browser wants it; a Dioxus app does not.
-#
-# This has to be `intl_bundled` rather than `intl`. Bare `intl` compiles the
-# builtins but supplies no data, and Boa then fails context construction with
-# "missing Intl provider for context" -- so it is not a smaller working
-# configuration, it is a broken one.
-intl = ["boa_engine/intl_bundled"]
+# Requires consumers to validate Intl support on the bound guest before execution.
+# The native guest exposes the locale subset implemented by its web bindings.
+intl = []
 system-fonts = ["blitz-dom/system-fonts"]
-tracing = ["dep:tracing", "blitz-dom/tracing"]
+tracing = ["blitz-dom/tracing"]
 
 [lib]
 name = "blitz_script"
@@ -54,56 +41,21 @@ name = "blitz_script"
 [dependencies]
 # Blitz dependencies
 blitz-dom = { workspace = true, features = ["autofocus"] }
+blitz-dom-api = { workspace = true }
 blitz-debug-control = { workspace = true, optional = true }
 blitz-paint = { workspace = true, optional = true }
 blitz-html = { workspace = true }
 blitz-traits = { workspace = true }
 
-# Boa (JavaScript engine)
-boa_engine = { workspace = true }
-boa_runtime = { workspace = true }
-boa_gc = { workspace = true }
-
-# Servo dependencies
-markup5ever = { workspace = true }
-rustc-hash = { workspace = true }
-style = { workspace = true, optional = true }
-
 # Other dependencies
-keyboard-types = { workspace = true }
+keyboard-types = { workspace = true, optional = true }
 url = { workspace = true }
 data-url = { workspace = true }
 web-time = { workspace = true }
-tracing = { workspace = true, optional = true }
 serde_json = { workspace = true }
-zeroize = "^1.8"
-getrandom = { workspace = true }
-nagoya = { workspace = true }
-bytes = { workspace = true }
+regex = "^1.13"
+nagoya = { workspace = true, optional = true }
 anyrender = { workspace = true, optional = true }
 anyrender_vello_cpu = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
 image = { workspace = true, features = ["png"], optional = true }
-
-[dev-dependencies]
-anyrender = { workspace = true }
-anyrender_vello_cpu = { workspace = true }
-blitz-paint = { workspace = true }
-blitz-traits = { workspace = true }
-image = { workspace = true, features = ["png"] }
-keyboard-types = { workspace = true }
-markup5ever = { workspace = true }
-url = { workspace = true }
-
-# Only on macOS, and only for `tests/text_metrics_macos.rs`, which measures
-# boxes sized by their own text and so cannot assert anything without a face.
-#
-# Scoped to the target rather than enabled outright because of where the face
-# comes from. macOS resolves it through Core Text: nothing to install, and no
-# system library in the graph. On Linux the same feature reaches
-# `parley/system` and then `yeslogic-fontconfig-sys`, which is how a headless
-# runner ended up needing `libfontconfig-dev` to run unit tests. There the
-# quarantined file compiles out and this line does not apply, so a Linux build
-# of this crate -- shipped or under test -- links no system library at all.
-[target.'cfg(target_os = "macos")'.dev-dependencies]
-blitz-dom = { workspace = true, features = ["system-fonts"] }

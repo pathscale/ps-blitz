@@ -1,4 +1,5 @@
 use crate::NodeTree;
+use crate::deferred_font_context::DeferredFontContext;
 use crate::events::{DragMode, ScrollAnimationState, handle_dom_event};
 use crate::font_metrics::BlitzFontMetricsProvider;
 use crate::layout::construct::ConstructionTask;
@@ -30,7 +31,7 @@ use blitz_traits::shell::{ColorScheme, DummyShellProvider, ShellProvider, Viewpo
 use cursor_icon::CursorIcon;
 use linebender_resource_handle::Blob;
 use markup5ever::{local_name, ns};
-use parley::{FontContext, PlainEditorDriver};
+use parley::PlainEditorDriver;
 use rustc_hash::FxHashSet;
 use selectors::{Element, matching::QuirksMode};
 use smallvec::SmallVec;
@@ -40,8 +41,8 @@ use std::collections::{BTreeMap, Bound, HashMap, HashSet};
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, MutexGuard, OnceLock, RwLockReadGuard, RwLockWriteGuard};
 use std::task::{Context as TaskContext, Waker};
 use style::Atom;
 use style::animation::{AnimationState, DocumentAnimationSet};
@@ -68,9 +69,10 @@ use style::{
     stylesheets::{AllowImportRules, DocumentStyleSheet, Origin, Stylesheet},
     stylist::Stylist,
 };
-use thin_vec::ThinVec;
 use url::Url;
 use web_time::Instant;
+
+static DEFAULT_CSS_TEMPLATE: OnceLock<Stylesheet> = OnceLock::new();
 
 #[cfg(feature = "parallel-construct")]
 use thread_local::ThreadLocal;
@@ -277,6 +279,7 @@ pub struct BaseDocument {
     // Config
     /// Base url for resolving linked resources (stylesheets, images, fonts, etc)
     pub(crate) url: DocumentUrl,
+    pub(crate) selector_cache: RefCell<crate::query_selector::SelectorCache>,
     // Devtool settings. Currently used to render debug overlays
     pub(crate) devtool_settings: DevtoolSettings,
     // Viewport details such as the dimensions, HiDPI scale, and zoom factor,
@@ -437,10 +440,10 @@ pub struct BaseDocument {
 
     // Parley contexts
     /// A Parley font context
-    pub(crate) font_ctx: Arc<Mutex<parley::FontContext>>,
+    pub(crate) font_ctx: Arc<DeferredFontContext>,
     #[cfg(feature = "parallel-construct")]
     /// Thread-and-document-local copies to the font context
-    pub(crate) thread_font_contexts: ThreadLocal<RefCell<Box<FontContext>>>,
+    pub(crate) thread_font_contexts: ThreadLocal<RefCell<Box<parley::FontContext>>>,
     /// A Parley layout context
     pub(crate) layout_ctx: parley::LayoutContext<TextBrush>,
 
@@ -490,6 +493,8 @@ pub struct BaseDocument {
     // TODO: collapse animating state into a bitflags
     /// Whether there are active CSS animations/transitions (so we should re-render every frame)
     pub(crate) has_active_animations: bool,
+    /// Host permission to tick CSS animations and transitions.
+    pub(crate) css_animation_ticks_enabled: bool,
     /// Whether there is a `<canvas>` element in the DOM (so we should re-render every frame)
     pub(crate) has_canvas: bool,
     /// The most urgent animation cadence required by any subdocument.
@@ -513,6 +518,12 @@ pub struct BaseDocument {
     /// Stylesheets added by the useragent
     /// where the key is the hashed CSS
     pub(crate) ua_stylesheets: HashMap<String, DocumentStyleSheet>,
+    /// Whether the built-in user-agent stylesheet has not yet been created or installed.
+    pub(crate) default_ua_stylesheet_pending: bool,
+    /// Enumeration can initialize the document-owned sheet before insertion.
+    default_ua_stylesheet_cache: OnceLock<DocumentStyleSheet>,
+    /// Constructor-owned insertion anchor, stable until the first UA mutation.
+    default_ua_stylesheet_before: Option<DocumentStyleSheet>,
     /// Map from form control node ID's to their associated forms node ID's
     pub(crate) controls_to_form: HashMap<NodeId, NodeId>,
     /// Nodes that contain sub documents
@@ -584,6 +595,10 @@ pub struct BaseDocument {
     /// Value is a list of (node_id, image_type) pairs waiting for the image.
     pub(crate) pending_images: HashMap<String, Vec<(NodeId, ImageType)>>,
 
+    /// Latest image request identity for script-visible `<img>` elements.
+    image_load_states: HashMap<NodeId, (String, u64)>,
+    image_load_outcomes: Vec<(NodeId, u64, bool)>,
+
     // Tracks in-flight "critical" resources (e.g. stylesheets linked from the `<head>`),
     // keyed by request id
     pub(crate) pending_critical_resources: HashSet<usize>,
@@ -610,10 +625,12 @@ pub struct BaseDocument {
     pub(crate) abort_signal: Option<AbortSignal>,
 }
 
+const MAX_PENDING_IMAGE_OUTCOMES: usize = 4096;
+
 pub(crate) fn make_device(
     viewport: &Viewport,
     media_type: MediaType,
-    font_ctx: Arc<Mutex<FontContext>>,
+    font_ctx: Arc<DeferredFontContext>,
 ) -> Device {
     let width = viewport.window_size.0 as f32 / viewport.scale();
     let height = viewport.window_size.1 as f32 / viewport.scale();
@@ -662,6 +679,12 @@ fn incremental_layout_default() -> bool {
 impl BaseDocument {
     /// Create a new (empty) [`BaseDocument`] with the specified configuration
     pub fn new(config: DocumentConfig) -> Self {
+        #[cfg(feature = "log-phase-times")]
+        let mut timer =
+            debug_timer::RealDebugTimer::init_if(blitz_traits::profiling::deep_profiling_enabled());
+        #[cfg(not(feature = "log-phase-times"))]
+        let mut timer = debug_timer::DummyDebugTimer::init();
+
         static ID_GENERATOR: AtomicUsize = AtomicUsize::new(1);
 
         let id = ID_GENERATOR.fetch_add(1, Ordering::SeqCst);
@@ -669,34 +692,28 @@ impl BaseDocument {
             .teardown
             .unwrap_or_else(crate::release::Teardown::new);
 
-        let font_ctx = config
-            .font_ctx
-            .map(|mut font_ctx| {
+        let defer_system_fonts = config.defer_system_fonts;
+        let (font_ctx, use_system_font_template) = match config.font_ctx {
+            Some(mut font_ctx) => {
                 font_ctx.source_cache.make_shared();
                 // font_ctx.collection.make_shared();
-                font_ctx
-            })
-            .unwrap_or_else(|| {
-                use parley::fontique::{Collection, CollectionOptions, SourceCache};
-                let mut font_ctx = FontContext {
-                    source_cache: SourceCache::new_shared(),
-                    collection: Collection::new(CollectionOptions {
-                        shared: false,
-                        system_fonts: cfg!(all(
-                            feature = "system-fonts",
-                            not(target_arch = "wasm32")
-                        )),
-                    }),
-                };
-                font_ctx
-                    .collection
-                    .register_fonts(Blob::new(Arc::new(crate::BULLET_FONT) as _), None);
-                font_ctx
-            });
-        let font_ctx = Arc::new(Mutex::new(font_ctx));
+                (font_ctx, false)
+            }
+            None => {
+                let system_fonts = cfg!(all(feature = "system-fonts", not(target_arch = "wasm32")))
+                    && !defer_system_fonts;
+                (crate::build_font_context(system_fonts), defer_system_fonts)
+            }
+        };
+        let font_ctx = Arc::new(DeferredFontContext::new(
+            font_ctx,
+            defer_system_fonts,
+            use_system_font_template,
+        ));
         if let Some(fallback) = config.family_fallback {
             crate::font_fallback::set(fallback);
         }
+        timer.record_time("fonts");
 
         // Make sure we turn on stylo features *before* creating the Stylist
         style_config::set_pref!("layout.grid.enabled", true);
@@ -705,10 +722,12 @@ impl BaseDocument {
         style_config::set_pref!("layout.css.basic-shape-shape.enabled", true);
         style_config::set_pref!("layout.threads", -1);
 
+        let default_ua_stylesheet_pending = config.ua_stylesheets.is_none();
         let viewport = config.viewport.unwrap_or_default();
         let media_type = config.media_type.unwrap_or_else(MediaType::screen);
         let device = make_device(&viewport, media_type.clone(), font_ctx.clone());
         let stylist = Stylist::new(device, QuirksMode::NoQuirks);
+        timer.record_time("device-stylist");
         let snapshots = SnapshotMap::new();
         let nodes = Box::new(NodeTree::new());
         let guard = SharedRwLock::new();
@@ -790,7 +809,11 @@ impl BaseDocument {
             live_ranges: Vec::new(),
             dom_selection: None,
             url: base_url,
+            selector_cache: RefCell::new(crate::query_selector::SelectorCache::default()),
             ua_stylesheets: HashMap::new(),
+            default_ua_stylesheet_pending,
+            default_ua_stylesheet_cache: OnceLock::new(),
+            default_ua_stylesheet_before: None,
             nodes_to_stylesheet: BTreeMap::new(),
             document_sheet_nodes: HashSet::new(),
             #[cfg(feature = "shadow-dom")]
@@ -809,6 +832,7 @@ impl BaseDocument {
             active_node_id: None,
             mousedown_node_id: None,
             has_active_animations: false,
+            css_animation_ticks_enabled: true,
             subdoc_animation_pacing: AnimationPacing::Idle,
             has_canvas: false,
             sub_document_nodes: HashSet::new(),
@@ -854,6 +878,8 @@ impl BaseDocument {
             script_custom_elements: Default::default(),
             image_cache: HashMap::new(),
             pending_images: HashMap::new(),
+            image_load_states: HashMap::new(),
+            image_load_outcomes: Vec::new(),
             pending_critical_resources: HashSet::new(),
             web_fonts: Vec::new(),
             font_epoch: 0,
@@ -875,19 +901,36 @@ impl BaseDocument {
             scroll_animation: ScrollAnimationState::None,
             text_selection: TextSelection::default(),
         };
+        timer.record_time("core-state");
 
         // Initialise document with root Document node
         doc.root_node_id = doc.create_node(NodeData::Document(Box::default()));
         doc.root_node_mut().flags.insert(NodeFlags::IS_IN_DOCUMENT);
 
-        match config.ua_stylesheets {
-            Some(stylesheets) => {
-                for ss in &stylesheets {
+        // The built-in sheet is parsed and installed on the first style query
+        // or resolution. Explicit sheets retain their insertion order.
+        if let Some(stylesheets) = config.ua_stylesheets {
+            for ss in &stylesheets {
+                if ss == DEFAULT_CSS
+                    && !doc.default_ua_stylesheet_pending
+                    && !doc.ua_stylesheets.contains_key(DEFAULT_CSS)
+                {
+                    doc.default_ua_stylesheet_pending = true;
+                } else if ss == DEFAULT_CSS {
+                    // Repeated defaults preserve their original separate sheet
+                    // identities and positions, just like explicit additions.
                     doc.add_user_agent_stylesheet(ss);
+                } else {
+                    let sheet = doc.append_user_agent_stylesheet(ss);
+                    if doc.default_ua_stylesheet_pending
+                        && doc.default_ua_stylesheet_before.is_none()
+                    {
+                        doc.default_ua_stylesheet_before = Some(sheet);
+                    }
                 }
             }
-            None => doc.add_user_agent_stylesheet(DEFAULT_CSS),
         }
+        timer.record_time("ua-sheet");
 
         // Stylo data on the root node container is needed to render the node
         let stylo_element_data = StyloElementData {
@@ -902,6 +945,8 @@ impl BaseDocument {
         };
         let stylo_data = doc.root_node_mut().stylo_element_data_mut();
         *stylo_data.ensure_init_mut() = stylo_element_data;
+        timer.record_time("root-style");
+        timer.print_times("[blitz] document construction ");
 
         doc
     }
@@ -929,6 +974,7 @@ impl BaseDocument {
     /// Set base url for resolving linked resources (stylesheets, images, fonts, etc)
     pub fn set_base_url(&mut self, url: &str) {
         self.url = DocumentUrl::from(Url::parse(url).unwrap());
+        self.selector_cache.borrow_mut().clear();
     }
 
     pub fn guard(&self) -> &SharedRwLock {
@@ -1218,6 +1264,16 @@ impl BaseDocument {
         &self.document_content_type
     }
 
+    /// Control CSS frame ticks without freezing scripts or resource loading.
+    pub fn set_css_animation_ticks_enabled(&mut self, enabled: bool) {
+        self.css_animation_ticks_enabled = enabled;
+        for id in self.sub_document_node_ids() {
+            if let Some(child) = self.subdoc_mut(id) {
+                child.inner_mut().set_css_animation_ticks_enabled(enabled);
+            }
+        }
+    }
+
     pub fn window_focused(&self) -> bool {
         self.document_window_focused
     }
@@ -1255,6 +1311,8 @@ impl BaseDocument {
         self.reset_web_fonts();
         self.pending_critical_resources.clear();
         self.pending_images.clear();
+        self.image_load_states.clear();
+        self.image_load_outcomes.clear();
         self.set_document_quirks_mode(0);
     }
 
@@ -1262,6 +1320,11 @@ impl BaseDocument {
         sub_document
             .inner_mut()
             .set_window_focused(self.document_window_focused);
+        if !self.css_animation_ticks_enabled {
+            sub_document
+                .inner_mut()
+                .set_css_animation_ticks_enabled(false);
+        }
         self.nodes[node_id]
             .element_data_mut()
             .unwrap()
@@ -2543,7 +2606,11 @@ impl BaseDocument {
     }
 
     pub fn create_text_node(&mut self, text: &str) -> NodeId {
-        let content = text.to_string();
+        self.create_text_node_owned(text.to_string())
+    }
+
+    /// Create a text node using an existing string allocation.
+    pub fn create_text_node_owned(&mut self, content: String) -> NodeId {
         let data = NodeData::Text(TextNodeData::new(content));
         self.create_node(data)
     }
@@ -2564,7 +2631,7 @@ impl BaseDocument {
             _ => {}
         }
 
-        let children = node.children.clone();
+        let mut children = node.children.clone();
         #[cfg(feature = "shadow-dom")]
         let shadow_source = node.shadow_root_id();
         let template_contents = node
@@ -2602,15 +2669,14 @@ impl BaseDocument {
         }
 
         // Recursively clone children
-        let new_children: ThinVec<NodeId> = children
-            .into_iter()
-            .map(|child_id| self.deep_clone_node(child_id))
-            .collect();
-        for &child_id in &new_children {
+        for child_id in &mut children {
+            *child_id = self.deep_clone_node(*child_id);
+        }
+        for &child_id in &children {
             self.nodes[child_id].parent = Some(new_node_id);
             self.attach_script_custom_element_subtree(child_id, new_node_id);
         }
-        self.nodes[new_node_id].children = new_children;
+        self.nodes[new_node_id].children = children;
 
         // Only a shadow root that opted into `clonable` is copied. Imperative
         // roots keep the previous behavior of not cloning.
@@ -2635,7 +2701,7 @@ impl BaseDocument {
                     .shadow_root_data()
                     .unwrap()
                     .declarative;
-                let shadow_children = self.nodes[source_root].children.clone();
+                let mut shadow_children = self.nodes[source_root].children.clone();
                 let new_root = self.attach_shadow(new_node_id, mode);
                 if let Some(root) = self.nodes[new_root].shadow_root_data_mut() {
                     root.clonable = true;
@@ -2643,15 +2709,14 @@ impl BaseDocument {
                     root.delegates_focus = delegates_focus;
                     root.declarative = declarative;
                 }
-                let cloned_shadow_children: ThinVec<NodeId> = shadow_children
-                    .into_iter()
-                    .map(|child_id| self.deep_clone_node(child_id))
-                    .collect();
-                for &child_id in &cloned_shadow_children {
+                for child_id in &mut shadow_children {
+                    *child_id = self.deep_clone_node(*child_id);
+                }
+                for &child_id in &shadow_children {
                     self.nodes[child_id].parent = Some(new_root);
                     self.attach_script_custom_element_subtree(child_id, new_root);
                 }
-                self.nodes[new_root].children = cloned_shadow_children;
+                self.nodes[new_root].children = shadow_children;
             }
         }
 
@@ -2771,9 +2836,31 @@ impl BaseDocument {
     }
 
     pub fn remove_user_agent_stylesheet(&mut self, contents: &str) {
+        if contents == DEFAULT_CSS && self.default_ua_stylesheet_pending {
+            self.default_ua_stylesheet_pending = false;
+            self.default_ua_stylesheet_cache.take();
+            self.default_ua_stylesheet_before = None;
+            return;
+        }
+        // Install before an explicit mutation can remove the insertion anchor.
+        self.ensure_default_ua_stylesheet();
         if let Some(sheet) = self.ua_stylesheets.remove(contents) {
             self.stylist.remove_stylesheet(sheet, &self.guard.read());
         }
+        if contents == DEFAULT_CSS {
+            self.default_ua_stylesheet_cache.take();
+        }
+    }
+
+    /// Whether ranges or selection endpoints can observe text replacement.
+    pub fn has_live_text_references(&self) -> bool {
+        self.dom_selection.is_some()
+            || self.text_selection.anchor.is_some()
+            || self.text_selection.focus.is_some()
+            || self
+                .live_ranges
+                .iter()
+                .any(|range| range.strong_count() != 0)
     }
 
     /// The document's base URL
@@ -2789,13 +2876,84 @@ impl BaseDocument {
 
     /// Iterate over the user-agent stylesheets currently associated with this document
     pub fn useragent_stylesheets(&self) -> impl Iterator<Item = &DocumentStyleSheet> {
-        self.ua_stylesheets.values()
+        let pending = self.default_ua_stylesheet_pending.then(|| {
+            self.default_ua_stylesheet_cache
+                .get_or_init(|| self.default_css_stylesheet())
+        });
+        self.ua_stylesheets.values().chain(pending)
     }
 
     pub fn add_user_agent_stylesheet(&mut self, css: &str) {
-        let sheet = self.make_stylesheet(css, Origin::UserAgent);
+        self.ensure_default_ua_stylesheet();
+        self.append_user_agent_stylesheet(css);
+    }
+
+    fn append_user_agent_stylesheet(&mut self, css: &str) -> DocumentStyleSheet {
+        let sheet = if css == DEFAULT_CSS {
+            self.default_css_stylesheet()
+        } else {
+            self.make_stylesheet(css, Origin::UserAgent)
+        };
         self.ua_stylesheets.insert(css.to_string(), sheet.clone());
-        self.stylist.append_stylesheet(sheet, &self.guard.read());
+        self.stylist
+            .append_stylesheet(sheet.clone(), &self.guard.read());
+        sheet
+    }
+
+    pub(crate) fn ensure_default_ua_stylesheet(&mut self) {
+        if !self.default_ua_stylesheet_pending {
+            return;
+        }
+
+        let sheet = self
+            .default_ua_stylesheet_cache
+            .get_or_init(|| self.default_css_stylesheet())
+            .clone();
+        self.ua_stylesheets
+            .insert(DEFAULT_CSS.to_string(), sheet.clone());
+        if let Some(before) = self.default_ua_stylesheet_before.take() {
+            self.stylist
+                .insert_stylesheet_before(sheet, before, &self.guard.read());
+        } else {
+            self.stylist.append_stylesheet(sheet, &self.guard.read());
+        }
+        self.default_ua_stylesheet_pending = false;
+    }
+
+    fn default_css_stylesheet(&self) -> DocumentStyleSheet {
+        let template = DEFAULT_CSS_TEMPLATE.get_or_init(|| {
+            let template_lock = SharedRwLock::new();
+            let neutral_url = DocumentUrl::default();
+            // DEFAULT_CSS uses absolute namespace URLs and a data: font source,
+            // with no relative URLs or imports, so the cached parse is document-neutral.
+            Stylesheet::from_str(
+                DEFAULT_CSS,
+                neutral_url.url_extra_data(),
+                Origin::UserAgent,
+                ServoArc::new(template_lock.wrap(MediaList::empty())),
+                template_lock,
+                None,
+                None,
+                QuirksMode::NoQuirks,
+                AllowImportRules::No,
+            )
+        });
+
+        let template_guard = template.shared_lock.read();
+        let url_data = self.url.url_extra_data();
+        let contents = template.contents.read_with(&template_guard).deep_clone(
+            &self.guard,
+            Some(&url_data),
+            &template_guard,
+        );
+        let media = template.media.read_with(&template_guard).clone();
+
+        DocumentStyleSheet(ServoArc::new(Stylesheet {
+            contents: self.guard.wrap(contents),
+            media: ServoArc::new(self.guard.wrap(media)),
+            shared_lock: self.guard.clone(),
+            disabled: AtomicBool::new(false),
+        }))
     }
 
     pub fn make_stylesheet(&self, css: impl AsRef<str>, origin: Origin) -> DocumentStyleSheet {
@@ -2890,7 +3048,8 @@ impl BaseDocument {
     }
 
     pub fn handle_messages(&mut self) {
-        for msg in self.rx.take_pending() {
+        let messages = self.rx.take_pending();
+        for msg in messages {
             let msg =
                 Arc::try_unwrap(msg).unwrap_or_else(|_| panic!("document event has one consumer"));
             self.handle_message(msg);
@@ -2919,6 +3078,46 @@ impl BaseDocument {
         self.pending_images.len()
     }
 
+    /// Take decoded image outcomes since the previous call.
+    pub fn take_image_load_outcomes(&mut self) -> Vec<(NodeId, u64, bool)> {
+        std::mem::take(&mut self.image_load_outcomes)
+            .into_iter()
+            .filter(|(node, generation, _)| {
+                self.image_load_states
+                    .get(node)
+                    .is_some_and(|(_, current)| current == generation)
+            })
+            .collect::<Vec<_>>()
+    }
+
+    pub(crate) fn begin_image_load(&mut self, node: NodeId, source: String) -> u64 {
+        let generation = self
+            .image_load_states
+            .get(&node)
+            .map_or(1, |(_, generation)| generation.wrapping_add(1).max(1));
+        self.image_load_states.insert(node, (source, generation));
+        generation
+    }
+
+    pub(crate) fn cancel_image_load(&mut self, node: NodeId) {
+        self.image_load_states.remove(&node);
+    }
+
+    pub(crate) fn finish_image_load(&mut self, node: NodeId, source: &str, loaded: bool) {
+        if let Some((current_source, generation)) = self.image_load_states.get(&node)
+            && current_source == source
+            && self.image_load_outcomes.len() < MAX_PENDING_IMAGE_OUTCOMES
+            && !self
+                .image_load_outcomes
+                .iter()
+                .any(|(queued_node, queued_generation, _)| {
+                    *queued_node == node && queued_generation == generation
+                })
+        {
+            self.image_load_outcomes.push((node, *generation, loaded));
+        }
+    }
+
     pub fn load_resource(&mut self, res: ResourceLoadResponse) {
         self.pending_critical_resources.remove(&res.request_id);
 
@@ -2927,6 +3126,11 @@ impl BaseDocument {
             Err(err) => {
                 if let Some(url) = res.resolved_url.as_ref() {
                     let waiting_nodes = self.pending_images.remove(url).unwrap_or_default();
+                    for (node, image_type) in waiting_nodes.iter() {
+                        if matches!(image_type, ImageType::Image) {
+                            self.finish_image_load(*node, url, false);
+                        }
+                    }
                     #[cfg(feature = "tracing")]
                     tracing::warn!(
                         url = url.as_str(),
@@ -3098,6 +3302,16 @@ impl BaseDocument {
 
         // Apply to all waiting nodes
         for (node_id, image_type) in waiting_nodes {
+            if matches!(image_type, ImageType::Image) {
+                if !self
+                    .image_load_states
+                    .get(&node_id)
+                    .is_some_and(|(current_source, _)| current_source == url)
+                {
+                    continue;
+                }
+                self.finish_image_load(node_id, url, true);
+            }
             let Some(node) = self.get_node_mut(node_id) else {
                 continue;
             };
@@ -3185,20 +3399,15 @@ impl BaseDocument {
                     .collect()
             });
 
-            let changed_attrs = attrs
-                .as_ref()
-                .map(|attrs| attrs.iter().map(|attr| attr.0.name.clone()).collect())
-                .unwrap_or_default();
-
             self.snapshots.insert(
                 opaque_node_id,
                 ServoElementSnapshot {
                     state: Some(*node.element_state()),
                     attrs,
-                    changed_attrs,
-                    class_changed: true,
-                    id_changed: true,
-                    other_attributes_changed: true,
+                    changed_attrs: Vec::new(),
+                    class_changed: false,
+                    id_changed: false,
+                    other_attributes_changed: false,
                 },
             );
         }
@@ -3212,6 +3421,13 @@ impl BaseDocument {
             let changed_attr = GenericAtomIdent(name.clone());
             if !snapshot.changed_attrs.contains(&changed_attr) {
                 snapshot.changed_attrs.extend(std::iter::once(changed_attr));
+            }
+            if name == &local_name!("id") {
+                snapshot.id_changed = true;
+            } else if name == &local_name!("class") {
+                snapshot.class_changed = true;
+            } else {
+                snapshot.other_attributes_changed = true;
             }
         }
     }
@@ -3703,7 +3919,7 @@ impl BaseDocument {
         let custom_widget_is_animating = false;
 
         let animating = self.has_canvas
-            | self.has_active_animations
+            | (self.css_animation_ticks_enabled && self.has_active_animations)
             | (self.subdoc_animation_pacing != AnimationPacing::Idle)
             | custom_widget_is_animating
             | (self.scroll_animation != ScrollAnimationState::None)
@@ -3752,7 +3968,7 @@ impl BaseDocument {
             || self.scrollbars_animating()
         {
             AnimationPacing::Interactive
-        } else if self.has_active_animations {
+        } else if self.css_animation_ticks_enabled && self.has_active_animations {
             const SLOW_ANIMATION_SECONDS: f64 = 2.0;
             let sets = self.animations.sets.read();
             let has_fast_animation_or_transition = sets.values().any(|set| {
