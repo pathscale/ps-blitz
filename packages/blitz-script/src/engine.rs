@@ -20,8 +20,11 @@ pub trait ScriptEngine {
     fn eval_module(&mut self, code: &str, url: Option<&Url>, description: &str);
     fn eval_json(&mut self, code: &str, description: &str) -> Result<serde_json::Value, String>;
     fn set_import_map(&self, json: &str, base_url: Option<&Url>);
+    /// Advance backend module evaluation bookkeeping after running queued jobs.
     fn poll_module_evaluations(&mut self);
+    /// Whether module evaluation promises still need to settle.
     fn has_pending_module_evaluations(&self) -> bool;
+    /// Whether module source/dependency resolution still needs external progress.
     fn has_pending_module_loads(&self) -> bool;
     fn begin_job_slice(&self) -> Self::JobScope;
     fn job_budget(&self) -> Duration;
@@ -30,7 +33,9 @@ pub trait ScriptEngine {
     fn job_slice_exhausted(&self) -> bool;
     fn jobs_remain(&self) -> bool;
     fn run_jobs(&mut self, description: &str);
+    /// Run a bounded job slice and report whether script work made progress.
     fn run_jobs_with_progress(&mut self, description: &str) -> bool;
+    /// Earliest timer deadline, for scheduling the next driver wakeup.
     fn next_timer_deadline(&self) -> Option<Instant>;
     fn run_due_timers(&mut self, profiling: bool) -> bool;
     fn dispatch_dom_event(
