@@ -1,3 +1,6 @@
+use std::collections::VecDeque;
+use std::sync::Arc;
+
 use blitz_traits::node_id::NodeId;
 use selectors::SelectorList;
 use smallvec::SmallVec;
@@ -8,7 +11,32 @@ use style::dom_apis::{
 use style::selector_parser::{SelectorImpl, SelectorParser};
 use style_traits::ParseError;
 
+use crate::url::DocumentUrl;
 use crate::{BaseDocument, Node};
+
+const MAX_SELECTOR_CACHE_ENTRIES: usize = 32;
+const MAX_SELECTOR_CACHE_INPUT_BYTES: usize = 16 * 1024;
+const MAX_SELECTOR_CACHE_ENTRY_BYTES: usize = 4 * 1024;
+
+struct SelectorCacheEntry {
+    input: Box<str>,
+    selector_list: Arc<SelectorList<SelectorImpl>>,
+}
+
+#[derive(Default)]
+pub(crate) struct SelectorCache {
+    context: Option<DocumentUrl>,
+    entries: VecDeque<SelectorCacheEntry>,
+    input_bytes: usize,
+}
+
+impl SelectorCache {
+    pub(crate) fn clear(&mut self) {
+        self.context = None;
+        self.entries.clear();
+        self.input_bytes = 0;
+    }
+}
 
 impl BaseDocument {
     /// Find the node with the specified id attribute (if one exists).
@@ -23,7 +51,8 @@ impl BaseDocument {
 
     /// Find the first of `candidates` in tree order
     fn first_in_tree_order(&self, candidates: &[NodeId]) -> Option<NodeId> {
-        let mut stack = vec![self.root_node_id];
+        let mut stack: SmallVec<[NodeId; 32]> = SmallVec::new();
+        stack.push(self.root_node_id);
         while let Some(node_id) = stack.pop() {
             if candidates.contains(&node_id) {
                 return Some(node_id);
@@ -85,7 +114,7 @@ impl BaseDocument {
         scope: NodeId,
         selector: &'input str,
     ) -> Result<Option<NodeId>, ParseError<'input>> {
-        let selector_list = self.try_parse_selector_list(selector)?;
+        let selector_list = self.cached_selector_list(selector)?;
         Ok(self.query_selector_in_raw(scope, &selector_list))
     }
 
@@ -153,7 +182,7 @@ impl BaseDocument {
         scope: NodeId,
         selector: &'input str,
     ) -> Result<SmallVec<[NodeId; 32]>, ParseError<'input>> {
-        let selector_list = self.try_parse_selector_list(selector)?;
+        let selector_list = self.cached_selector_list(selector)?;
         Ok(self.query_selector_all_in_raw(scope, &selector_list))
     }
 
@@ -214,7 +243,7 @@ impl BaseDocument {
         node_id: NodeId,
         selector: &'input str,
     ) -> Result<bool, ParseError<'input>> {
-        let selector_list = self.try_parse_selector_list(selector)?;
+        let selector_list = self.cached_selector_list(selector)?;
         Ok(self.nodes[node_id].matches_selector_raw(&selector_list))
     }
 
@@ -227,7 +256,7 @@ impl BaseDocument {
         node_id: NodeId,
         selector: &'input str,
     ) -> Result<Option<NodeId>, ParseError<'input>> {
-        let selector_list = self.try_parse_selector_list(selector)?;
+        let selector_list = self.cached_selector_list(selector)?;
         Ok(self.nodes[node_id].closest_raw(&selector_list))
     }
 
@@ -235,8 +264,72 @@ impl BaseDocument {
         &self,
         input: &'input str,
     ) -> Result<SelectorList<SelectorImpl>, ParseError<'input>> {
+        let selector_list = self.cached_selector_list(input)?;
+        Ok((*selector_list).clone())
+    }
+
+    fn cached_selector_list<'input>(
+        &self,
+        input: &'input str,
+    ) -> Result<Arc<SelectorList<SelectorImpl>>, ParseError<'input>> {
+        {
+            let mut cache = self.selector_cache.borrow_mut();
+            let same_context = cache
+                .context
+                .as_ref()
+                .is_some_and(|context| std::ptr::eq(&**context, &*self.url));
+
+            if !same_context {
+                cache.clear();
+                cache.context = Some(self.url.clone());
+            }
+
+            if let Some(entry) = cache.entries.front()
+                && entry.input.as_ref() == input
+            {
+                return Ok(Arc::clone(&entry.selector_list));
+            }
+
+            if let Some(index) = cache
+                .entries
+                .iter()
+                .skip(1)
+                .position(|entry| entry.input.as_ref() == input)
+            {
+                let entry = cache.entries.remove(index + 1).unwrap();
+                let selector_list = Arc::clone(&entry.selector_list);
+                cache.entries.push_front(entry);
+                return Ok(selector_list);
+            }
+        }
+
         let url_extra_data = self.url.url_extra_data();
-        SelectorParser::parse_author_origin_no_namespace(input, &url_extra_data)
+        let selector_list = Arc::new(SelectorParser::parse_author_origin_no_namespace(
+            input,
+            &url_extra_data,
+        )?);
+
+        if input.len() <= MAX_SELECTOR_CACHE_ENTRY_BYTES {
+            let mut cache = self.selector_cache.borrow_mut();
+            let entry = SelectorCacheEntry {
+                input: input.into(),
+                selector_list: Arc::clone(&selector_list),
+            };
+
+            while cache.entries.len() >= MAX_SELECTOR_CACHE_ENTRIES
+                || cache.input_bytes + input.len() > MAX_SELECTOR_CACHE_INPUT_BYTES
+            {
+                let Some(evicted) = cache.entries.pop_back() else {
+                    break;
+                };
+                cache.input_bytes -= evicted.input.len();
+            }
+
+            cache.input_bytes += input.len();
+            cache.entries.push_front(entry);
+        }
+
+        Ok(selector_list)
     }
 }
 
@@ -267,7 +360,7 @@ fn query_dom_descendants(
         .as_element()
         .map(|element| selectors::Element::opaque(&element));
     let mut results = SmallVec::new();
-    let mut stack: Vec<_> = scope.children.iter().rev().copied().collect();
+    let mut stack: SmallVec<[NodeId; 32]> = scope.children.iter().rev().copied().collect();
     while let Some(id) = stack.pop() {
         let node = scope.with(id);
         if node.is_element() && matches_selector_list(selector_list, &node, &mut context) {

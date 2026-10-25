@@ -26,7 +26,9 @@ fn paints_non_white_pixels(doc: &mut HtmlDocument, width: u32, height: u32) -> b
         height,
     );
     buffer
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .any(|pixel| pixel[0] < 245 || pixel[1] < 245 || pixel[2] < 245)
 }
 

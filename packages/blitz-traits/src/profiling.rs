@@ -117,10 +117,18 @@ impl Drop for DeepProfilingGuard {
         // Saturating rather than wrapping: a count that underflowed would read
         // as "a consumer is attached" forever, which is precisely the state
         // this type exists to make impossible.
-        let _ =
-            DEEP_PROFILING_CONSUMERS.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
-                Some(count.saturating_sub(1))
-            });
+        let mut count = DEEP_PROFILING_CONSUMERS.load(Ordering::Relaxed);
+        while count != 0 {
+            match DEEP_PROFILING_CONSUMERS.compare_exchange_weak(
+                count,
+                count - 1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(current) => count = current,
+            }
+        }
     }
 }
 

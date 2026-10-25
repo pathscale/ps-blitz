@@ -3,6 +3,7 @@
 
 use blitz_traits::node_id::NodeId;
 use std::ptr::NonNull;
+use std::sync::Mutex;
 use std::sync::atomic::Ordering;
 
 use crate::StyleThreading;
@@ -57,8 +58,12 @@ use style_dom::ElementState;
 
 use style::values::computed::text::TextAlign as StyloTextAlign;
 
+// Keep parallel traversals from overlapping their worker-local Stylo caches.
+static PARALLEL_STYLO_TRAVERSAL: Mutex<()> = Mutex::new(());
+
 impl crate::document::BaseDocument {
     pub fn resolve_stylist(&mut self, now: f64) {
+        self.ensure_default_ua_stylesheet();
         style::thread_state::enter(ThreadState::LAYOUT);
 
         #[cfg(feature = "shadow-dom")]
@@ -103,6 +108,10 @@ impl crate::document::BaseDocument {
             if !in_document {
                 set.animations.clear();
                 set.transitions.clear();
+                continue;
+            }
+
+            if !self.css_animation_ticks_enabled {
                 continue;
             }
 
@@ -152,9 +161,15 @@ impl crate::document::BaseDocument {
         if token.should_traverse() {
             // Style the elements, resolving their data
             let traverser = RecalcStyle::new(context);
-            // `Sequential` bypasses Stylo's global pool. See `StyleThreading`.
-            let pool_guard = matches!(self.style_threading, StyleThreading::Parallel)
-                .then(|| STYLE_THREAD_POOL.pool());
+            // Never wait for another parallel traversal. A busy or poisoned
+            // guard selects sequential traversal on the calling thread.
+            let parallel_guard = if matches!(self.style_threading, StyleThreading::Parallel) {
+                PARALLEL_STYLO_TRAVERSAL.try_lock().ok()
+            } else {
+                None
+            };
+            // Hold both guards until traversal and its Stylo TLS cleanup finish.
+            let pool_guard = parallel_guard.as_ref().map(|_| STYLE_THREAD_POOL.pool());
             let rayon_pool = pool_guard.as_ref().and_then(|g| g.as_ref());
             style::driver::traverse_dom(&traverser, token, rayon_pool);
             style_traversed = true;

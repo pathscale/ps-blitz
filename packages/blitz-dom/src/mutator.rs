@@ -1,12 +1,13 @@
 use blitz_traits::net::RequestDestination;
 use blitz_traits::node_id::NodeId;
 use rustc_hash::FxHashSet;
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::mem;
 use std::ops::{Deref, DerefMut};
 
 use crate::document::make_device;
-use crate::layout::damage::ALL_DAMAGE;
+use crate::layout::damage::{ALL_DAMAGE, CONSTRUCT_FC, ONLY_RELAYOUT};
 use crate::net::{ImageHandler, ResourceHandler, StylesheetHandler};
 use crate::node::{CanvasData, NodeFlags, SpecialElementData};
 use crate::util::ImageType;
@@ -25,6 +26,226 @@ macro_rules! tag_and_attr {
     ($tag:tt, $attr:tt) => {
         (&local_name!($tag), &local_name!($attr))
     };
+}
+
+/** Match a single width condition. Unsupported media syntax does not match. */
+fn image_media_matches(media: &str, viewport_width: f32) -> bool {
+    let media = media.trim();
+    if media.is_empty() {
+        return true;
+    }
+    let Some(condition) = media
+        .strip_prefix('(')
+        .and_then(|condition| condition.strip_suffix(')'))
+    else {
+        return false;
+    };
+    let Some((feature, length)) = condition.split_once(':') else {
+        return false;
+    };
+    let length = length.trim().to_ascii_lowercase();
+    let Some(width) = length
+        .strip_suffix("px")
+        .and_then(|number| number.parse::<f32>().ok())
+        .filter(|width| width.is_finite() && *width >= 0.0)
+    else {
+        return false;
+    };
+    let feature = feature.trim();
+    if feature.eq_ignore_ascii_case("max-width") {
+        viewport_width <= width
+    } else if feature.eq_ignore_ascii_case("min-width") {
+        viewport_width >= width
+    } else {
+        false
+    }
+}
+
+fn parse_image_size_length(length: &str, viewport_width: f32) -> Option<f32> {
+    let length = length.trim().to_ascii_lowercase();
+    let (number, factor) = if let Some(number) = length.strip_suffix("px") {
+        (number, 1.0)
+    } else if let Some(number) = length.strip_suffix("vw") {
+        (number, viewport_width / 100.0)
+    } else {
+        let number = length
+            .strip_suffix("rem")
+            .or_else(|| length.strip_suffix("em"))?;
+        // Font-relative sizes use a fixed 16px approximation.
+        (number, 16.0)
+    };
+    let number = number
+        .parse::<f32>()
+        .ok()
+        .filter(|number| number.is_finite() && *number >= 0.0)?;
+    let width = number * factor;
+    (width.is_finite() && width >= 0.0).then_some(width)
+}
+
+fn parse_sizes_effective_width(sizes: Option<&str>, viewport_width: f32) -> f32 {
+    for entry in sizes.unwrap_or("").split(',') {
+        let entry = entry.trim();
+        let length = if entry.starts_with('(') {
+            let Some(end) = entry.find(')') else {
+                continue;
+            };
+            let (media, length) = entry.split_at(end + 1);
+            if !image_media_matches(media, viewport_width) {
+                continue;
+            }
+            length
+        } else {
+            entry
+        };
+        if let Some(width) = parse_image_size_length(length, viewport_width) {
+            return width;
+        }
+    }
+    viewport_width
+}
+
+#[allow(clippy::match_like_matches_macro)]
+fn image_source_type_supported(mime: Option<&str>) -> bool {
+    let mime = mime
+        .unwrap_or("")
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    match mime.as_str() {
+        "" => true,
+        "image/svg+xml" => cfg!(feature = "svg"),
+        "image/png"
+        | "image/jpeg"
+        | "image/gif"
+        | "image/webp"
+        | "image/bmp"
+        | "image/x-ms-bmp"
+        | "image/x-icon"
+        | "image/vnd.microsoft.icon"
+        | "image/jxl" => cfg!(feature = "image-formats"),
+        _ => false,
+    }
+}
+
+/// Select density or width candidates for the device scale and effective width.
+fn select_image_source<'a>(
+    src: Option<&'a str>,
+    srcset: Option<&'a str>,
+    effective_width: f32,
+    scale: f32,
+    is_valid_url: impl Fn(&str) -> bool,
+) -> Option<&'a str> {
+    let src = src.filter(|src| !src.is_empty());
+    let Some(mut input) = srcset else {
+        return src;
+    };
+    let target = if scale.is_finite() && scale > 0.0 {
+        f64::from(scale)
+    } else {
+        1.0
+    };
+    let target_width = f64::from(effective_width) * target;
+    let mut best_density: Option<(&'a str, f64)> = None;
+    let mut best_width: Option<(&'a str, f64)> = None;
+    let mut has_one_x = false;
+    let mut consider_density = |url: &'a str, density: f64| {
+        let better = best_density.is_none_or(|(_, current)| {
+            if density >= target {
+                current < target || density < current
+            } else {
+                current < target && density > current
+            }
+        });
+        if better {
+            best_density = Some((url, density));
+        }
+    };
+    let is_space = |c: char| matches!(c, '\t' | '\n' | '\x0C' | '\r' | ' ');
+
+    loop {
+        input = input.trim_start_matches(|c| c == ',' || is_space(c));
+        if input.is_empty() {
+            break;
+        }
+
+        // Commas within a URL, including a data URL, are not separators.
+        let end = input.find(is_space).unwrap_or(input.len());
+        let token = &input[..end];
+        input = &input[end..];
+        let url = token.trim_end_matches(',');
+        let descriptors = if url.len() != token.len() {
+            ""
+        } else {
+            let end = input.find(',').unwrap_or(input.len());
+            let descriptors = &input[..end];
+            input = &input[end..];
+            descriptors
+        };
+        let mut descriptors = descriptors.split(is_space).filter(|part| !part.is_empty());
+        let (value, is_width) = match (descriptors.next(), descriptors.next()) {
+            (None, None) => (1.0, false),
+            (Some(descriptor), None) => {
+                if let Some(number) = descriptor.strip_suffix('x') {
+                    if number.starts_with('+') {
+                        continue;
+                    }
+                    let Ok(density) = number.parse::<f64>() else {
+                        continue;
+                    };
+                    if !density.is_finite() || density <= 0.0 {
+                        continue;
+                    }
+                    (density, false)
+                } else if let Some(number) = descriptor.strip_suffix('w') {
+                    if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) {
+                        continue;
+                    }
+                    let Ok(width) = number.parse::<u64>() else {
+                        continue;
+                    };
+                    if width == 0 {
+                        continue;
+                    }
+                    (width as f64, true)
+                } else {
+                    continue;
+                }
+            }
+            _ => continue,
+        };
+        if url.is_empty() || !is_valid_url(url) {
+            continue;
+        }
+
+        if is_width {
+            let better = best_width.is_none_or(|(_, current)| {
+                if value >= target_width {
+                    current < target_width || value < current
+                } else {
+                    current < target_width && value > current
+                }
+            });
+            if better {
+                best_width = Some((url, value));
+            }
+        } else {
+            has_one_x |= value == 1.0;
+            consider_density(url, value);
+        }
+    }
+
+    if let Some((url, _)) = best_width {
+        return Some(url);
+    }
+    // A nonempty src supplies an implicit 1x candidate unless srcset supplies one.
+    if !has_one_x {
+        if let Some(src) = src.filter(|src| is_valid_url(src)) {
+            consider_density(src, 1.0);
+        }
+    }
+    best_density.map(|(url, _)| url).or(src)
 }
 
 #[derive(Debug, Clone)]
@@ -108,17 +329,14 @@ impl DocumentMutator<'_> {
         }
     }
 
-    // Attribute changes can affect sibling and :has() matches on the parent.
-    // Keep the wide hint conditional so unrelated siblings need not restyle.
+    // Snapshots handle ordinary descendant and sibling selector invalidation.
+    // Keep the subtree fallback for filtered nth-child and relative selectors.
     fn restyle_parent_for_attribute_change(&mut self, parent_id: Option<NodeId>) {
         let Some(parent_id) = parent_id else {
             return;
         };
         let flags = self.doc.nodes[parent_id].selector_flags().get();
-        let child_dependent = ElementSelectorFlags::HAS_SLOW_SELECTOR
-            | ElementSelectorFlags::HAS_SLOW_SELECTOR_LATER_SIBLINGS
-            | ElementSelectorFlags::HAS_EDGE_CHILD_SELECTOR
-            | ElementSelectorFlags::HAS_EMPTY_SELECTOR
+        let child_dependent = ElementSelectorFlags::HAS_SLOW_SELECTOR_NTH_OF
             | ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_ANCESTOR
             | ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_SIBLING
             | ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_ANCESTOR_SIBLING;
@@ -174,13 +392,21 @@ impl DocumentMutator<'_> {
     // Node creation methods
 
     pub fn create_comment_node(&mut self, contents: &str) -> NodeId {
-        self.doc.create_node(NodeData::Comment {
-            contents: contents.to_string(),
-        })
+        self.create_comment_node_owned(contents.to_string())
+    }
+
+    /// Create a comment node using an existing string allocation.
+    pub fn create_comment_node_owned(&mut self, contents: String) -> NodeId {
+        self.doc.create_node(NodeData::Comment { contents })
     }
 
     pub fn create_text_node(&mut self, text: &str) -> NodeId {
         self.doc.create_text_node(text)
+    }
+
+    /// Create a text node using an existing string allocation.
+    pub fn create_text_node_owned(&mut self, text: String) -> NodeId {
+        self.doc.create_text_node_owned(text)
     }
 
     /// A `DocumentFragment`: a parentless container that never appears in a box
@@ -294,6 +520,12 @@ impl DocumentMutator<'_> {
     // Node mutation methods
 
     pub fn set_node_text(&mut self, node_id: NodeId, value: &str) {
+        if self.doc.nodes[node_id]
+            .text_data()
+            .is_some_and(|text| text.content == value)
+        {
+            return;
+        }
         if matches!(
             self.doc.nodes[node_id].markup.as_deref(),
             Some(crate::node::MarkupNode::Doctype { .. })
@@ -407,7 +639,7 @@ impl DocumentMutator<'_> {
             self.mutations_occurred |= node_is_in_document;
             text.content.clear();
             text.content.push_str(value);
-            node.insert_damage(ALL_DAMAGE);
+            node.insert_damage(CONSTRUCT_FC | ONLY_RELAYOUT);
             // Mark ancestors dirty so the style traversal visits this subtree.
             // Without this, the traversal may skip nodes with pending damage.
             node.mark_ancestors_dirty();
@@ -417,7 +649,7 @@ impl DocumentMutator<'_> {
             // affect the parent's layout (text may wrap differently, change size, etc.)
             if let Some(parent_id) = parent_id {
                 let parent = &mut self.doc.nodes[parent_id];
-                parent.insert_damage(ALL_DAMAGE);
+                parent.insert_damage(CONSTRUCT_FC | ONLY_RELAYOUT);
             }
 
             self.maybe_record_node(parent_id);
@@ -431,12 +663,18 @@ impl DocumentMutator<'_> {
     ) -> Result<(), AppendTextErr> {
         let node_is_in_document = self.doc.nodes[node_id].flags.is_in_document();
         let node = &mut self.doc.nodes[node_id];
-        node.insert_damage(ALL_DAMAGE);
-        node.mark_ancestors_dirty();
         let parent = node.parent;
         match node.text_data_mut() {
             Some(data) => {
+                if text.is_empty() {
+                    return Ok(());
+                }
                 data.content += text;
+                node.insert_damage(CONSTRUCT_FC | ONLY_RELAYOUT);
+                node.mark_ancestors_dirty();
+                if let Some(parent) = parent {
+                    self.doc.nodes[parent].insert_damage(CONSTRUCT_FC | ONLY_RELAYOUT);
+                }
                 self.mutations_occurred |= node_is_in_document;
                 // A streaming parser appends a <style>'s text in several
                 // chunks, possibly across mutator sessions. Each chunk must
@@ -475,8 +713,32 @@ impl DocumentMutator<'_> {
     }
 
     pub fn set_attribute(&mut self, node_id: NodeId, name: QualName, value: &str) {
-        self.doc.note_stash_subtree(node_id);
-        self.doc.note_stash_attribute(node_id, &name, value);
+        // Equal writes still notify observers and can affect live element state.
+        let needs_attribute_invalidation =
+            self.doc.nodes[node_id]
+                .element_data()
+                .is_none_or(|element| {
+                    element.attr_by_name(&name) != Some(value)
+                        || !matches!(&element.special_data, SpecialElementData::None)
+                        || (name.ns == ns!()
+                            && matches!(
+                                name.local.as_ref(),
+                                "value"
+                                    | "style"
+                                    | "disabled"
+                                    | "checked"
+                                    | "src"
+                                    | "srcset"
+                                    | "href"
+                                    | "srcdoc"
+                                    | "selected"
+                            ))
+                });
+        if name.ns.as_ref().is_empty() {
+            self.doc.note_stash_attribute(node_id, &name, value);
+        } else {
+            self.doc.note_stash_subtree(node_id);
+        }
         #[cfg(feature = "shadow-dom")]
         if name.local == local_name!("slot") || name.local == local_name!("name") {
             self.doc.note_shadow_tree_change(node_id);
@@ -500,7 +762,7 @@ impl DocumentMutator<'_> {
                 });
             }
         }
-        if node_is_in_document {
+        if node_is_in_document && needs_attribute_invalidation {
             self.doc.snapshot_attribute(node_id, &name.local);
 
             // Damage is asserted only where an attribute can change what the
@@ -529,50 +791,14 @@ impl DocumentMutator<'_> {
             let node = &mut self.doc.nodes[node_id];
             node.set_dirty_descendants();
             if let Some(mut data) = node.stylo_element_data_opt_mut().and_then(|s| s.get_mut()) {
-                data.hint |= RestyleHint::restyle_subtree();
+                data.hint |= RestyleHint::RESTYLE_SELF;
                 if renders_from_attributes {
                     data.damage.insert(ALL_DAMAGE);
                 }
             }
 
-            // The parent is restyled only when a selector says it depends on
-            // its children.
-            //
-            // It used to be restyled unconditionally, which meant a class
-            // toggle on one row restyled every sibling of that row: on a
-            // 40-row list, a colour-only change cost 773us of style against
-            // 15us for a frame that changed nothing, while layout recomputed
-            // four nodes. Style was half of the whole resolve, for one
-            // element's colour.
-            //
-            // The flags say exactly when the wide hint is needed, because
-            // `apply_selector_flags` deposits them on the parent while matching:
-            // `:empty` and `:only-child` on the parent, `:nth-child` and the
-            // sibling combinators on the siblings, `:has()` through the
-            // relative-selector directions. A parent carrying none of them has
-            // no rule whose match can change because a child's attribute did.
-            let parent = node.parent;
-            if let Some(parent_id) = parent {
-                let parent = &self.doc.nodes[parent_id];
-                let flags = parent.selector_flags().get();
-                let child_dependent = ElementSelectorFlags::HAS_SLOW_SELECTOR
-                    | ElementSelectorFlags::HAS_SLOW_SELECTOR_LATER_SIBLINGS
-                    | ElementSelectorFlags::HAS_EDGE_CHILD_SELECTOR
-                    | ElementSelectorFlags::HAS_EMPTY_SELECTOR
-                    | ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_ANCESTOR
-                    | ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_SIBLING
-                    | ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_ANCESTOR_SIBLING;
-
-                if flags.intersects(child_dependent) {
-                    let parent = &mut self.doc.nodes[parent_id];
-                    if let Some(mut data) = parent
-                        .stylo_element_data_opt_mut()
-                        .and_then(|s| s.get_mut())
-                    {
-                        data.hint |= RestyleHint::restyle_subtree();
-                    }
-                }
-            }
+            let parent_id = node.parent;
+            self.restyle_parent_for_attribute_change(parent_id);
 
             // Mark ancestors dirty so the style traversal visits this subtree.
             // Without this, the traversal may skip nodes with pending RestyleHint/damage
@@ -675,7 +901,11 @@ impl DocumentMutator<'_> {
 
         if *attr == local_name!("style") {
             element.flush_style_attribute(&self.doc.guard, &self.doc.url.url_extra_data());
-            node.mark_style_attr_updated();
+            if node_is_in_document {
+                node.mark_style_attr_updated_without_propagation();
+            } else {
+                node.mark_style_attr_updated();
+            }
             return;
         }
 
@@ -687,13 +917,21 @@ impl DocumentMutator<'_> {
         // If node if not in the document, then don't apply any special behaviours
         // and simply set the attribute value
         if !node.flags.is_in_document() {
+            if *tag == local_name!("img") && matches!(attr.as_ref(), "src" | "srcset" | "sizes") {
+                self.load_image(node_id);
+            }
             return;
         }
 
         if (tag, attr) == tag_and_attr!("input", "checked") {
             set_input_checked_state(element, value.to_string());
-        } else if (tag, attr) == tag_and_attr!("img", "src") {
+        } else if *tag == local_name!("img") && matches!(attr.as_ref(), "src" | "srcset" | "sizes")
+        {
             self.load_image(node_id);
+        } else if *tag == local_name!("source")
+            && matches!(attr.as_ref(), "srcset" | "media" | "sizes" | "type")
+        {
+            self.reload_picture_images(node_id);
         } else if (tag, attr) == tag_and_attr!("canvas", "src") {
             self.load_custom_paint_src(node_id);
         } else if (tag, attr) == tag_and_attr!("link", "href") {
@@ -749,6 +987,13 @@ impl DocumentMutator<'_> {
     }
 
     pub fn clear_attribute(&mut self, node_id: NodeId, name: QualName) {
+        if self.doc.nodes[node_id]
+            .element_data()
+            .and_then(|element| element.attr_by_name(&name))
+            .is_none()
+        {
+            return;
+        }
         self.doc.note_stash_subtree(node_id);
         #[cfg(feature = "shadow-dom")]
         if name.local == local_name!("slot") || name.local == local_name!("name") {
@@ -776,9 +1021,6 @@ impl DocumentMutator<'_> {
             }
         }
         if node_is_in_document {
-            let removes_existing_attribute = self.doc.nodes[node_id]
-                .element_data()
-                .is_some_and(|element| element.attrs.iter().any(|attr| attr.name == name));
             self.doc.snapshot_attribute(node_id, &name.local);
             let parent_id = self.doc.nodes[node_id].parent;
             {
@@ -786,15 +1028,13 @@ impl DocumentMutator<'_> {
                 node.set_dirty_descendants();
                 if let Some(mut data) = node.stylo_element_data_opt_mut().and_then(|s| s.get_mut())
                 {
-                    data.hint |= RestyleHint::restyle_subtree();
+                    data.hint |= RestyleHint::RESTYLE_SELF;
                     data.damage.insert(ALL_DAMAGE);
                 }
                 // Make pending restyle hints reachable by traversal.
                 node.mark_ancestors_dirty();
             }
-            if removes_existing_attribute {
-                self.restyle_parent_for_attribute_change(parent_id);
-            }
+            self.restyle_parent_for_attribute_change(parent_id);
         }
 
         if name.ns == ns!() && name.local == local_name!("id") {
@@ -879,7 +1119,19 @@ impl DocumentMutator<'_> {
 
         if *attr == local_name!("style") {
             element.flush_style_attribute(&self.doc.guard, &self.doc.url.url_extra_data());
-            node.mark_style_attr_updated();
+            if node_is_in_document {
+                node.mark_style_attr_updated_without_propagation();
+            } else {
+                node.mark_style_attr_updated();
+            }
+        } else if *tag == local_name!("img") && matches!(attr.as_ref(), "src" | "srcset" | "sizes")
+        {
+            self.load_image(node_id);
+        } else if node_is_in_document
+            && *tag == local_name!("source")
+            && matches!(attr.as_ref(), "srcset" | "media" | "sizes" | "type")
+        {
+            self.reload_picture_images(node_id);
         } else if (tag, attr) == tag_and_attr!("canvas", "src") {
             self.recompute_is_animating = true;
         } else if (tag, attr) == tag_and_attr!("link", "href") {
@@ -910,6 +1162,9 @@ impl DocumentMutator<'_> {
 
     pub fn remove_sub_document(&mut self, node_id: NodeId) {
         let node_is_in_document = self.doc.nodes[node_id].flags.is_in_document();
+        if let Some(load) = self.doc.iframe_loads.remove(&node_id) {
+            load.abort_controller.abort();
+        }
         self.doc.remove_sub_document(node_id);
         self.mutations_occurred |= node_is_in_document;
     }
@@ -1370,7 +1625,7 @@ impl DocumentMutator<'_> {
         // The fragment is emptied as it is expanded, which is what the spec
         // requires: after insertion a fragment has no children, and leaving
         // them behind would give every child two parents.
-        let child_ids: Vec<NodeId> = if child_ids
+        let child_ids: Cow<'_, [NodeId]> = if child_ids
             .iter()
             .any(|id| matches!(self.doc.nodes[*id].data, NodeData::DocumentFragment))
         {
@@ -1389,11 +1644,11 @@ impl DocumentMutator<'_> {
                     flattened.push(id);
                 }
             }
-            flattened
+            Cow::Owned(flattened)
         } else {
-            child_ids.to_vec()
+            Cow::Borrowed(child_ids)
         };
-        let child_ids = child_ids.as_slice();
+        let child_ids = child_ids.as_ref();
 
         let new_parent_is_in_document = self.doc.nodes[parent_id].flags.is_in_document();
         self.mutations_occurred |= new_parent_is_in_document && !child_ids.is_empty();
@@ -1485,7 +1740,20 @@ impl DocumentMutator<'_> {
             }
         }
 
-        self.doc.note_stash_subtree(parent_id);
+        // Only added subtrees need reclassification after an insertion. Walking
+        // the whole parent subtree here revisits existing siblings on every
+        // append. A form parent also needs the associated-control scan performed
+        // by note_stash_subtree.
+        let parent_is_form = self.doc.nodes[parent_id]
+            .element_data()
+            .is_some_and(|element| element.name.local.as_ref() == "form");
+        if parent_is_form {
+            self.doc.note_stash_subtree(parent_id);
+        } else {
+            for child_id in child_ids.iter().copied() {
+                self.doc.note_stash_subtree(child_id);
+            }
+        }
         self.maybe_record_node(parent_id);
     }
 
@@ -1859,106 +2127,155 @@ impl<'doc> DocumentMutator<'doc> {
     fn process_removed_subtree(&mut self, node_id: NodeId) {
         let mut removed = FxHashSet::default();
         let mut parents = FxHashSet::default();
-        self.doc
-            .iter_shadow_including_subtree_mut(node_id, |node_id, doc| {
-                removed.insert(node_id);
-                let node = &doc.nodes[node_id];
-                parents.extend(
-                    [node.parent, node.layout_parent.get()]
-                        .into_iter()
-                        .flatten(),
-                );
-                doc.nodes[node_id]
-                    .flags
-                    .set(NodeFlags::IS_IN_DOCUMENT, false);
+        if self.doc.nodes[node_id].children.is_empty()
+            && matches!(
+                &self.doc.nodes[node_id].data,
+                NodeData::Text(_) | NodeData::Comment { .. }
+            )
+        {
+            // These node kinds have no element attributes (including id/class),
+            // special-element resources, custom-element definitions, or stash
+            // attributes. Keep the node in `removed`: layout caches can point
+            // to text nodes, and interaction state can target either leaf kind.
+            removed.insert(node_id);
+            let node = &self.doc.nodes[node_id];
+            parents.extend(
+                [node.parent, node.layout_parent.get()]
+                    .into_iter()
+                    .flatten(),
+            );
+            self.doc.nodes[node_id]
+                .flags
+                .set(NodeFlags::IS_IN_DOCUMENT, false);
 
-                // Clear any interaction state that references this node, running
-                // the usual teardown steps (unhover/unactive the surviving
-                // ancestor chain, IME disable on blur of a focused input).
-                doc.clear_interaction_state_for_removed_node(node_id);
+            if let Some(load) = self.doc.iframe_loads.remove(&node_id) {
+                load.abort_controller.abort();
+            }
 
-                let node = &mut doc.nodes[node_id];
+            self.doc.clear_interaction_state_for_removed_node(node_id);
+            if self.doc.focus_node_id == Some(node_id) {
+                self.doc.focus_node_id = None;
+            }
+            if self.doc.mousedown_node_id == Some(node_id) {
+                self.doc.mousedown_node_id = None;
+            }
+            if self.doc.text_selection.anchor.node_or_parent == Some(node_id)
+                || self.doc.text_selection.focus.node_or_parent == Some(node_id)
+            {
+                self.doc.text_selection.clear();
+            }
 
-                // Same for focus and for the node the last press landed on.
-                //
-                // These two were missed, and they are the two most likely to point
-                // at a node that is being removed: dismissing a panel is a click on
-                // a control *inside* it, so that control is both the focused node
-                // and the mousedown node at the moment its subtree goes away.
-                //
-                // A stale id here is not inert. The next click calls `set_focus_to`,
-                // which blurs the old node by indexing it, and indexing a dropped
-                // id panics inside the event handler. The window then stops
-                // responding to clicks until something forces a full rebuild.
-                //
-                // The upstream fix carried a second failure mode, the blur landing
-                // on whatever node had taken the recycled slot. That one cannot
-                // happen here: `NodeId` is versioned, so a dropped id resolves to
-                // nothing rather than aliasing its successor.
-                if doc.focus_node_id == Some(node_id) {
-                    doc.focus_node_id = None;
-                }
-                if doc.mousedown_node_id == Some(node_id) {
-                    doc.mousedown_node_id = None;
-                }
+            if self.doc.nodes[node_id].has_snapshot() {
+                let opaque_id = style::dom::TNode::opaque(&&self.doc.nodes[node_id]);
+                self.doc.snapshots.remove(&opaque_id);
+                self.doc.nodes[node_id].set_has_snapshot(false);
+            }
+        } else {
+            self.doc
+                .iter_shadow_including_subtree_mut(node_id, |node_id, doc| {
+                    removed.insert(node_id);
+                    let node = &doc.nodes[node_id];
+                    parents.extend(
+                        [node.parent, node.layout_parent.get()]
+                            .into_iter()
+                            .flatten(),
+                    );
+                    doc.nodes[node_id]
+                        .flags
+                        .set(NodeFlags::IS_IN_DOCUMENT, false);
 
-                // Clear the text selection if one of its endpoints references this node.
-                // This prevents stale selection endpoint references.
-                if doc.text_selection.anchor.node_or_parent == Some(node_id)
-                    || doc.text_selection.focus.node_or_parent == Some(node_id)
-                {
-                    doc.text_selection.clear();
-                }
-
-                // Remove any snapshot for this node to prevent stale snapshot references
-                // during style invalidation.
-                if node.has_snapshot() {
-                    let opaque_id = style::dom::TNode::opaque(&&*node);
-                    doc.snapshots.remove(&opaque_id);
-                    node.set_has_snapshot(false);
-                }
-
-                // If the node has an "id" attribute remove it from the ID map.
-                if let Some(id_attr) = node.attr(local_name!("id")).map(ToString::to_string) {
-                    doc.remove_from_id_map(&id_attr, node_id);
-                }
-
-                let node = &mut doc.nodes[node_id];
-                let NodeData::Element(ref mut element) = node.data else {
-                    return;
-                };
-
-                match &element.special_data {
-                    SpecialElementData::SubDocument(_) => {
-                        self.eager_op_queue
-                            .push(SpecialOp::UnloadSubDocument(node_id));
+                    if let Some(load) = doc.iframe_loads.remove(&node_id) {
+                        load.abort_controller.abort();
                     }
-                    #[cfg(feature = "custom-widget")]
-                    SpecialElementData::CustomWidget(_) => {
-                        self.eager_op_queue
-                            .push(SpecialOp::UnloadCustomWidget(node_id));
+
+                    // Clear any interaction state that references this node, running
+                    // the usual teardown steps (unhover/unactive the surviving
+                    // ancestor chain, IME disable on blur of a focused input).
+                    doc.clear_interaction_state_for_removed_node(node_id);
+
+                    let node = &mut doc.nodes[node_id];
+
+                    // Same for focus and for the node the last press landed on.
+                    //
+                    // These two were missed, and they are the two most likely to point
+                    // at a node that is being removed: dismissing a panel is a click on
+                    // a control *inside* it, so that control is both the focused node
+                    // and the mousedown node at the moment its subtree goes away.
+                    //
+                    // A stale id here is not inert. The next click calls `set_focus_to`,
+                    // which blurs the old node by indexing it, and indexing a dropped
+                    // id panics inside the event handler. The window then stops
+                    // responding to clicks until something forces a full rebuild.
+                    //
+                    // The upstream fix carried a second failure mode, the blur landing
+                    // on whatever node had taken the recycled slot. That one cannot
+                    // happen here: `NodeId` is versioned, so a dropped id resolves to
+                    // nothing rather than aliasing its successor.
+                    if doc.focus_node_id == Some(node_id) {
+                        doc.focus_node_id = None;
                     }
-                    #[cfg(feature = "shadow-dom")]
-                    SpecialElementData::CustomElement(_) => {
-                        self.eager_op_queue
-                            .push(SpecialOp::DisconnectCustomElement(node_id));
+                    if doc.mousedown_node_id == Some(node_id) {
+                        doc.mousedown_node_id = None;
                     }
-                    SpecialElementData::Stylesheet(_) => self
-                        .eager_op_queue
-                        .push(SpecialOp::UnloadStylesheet(node_id)),
-                    SpecialElementData::Image(_) => {}
-                    SpecialElementData::Canvas(_) => {
-                        self.recompute_is_animating = true;
+
+                    // Clear the text selection if one of its endpoints references this node.
+                    // This prevents stale selection endpoint references.
+                    if doc.text_selection.anchor.node_or_parent == Some(node_id)
+                        || doc.text_selection.focus.node_or_parent == Some(node_id)
+                    {
+                        doc.text_selection.clear();
                     }
-                    SpecialElementData::TableRoot(_) => {}
-                    SpecialElementData::TextInput(_) => {}
-                    SpecialElementData::CheckboxInput(_) => {}
-                    SpecialElementData::Select(_) => {}
-                    #[cfg(feature = "file-input")]
-                    SpecialElementData::FileInput(_) => {}
-                    SpecialElementData::None => {}
-                }
-            });
+
+                    // Remove any snapshot for this node to prevent stale snapshot references
+                    // during style invalidation.
+                    if node.has_snapshot() {
+                        let opaque_id = style::dom::TNode::opaque(&&*node);
+                        doc.snapshots.remove(&opaque_id);
+                        node.set_has_snapshot(false);
+                    }
+
+                    // If the node has an "id" attribute remove it from the ID map.
+                    if let Some(id_attr) = node.attr(local_name!("id")).map(ToString::to_string) {
+                        doc.remove_from_id_map(&id_attr, node_id);
+                    }
+
+                    let node = &mut doc.nodes[node_id];
+                    let NodeData::Element(ref mut element) = node.data else {
+                        return;
+                    };
+
+                    match &element.special_data {
+                        SpecialElementData::SubDocument(_) => {
+                            self.eager_op_queue
+                                .push(SpecialOp::UnloadSubDocument(node_id));
+                        }
+                        #[cfg(feature = "custom-widget")]
+                        SpecialElementData::CustomWidget(_) => {
+                            self.eager_op_queue
+                                .push(SpecialOp::UnloadCustomWidget(node_id));
+                        }
+                        #[cfg(feature = "shadow-dom")]
+                        SpecialElementData::CustomElement(_) => {
+                            self.eager_op_queue
+                                .push(SpecialOp::DisconnectCustomElement(node_id));
+                        }
+                        SpecialElementData::Stylesheet(_) => self
+                            .eager_op_queue
+                            .push(SpecialOp::UnloadStylesheet(node_id)),
+                        SpecialElementData::Image(_) => {}
+                        SpecialElementData::Canvas(_) => {
+                            self.recompute_is_animating = true;
+                        }
+                        SpecialElementData::TableRoot(_) => {}
+                        SpecialElementData::TextInput(_) => {}
+                        SpecialElementData::CheckboxInput(_) => {}
+                        SpecialElementData::Select(_) => {}
+                        #[cfg(feature = "file-input")]
+                        SpecialElementData::FileInput(_) => {}
+                        SpecialElementData::None => {}
+                    }
+                });
+        }
 
         // Detachment must remove published paint edges even while script
         // still owns wrappers. The later drop also invalidates references to
@@ -2084,55 +2401,172 @@ impl<'doc> DocumentMutator<'doc> {
             .force_stylesheet_origins_dirty(OriginSet::all());
     }
 
-    fn load_image(&mut self, target_id: NodeId) {
+    fn reload_picture_images(&mut self, source_id: NodeId) {
+        let Some(parent_id) = self.doc.nodes[source_id].parent else {
+            return;
+        };
+        let parent = &self.doc.nodes[parent_id];
+        let Some(element) = parent.element_data() else {
+            return;
+        };
+        if element.name.ns != ns!(html) || element.name.local != local_name!("picture") {
+            return;
+        }
+        let image_ids: Vec<NodeId> = parent
+            .children
+            .iter()
+            .copied()
+            .skip_while(|id| *id != source_id)
+            .skip(1)
+            .filter(|id| {
+                let node = &self.doc.nodes[*id];
+                node.flags.is_in_document()
+                    && node.element_data().is_some_and(|element| {
+                        element.name.ns == ns!(html) && element.name.local == local_name!("img")
+                    })
+            })
+            .collect();
+        for image_id in image_ids {
+            self.load_image(image_id);
+        }
+    }
+
+    fn selected_image_source(&self, target_id: NodeId) -> Option<&str> {
         let node = &self.doc.nodes[target_id];
-        if let Some(raw_src) = node.attr(local_name!("src")) {
-            if !raw_src.is_empty() {
-                let src = self.doc.resolve_url(raw_src);
-                let src_string = src.as_str();
+        let scale = self.doc.viewport.scale();
+        let scale = if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        };
+        let viewport_width = self.doc.viewport.window_size.0 as f32 / scale;
+        let viewport_width = if viewport_width.is_finite() {
+            viewport_width
+        } else {
+            0.0
+        };
 
-                // Check cache first
-                if let Some(cached_image) = self.doc.image_cache.get(src_string) {
-                    #[cfg(feature = "tracing")]
-                    tracing::info!("Loading image {src_string} from cache");
-                    let node = &mut self.doc.nodes[target_id];
-                    node.element_data_mut().unwrap().special_data =
-                        SpecialElementData::Image(Box::new(cached_image.clone()));
-                    node.cache_mut().clear();
-                    node.insert_damage(ALL_DAMAGE);
-                    return;
+        if let Some(parent_id) = node.parent {
+            let parent = &self.doc.nodes[parent_id];
+            if parent.element_data().is_some_and(|element| {
+                element.name.ns == ns!(html) && element.name.local == local_name!("picture")
+            }) {
+                for &child_id in &parent.children {
+                    if child_id == target_id {
+                        break;
+                    }
+                    let source = &self.doc.nodes[child_id];
+                    let Some(element) = source.element_data() else {
+                        continue;
+                    };
+                    if element.name.ns != ns!(html)
+                        || element.name.local != local_name!("source")
+                        || !image_media_matches(
+                            source.attr(local_name!("media")).unwrap_or(""),
+                            viewport_width,
+                        )
+                        || !image_source_type_supported(source.attr(local_name!("type")))
+                    {
+                        continue;
+                    }
+                    if let Some(src) = select_image_source(
+                        None,
+                        source.attr(local_name!("srcset")),
+                        parse_sizes_effective_width(
+                            source.attr(local_name!("sizes")),
+                            viewport_width,
+                        ),
+                        scale,
+                        |raw| self.doc.url.resolve_relative(raw).is_some(),
+                    ) {
+                        return Some(src);
+                    }
                 }
-
-                // Check if there's already a pending request for this URL
-                if let Some(waiting_list) = self.doc.pending_images.get_mut(src_string) {
-                    #[cfg(feature = "tracing")]
-                    tracing::info!("Image {src_string} already pending, queueing node {target_id}");
-                    waiting_list.push((target_id, ImageType::Image));
-                    return;
-                }
-
-                // Start fetch and track as pending
-                #[cfg(feature = "tracing")]
-                tracing::info!("Fetching image {src_string}");
-                self.doc
-                    .pending_images
-                    .insert(src_string.to_string(), vec![(target_id, ImageType::Image)]);
-
-                self.doc.net_provider.fetch(
-                    self.doc.id(),
-                    self.doc
-                        .build_request(src)
-                        .destination(RequestDestination::Image),
-                    ResourceHandler::boxed(
-                        self.doc.tx.clone(),
-                        self.doc.id(),
-                        None, // Don't pass node_id, we'll handle it via pending_images
-                        self.doc.shell_provider.clone(),
-                        ImageHandler::new(ImageType::Image),
-                    ),
-                );
             }
         }
+
+        select_image_source(
+            node.attr(local_name!("src")),
+            node.attr(local_name!("srcset")),
+            parse_sizes_effective_width(node.attr(local_name!("sizes")), viewport_width),
+            scale,
+            |raw| self.doc.url.resolve_relative(raw).is_some(),
+        )
+    }
+
+    fn load_image(&mut self, target_id: NodeId) {
+        let Some(raw_src) = self.selected_image_source(target_id) else {
+            self.doc.cancel_image_load(target_id);
+            let node = &mut self.doc.nodes[target_id];
+            node.element_data_mut().unwrap().special_data = SpecialElementData::None;
+            node.cache_mut().clear();
+            node.insert_damage(ALL_DAMAGE);
+            return;
+        };
+        if raw_src.is_empty() {
+            self.doc.cancel_image_load(target_id);
+            let node = &mut self.doc.nodes[target_id];
+            node.element_data_mut().unwrap().special_data = SpecialElementData::None;
+            node.cache_mut().clear();
+            node.insert_damage(ALL_DAMAGE);
+            return;
+        }
+        let src = self.doc.resolve_url(raw_src);
+        let src_string = src.as_str();
+        self.doc.begin_image_load(target_id, src_string.to_owned());
+        let node = &mut self.doc.nodes[target_id];
+        node.element_data_mut().unwrap().special_data = SpecialElementData::None;
+        node.cache_mut().clear();
+        node.insert_damage(ALL_DAMAGE);
+
+        // Check cache first
+        if let Some(cached_image) = self.doc.image_cache.get(src_string) {
+            #[cfg(feature = "tracing")]
+            tracing::info!("Loading image {src_string} from cache");
+            let node = &mut self.doc.nodes[target_id];
+            node.element_data_mut().unwrap().special_data =
+                SpecialElementData::Image(Box::new(cached_image.clone()));
+            node.cache_mut().clear();
+            node.insert_damage(ALL_DAMAGE);
+            self.doc.finish_image_load(target_id, src_string, true);
+            return;
+        }
+
+        // Check if there's already a pending request for this URL
+        if let Some(waiting_list) = self.doc.pending_images.get_mut(src_string) {
+            #[cfg(feature = "tracing")]
+            tracing::info!("Image {src_string} already pending, queueing node {target_id}");
+            if !waiting_list
+                .iter()
+                .any(|(node, kind)| *node == target_id && matches!(kind, ImageType::Image))
+            {
+                waiting_list.push((target_id, ImageType::Image));
+            }
+            return;
+        }
+
+        // Start fetch and track as pending
+        #[cfg(feature = "tracing")]
+        tracing::info!("Fetching image {src_string}");
+        self.doc
+            .pending_images
+            .insert(src_string.to_string(), vec![(target_id, ImageType::Image)]);
+
+        let request_url = src_string.to_owned();
+        self.doc.net_provider.fetch(
+            self.doc.id(),
+            self.doc
+                .build_request(src)
+                .destination(RequestDestination::Image),
+            ResourceHandler::boxed_for_url(
+                self.doc.tx.clone(),
+                self.doc.id(),
+                None, // Don't pass node_id, we'll handle it via pending_images
+                self.doc.shell_provider.clone(),
+                ImageHandler::new(ImageType::Image),
+                request_url,
+            ),
+        );
     }
 
     fn load_iframe(&mut self, target_id: NodeId) {

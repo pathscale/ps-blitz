@@ -10,9 +10,7 @@ use blitz_traits::node_id::NodeId;
 use style::properties::ComputedValues;
 use style::properties::generated::longhands::position::computed_value::T as Position;
 use style::selector_parser::RestyleDamage;
-use style::values::computed::Rotate;
-use style::values::generics::transform::{Scale, Translate};
-use style::values::specified::box_::{DisplayInside, DisplayOutside};
+use style::values::specified::box_::{Contain, DisplayInside, DisplayOutside, WillChangeBits};
 use taffy::{Direction, Layout, Overflow, Point, ResolveOrZero, Size};
 use thin_vec::ThinVec;
 
@@ -49,12 +47,26 @@ pub(crate) struct FixedLayoutParents {
     moved: Vec<(NodeId, NodeId)>,
 }
 
-pub(crate) fn establishes_transform_containing_block(styles: &ComputedValues) -> bool {
+/// Whether computed styles establish a containing block for absolute and fixed descendants.
+pub(crate) fn establishes_all_descendants_containing_block(
+    styles: &ComputedValues,
+    is_root: bool,
+) -> bool {
     let box_styles = styles.get_box();
-    !box_styles.transform.0.is_empty()
-        || !matches!(box_styles.translate, Translate::None)
-        || !matches!(box_styles.rotate, Rotate::None)
-        || !matches!(box_styles.scale, Scale::None)
+    let effects = styles.get_effects();
+    let will_change = box_styles.will_change.bits;
+
+    box_styles.has_transform_or_perspective()
+        || box_styles
+            .contain
+            .intersects(Contain::LAYOUT | Contain::PAINT)
+        || will_change.intersects(
+            WillChangeBits::TRANSFORM | WillChangeBits::PERSPECTIVE | WillChangeBits::CONTAIN,
+        )
+        || (!is_root
+            && (!effects.filter.0.is_empty()
+                || !effects.backdrop_filter.0.is_empty()
+                || will_change.intersects(WillChangeBits::FIXPOS_CB_NON_SVG)))
 }
 
 impl BaseDocument {
@@ -162,8 +174,16 @@ impl BaseDocument {
                 }?;
             let ancestor = self.nodes.get(parent)?;
             if ancestor.primary_styles().is_some_and(|styles| {
-                establishes_transform_containing_block(&styles)
-                    || (!fixed && styles.clone_position() != Position::Static)
+                establishes_all_descendants_containing_block(
+                    &styles,
+                    parent == self.root_element().id,
+                ) || (!fixed
+                    && (styles.clone_position() != Position::Static
+                        || styles
+                            .get_box()
+                            .will_change
+                            .bits
+                            .intersects(WillChangeBits::POSITION)))
             }) {
                 return Some(parent);
             }
@@ -382,8 +402,16 @@ impl BaseDocument {
                 let display = styles.clone_display();
                 if display.outside() == DisplayOutside::Inline
                     && display.inside() == DisplayInside::Flow
-                    && (establishes_transform_containing_block(&styles)
-                        || (!fixed && styles.clone_position() != Position::Static))
+                    && (establishes_all_descendants_containing_block(
+                        &styles,
+                        id == self.root_element().id,
+                    ) || (!fixed
+                        && (styles.clone_position() != Position::Static
+                            || styles
+                                .get_box()
+                                .will_change
+                                .bits
+                                .intersects(WillChangeBits::POSITION))))
                 {
                     return Some(id);
                 }
