@@ -24,12 +24,6 @@ name: Publish crates
 # `cargo publish` waits for the registry to serve what it just uploaded before
 # the next one starts, because the next crate resolves it from crates.io.
 on:
-  push:
-    branches: [master]
-    paths:
-      - Cargo.toml
-      - packages/**
-      - .github/workflows/publish.yml
   workflow_dispatch:
     inputs:
       dry_run:
