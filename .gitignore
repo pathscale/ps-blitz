@@ -17,5 +17,3 @@
 # version rather than whatever this repository happened to build against.
 Cargo.lock
 
-# Operational execution tracking stays local.
-/TODO.md
