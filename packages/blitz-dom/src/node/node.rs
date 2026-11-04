@@ -1703,6 +1703,7 @@ impl Node {
     /// processed buffer, rather than reconstructing whitespace from source.
     /// Callers must flush layout before invoking this.
     pub fn rendered_inner_text(&self) -> String {
+        use parley::PositionedLayoutItem;
         use style::computed_values::visibility::T as Visibility;
 
         enum Piece {
@@ -1710,44 +1711,32 @@ impl Node {
             RequiredBreak(usize),
         }
 
-        fn text(node: &Node) -> String {
-            let NodeData::Text(data) = &node.data else {
-                return String::new();
-            };
-            // Text that never reached an inline layout is not rendered.
-            if node.inline_root_ancestor().is_none() {
-                return String::new();
-            }
-            let preserves = node
-                .parent
-                .map(|id| node.with(id))
-                .and_then(Node::primary_styles)
-                .is_some_and(|style| {
-                    style.get_inherited_text().white_space_collapse
-                        != style::computed_values::white_space_collapse::T::Collapse
-                });
-            if preserves {
-                return data.content.to_string();
-            }
-            // Collapsing white space: every run of spaces, tabs and newlines
-            // is one space, as the line layout rendered it.
-            let mut result = String::with_capacity(data.content.len());
-            let mut space = false;
-            for ch in data.content.chars() {
-                if matches!(ch, ' ' | '\t' | '\n' | '\r' | '\u{c}') {
-                    space = true;
-                } else {
-                    if space {
-                        result.push(' ');
-                        space = false;
+        fn text(node: &Node) -> Option<String> {
+            let root = node.inline_root_ancestor()?;
+            let inline = root.element_data()?.inline_layout_data.as_ref()?;
+            let mut ranges = Vec::new();
+            for line in inline.layout.lines() {
+                for item in line.items() {
+                    if let PositionedLayoutItem::GlyphRun(run) = item
+                        && run.style().brush.text_node == Some(node.id)
+                    {
+                        ranges.push(run.run().text_range());
                     }
-                    result.push(ch);
                 }
             }
-            if space {
-                result.push(' ');
+            ranges.sort_by_key(|range| range.start);
+            let mut result = String::new();
+            let mut end = 0;
+            for range in ranges {
+                let start = range.start.max(end);
+                if start < range.end
+                    && let Some(value) = inline.text.get(start..range.end)
+                {
+                    result.push_str(value);
+                }
+                end = end.max(range.end);
             }
-            result
+            Some(result)
         }
         fn collect(node: &Node, pieces: &mut Vec<Piece>) {
             if node.is_element() && node.is_display_none() {
@@ -1763,7 +1752,12 @@ impl Node {
                     .and_then(Node::primary_styles)
                     .is_none_or(|style| style.clone_visibility() == Visibility::Visible);
                 if visible {
-                    let value = text(node);
+                    let value = text(node).unwrap_or_else(|| {
+                        let NodeData::Text(data) = &node.data else {
+                            return String::new();
+                        };
+                        data.content.to_string()
+                    });
                     if !value.is_empty() {
                         pieces.push(Piece::Text(value));
                     }

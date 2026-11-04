@@ -198,12 +198,38 @@ impl BaseDocument {
         node.children = children;
         *node.layout_children.get_mut() = layout_children;
 
-        if damage.contains(CONSTRUCT_BOX) {
+        // An inline root owns the shaping of its non-atomic descendants.
+        // Construction below it therefore invalidates this one inline layout.
+        if node.flags.contains(NodeFlags::IS_INLINE_ROOT)
+            && damage.contains(CONSTRUCT_DESCENDENT)
+        {
+            damage.insert(CONSTRUCT_FC);
+        }
+
+        if damage.intersects(CONSTRUCT_BOX | CONSTRUCT_FC) {
             damage.insert(RestyleDamage::RELAYOUT);
         }
 
-        // Compute damage to propagate to parent
-        let damage_for_parent = damage; // & RestyleDamage::RELAYOUT;
+        // Construction is local. Copying CONSTRUCT_BOX and CONSTRUCT_FC
+        // unchanged through every ancestor reconstructs the whole document
+        // after a text mutation, throwing away unrelated shaped layouts.
+        // Ancestors still receive relayout damage and a traversal marker.
+        let mut damage_for_parent = damage;
+        damage_for_parent.remove(CONSTRUCT_BOX | CONSTRUCT_FC);
+        if damage.intersects(CONSTRUCT_BOX | CONSTRUCT_FC) {
+            damage_for_parent.insert(CONSTRUCT_DESCENDENT);
+        }
+
+        // A changed box can change its immediate parent's child collection:
+        // inline/block classification, anonymous wrappers and embedded boxes.
+        // display:contents is transparent, so collection damage must cross it
+        // until it reaches a real formatting context.
+        if damage.contains(CONSTRUCT_BOX)
+            || (node.display_constructed_as().inside() == DisplayInside::Contents
+                && damage.intersects(CONSTRUCT_FC | CONSTRUCT_DESCENDENT))
+        {
+            damage_for_parent.insert(CONSTRUCT_FC);
+        }
 
         // Damage is already the union of this node and its descendants.
         // Construction changes layout inputs even without ONLY_RELAYOUT.
