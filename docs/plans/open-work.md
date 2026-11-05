@@ -12,9 +12,12 @@ The archived proposal is not an instruction to activate the historical transport
 
 ## Package and API release review
 
-This PR removes the public `ScriptDocument` and `ScriptBackend` APIs and replaces the concrete `ApplicationDocument` with a generic backend type. That is a breaking change for consumers of the publishable `ps-blitz-script` package. The PR is source integration, not a release, so it retains the current workspace version `0.6.5`. Before publishing this API, bump the workspace version and affected published packages to `0.7.0` and update their internal version requirements; pre-1.0 semver uses the minor component for this compatibility break. Do not publish this source at `0.6.5`.
-
-No matching `0.6.5` Git tag or GitHub release was found. `cargo info --registry crates-io ps-blitz-script@0.6.5` confirms that `0.6.5` is published with the old Boa API. Therefore the breaking replacement must not be published as `0.6.5`; bump the workspace and affected published packages to `0.7.0` before the release. This PR only integrates source and keeps the current workspace version unchanged.
+This PR removes public `ScriptDocument` and `ScriptBackend` and replaces the concrete
+`ApplicationDocument` with a generic backend type. The published `ps-blitz-script 0.6.5`
+has the old Boa API, so this branch now bumps the workspace to `0.7.0` and its internal
+workspace dependency requirements to `^0.7.0`. The manual publish workflow remains an
+explicit release action; this PR does not publish packages. Check the selected publish set
+and the 0.7.0 dependency closure before any registry release.
 
 ## JPEG XL per-document memory budget
 
