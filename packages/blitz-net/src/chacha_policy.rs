@@ -90,7 +90,7 @@ pub fn prepare_native_tls() -> Result<(), String> {
     super::h1::prepare_native_tls()
 }
 
-#[cfg(feature = "sandbox2-witness")]
+#[cfg(all(feature = "sandbox2-witness", debug_assertions))]
 pub(super) fn add_witness_roots(roots: &mut RootCertStore) -> Result<(), String> {
     use rustls::pki_types::{CertificateDer, pem::PemObject};
     if let Some(path) = std::env::var_os("SANDBOX2_TLS_CA_FILE") {

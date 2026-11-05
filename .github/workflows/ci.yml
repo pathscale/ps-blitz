@@ -140,6 +140,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@cargo-deny
       - run: cargo deny check bans
+      - run: cargo deny --all-features --config deny-crypto.toml check bans
 
   # There was a `build-counter` job here. It built a GUI example on a Linux
   # runner, so it needed `libfontconfig-dev` installed to compile, and it was
@@ -381,7 +382,7 @@ jobs:
       - name: Build the matching Solid 2 fixture without a lockfile
         working-directory: examples/solid
         run: |
-          bun install --no-save
+          bun install --no-save --ignore-scripts
           bun run build
       - name: Drive the fixture through the real process boundary
         run: cargo test -p ps-blitz-script --features debug-control --test debug_control

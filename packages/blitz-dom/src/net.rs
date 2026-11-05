@@ -717,12 +717,15 @@ pub fn decode_jxl(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     };
     use jxl_cms::{JxlCms, moxcms::MoxCms};
 
-    // The same decode budget as the canvas path: refuse before rendering anything.
+    // Refuse oversized images before rendering. The float planes used below cost
+    // several times the RGBA8 output, so budget dimensions at 64 bytes per pixel.
     const ALLOCATION_LIMIT: u64 = 64 * 1024 * 1024;
+    const BYTES_PER_PIXEL_BUDGET: u64 = 64;
     let mut options = JxlDecoderOptions::default();
     options.sample_limit = Some(
         usize::try_from(ALLOCATION_LIMIT)
-            .map_err(|_| "JPEG XL allocation limit exceeds usize".to_owned())?,
+            .map_err(|_| "JPEG XL sample limit exceeds usize".to_owned())?
+            / std::mem::size_of::<f32>(),
     );
     let mut decoder = JxlDecoder::new(options);
     let mut input = bytes;
@@ -751,13 +754,18 @@ pub fn decode_jxl(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
         .0
         .checked_mul(info.size.1)
         .ok_or_else(|| "JPEG XL pixel count overflows usize".to_owned())?;
+    let estimated_working_set = u64::try_from(pixels)
+        .ok()
+        .and_then(|pixels| pixels.checked_mul(BYTES_PER_PIXEL_BUDGET))
+        .ok_or_else(|| "JPEG XL working-set estimate overflows u64".to_owned())?;
+    if estimated_working_set > ALLOCATION_LIMIT {
+        return Err(format!("{width}x{height} exceeds the decode budget"));
+    }
     let rgba_bytes = u64::try_from(pixels)
         .ok()
         .and_then(|pixels| pixels.checked_mul(4))
         .ok_or_else(|| "JPEG XL decoded size overflows u64".to_owned())?;
-    if rgba_bytes > ALLOCATION_LIMIT {
-        return Err(format!("{width}x{height} exceeds the decode budget"));
-    }
+    debug_assert!(rgba_bytes <= ALLOCATION_LIMIT);
 
     let grayscale = decoder
         .current_pixel_format()

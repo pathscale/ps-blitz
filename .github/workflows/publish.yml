@@ -55,7 +55,9 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-deny
+      - name: Enforce the crypto policy before publication
+        run: cargo deny --all-features --config deny-crypto.toml check bans
 
       # Cargo knows which crates are publishable, what order they depend on
       # each other in, and which versions are already on the registry. This
