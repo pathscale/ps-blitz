@@ -140,6 +140,12 @@ impl DebugController {
                 "TAURI_BLITZ_DRIVER_TOKEN is required",
             )
         })?;
+        if token.len() != 64 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "TAURI_BLITZ_DRIVER_TOKEN must contain 64 hexadecimal characters",
+            ));
+        }
         let bind_address: SocketAddr = address.to_string_lossy().parse().map_err(|error| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
