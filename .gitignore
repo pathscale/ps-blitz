@@ -16,4 +16,3 @@
 # as carets in Cargo.toml instead, so a consumer resolves the newest compatible
 # version rather than whatever this repository happened to build against.
 Cargo.lock
-
