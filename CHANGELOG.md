@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.0
+
+- Breaking: remove the public Boa-backed `ScriptDocument` and `ScriptBackend` APIs; use the engine-neutral document/backend contracts instead.
+- Update the workspace and its internal package requirements to 0.7.0 so the published API break is not shipped under the existing 0.6.5 version.
+
 ## 0.6.2
 
 - Make AbortSignal reactive: abort wakes every registered request without timers, and dropped waiters unregister.
