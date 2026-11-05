@@ -4,7 +4,9 @@ Audited 2026-10-14 against `307b2838`. This is the repository's durable open-wor
 
 ## Open
 
-(None)
+- **Security audit follow-up, unverified against current master:** the 2026-10-14 static review named module/script `file:` fallback, file-principal path/special-file access, cross-origin guest fetch/CORS, DOM depth and iframe-breadth limits, and decoder/header/cache resource budgets. Recheck each against current loader, fetch/resource-policy, DOM and network callers; keep existing deny-by-default gates fail-closed and track only a currently missing behavior. The old findings did not include a runtime check.
+- **Crypto and release gate, unverified:** reconcile the review's RSA/AES feature-policy concern with current `deny-crypto.toml`, Cargo features and published API, then ensure the selected deny policy runs in CI and before publication. Recheck whether publish jobs expose registry/signing credentials to dependency build scripts, mutable actions or shared caches; prefer an isolated credential boundary. Do not treat the 2026-10-14 source snapshot as current proof.
+- **Debug-control and platform resource limits, unverified:** recheck per-request debug-control session-token/Origin validation and unauthenticated allocation bounds; decoder output/header/image memory charging; and release-only TLS witness overrides. The old audit mixed confirmed source observations with conditional threat scenarios, so establish current paths and reachability before changing behavior.
 
 ## Done
 
