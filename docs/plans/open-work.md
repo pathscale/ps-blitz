@@ -12,4 +12,6 @@ The archived proposal is not an instruction to activate the historical transport
 
 ## Package and API release review
 
-For a release that changes a published package, review package versions, public API compatibility, dependent version constraints, workspace lockfile effects, and publication policy together. A change does not imply a version bump by itself; document why no bump is needed when the change is internal-only.
+This PR removes the public `ScriptDocument` and `ScriptBackend` APIs and replaces the concrete `ApplicationDocument` with a generic backend type. That is a breaking change for consumers of the publishable `ps-blitz-script` package. The PR is source integration, not a release, so it retains the current workspace version `0.6.5`. Before publishing this API, bump the workspace version and affected published packages to `0.7.0` and update their internal version requirements; pre-1.0 semver uses the minor component for this compatibility break. Do not publish this source at `0.6.5`.
+
+No matching `0.6.5` Git tag or GitHub release was found during PR preparation. The registry's published-version status was not queried; verify registry availability during release preparation.
