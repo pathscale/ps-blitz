@@ -6,10 +6,6 @@ This file tracks requirements that remain open; verify each against the current 
 
 Revisit the historical child-list clone optimization only after establishing that recursive cloning cannot mutate the source child list. Measure the affected clone path before claiming a performance improvement. Preserve current behavior until correctness and performance are demonstrated.
 
-## Runtime-free network proposal safeguards
-
-The archived proposal is not an instruction to activate the historical transport. If reconsidered, resolve its cache privacy and size limits, response-header/framing correctness, HTTP/2 and proxy/compression behavior, and regression coverage against the actual consumer. See [the existing proposal](../proposals/runtime-free-network.md).
-
 ## Package and API release review
 
 This PR removes public `ScriptDocument` and `ScriptBackend` and replaces the concrete
@@ -53,6 +49,16 @@ API boundary honest until a complete policy is selected and covered.
 The manual CI and publish workflows now invoke `cargo deny --all-features --config
 deny-crypto.toml check bans` before build/publication. `cargo-deny` is not installed in
 the current local environment, so this gate has not been executed here. The policy file
-explicitly denies RSA and the current `packages/blitz-net/Cargo.toml:55` enables the
+explicitly denies RSA and the current `packages/blitz-net/Cargo.toml` enables the
 `ps-rustcrypto` `rsa-pss` feature; resolve the existing `POL-002` ruling and run this
 focused gate locally before treating the manual workflows or a registry release as ready.
+
+## HTTP disk-cache storage budget
+
+`packages/blitz-net/src/cache.rs` bounds each cached body by `MAX_BODY_BYTES`, but does not
+bound the sum of body files or number of cache rows. A long-running profile can therefore
+grow the cache without limit. Add a configurable or documented per-profile byte quota and
+an eviction policy that accounts for existing files on open, concurrent insertions, row
+replacement, failed writes, and stale orphan cleanup. Keep body-file deletion ordered after
+metadata publication/removal so crashes cannot leave a live row pointing at a deleted body.
+Verify quota enforcement and recovery with cache tests before treating disk use as bounded.
