@@ -2,18 +2,13 @@
 
 Runtime-agnostic DOM operations over `blitz-dom`.
 
-`blitz-script` is currently the only path from a language runtime to the DOM,
-and its operations are entangled with Boa: `JsValue` in, `JsResult` out, a
-`Context` threaded through, prototype objects holding the registration. A
-second runtime cannot reuse any of it. This crate is those operations with the
-runtime removed, so that a binding does argument coercion and result
-construction and nothing else.
+`ps-blitz-script` defines engine-neutral execution and document contracts.
+This crate provides DOM operations as ordinary Rust functions. Runtime adapters
+own argument coercion, result construction, and guest object identity.
 
 Nothing here depends on Boa, and nothing here may: `tests/no_boa.rs` resolves
-the real dependency graph and fails if a `boa_*` crate appears in it.
-
-`blitz-script` is untouched. Reparenting it onto this crate is a separate
-change.
+the real dependency graph and rejects both the upstream Boa family and the
+`ps-boa` family, including their hyphenated and underscored package names.
 
 ## Using it
 
@@ -47,8 +42,8 @@ sit beside the owning readers rather than replacing them. `blitz-wasm` measured
 what the difference is worth; see MAPPING.md, "Readers allocate a `String`".
 
 **Mutations do not mark layout dirty and do not request a redraw.**
-`blitz-script` routes every mutation through `DomCtx::mutate_doc`, which does
-both. Both are properties of the embedding, so both stay with the binding. A
+The removed interpreter performed both in `DomCtx::mutate_doc`. Both are
+properties of the embedding, so both stay with the runtime adapter. A
 binding that forgets the flag reads geometry from before its own mutations; one
 that forgets the redraw makes a change that never reaches the screen.
 

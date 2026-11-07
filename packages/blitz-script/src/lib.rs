@@ -1,78 +1,41 @@
-//! JavaScript execution on top of Blitz
+//! Script integration for Blitz.
 //!
-//! This crate implements a [`ScriptDocument`]: a wrapper around a [`BaseDocument`](blitz_dom::BaseDocument)
-//! which can execute the JavaScript contained in (or referenced by) the document's `<script>` tags
-//! using the [Boa](https://boajs.dev) JavaScript engine, and which exposes JavaScript DOM APIs
-//! (`document`, elements, events, timers, etc) backed by `blitz-dom` to the scripts it runs.
+//! This crate defines the contract for script-capable document backends and
+//! shared facilities used by those backends. A backend implements
+//! [`ScriptDocumentBackend`] to construct a document from HTML and execute its
+//! scripts. The document participates in Blitz through the
+//! [`Document`](blitz_dom::Document) interface.
 //!
-//! It is capable of running real-world JavaScript frameworks such as [Preact](https://preactjs.com/).
-//!
-//! ### Modules
-//!
-//! `<script type="module">` is parsed in module goal and its imports are
-//! resolved and fetched through the same [`ScriptFetcher`] as classic
-//! `<script src>`, so a module graph blocks the document thread the same way a
-//! classic script already does. `<script type="importmap">`, `import.meta.url`,
-//! dynamic `import()` and JSON modules (`with { type: "json" }`) are supported;
-//! import-map `integrity` and module workers are not.
-//!
-//! ### Example
-//!
-//! ```rust
-//! use blitz_script::ScriptDocument;
-//! use blitz_dom::DocumentConfig;
-//!
-//! let mut doc = ScriptDocument::from_html(
-//!     r#"
-//!         <div id="root"></div>
-//!         <script>
-//!             const el = document.createElement("h1");
-//!             el.textContent = "Hello from JS";
-//!             document.getElementById("root").appendChild(el);
-//!         </script>
-//!     "#,
-//!     DocumentConfig::default(),
-//! );
-//! doc.execute_scripts();
-//! ```
+//! Runtime-specific execution stays in the backend implementation. This crate
+//! provides a common document wrapper and shared diagnostics, fetching, job
+//! budgets, and script statistics.
 
 #![allow(clippy::collapsible_if)]
 
 mod application_document;
 #[cfg(feature = "debug-control")]
 mod debug_control;
-mod document;
-mod docwrite;
-mod dom;
-pub mod dom_exception;
-mod domc;
+mod diagnostics;
+mod document_scripts;
 pub mod engine;
-mod event_handler;
 mod fetch;
-mod fonts;
 mod job_budget;
-pub mod media;
-mod module;
-mod raster;
-mod runtime;
+pub mod native;
+pub mod native_document;
+pub mod native_host;
+pub mod runtime_driver;
 pub mod script_stats;
-mod state;
-mod timers;
 
-// Embedders extending the native script surface must use the same Boa types
-// and registry dependencies as this engine.
-pub use boa_engine;
-pub use boa_runtime;
-
-/// Drop-context collection on its current owner thread.
-pub fn collect_retired_realms() {
-    boa_gc::force_collect();
-}
-
-pub use application_document::{ApplicationDocument, ScriptBackend, ScriptDocumentBackend};
+pub use application_document::{
+    ApplicationDocument, NativeHostDocumentBackend, ScriptDocumentBackend,
+};
 #[cfg(feature = "debug-control")]
-pub use debug_control::DebugController;
-pub use document::ScriptDocument;
+pub use debug_control::{DebugController, DebugDocument};
+pub use diagnostics::{DiagnosticBatch, DiagnosticEntry, DiagnosticStreamBatch};
+pub use document_scripts::{ScriptKind, external_script_urls};
 pub use fetch::{DefaultScriptFetcher, FetchError, ScriptFetcher};
-pub use raster::raster_image_for_attribute;
-pub use runtime::{DiagnosticBatch, DiagnosticEntry, DiagnosticStreamBatch};
+pub use native_document::{
+    BoundScriptDocument, DocumentHostExtension, DocumentPollHook, NativeDocumentRuntime,
+    TypedNativeGuest,
+};
+pub use runtime_driver::RuntimeDriver;

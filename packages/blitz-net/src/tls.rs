@@ -44,7 +44,7 @@ fn native_roots() -> Result<RootCertStore, String> {
             native.errors.len(),
         );
     }
-    #[cfg(feature = "sandbox2-witness")]
+    #[cfg(all(feature = "sandbox2-witness", debug_assertions))]
     crate::chacha_policy::add_witness_roots(&mut roots)?;
     Ok(roots)
 }
@@ -85,7 +85,7 @@ fn build_config() -> Result<Arc<ClientConfig>, String> {
         .with_custom_certificate_verifier(crate::certificate_verifier(roots, public)?)
         .with_no_client_auth();
     config.alpn_protocols = alpn();
-    #[cfg(feature = "sandbox2-witness")]
+    #[cfg(all(feature = "sandbox2-witness", debug_assertions))]
     if std::env::var("SANDBOX2_TLS_DEFECT").ok().as_deref() == Some("chacha-load") {
         // Plant a real incompatible ALPN in the production TLS entry point.
         config.alpn_protocols = vec![b"sandbox2-incompatible".to_vec()];
@@ -242,7 +242,7 @@ async fn handshake(
             "peer negotiated an unsupported ALPN protocol".to_owned(),
         ));
     }
-    #[cfg(feature = "sandbox2-witness")]
+    #[cfg(all(feature = "sandbox2-witness", debug_assertions))]
     if std::env::var("SANDBOX2_TLS_DEFECT").ok().as_deref() == Some("chacha-load") {
         // Plant the acceptance defect after a real successful handshake.
         return Err(Error::TlsPolicy(TlsPolicyError::CipherSuite));

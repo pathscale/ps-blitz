@@ -304,6 +304,19 @@ impl BaseDocument {
     }
 
     fn range_content(&self, id: NodeId, bounds: RangeBounds) -> Option<RangeContent> {
+        self.range_content_at_depth(id, bounds, 0)
+    }
+
+    fn range_content_at_depth(
+        &self,
+        id: NodeId,
+        bounds: RangeBounds,
+        depth: usize,
+    ) -> Option<RangeContent> {
+        if depth >= crate::layout::RUNAWAY_DEPTH {
+            return None;
+        }
+
         let node = self.get_node(id)?;
         let parent = node.parent?;
         let index = self.get_node(parent)?.index_of_child(id)?;
@@ -342,7 +355,7 @@ impl BaseDocument {
             id,
             node.children
                 .iter()
-                .filter_map(|id| self.range_content(*id, bounds))
+                .filter_map(|id| self.range_content_at_depth(*id, bounds, depth + 1))
                 .collect(),
         ))
     }
@@ -378,27 +391,28 @@ impl BaseDocument {
             content: &RangeContent,
             result: &mut Vec<(NodeId, usize, usize)>,
         ) {
-            match content {
-                RangeContent::Data(id, start, end) => {
-                    if doc.get_node(*id).is_some_and(|node| node.is_text_node()) {
-                        result.push((*id, *start, *end));
+            let mut content_stack: Vec<&RangeContent> = vec![content];
+            while let Some(content) = content_stack.pop() {
+                match content {
+                    RangeContent::Data(id, start, end) => {
+                        if doc.get_node(*id).is_some_and(|node| node.is_text_node()) {
+                            result.push((*id, *start, *end));
+                        }
                     }
-                }
-                RangeContent::Partial(_, children) => {
-                    for child in children {
-                        append(doc, child, result);
+                    RangeContent::Partial(_, children) => {
+                        content_stack.extend(children.iter().rev());
                     }
-                }
-                RangeContent::Full(id) => {
-                    let mut stack = vec![*id];
-                    while let Some(id) = stack.pop() {
-                        let Some(node) = doc.get_node(id) else {
-                            continue;
-                        };
-                        if let NodeData::Text(text) = &node.data {
-                            result.push((id, 0, text.content.encode_utf16().count()));
-                        } else {
-                            stack.extend(node.children.iter().rev().copied());
+                    RangeContent::Full(id) => {
+                        let mut stack = vec![*id];
+                        while let Some(id) = stack.pop() {
+                            let Some(node) = doc.get_node(id) else {
+                                continue;
+                            };
+                            if let NodeData::Text(text) = &node.data {
+                                result.push((id, 0, text.content.encode_utf16().count()));
+                            } else {
+                                stack.extend(node.children.iter().rev().copied());
+                            }
                         }
                     }
                 }

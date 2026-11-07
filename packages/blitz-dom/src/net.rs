@@ -115,6 +115,7 @@ pub(crate) struct ResourceHandler<T: Send + Sync + 'static> {
     doc_id: usize,
     request_id: usize,
     node_id: Option<NodeId>,
+    request_url: Option<String>,
     tx: EventTarget<DocumentEvent>,
     shell_provider: Arc<dyn ShellProvider>,
     /// Set once `respond` has delivered a result. A fetch that never calls
@@ -132,11 +133,23 @@ impl<T: Send + Sync + 'static> ResourceHandler<T> {
         shell_provider: Arc<dyn ShellProvider>,
         data: T,
     ) -> Self {
+        Self::new_with_url(tx, doc_id, node_id, shell_provider, data, None)
+    }
+
+    fn new_with_url(
+        tx: EventTarget<DocumentEvent>,
+        doc_id: usize,
+        node_id: Option<NodeId>,
+        shell_provider: Arc<dyn ShellProvider>,
+        data: T,
+        request_url: Option<String>,
+    ) -> Self {
         static REQUEST_ID_COUNTER: AtomicUsize = AtomicUsize::new(0);
         Self {
             request_id: REQUEST_ID_COUNTER.fetch_add(1, Ao::Relaxed),
             doc_id,
             node_id,
+            request_url,
             tx,
             shell_provider,
             settled: AtomicBool::new(false),
@@ -155,6 +168,27 @@ impl<T: Send + Sync + 'static> ResourceHandler<T> {
         ResourceHandler<T>: NetHandler,
     {
         Box::new(Self::new(tx, doc_id, node_id, shell_provider, data)) as _
+    }
+
+    pub(crate) fn boxed_for_url(
+        tx: EventTarget<DocumentEvent>,
+        doc_id: usize,
+        node_id: Option<NodeId>,
+        shell_provider: Arc<dyn ShellProvider>,
+        data: T,
+        request_url: String,
+    ) -> Box<dyn NetHandler>
+    where
+        ResourceHandler<T>: NetHandler,
+    {
+        Box::new(Self::new_with_url(
+            tx,
+            doc_id,
+            node_id,
+            shell_provider,
+            data,
+            Some(request_url),
+        )) as _
     }
 
     pub(crate) fn request_id(&self) -> usize {
@@ -184,7 +218,7 @@ impl<T: Send + Sync + 'static> Drop for ResourceHandler<T> {
             ResourceLoadResponse {
                 request_id: self.request_id,
                 node_id: self.node_id,
-                resolved_url: None,
+                resolved_url: self.request_url.clone(),
                 result: Err(String::from("resource fetch failed")),
             },
         )));
@@ -677,39 +711,241 @@ pub fn is_jxl(bytes: &[u8]) -> bool {
 /// script and canvas images through this too, so there is one JXL path.
 #[cfg(feature = "image-formats")]
 pub fn decode_jxl(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
-    use jxl_oxide::{EnumColourEncoding, JxlImage, NullCms, RenderingIntent};
+    use jxl::api::{
+        Endianness, Event, ExtraChannel, JxlColorEncoding, JxlColorProfile, JxlColorType,
+        JxlDataFormat, JxlDecoder, JxlDecoderOptions, JxlOutputBuffer, JxlPixelFormat,
+    };
+    use jxl_cms::{JxlCms, moxcms::MoxCms};
 
-    // The same decode budget as the canvas path: refuse before rendering anything.
+    // Refuse oversized images before rendering. The float planes used below cost
+    // several times the RGBA8 output, so budget dimensions at 64 bytes per pixel.
     const ALLOCATION_LIMIT: u64 = 64 * 1024 * 1024;
-    let mut image = JxlImage::builder()
-        .read_bytes(Arc::from(bytes))
-        .map_err(|error| error.to_string())?;
-    let (width, height) = (image.width(), image.height());
-    if u64::from(width) * u64::from(height) * 4 > ALLOCATION_LIMIT {
+    const BYTES_PER_PIXEL_BUDGET: u64 = 64;
+    let mut options = JxlDecoderOptions::default();
+    options.sample_limit = Some(
+        usize::try_from(ALLOCATION_LIMIT)
+            .map_err(|_| "JPEG XL sample limit exceeds usize".to_owned())?
+            / std::mem::size_of::<f32>(),
+    );
+    let mut decoder = JxlDecoder::new(options);
+    let mut input = bytes;
+    loop {
+        match decoder
+            .process(&mut input, None, None)
+            .map_err(|error| error.to_string())?
+        {
+            Event::BasicInfo => break,
+            Event::NeedMoreInput { .. } => return Err("truncated JPEG XL input".into()),
+            _ => return Err("JPEG XL decoder did not produce image information".into()),
+        }
+    }
+
+    let info = decoder
+        .basic_info()
+        .cloned()
+        .ok_or_else(|| "JPEG XL basic information is unavailable".to_owned())?;
+    let width = u32::try_from(info.size.0).map_err(|_| "JPEG XL width exceeds u32".to_owned())?;
+    let height = u32::try_from(info.size.1).map_err(|_| "JPEG XL height exceeds u32".to_owned())?;
+    if info.size.0 == 0 || info.size.1 == 0 {
+        return Err("JPEG XL dimensions must be positive".into());
+    }
+    let pixels = info
+        .size
+        .0
+        .checked_mul(info.size.1)
+        .ok_or_else(|| "JPEG XL pixel count overflows usize".to_owned())?;
+    let estimated_working_set = u64::try_from(pixels)
+        .ok()
+        .and_then(|pixels| pixels.checked_mul(BYTES_PER_PIXEL_BUDGET))
+        .ok_or_else(|| "JPEG XL working-set estimate overflows u64".to_owned())?;
+    if estimated_working_set > ALLOCATION_LIMIT {
         return Err(format!("{width}x{height} exceeds the decode budget"));
     }
-    image.set_cms(NullCms);
-    image.request_color_encoding(EnumColourEncoding::srgb(RenderingIntent::Relative));
-    let render = image.render_frame(0).map_err(|error| error.to_string())?;
-    let mut stream = render.stream();
-    let (width, height, channels) = (stream.width(), stream.height(), stream.channels() as usize);
-    let mut samples = vec![0f32; width as usize * height as usize * channels];
-    stream.write_to_buffer(&mut samples);
+    let rgba_bytes = u64::try_from(pixels)
+        .ok()
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| "JPEG XL decoded size overflows u64".to_owned())?;
+    debug_assert!(rgba_bytes <= ALLOCATION_LIMIT);
+
+    let grayscale = decoder
+        .current_pixel_format()
+        .ok_or_else(|| "JPEG XL pixel format is unavailable".to_owned())?
+        .color_type
+        .is_grayscale();
+    let alpha_index = info
+        .extra_channels
+        .iter()
+        .position(|channel| channel.ec_type == ExtraChannel::Alpha);
+    let initial_profile = decoder
+        .output_color_profile()
+        .cloned()
+        .ok_or_else(|| "JPEG XL color profile is unavailable".to_owned())?;
+    let cmyk = initial_profile.is_cmyk();
+    let black_index = info
+        .extra_channels
+        .iter()
+        .position(|channel| channel.ec_type == ExtraChannel::Black);
+    if cmyk && black_index.is_none() {
+        return Err("CMYK JPEG XL image is missing its black channel".into());
+    }
+
+    // Keep the main alpha interleaved for RGB/gray images. CMYK has no
+    // CMYKA pixel format, so request alpha as a separate plane in that case.
+    let color_type = if cmyk {
+        JxlColorType::Cmyk
+    } else {
+        match (grayscale, alpha_index.is_some()) {
+            (true, true) => JxlColorType::GrayscaleAlpha,
+            (true, false) => JxlColorType::Grayscale,
+            (false, true) => JxlColorType::Rgba,
+            (false, false) => JxlColorType::Rgb,
+        }
+    };
+    let separate_alpha = if cmyk { alpha_index } else { None };
+    let f32_format = JxlDataFormat::F32 {
+        endianness: Endianness::native(),
+    };
+    let pixel_format = JxlPixelFormat {
+        color_type,
+        color_data_format: Some(f32_format),
+        extra_channel_format: info
+            .extra_channels
+            .iter()
+            .enumerate()
+            .map(|(index, _)| (Some(index) == separate_alpha).then_some(f32_format))
+            .collect(),
+    };
+    decoder
+        .set_pixel_format(pixel_format)
+        .map_err(|error| error.to_string())?;
+    let source_profile = decoder
+        .output_color_profile()
+        .cloned()
+        .ok_or_else(|| "JPEG XL output color profile is unavailable".to_owned())?;
+
+    let channels = color_type.samples_per_pixel();
+    let color_sample_count = pixels
+        .checked_mul(channels)
+        .ok_or_else(|| "JPEG XL color sample count overflows usize".to_owned())?;
+    let mut color_samples = vec![0.0f32; color_sample_count];
+    let mut alpha_samples = separate_alpha.map(|_| vec![0.0f32; pixels]);
+    let row_bytes = info
+        .size
+        .0
+        .checked_mul(channels)
+        .and_then(|samples| samples.checked_mul(std::mem::size_of::<f32>()))
+        .ok_or_else(|| "JPEG XL output row size overflows usize".to_owned())?;
+    let mut output_buffers = vec![JxlOutputBuffer::new(
+        bytemuck::cast_slice_mut(&mut color_samples),
+        info.size.1,
+        row_bytes,
+    )];
+    if let Some(alpha_samples) = &mut alpha_samples {
+        let alpha_bytes = info
+            .size
+            .0
+            .checked_mul(std::mem::size_of::<f32>())
+            .ok_or_else(|| "JPEG XL alpha row size overflows usize".to_owned())?;
+        output_buffers.push(JxlOutputBuffer::new(
+            bytemuck::cast_slice_mut(alpha_samples),
+            info.size.1,
+            alpha_bytes,
+        ));
+    }
+
+    loop {
+        match decoder
+            .process(&mut input, Some(&mut output_buffers), None)
+            .map_err(|error| error.to_string())?
+        {
+            Event::FrameHeader => {}
+            Event::FrameComplete { .. } => break,
+            Event::NeedMoreInput { .. } => return Err("truncated JPEG XL frame".into()),
+            _ => return Err("JPEG XL image has no visible frame".into()),
+        }
+    }
+    drop(output_buffers);
+
+    let target_profile = JxlColorProfile::Simple(JxlColorEncoding::srgb(false));
+    let mut transforms = if !grayscale && !cmyk && source_profile == target_profile {
+        None
+    } else {
+        let (output_channels, mut transforms) = MoxCms
+            .initialize_transforms(1, info.size.0, source_profile, target_profile, 255.0)
+            .map_err(|error| error.to_string())?;
+        if output_channels != 3 || transforms.len() != 1 {
+            return Err("JPEG XL CMS did not provide one RGB transform".into());
+        }
+        Some(transforms.remove(0))
+    };
+
+    let input_color_channels = if cmyk {
+        4
+    } else if grayscale {
+        1
+    } else {
+        3
+    };
+    let row_samples = info
+        .size
+        .0
+        .checked_mul(input_color_channels)
+        .ok_or_else(|| "JPEG XL input row sample count overflows usize".to_owned())?;
+    let mut input_row = vec![0.0f32; row_samples];
+    let output_row_samples = info
+        .size
+        .0
+        .checked_mul(3)
+        .ok_or_else(|| "JPEG XL output row sample count overflows usize".to_owned())?;
+    let mut output_row = vec![0.0f32; output_row_samples];
+    let rgba_len =
+        usize::try_from(rgba_bytes).map_err(|_| "JPEG XL output size exceeds usize".to_owned())?;
+    let mut rgba = vec![0u8; rgba_len];
     let to_byte = |value: f32| (value.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-    let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
-    for pixel in samples.chunks_exact(channels) {
-        let (rgb, alpha) = match channels {
-            1 => ([pixel[0]; 3], 1.0),
-            2 => ([pixel[0]; 3], pixel[1]),
-            3 => ([pixel[0], pixel[1], pixel[2]], 1.0),
-            _ => ([pixel[0], pixel[1], pixel[2]], pixel[3]),
+    for y in 0..info.size.1 {
+        for x in 0..info.size.0 {
+            let pixel = y * info.size.0 + x;
+            let source = pixel * channels;
+            let input = x * input_color_channels;
+            input_row[input..input + input_color_channels]
+                .copy_from_slice(&color_samples[source..source + input_color_channels]);
+        }
+
+        let colors = if let Some(transform) = &mut transforms {
+            transform
+                .do_transform(&input_row, &mut output_row)
+                .map_err(|error| error.to_string())?;
+            &output_row[..]
+        } else {
+            &input_row[..]
         };
-        rgba.extend_from_slice(&[
-            to_byte(rgb[0]),
-            to_byte(rgb[1]),
-            to_byte(rgb[2]),
-            to_byte(alpha),
-        ]);
+
+        for x in 0..info.size.0 {
+            let pixel = y * info.size.0 + x;
+            let color = x * if transforms.is_some() {
+                3
+            } else {
+                input_color_channels
+            };
+            let destination = pixel * 4;
+            if grayscale {
+                let value = to_byte(colors[color]);
+                rgba[destination..destination + 3].fill(value);
+            } else {
+                rgba[destination] = to_byte(colors[color]);
+                rgba[destination + 1] = to_byte(colors[color + 1]);
+                rgba[destination + 2] = to_byte(colors[color + 2]);
+            }
+
+            let alpha = if cmyk {
+                separate_alpha.map_or(1.0, |_| alpha_samples.as_ref().unwrap()[pixel])
+            } else if alpha_index.is_some() {
+                color_samples[pixel * channels + channels - 1]
+            } else {
+                1.0
+            };
+            rgba[destination + 3] = to_byte(alpha);
+        }
     }
     Ok((width, height, rgba))
 }

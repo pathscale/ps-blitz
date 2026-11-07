@@ -10,20 +10,22 @@ use style::media_queries::MediaType;
 
 /// Strategy for Stylo's style traversal during `resolve`.
 ///
-/// Two `Document`s resolving on [`StyleThreading::Parallel`] concurrently
-/// share Stylo's global thread pool and can panic with
-/// `already mutably borrowed` — see
-/// <https://github.com/DioxusLabs/blitz/issues/430>. Set
-/// [`StyleThreading::Sequential`] on documents that may resolve from a
-/// user thread while another `Parallel` resolve is in flight.
+/// Blitz permits at most one parallel traversal at a time through a
+/// process-wide guard. Concurrent `Parallel` resolves of independent
+/// documents fall back to sequential traversal when the guard is unavailable.
+/// This avoids overlapping parallel traversals borrowing Stylo's worker-local
+/// caches: <https://github.com/DioxusLabs/blitz/issues/430>.
+///
+/// Styling must not reenter Stylo on a thread with an active style context.
+/// Other users of Stylo's global pool must coordinate separately.
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum StyleThreading {
-    /// Use Stylo's parallel traversal via its global rayon thread pool.
-    /// Fastest for a single document; panics if another `Parallel` resolve
-    /// is in flight on a different thread.
+    /// Use Stylo's parallel traversal via its global rayon thread pool when
+    /// the traversal guard is available. Otherwise run sequentially on the
+    /// calling thread without waiting for the guard.
     Parallel,
     /// Run style traversal sequentially on the calling thread, bypassing
-    /// the global pool. Safe to use from many user threads concurrently.
+    /// the global pool. This is the default.
     #[default]
     Sequential,
 }
@@ -47,11 +49,17 @@ pub struct DocumentConfig {
     pub html_parser_provider: Option<Arc<dyn HtmlParserProvider>>,
     /// Parley `FontContext`
     pub font_ctx: Option<FontContext>,
+    /// Defer system-font discovery until this document first accesses its font context.
+    ///
+    /// The default is `false`, preserving eager system-font loading behavior.
+    /// When no custom font context is supplied, deferred documents share a
+    /// process-local system-font template while keeping document registrations isolated.
+    pub defer_system_fonts: bool,
     /// The CSS media type used to evaluate `@media` rules.
     /// Defaults to [`MediaType::screen`].
     pub media_type: Option<MediaType>,
     /// Strategy for Stylo's style traversal.
-    /// Defaults to [`StyleThreading::Parallel`].
+    /// Defaults to [`StyleThreading::Sequential`].
     pub style_threading: StyleThreading,
     /// Whether incremental layout is enabled. Defaults to `true`.
     pub incremental: Option<bool>,

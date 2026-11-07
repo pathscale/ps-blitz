@@ -40,12 +40,40 @@ fn package_name(line: &str) -> Option<&str> {
 
 /// Every package name in the graph rooted at `spec`.
 fn packages_in_tree(spec: &str, edges: &str, depth: Option<&str>) -> BTreeSet<String> {
+    let tree = if let Some(directory) = std::env::var_os("BLITZ_GRAPH_CAPTURE_DIR") {
+        // Serialized build hosts capture these graphs before starting Cargo's
+        // test runner, avoiding nested Cargo processes and lockfile writes.
+        let filename = format!(
+            "{spec}-{}-{}.txt",
+            edges.replace(',', "-"),
+            depth.unwrap_or("all")
+        );
+        let path = std::path::PathBuf::from(directory).join(filename);
+        std::fs::read_to_string(&path).unwrap_or_else(|error| {
+            panic!("could not read captured graph {}: {error}", path.display())
+        })
+    } else {
+        cargo_tree(spec, edges, depth)
+    };
+    let names: BTreeSet<String> = tree
+        .lines()
+        .filter_map(package_name)
+        .map(str::to_owned)
+        .collect();
+
+    assert!(
+        names.contains(spec),
+        "`cargo tree --package {spec} --edges {edges}` did not contain its root package:\n{tree}"
+    );
+    names
+}
+
+fn cargo_tree(spec: &str, edges: &str, depth: Option<&str>) -> String {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
 
     let mut args = vec![
         "tree",
-        "--locked",
         "--manifest-path",
         manifest,
         "--package",
@@ -73,20 +101,7 @@ fn packages_in_tree(spec: &str, edges: &str, depth: Option<&str>) -> BTreeSet<St
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let tree = String::from_utf8_lossy(&output.stdout).into_owned();
-    let names: BTreeSet<String> = tree
-        .lines()
-        .filter_map(package_name)
-        .map(str::to_owned)
-        .collect();
-
-    // A silent empty result would pass every assertion below, which is the
-    // failure mode this whole test exists to avoid.
-    assert!(
-        !names.is_empty(),
-        "`cargo tree --package {spec} --edges {edges}` produced no recognisable graph:\n{tree}"
-    );
-    names
+    String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
 /// The direct dependencies: the depth-1 graph, minus this crate itself.
@@ -185,7 +200,7 @@ fn the_manifest_declares_one_dependency() {
 fn the_detector_reads_names_and_not_substrings() {
     assert_eq!(package_name("serde v1.0.219"), Some("serde"));
     assert_eq!(
-        package_name("dom-abi v0.3.0-beta.3 (/Users/x/ps-blitz/packages/dom-abi)"),
+        package_name("dom-abi v0.3.0-beta.3 (source)"),
         Some("dom-abi")
     );
     assert_eq!(package_name("serde v1.0.219 (*)"), Some("serde"));

@@ -25,7 +25,7 @@ fn inset_fifty_percent_hides_a_native_checkbox() {
         80,
         80,
     );
-    for pixel in buffer.chunks_exact(4) {
+    for pixel in buffer.as_chunks::<4>().0 {
         assert_eq!(&pixel[..3], &[255, 0, 0]);
     }
 }
