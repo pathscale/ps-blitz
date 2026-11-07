@@ -214,6 +214,23 @@ impl BaseDocument {
         );
     }
 
+    /// Release the current iframe generation when its HTML request fails.
+    /// Request identity prevents an older failed fetch from evicting a newer
+    /// navigation (or a loaded generation whose request ID has been cleared).
+    pub(crate) fn clear_failed_iframe_load(&mut self, node_id: NodeId, request_id: usize) {
+        let is_current = self
+            .iframe_loads
+            .get(&node_id)
+            .is_some_and(|load| load.request_id == Some(request_id));
+        if !is_current {
+            return;
+        }
+
+        if let Some(load) = self.iframe_loads.remove(&node_id) {
+            load.abort_controller.abort();
+        }
+    }
+
     /// Handle a navigation originating from within an iframe's sub-document
     /// (e.g. a link click) by loading the new URL into the iframe.
     pub(crate) fn navigate_iframe(&mut self, node_id: NodeId, url: Url) {
@@ -260,5 +277,88 @@ impl BaseDocument {
         let signal = load.abort_controller.signal.clone();
 
         self.attach_iframe_document(node_id, html, resolved_url, signal, false);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::net::ResourceLoadResponse;
+    use crate::qual_name;
+    use blitz_traits::net::{NetHandler, NetProvider, Request};
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct HoldingNetProvider {
+        handlers: Mutex<Vec<Box<dyn NetHandler>>>,
+    }
+
+    impl HoldingNetProvider {
+        fn drop_handler(&self, index: usize) {
+            let handler = self.handlers.lock().unwrap().remove(index);
+            drop(handler);
+        }
+    }
+
+    impl NetProvider for HoldingNetProvider {
+        fn fetch(&self, _doc_id: usize, _request: Request, handler: Box<dyn NetHandler>) {
+            self.handlers.lock().unwrap().push(handler);
+        }
+    }
+
+    #[test]
+    fn iframe_fetch_failure_releases_only_its_matching_generation() {
+        let mut doc = BaseDocument::new(DocumentConfig::default());
+        let provider = Arc::new(HoldingNetProvider::default());
+        doc.set_net_provider(provider.clone());
+        let root = doc.root_node().id;
+        let iframe = {
+            let mut mutator = doc.mutate();
+            let iframe = mutator.create_element(qual_name!("iframe"), vec![]);
+            mutator.append_children(root, &[iframe]);
+            iframe
+        };
+        let url = Url::parse("https://example.test/frame").unwrap();
+
+        // Keep the first fetch pending while replacing its generation.
+        doc.start_iframe_load(iframe, url.clone());
+        let (stale_request_id, stale_signal) = {
+            let load = doc.iframe_loads.get(&iframe).unwrap();
+            (load.request_id.unwrap(), load.abort_controller.signal.clone())
+        };
+        doc.start_iframe_load(iframe, url);
+        let (current_request_id, current_signal) = {
+            let load = doc.iframe_loads.get(&iframe).unwrap();
+            (load.request_id.unwrap(), load.abort_controller.signal.clone())
+        };
+        assert_ne!(stale_request_id, current_request_id);
+        assert!(stale_signal.aborted());
+
+        // Dropping the old retained handler emits its actual failure event
+        // while the newer generation is still pending.
+        provider.drop_handler(0);
+        doc.handle_messages();
+        assert_eq!(
+            doc.iframe_loads
+                .get(&iframe)
+                .and_then(|load| load.request_id),
+            Some(current_request_id)
+        );
+        assert!(!current_signal.aborted());
+
+        // The current request fails independently and releases its own entry.
+        provider.drop_handler(0);
+        doc.handle_messages();
+        assert!(!doc.iframe_loads.contains_key(&iframe));
+        assert!(current_signal.aborted());
+
+        // Replaying the stale request after cleanup is harmless.
+        doc.load_resource(ResourceLoadResponse {
+            request_id: stale_request_id,
+            node_id: Some(iframe),
+            resolved_url: None,
+            result: Err("replayed stale failure".into()),
+        });
+        assert!(!doc.iframe_loads.contains_key(&iframe));
     }
 }

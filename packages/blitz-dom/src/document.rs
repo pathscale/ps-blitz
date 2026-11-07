@@ -3124,6 +3124,9 @@ impl BaseDocument {
         let resource = match res.result {
             Ok(resource) => resource,
             Err(err) => {
+                if let Some(node_id) = res.node_id {
+                    self.clear_failed_iframe_load(node_id, res.request_id);
+                }
                 if let Some(url) = res.resolved_url.as_ref() {
                     let waiting_nodes = self.pending_images.remove(url).unwrap_or_default();
                     for (node, image_type) in waiting_nodes.iter() {
