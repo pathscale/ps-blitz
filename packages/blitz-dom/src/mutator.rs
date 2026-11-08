@@ -2563,7 +2563,11 @@ impl<'doc> DocumentMutator<'doc> {
                 self.doc.id(),
                 None, // Don't pass node_id, we'll handle it via pending_images
                 self.doc.shell_provider.clone(),
-                ImageHandler::new(ImageType::Image),
+                ImageHandler::for_document(
+                    ImageType::Image,
+                    #[cfg(feature = "image-formats")]
+                    self.doc.teardown.jxl_decode_budget(),
+                ),
                 request_url,
             ),
         );

@@ -3221,6 +3221,12 @@ impl BaseDocument {
 
                 self.apply_loaded_image(url, image);
             }
+            #[cfg(feature = "image-formats")]
+            Resource::JxlImage(_kind, image) => {
+                if let Some(url) = res.resolved_url.as_ref() {
+                    self.apply_loaded_image(url, ImageData::Raster(image));
+                }
+            }
             #[cfg(feature = "svg")]
             Resource::Svg(_kind, svg) => {
                 // Create the ImageData and cache it
