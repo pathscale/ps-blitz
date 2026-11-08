@@ -14,7 +14,7 @@
 //!    Applying it unconditionally meant Enter never submitted any form with two
 //!    explicitly typed fields, submit button or not. Three sites hit this.
 
-use blitz_dom::{Document, DocumentConfig};
+use blitz_dom::{Document, DocumentConfig, FormSubmissionScope};
 use blitz_html::{HtmlDocument, HtmlProvider};
 use blitz_traits::{
     navigation::{NavigationOptions, NavigationProvider},
@@ -100,6 +100,67 @@ fn enter_after_two_value_sets_does_not_panic_on_a_recreated_control() {
         navigation.navigations.lock().unwrap().len(),
         1,
         "Enter in a single-field form must still submit it"
+    );
+}
+
+#[test]
+fn restricted_search_grant_is_bound_to_the_submitter_and_live_route() {
+    let navigation = Arc::new(RecordingNavigation::default());
+    let mut doc = doc_with(
+        r#"<form id="search" action="/search">
+            <input name="q" value="trains">
+            <button id="first">Search</button>
+            <button id="second" type="submit">Search</button>
+        </form>"#,
+        Arc::clone(&navigation),
+    );
+    doc.resolve(0.0);
+    let form = doc.query_selector("#search").unwrap().unwrap();
+    let first = doc.query_selector("#first").unwrap().unwrap();
+    let second = doc.query_selector("#second").unwrap().unwrap();
+    let _restricted = FormSubmissionScope::restricted();
+    doc.submit_form(form, first);
+    assert!(navigation.navigations.lock().unwrap().is_empty());
+
+    {
+        let grant = doc.lookup_form_submission(first).unwrap().unwrap();
+        let _action = FormSubmissionScope::allow(grant);
+        doc.submit_form(form, second);
+    }
+    assert!(navigation.navigations.lock().unwrap().is_empty());
+
+    {
+        let grant = doc.lookup_form_submission(first).unwrap().unwrap();
+        let _action = FormSubmissionScope::allow(grant);
+        doc.mutate()
+            .set_attribute(first, blitz_dom::qual_name!("formaction"), "/changed");
+        doc.submit_form(form, first);
+    }
+    assert!(navigation.navigations.lock().unwrap().is_empty());
+
+    doc.mutate()
+        .set_attribute(first, blitz_dom::qual_name!("formmethod"), "post");
+    assert!(doc.lookup_form_submission(first).is_err());
+    doc.mutate()
+        .set_attribute(first, blitz_dom::qual_name!("formmethod"), "get");
+    doc.mutate().set_attribute(
+        first,
+        blitz_dom::qual_name!("formaction"),
+        "https://other.example.test/search",
+    );
+    assert!(doc.lookup_form_submission(first).is_err());
+    doc.mutate()
+        .set_attribute(first, blitz_dom::qual_name!("formaction"), "/search");
+    {
+        let grant = doc.lookup_form_submission(first).unwrap().unwrap();
+        let _action = FormSubmissionScope::allow(grant);
+        doc.submit_form(form, first);
+        doc.submit_form(form, first);
+    }
+    doc.submit_form(form, first);
+    assert_eq!(
+        navigation.navigations.lock().unwrap().as_slice(),
+        ["https://example.test/search?q=trains"]
     );
 }
 

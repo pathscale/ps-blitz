@@ -111,6 +111,7 @@ pub use document::{
 /// the same feature that pays for the counting.
 #[cfg(feature = "log-phase-times")]
 pub use layout::layout_counters;
+pub use form::{FormSubmissionScope, LookupFormSubmission, LookupFormSubmissionDenied};
 pub use markup5ever::{
     LocalName, Namespace, NamespaceStaticSet, Prefix, PrefixStaticSet, QualName, local_name,
     namespace_prefix, namespace_url, ns,
