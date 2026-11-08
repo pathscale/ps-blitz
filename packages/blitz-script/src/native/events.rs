@@ -121,6 +121,20 @@ impl<B: RuntimeBridge> Guest<B> {
                         event.put(key, value);
                     }
                 }
+                if name == "KeyboardEvent" {
+                    let mut member = |key| match &options {
+                        Value::Object(_) => self.get_property(doc, &options, key),
+                        _ => Ok(Value::Undefined),
+                    };
+                    let is_composing = member("isComposing")?.truthy();
+                    let location = member("location")?.number_value();
+                    let repeat = member("repeat")?.truthy();
+                    // Web IDL unsigned long truncates and wraps modulo 2^32.
+                    let location = location.trunc().rem_euclid(4_294_967_296.0) as u32;
+                    event.put("location", Value::number(location));
+                    event.put("repeat", Value::Bool(repeat));
+                    event.put("isComposing", Value::Bool(is_composing));
+                }
                 let prototype_name = if name == "CustomEvent"
                     || name == "UIEvent"
                     || name == "MouseEvent"
