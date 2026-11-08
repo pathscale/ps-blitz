@@ -39,6 +39,8 @@ pub use url::Url;
 /// assume the handler runs later, or on another thread: an implementation
 /// serving a `data:` URL may answer before `fetch` returns.
 pub trait FetchProvider: Send + Sync + 'static {
+    /// Before following any redirect, resolve its destination and enforce
+    /// [`FetchRequest::check_redirect`] before contacting that destination.
     fn fetch(&self, request: FetchRequest, handler: Box<dyn FetchHandler>);
 }
 
@@ -74,6 +76,8 @@ pub struct FetchRequest {
     pub signal: Option<crate::net::AbortSignal>,
     pub initiator: crate::resource_policy::Initiator,
     pub credentials: crate::resource_policy::Credentials,
+    redirect_origin: Option<OriginKey>,
+    return_redirects: bool,
 }
 
 impl FetchRequest {
@@ -87,7 +91,38 @@ impl FetchRequest {
             signal: None,
             initiator: crate::resource_policy::Initiator::default(),
             credentials: crate::resource_policy::Credentials::default(),
+            redirect_origin: None,
+            return_redirects: false,
         }
+    }
+
+    /// Require every redirect destination to be HTTP(S) and on this origin.
+    pub fn restrict_redirects_to(mut self, origin: OriginKey) -> Self {
+        self.redirect_origin = Some(origin);
+        self
+    }
+
+    /// Check a resolved redirect destination before sending the next request.
+    pub fn check_redirect(&self, destination: &Url) -> Result<(), String> {
+        self.initiator.check_redirect_destination(destination)?;
+        if let Some(origin) = &self.redirect_origin
+            && !origin.matches_http_url(destination)
+        {
+            return Err("guest-fetch-origin".into());
+        }
+        Ok(())
+    }
+
+    /// Return each redirect to the caller before sending the next request.
+    /// The native transport attaches the next request to the redirect response
+    /// after applying its redirect rules. The caller owns the redirect limit.
+    pub fn return_redirects(mut self) -> Self {
+        self.return_redirects = true;
+        self
+    }
+
+    pub fn returns_redirects(&self) -> bool {
+        self.return_redirects
     }
 
     pub fn initiator(mut self, initiator: crate::resource_policy::Initiator) -> Self {
@@ -126,6 +161,7 @@ pub struct FetchResponse {
     pub status: StatusCode,
     pub headers: HeaderMap,
     pub body: Bytes,
+    redirect_request: Option<Box<FetchRequest>>,
 }
 
 impl FetchResponse {
@@ -142,6 +178,7 @@ impl FetchResponse {
             status,
             headers: HeaderMap::new(),
             body: Bytes::new(),
+            redirect_request: None,
         }
     }
 
@@ -153,6 +190,17 @@ impl FetchResponse {
     pub fn body(mut self, body: Bytes) -> Self {
         self.body = body;
         self
+    }
+
+    /// Attach the prepared next request to a redirect response without a body.
+    pub fn with_redirect_request(mut self, request: FetchRequest) -> Self {
+        self.redirect_request = Some(Box::new(request));
+        self
+    }
+
+    /// Take the unsent request for the next hop, if the provider stopped here.
+    pub fn take_redirect_request(&mut self) -> Option<FetchRequest> {
+        self.redirect_request.take().map(|request| *request)
     }
 }
 
@@ -271,6 +319,11 @@ impl OriginKey {
         } else {
             Self::opaque()
         }
+    }
+
+    /// Whether the URL is HTTP(S) and belongs to this origin.
+    pub fn matches_http_url(&self, url: &Url) -> bool {
+        matches!(url.scheme(), "http" | "https") && Self::for_document(url) == *self
     }
 
     /// A fresh opaque origin, shared with nothing.

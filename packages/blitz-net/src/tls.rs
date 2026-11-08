@@ -22,7 +22,7 @@ const READ_CHUNK: usize = 16 * 1024;
 
 pub(super) fn default_config() -> Result<Arc<ClientConfig>, Error> {
     static CONFIG: OnceLock<Result<Arc<ClientConfig>, String>> = OnceLock::new();
-    match CONFIG.get_or_init(build_config) {
+    match CONFIG.get_or_init(|| native_roots().and_then(build_config)) {
         Ok(config) => Ok(config.clone()),
         Err(error) => Err(Error::Tls(error.clone())),
     }
@@ -44,7 +44,7 @@ fn native_roots() -> Result<RootCertStore, String> {
             native.errors.len(),
         );
     }
-    #[cfg(feature = "sandbox2-witness")]
+    #[cfg(all(feature = "sandbox2-witness", debug_assertions))]
     crate::chacha_policy::add_witness_roots(&mut roots)?;
     Ok(roots)
 }
@@ -74,8 +74,7 @@ pub(super) fn alpn() -> Vec<Vec<u8>> {
     vec![b"h2".to_vec(), b"http/1.1".to_vec()]
 }
 
-fn build_config() -> Result<Arc<ClientConfig>, String> {
-    let roots = native_roots()?;
+fn build_config(roots: RootCertStore) -> Result<Arc<ClientConfig>, String> {
     let public = public_roots(&roots);
     let provider = crate::chacha_provider();
     let mut config = ClientConfig::builder_with_provider(provider)
@@ -85,7 +84,7 @@ fn build_config() -> Result<Arc<ClientConfig>, String> {
         .with_custom_certificate_verifier(crate::certificate_verifier(roots, public)?)
         .with_no_client_auth();
     config.alpn_protocols = alpn();
-    #[cfg(feature = "sandbox2-witness")]
+    #[cfg(all(feature = "sandbox2-witness", debug_assertions))]
     if std::env::var("SANDBOX2_TLS_DEFECT").ok().as_deref() == Some("chacha-load") {
         // Plant a real incompatible ALPN in the production TLS entry point.
         config.alpn_protocols = vec![b"sandbox2-incompatible".to_vec()];
@@ -191,7 +190,20 @@ pub(super) async fn resolve_addresses(
     .await
     .ok_or_else(|| Error::Dns("resolver task was cancelled".to_owned()))??;
 
-    for address in &addresses {
+    // Return the checked candidates to the transport, which dials these
+    // socket addresses directly without resolving the hostname again.
+    validate_resolved_addresses(&addresses, initiator)?;
+    Ok(addresses)
+}
+
+fn validate_resolved_addresses(
+    addresses: &[nagoya::reactor::socket::Addr],
+    initiator: &blitz_traits::net::Initiator,
+) -> Result<(), Error> {
+    if addresses.is_empty() {
+        return Err(Error::Dns("resolver returned no addresses".into()));
+    }
+    for address in addresses {
         use nagoya::reactor::socket::Addr;
         let ip = match address {
             Addr::V4(bytes, _) => std::net::IpAddr::from(*bytes),
@@ -200,7 +212,7 @@ pub(super) async fn resolve_addresses(
         };
         initiator.check_address(ip).map_err(Error::Blocked)?;
     }
-    Ok(addresses)
+    Ok(())
 }
 
 async fn connect(
@@ -242,7 +254,7 @@ async fn handshake(
             "peer negotiated an unsupported ALPN protocol".to_owned(),
         ));
     }
-    #[cfg(feature = "sandbox2-witness")]
+    #[cfg(all(feature = "sandbox2-witness", debug_assertions))]
     if std::env::var("SANDBOX2_TLS_DEFECT").ok().as_deref() == Some("chacha-load") {
         // Plant the acceptance defect after a real successful handshake.
         return Err(Error::TlsPolicy(TlsPolicyError::CipherSuite));
@@ -339,6 +351,88 @@ impl Transport {
                 .write_all(bytes)
                 .await
                 .map_err(|error| Error::Write(error.to_string())),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use blitz_traits::net::{Initiator, ResourcePolicy, Url};
+    use nagoya::reactor::socket::Addr;
+    use rustls::{CipherSuite, SignatureScheme, server::Acceptor};
+    use std::net::IpAddr;
+
+    #[test]
+    fn client_hello_offers_only_ecc_authentication_and_chacha() {
+        let roots = RootCertStore {
+            roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+        };
+        let config = build_config(roots).unwrap();
+        let name = ServerName::try_from("example.com").unwrap();
+        let mut client = ClientConnection::new(config, name).unwrap();
+        let mut wire = Vec::new();
+        client.write_tls(&mut wire).unwrap();
+        let mut acceptor = Acceptor::default();
+        acceptor.read_tls(&mut wire.as_slice()).unwrap();
+        let accepted = acceptor.accept().unwrap().expect("complete ClientHello");
+        let hello = accepted.client_hello();
+
+        let suites: Vec<_> = hello
+            .cipher_suites()
+            .iter()
+            .copied()
+            .filter(|suite| *suite != CipherSuite::TLS_EMPTY_RENEGOTIATION_INFO_SCSV)
+            .collect();
+        assert_eq!(
+            suites,
+            [
+                CipherSuite::TLS13_CHACHA20_POLY1305_SHA256,
+                CipherSuite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+            ],
+        );
+        assert_eq!(
+            hello.signature_schemes(),
+            [
+                SignatureScheme::ECDSA_NISTP256_SHA256,
+                SignatureScheme::ECDSA_NISTP384_SHA384,
+                SignatureScheme::ED25519,
+            ],
+        );
+    }
+
+    #[test]
+    fn public_https_dial_requires_every_candidate_to_be_public() {
+        let resources = Arc::new(ResourcePolicy::default());
+        let url = Url::parse("https://supplier.example/").unwrap();
+        let scope = resources.public_https_document(url, &Initiator::Unknown, &[]);
+        let address = |value: &str| match value.parse::<IpAddr>().unwrap() {
+            IpAddr::V4(ip) => Addr::V4(ip.octets(), 443),
+            IpAddr::V6(ip) => Addr::V6(ip.octets(), 443),
+        };
+        let public = address("8.8.8.8");
+        assert!(validate_resolved_addresses(&[], &scope).is_err());
+        assert!(validate_resolved_addresses(&[public, address("2606:4700::1")], &scope).is_ok());
+        for denied in [
+            "10.0.0.1",
+            "100.64.0.1",
+            "169.254.169.254",
+            "192.0.2.1",
+            "::ffff:127.0.0.1",
+            "::ffff:192.0.2.1",
+            "fd00::1",
+            "2001:db8::1",
+            "2002:0808:0808::1",
+            "64:ff9b::808:808",
+            "3fff::1",
+        ] {
+            assert!(
+                matches!(
+                    validate_resolved_addresses(&[public, address(denied)], &scope),
+                    Err(Error::Blocked(_))
+                ),
+                "accepted {denied}"
+            );
         }
     }
 }

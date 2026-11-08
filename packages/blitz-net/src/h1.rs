@@ -99,6 +99,8 @@ pub struct H1Client {
     h2: Arc<http2::H2Pool>,
     restricted_pool: Arc<Pool>,
     restricted_h2: Arc<http2::H2Pool>,
+    public_https_pool: Arc<Pool>,
+    public_https_h2: Arc<http2::H2Pool>,
     reactor: &'static Reactor,
     tls_config: Arc<nago_rustls::rustls::ClientConfig>,
 
@@ -134,6 +136,8 @@ impl H1Client {
             h2: shared_h2_pool(),
             restricted_pool: Arc::new(Pool::default()),
             restricted_h2: Arc::new(http2::H2Pool::default()),
+            public_https_pool: Arc::new(Pool::default()),
+            public_https_h2: Arc::new(http2::H2Pool::default()),
             reactor: process_reactor()?,
             tls_config: tls::default_config()?,
             user_agent,
@@ -154,7 +158,7 @@ impl H1Client {
         self
     }
 
-    /// Fetch an HTTP URL, following redirects and retaining response metadata.
+    /// Fetch an HTTP URL, following redirects unless the caller handles them.
     ///
     /// `data:` and `file:` remain provider operations. Every response head,
     /// including redirects and errors, is delivered to the cookie jar before
@@ -165,7 +169,11 @@ impl H1Client {
             .check_url(&request.url)
             .map_err(Error::Blocked)?;
         let mut scoped = self.clone();
-        if request.initiator.restrict_network() {
+        if request.initiator.public_https_only() {
+            // Reuse only sockets opened under the same address restrictions.
+            scoped.pool = Arc::clone(&self.public_https_pool);
+            scoped.h2 = Arc::clone(&self.public_https_h2);
+        } else if request.initiator.restrict_network() {
             // A browser socket to a private peer must never enter this pool.
             scoped.pool = Arc::clone(&self.restricted_pool);
             scoped.h2 = Arc::clone(&self.restricted_h2);
@@ -322,6 +330,7 @@ impl H1Client {
                 .url
                 .join(location)
                 .map_err(|_| Error::Protocol("invalid redirect URL"))?;
+            request.check_redirect(&next_url).map_err(Error::Blocked)?;
             let next_origin = Origin::from_url(&next_url)?;
             if !next_url.username().is_empty() || next_url.password().is_some() {
                 return Err(Error::InvalidRequest("redirect URL contains credentials"));
@@ -360,7 +369,14 @@ impl H1Client {
                 }
             }
 
-            request.url = next_url;
+            let previous_url = std::mem::replace(&mut request.url, next_url);
+            if request.returns_redirects() {
+                return Ok(Some(
+                    FetchResponse::new(previous_url, wire.status)
+                        .headers(wire.headers)
+                        .with_redirect_request(request.clone()),
+                ));
+            }
             return Ok(None);
         }
 
@@ -940,13 +956,18 @@ fn decode_body(
     }
     let mut high_water = body.len();
     for encoding in encodings.iter().rev() {
-        let limit = high_water
-            .saturating_add(initiator.remaining_bytes())
-            .min(MAX_BODY_BYTES);
         body = match encoding.as_str() {
             "identity" => body,
-            "br" => bounded_decode(brotli::Decompressor::new(body.as_ref(), 16 * 1024), limit)?,
-            "gzip" => bounded_decode(flate2::read::MultiGzDecoder::new(body.as_ref()), limit)?,
+            "br" => bounded_decode(
+                brotli::Decompressor::new(body.as_ref(), 16 * 1024),
+                initiator,
+                &mut high_water,
+            )?,
+            "gzip" => bounded_decode(
+                flate2::read::MultiGzDecoder::new(body.as_ref()),
+                initiator,
+                &mut high_water,
+            )?,
             "deflate" => {
                 // HTTP deflate is zlib wrapped, but older servers send raw
                 // DEFLATE. Recognise a zlib header without retrying corrupt
@@ -956,17 +977,21 @@ fn decode_body(
                     && body[0] >> 4 <= 7
                     && u16::from_be_bytes([body[0], body[1]]).is_multiple_of(31);
                 if wrapped {
-                    bounded_decode(flate2::read::ZlibDecoder::new(body.as_ref()), limit)?
+                    bounded_decode(
+                        flate2::read::ZlibDecoder::new(body.as_ref()),
+                        initiator,
+                        &mut high_water,
+                    )?
                 } else {
-                    bounded_decode(flate2::read::DeflateDecoder::new(body.as_ref()), limit)?
+                    bounded_decode(
+                        flate2::read::DeflateDecoder::new(body.as_ref()),
+                        initiator,
+                        &mut high_water,
+                    )?
                 }
             }
             _ => return Err(Error::Protocol("unsupported content coding")),
         };
-        initiator
-            .charge(body.len().saturating_sub(high_water))
-            .map_err(Error::Blocked)?;
-        high_water = high_water.max(body.len());
     }
     // These described the encoded representation, not the returned bytes.
     headers.remove("content-encoding");
@@ -975,15 +1000,35 @@ fn decode_body(
 }
 
 #[cfg(feature = "compression")]
-fn bounded_decode(reader: impl std::io::Read, limit: usize) -> Result<Bytes, Error> {
-    use std::io::Read;
+fn bounded_decode(
+    mut reader: impl std::io::Read,
+    initiator: &blitz_traits::net::Initiator,
+    high_water: &mut usize,
+) -> Result<Bytes, Error> {
+    let credited = *high_water;
+    let mut charged_through = credited;
     let mut output = Vec::new();
-    reader
-        .take(limit as u64 + 1)
-        .read_to_end(&mut output)
-        .map_err(|error| Error::Io(error.to_string()))?;
-    if output.len() > limit {
-        return Err(Error::Blocked("resource-byte-cap".into()));
+    let mut scratch = [0u8; 16 * 1024];
+    loop {
+        let read = loop {
+            match reader.read(&mut scratch) {
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                result => break result.map_err(|error| Error::Io(error.to_string()))?,
+            }
+        };
+        if read == 0 {
+            break;
+        }
+        let next_len = output.len().checked_add(read).ok_or(Error::TooLarge)?;
+        if next_len > MAX_BODY_BYTES {
+            return Err(Error::TooLarge);
+        }
+        initiator
+            .charge(next_len.saturating_sub(charged_through))
+            .map_err(Error::Blocked)?;
+        charged_through = charged_through.max(next_len);
+        output.extend_from_slice(&scratch[..read]);
     }
+    *high_water = (*high_water).max(output.len());
     Ok(Bytes::from(output))
 }

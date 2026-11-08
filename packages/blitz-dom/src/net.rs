@@ -3,6 +3,8 @@ pub mod web_fonts;
 
 use blitz_traits::handoff::EventTarget;
 use blitz_traits::node_id::NodeId;
+#[cfg(feature = "image-formats")]
+use linebender_resource_handle::Blob;
 use selectors::context::QuirksMode;
 use std::sync::atomic::Ordering as Ao;
 use std::{
@@ -92,6 +94,8 @@ pub struct FontFaceOverrides {
 #[derive(Clone, Debug)]
 pub enum Resource {
     Image(ImageType, u32, u32, Arc<Vec<u8>>),
+    #[cfg(feature = "image-formats")]
+    JxlImage(ImageType, crate::node::RasterImageData),
     #[cfg(feature = "svg")]
     Svg(ImageType, crate::node::SvgImageData),
     Css(DocumentStyleSheet),
@@ -115,6 +119,7 @@ pub(crate) struct ResourceHandler<T: Send + Sync + 'static> {
     doc_id: usize,
     request_id: usize,
     node_id: Option<NodeId>,
+    request_url: Option<String>,
     tx: EventTarget<DocumentEvent>,
     shell_provider: Arc<dyn ShellProvider>,
     /// Set once `respond` has delivered a result. A fetch that never calls
@@ -132,11 +137,23 @@ impl<T: Send + Sync + 'static> ResourceHandler<T> {
         shell_provider: Arc<dyn ShellProvider>,
         data: T,
     ) -> Self {
+        Self::new_with_url(tx, doc_id, node_id, shell_provider, data, None)
+    }
+
+    fn new_with_url(
+        tx: EventTarget<DocumentEvent>,
+        doc_id: usize,
+        node_id: Option<NodeId>,
+        shell_provider: Arc<dyn ShellProvider>,
+        data: T,
+        request_url: Option<String>,
+    ) -> Self {
         static REQUEST_ID_COUNTER: AtomicUsize = AtomicUsize::new(0);
         Self {
             request_id: REQUEST_ID_COUNTER.fetch_add(1, Ao::Relaxed),
             doc_id,
             node_id,
+            request_url,
             tx,
             shell_provider,
             settled: AtomicBool::new(false),
@@ -155,6 +172,27 @@ impl<T: Send + Sync + 'static> ResourceHandler<T> {
         ResourceHandler<T>: NetHandler,
     {
         Box::new(Self::new(tx, doc_id, node_id, shell_provider, data)) as _
+    }
+
+    pub(crate) fn boxed_for_url(
+        tx: EventTarget<DocumentEvent>,
+        doc_id: usize,
+        node_id: Option<NodeId>,
+        shell_provider: Arc<dyn ShellProvider>,
+        data: T,
+        request_url: String,
+    ) -> Box<dyn NetHandler>
+    where
+        ResourceHandler<T>: NetHandler,
+    {
+        Box::new(Self::new_with_url(
+            tx,
+            doc_id,
+            node_id,
+            shell_provider,
+            data,
+            Some(request_url),
+        )) as _
     }
 
     pub(crate) fn request_id(&self) -> usize {
@@ -184,7 +222,7 @@ impl<T: Send + Sync + 'static> Drop for ResourceHandler<T> {
             ResourceLoadResponse {
                 request_id: self.request_id,
                 node_id: self.node_id,
-                resolved_url: None,
+                resolved_url: self.request_url.clone(),
                 result: Err(String::from("resource fetch failed")),
             },
         )));
@@ -650,10 +688,27 @@ impl NetHandler for ResourceHandler<DocumentSrcHandler> {
 
 pub struct ImageHandler {
     kind: ImageType,
+    #[cfg(feature = "image-formats")]
+    jxl_budget: JxlDecodeBudget,
 }
 impl ImageHandler {
     pub fn new(kind: ImageType) -> Self {
-        Self { kind }
+        Self {
+            kind,
+            #[cfg(feature = "image-formats")]
+            jxl_budget: JxlDecodeBudget::default(),
+        }
+    }
+
+    pub(crate) fn for_document(
+        kind: ImageType,
+        #[cfg(feature = "image-formats")] jxl_budget: &JxlDecodeBudget,
+    ) -> Self {
+        Self {
+            kind,
+            #[cfg(feature = "image-formats")]
+            jxl_budget: jxl_budget.clone(),
+        }
     }
 }
 
@@ -661,6 +716,118 @@ impl NetHandler for ResourceHandler<ImageHandler> {
     fn bytes(self: Box<Self>, resolved_url: String, bytes: Bytes) {
         let result = self.data.parse(bytes);
         self.respond(resolved_url, result)
+    }
+}
+
+/// Accounts for estimated frame decode working sets and retained JPEG XL RGBA
+/// buffers. Document-owned callers share the budget from their document's
+/// [lifetime receipt](crate::release::Teardown::jxl_decode_budget).
+#[cfg(feature = "image-formats")]
+#[derive(Clone)]
+pub struct JxlDecodeBudget(Arc<JxlBudgetState>);
+
+// Leave room for concurrent decodes within the existing 64 MiB per-image limit.
+#[cfg(feature = "image-formats")]
+const JXL_DOCUMENT_LIMIT: usize = 128 * 1024 * 1024;
+
+#[cfg(feature = "image-formats")]
+struct JxlBudgetState {
+    limit: usize,
+    used: AtomicUsize,
+}
+
+#[cfg(feature = "image-formats")]
+impl Default for JxlDecodeBudget {
+    fn default() -> Self {
+        Self::new(JXL_DOCUMENT_LIMIT)
+    }
+}
+
+#[cfg(feature = "image-formats")]
+impl JxlDecodeBudget {
+    fn new(limit: usize) -> Self {
+        Self(Arc::new(JxlBudgetState {
+            limit,
+            used: AtomicUsize::new(0),
+        }))
+    }
+
+    fn reserve(&self, bytes: usize) -> Result<JxlReservation, String> {
+        self.0
+            .used
+            .fetch_update(Ao::Relaxed, Ao::Relaxed, |used| {
+                used.checked_add(bytes).filter(|&total| total <= self.0.limit)
+            })
+            .map_err(|_| "JPEG XL document memory budget exceeded".to_owned())?;
+        Ok(JxlReservation {
+            budget: self.clone(),
+            bytes,
+        })
+    }
+
+    /// Decode the first frame and attach its retained charge to the pixel data.
+    pub fn decode(&self, bytes: &[u8]) -> Result<crate::node::RasterImageData, String> {
+        // Keep the reservation outside the decoder so all its working
+        // allocations are gone before releasing the charge, even on error.
+        let mut reservation = None;
+        let (width, height, rgba) = decode_jxl_with_reservation(bytes, |estimate| {
+            reservation = Some(self.reserve(estimate)?);
+            Ok(())
+        })?;
+        let pixels = reservation
+            .expect("JPEG XL frame decode reserved its working set")
+            .retain(rgba)?;
+        let data = Blob::new(Arc::new(pixels));
+        Ok(crate::node::RasterImageData {
+            width,
+            height,
+            data,
+        })
+    }
+}
+
+#[cfg(feature = "image-formats")]
+struct JxlReservation {
+    budget: JxlDecodeBudget,
+    bytes: usize,
+}
+
+#[cfg(feature = "image-formats")]
+impl JxlReservation {
+    fn retain(mut self, rgba: Vec<u8>) -> Result<JxlPixels, String> {
+        let bytes = rgba.capacity();
+        let Some(released) = self.bytes.checked_sub(bytes) else {
+            drop(rgba);
+            return Err("JPEG XL output capacity exceeds the reserved working set".into());
+        };
+        self.budget.0.used.fetch_sub(released, Ao::Relaxed);
+        self.bytes = bytes;
+        Ok(JxlPixels {
+            rgba,
+            _reservation: self,
+        })
+    }
+}
+
+#[cfg(feature = "image-formats")]
+impl Drop for JxlReservation {
+    fn drop(&mut self) {
+        self.budget.0.used.fetch_sub(self.bytes, Ao::Relaxed);
+    }
+}
+
+/// Own the reservation alongside the bytes so the final Blob owner releases
+/// it, even if it outlives the document. Drop the bytes first.
+#[cfg(feature = "image-formats")]
+struct JxlPixels {
+    rgba: Vec<u8>,
+    _reservation: JxlReservation,
+}
+
+#[cfg(feature = "image-formats")]
+impl AsRef<[u8]> for JxlPixels {
+    fn as_ref(&self) -> &[u8] {
+        &self.rgba
     }
 }
 
@@ -673,43 +840,260 @@ pub fn is_jxl(bytes: &[u8]) -> bool {
     bytes.starts_with(&[0xFF, 0x0A]) || bytes.starts_with(&CONTAINER)
 }
 
-/// The first keyframe of a JPEG XL image in sRGB, as RGBA8. Embedders decode
-/// script and canvas images through this too, so there is one JXL path.
+/// Decode a standalone JPEG XL image's first keyframe to sRGB RGBA8.
+/// Use [`JxlDecodeBudget::decode`] for document-owned images.
 #[cfg(feature = "image-formats")]
 pub fn decode_jxl(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
-    use jxl_oxide::{EnumColourEncoding, JxlImage, NullCms, RenderingIntent};
+    decode_jxl_with_reservation(bytes, |_| Ok(()))
+}
 
-    // The same decode budget as the canvas path: refuse before rendering anything.
+#[cfg(feature = "image-formats")]
+fn decode_jxl_with_reservation(
+    bytes: &[u8],
+    reserve: impl FnOnce(usize) -> Result<(), String>,
+) -> Result<(u32, u32, Vec<u8>), String> {
+    use jxl::api::{
+        Endianness, Event, ExtraChannel, JxlColorEncoding, JxlColorProfile, JxlColorType,
+        JxlDataFormat, JxlDecoder, JxlDecoderOptions, JxlOutputBuffer, JxlPixelFormat,
+    };
+    use jxl_cms::{JxlCms, moxcms::MoxCms};
+
+    // Refuse oversized images before rendering. Budget 64 bytes per pixel
+    // for the float planes, RGBA8 output and other frame working memory.
     const ALLOCATION_LIMIT: u64 = 64 * 1024 * 1024;
-    let mut image = JxlImage::builder()
-        .read_bytes(Arc::from(bytes))
-        .map_err(|error| error.to_string())?;
-    let (width, height) = (image.width(), image.height());
-    if u64::from(width) * u64::from(height) * 4 > ALLOCATION_LIMIT {
+    const BYTES_PER_PIXEL_BUDGET: u64 = 64;
+    let mut options = JxlDecoderOptions::default();
+    options.sample_limit = Some(
+        usize::try_from(ALLOCATION_LIMIT)
+            .map_err(|_| "JPEG XL sample limit exceeds usize".to_owned())?
+            / std::mem::size_of::<f32>(),
+    );
+    let mut decoder = JxlDecoder::new(options);
+    let mut input = bytes;
+    loop {
+        match decoder
+            .process(&mut input, None, None)
+            .map_err(|error| error.to_string())?
+        {
+            Event::BasicInfo => break,
+            Event::NeedMoreInput { .. } => return Err("truncated JPEG XL input".into()),
+            _ => return Err("JPEG XL decoder did not produce image information".into()),
+        }
+    }
+
+    let info = decoder
+        .basic_info()
+        .cloned()
+        .ok_or_else(|| "JPEG XL basic information is unavailable".to_owned())?;
+    let width = u32::try_from(info.size.0).map_err(|_| "JPEG XL width exceeds u32".to_owned())?;
+    let height = u32::try_from(info.size.1).map_err(|_| "JPEG XL height exceeds u32".to_owned())?;
+    if info.size.0 == 0 || info.size.1 == 0 {
+        return Err("JPEG XL dimensions must be positive".into());
+    }
+    let pixels = info
+        .size
+        .0
+        .checked_mul(info.size.1)
+        .ok_or_else(|| "JPEG XL pixel count overflows usize".to_owned())?;
+    let estimated_working_set = u64::try_from(pixels)
+        .ok()
+        .and_then(|pixels| pixels.checked_mul(BYTES_PER_PIXEL_BUDGET))
+        .ok_or_else(|| "JPEG XL working-set estimate overflows u64".to_owned())?;
+    if estimated_working_set > ALLOCATION_LIMIT {
         return Err(format!("{width}x{height} exceeds the decode budget"));
     }
-    image.set_cms(NullCms);
-    image.request_color_encoding(EnumColourEncoding::srgb(RenderingIntent::Relative));
-    let render = image.render_frame(0).map_err(|error| error.to_string())?;
-    let mut stream = render.stream();
-    let (width, height, channels) = (stream.width(), stream.height(), stream.channels() as usize);
-    let mut samples = vec![0f32; width as usize * height as usize * channels];
-    stream.write_to_buffer(&mut samples);
+    let rgba_bytes = u64::try_from(pixels)
+        .ok()
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| "JPEG XL decoded size overflows u64".to_owned())?;
+    debug_assert!(rgba_bytes <= ALLOCATION_LIMIT);
+
+    // The header supplies dimensions; reserve before allocating output
+    // planes or decoding frame data. This is not a decoder allocator limit.
+    reserve(
+        usize::try_from(estimated_working_set)
+            .map_err(|_| "JPEG XL working-set estimate exceeds usize".to_owned())?,
+    )?;
+
+    let grayscale = decoder
+        .current_pixel_format()
+        .ok_or_else(|| "JPEG XL pixel format is unavailable".to_owned())?
+        .color_type
+        .is_grayscale();
+    let alpha_index = info
+        .extra_channels
+        .iter()
+        .position(|channel| channel.ec_type == ExtraChannel::Alpha);
+    let initial_profile = decoder
+        .output_color_profile()
+        .cloned()
+        .ok_or_else(|| "JPEG XL color profile is unavailable".to_owned())?;
+    let cmyk = initial_profile.is_cmyk();
+    let black_index = info
+        .extra_channels
+        .iter()
+        .position(|channel| channel.ec_type == ExtraChannel::Black);
+    if cmyk && black_index.is_none() {
+        return Err("CMYK JPEG XL image is missing its black channel".into());
+    }
+
+    // Keep the main alpha interleaved for RGB/gray images. CMYK has no
+    // CMYKA pixel format, so request alpha as a separate plane in that case.
+    let color_type = if cmyk {
+        JxlColorType::Cmyk
+    } else {
+        match (grayscale, alpha_index.is_some()) {
+            (true, true) => JxlColorType::GrayscaleAlpha,
+            (true, false) => JxlColorType::Grayscale,
+            (false, true) => JxlColorType::Rgba,
+            (false, false) => JxlColorType::Rgb,
+        }
+    };
+    let separate_alpha = if cmyk { alpha_index } else { None };
+    let f32_format = JxlDataFormat::F32 {
+        endianness: Endianness::native(),
+    };
+    let pixel_format = JxlPixelFormat {
+        color_type,
+        color_data_format: Some(f32_format),
+        extra_channel_format: info
+            .extra_channels
+            .iter()
+            .enumerate()
+            .map(|(index, _)| (Some(index) == separate_alpha).then_some(f32_format))
+            .collect(),
+    };
+    decoder
+        .set_pixel_format(pixel_format)
+        .map_err(|error| error.to_string())?;
+    let source_profile = decoder
+        .output_color_profile()
+        .cloned()
+        .ok_or_else(|| "JPEG XL output color profile is unavailable".to_owned())?;
+
+    let channels = color_type.samples_per_pixel();
+    let color_sample_count = pixels
+        .checked_mul(channels)
+        .ok_or_else(|| "JPEG XL color sample count overflows usize".to_owned())?;
+    let mut color_samples = vec![0.0f32; color_sample_count];
+    let mut alpha_samples = separate_alpha.map(|_| vec![0.0f32; pixels]);
+    let row_bytes = info
+        .size
+        .0
+        .checked_mul(channels)
+        .and_then(|samples| samples.checked_mul(std::mem::size_of::<f32>()))
+        .ok_or_else(|| "JPEG XL output row size overflows usize".to_owned())?;
+    let mut output_buffers = vec![JxlOutputBuffer::new(
+        bytemuck::cast_slice_mut(&mut color_samples),
+        info.size.1,
+        row_bytes,
+    )];
+    if let Some(alpha_samples) = &mut alpha_samples {
+        let alpha_bytes = info
+            .size
+            .0
+            .checked_mul(std::mem::size_of::<f32>())
+            .ok_or_else(|| "JPEG XL alpha row size overflows usize".to_owned())?;
+        output_buffers.push(JxlOutputBuffer::new(
+            bytemuck::cast_slice_mut(alpha_samples),
+            info.size.1,
+            alpha_bytes,
+        ));
+    }
+
+    loop {
+        match decoder
+            .process(&mut input, Some(&mut output_buffers), None)
+            .map_err(|error| error.to_string())?
+        {
+            Event::FrameHeader => {}
+            Event::FrameComplete { .. } => break,
+            Event::NeedMoreInput { .. } => return Err("truncated JPEG XL frame".into()),
+            _ => return Err("JPEG XL image has no visible frame".into()),
+        }
+    }
+    drop(output_buffers);
+
+    let target_profile = JxlColorProfile::Simple(JxlColorEncoding::srgb(false));
+    let mut transforms = if !grayscale && !cmyk && source_profile == target_profile {
+        None
+    } else {
+        let (output_channels, mut transforms) = MoxCms
+            .initialize_transforms(1, info.size.0, source_profile, target_profile, 255.0)
+            .map_err(|error| error.to_string())?;
+        if output_channels != 3 || transforms.len() != 1 {
+            return Err("JPEG XL CMS did not provide one RGB transform".into());
+        }
+        Some(transforms.remove(0))
+    };
+
+    let input_color_channels = if cmyk {
+        4
+    } else if grayscale {
+        1
+    } else {
+        3
+    };
+    let row_samples = info
+        .size
+        .0
+        .checked_mul(input_color_channels)
+        .ok_or_else(|| "JPEG XL input row sample count overflows usize".to_owned())?;
+    let mut input_row = vec![0.0f32; row_samples];
+    let output_row_samples = info
+        .size
+        .0
+        .checked_mul(3)
+        .ok_or_else(|| "JPEG XL output row sample count overflows usize".to_owned())?;
+    let mut output_row = vec![0.0f32; output_row_samples];
+    let rgba_len =
+        usize::try_from(rgba_bytes).map_err(|_| "JPEG XL output size exceeds usize".to_owned())?;
+    let mut rgba = vec![0u8; rgba_len];
     let to_byte = |value: f32| (value.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-    let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
-    for pixel in samples.chunks_exact(channels) {
-        let (rgb, alpha) = match channels {
-            1 => ([pixel[0]; 3], 1.0),
-            2 => ([pixel[0]; 3], pixel[1]),
-            3 => ([pixel[0], pixel[1], pixel[2]], 1.0),
-            _ => ([pixel[0], pixel[1], pixel[2]], pixel[3]),
+    for y in 0..info.size.1 {
+        for x in 0..info.size.0 {
+            let pixel = y * info.size.0 + x;
+            let source = pixel * channels;
+            let input = x * input_color_channels;
+            input_row[input..input + input_color_channels]
+                .copy_from_slice(&color_samples[source..source + input_color_channels]);
+        }
+
+        let colors = if let Some(transform) = &mut transforms {
+            transform
+                .do_transform(&input_row, &mut output_row)
+                .map_err(|error| error.to_string())?;
+            &output_row[..]
+        } else {
+            &input_row[..]
         };
-        rgba.extend_from_slice(&[
-            to_byte(rgb[0]),
-            to_byte(rgb[1]),
-            to_byte(rgb[2]),
-            to_byte(alpha),
-        ]);
+
+        for x in 0..info.size.0 {
+            let pixel = y * info.size.0 + x;
+            let color = x * if transforms.is_some() {
+                3
+            } else {
+                input_color_channels
+            };
+            let destination = pixel * 4;
+            if grayscale {
+                let value = to_byte(colors[color]);
+                rgba[destination..destination + 3].fill(value);
+            } else {
+                rgba[destination] = to_byte(colors[color]);
+                rgba[destination + 1] = to_byte(colors[color + 1]);
+                rgba[destination + 2] = to_byte(colors[color + 2]);
+            }
+
+            let alpha = if cmyk {
+                separate_alpha.map_or(1.0, |_| alpha_samples.as_ref().unwrap()[pixel])
+            } else if alpha_index.is_some() {
+                color_samples[pixel * channels + channels - 1]
+            } else {
+                1.0
+            };
+            rgba[destination + 3] = to_byte(alpha);
+        }
     }
     Ok((width, height, rgba))
 }
@@ -718,10 +1102,10 @@ impl ImageHandler {
     fn parse(&self, bytes: Bytes) -> Result<Resource, String> {
         #[cfg(feature = "image-formats")]
         if is_jxl(&bytes) {
-            return decode_jxl(&bytes)
-                .map(|(width, height, rgba)| {
-                    Resource::Image(self.kind, width, height, Arc::new(rgba))
-                })
+            return self
+                .jxl_budget
+                .decode(&bytes)
+                .map(|image| Resource::JxlImage(self.kind, image))
                 .map_err(|error| {
                     format!(
                         "Could not parse JPEG XL image ({} bytes): {error}",
@@ -762,6 +1146,145 @@ impl ImageHandler {
             "Could not parse image ({} bytes): image-crate error: {image_err}; svg fallback error: {svg_err}",
             bytes.len()
         ))
+    }
+}
+
+#[cfg(all(test, feature = "image-formats"))]
+mod jxl_tests {
+    use super::*;
+    use crate::{BaseDocument, DocumentConfig, qual_name};
+    use std::sync::Barrier;
+
+    // jxl's modular_rle_fast_path_without_lz77.jxl fixture (8x8).
+    const IMAGE: &[u8] = &[
+        0xff, 0x0a, 0x01, 0xc0, 0x08, 0x81, 0x04, 0x40, 0x00, 0x89, 0x1c, 0x28, 0x17, 0x2a,
+        0x84, 0x10, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ];
+
+    struct JxlProvider;
+
+    impl NetProvider for JxlProvider {
+        fn fetch(&self, _: usize, request: Request, handler: Box<dyn NetHandler>) {
+            handler.bytes(request.url.to_string(), Bytes::from_static(IMAGE));
+        }
+    }
+
+    #[test]
+    fn jxl_document_budget_follows_queued_and_shared_pixels() {
+        const FIRST: &str = "https://example.test/first.jxl";
+        const SECOND: &str = "https://example.test/second.jxl";
+        const THIRD: &str = "https://example.test/third.jxl";
+        const BACKGROUND: &str = "https://example.test/background.jxl";
+        let receipt = crate::release::Teardown::new();
+        let host_budget = receipt.jxl_decode_budget().clone();
+        // Leave room for one 8x8 decode and one already decoded RGBA buffer.
+        let _pressure = host_budget
+            .reserve(JXL_DOCUMENT_LIMIT - 8 * 8 * (64 + 4))
+            .unwrap();
+        let mut doc = BaseDocument::new(DocumentConfig {
+            net_provider: Some(Arc::new(JxlProvider)),
+            teardown: Some(receipt),
+            ..Default::default()
+        });
+        let root = doc.root_node().id;
+        let mut edit = doc.mutate();
+        let html = edit.create_element(qual_name!("html", html), vec![]);
+        let body = edit.create_element(qual_name!("body", html), vec![]);
+        let first = edit.create_element(qual_name!("img", html), vec![]);
+        let second = edit.create_element(qual_name!("img", html), vec![]);
+        let third = edit.create_element(qual_name!("img", html), vec![]);
+        let background = edit.create_element(qual_name!("div", html), vec![]);
+        edit.append_children(body, &[first, second, third, background]);
+        edit.append_children(html, &[body]);
+        edit.append_children(root, &[html]);
+        drop(edit);
+
+        let mut edit = doc.mutate();
+        edit.set_attribute(first, qual_name!("src"), FIRST);
+        edit.set_attribute(second, qual_name!("src"), SECOND);
+        edit.set_attribute(third, qual_name!("src"), THIRD);
+        drop(edit);
+        // The third response fails even before the first two are applied.
+        assert_eq!(
+            host_budget.decode(IMAGE).unwrap_err(),
+            "JPEG XL document memory budget exceeded"
+        );
+        doc.handle_messages();
+        assert!(doc.image_cache.contains_key(FIRST));
+        assert!(doc.image_cache.contains_key(SECOND));
+        assert!(!doc.image_cache.contains_key(THIRD));
+        assert!(
+            doc.take_image_load_outcomes()
+                .iter()
+                .any(|&(node, _, ok)| node == third && !ok)
+        );
+
+        doc.mutate().set_attribute(
+            background,
+            qual_name!("style"),
+            &format!("background-image: url({BACKGROUND})"),
+        );
+        doc.resolve(0.0);
+        assert!(doc.pending_images.contains_key(BACKGROUND));
+        doc.handle_messages();
+        assert!(!doc.image_cache.contains_key(BACKGROUND));
+
+        let renderer_copy = doc
+            .get_node(first)
+            .unwrap()
+            .element_data()
+            .unwrap()
+            .raster_image_data()
+            .unwrap()
+            .data
+            .clone();
+        assert_eq!(renderer_copy.len(), 8 * 8 * 4);
+        doc.image_cache.remove(FIRST);
+        doc.mutate().set_attribute(first, qual_name!("src"), "");
+        doc.mutate().set_attribute(third, qual_name!("src"), THIRD);
+        doc.handle_messages();
+        assert!(!doc.image_cache.contains_key(THIRD));
+
+        drop(renderer_copy);
+        let native_image = host_budget.decode(IMAGE).unwrap();
+        doc.mutate().set_attribute(third, qual_name!("src"), THIRD);
+        doc.handle_messages();
+        assert!(!doc.image_cache.contains_key(THIRD));
+        drop(native_image);
+
+        doc.mutate().set_attribute(third, qual_name!("src"), THIRD);
+        doc.handle_messages();
+        assert!(doc.image_cache.contains_key(THIRD));
+    }
+
+    #[test]
+    fn jxl_document_budget_rejects_output_larger_than_its_reservation() {
+        let budget = JxlDecodeBudget::new(64);
+        assert!(budget.reserve(64).unwrap().retain(vec![0; 65]).is_err());
+        assert!(budget.reserve(64).is_ok());
+    }
+
+    #[test]
+    fn jxl_document_budget_rejects_concurrent_overcommit() {
+        let budget = JxlDecodeBudget::new(64);
+        let start = Barrier::new(4);
+        let reservations = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..4)
+                .map(|_| {
+                    scope.spawn(|| {
+                        start.wait();
+                        budget.reserve(64)
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(reservations.iter().filter(|result| result.is_ok()).count(), 1);
+        drop(reservations);
+        assert!(budget.reserve(64).is_ok());
     }
 }
 

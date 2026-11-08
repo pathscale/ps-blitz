@@ -1,26 +1,15 @@
-# Runtime-free network proposal
+# Runtime-free network proposal archive
 
-This is a historical HTTP/1.1-only proposal against the source base below.
-Do not apply it to current master: `packages/blitz-net/src/tls.rs` and
-`h2.rs` contain the active strict TLS policy and HTTP/2 transport. The archived
-patch's TLS recipe now uses the base ps-rustcrypto provider so it cannot
-reintroduce a process-default RSA/AES provider. Keeping the proposal here does
-not change the compiled network provider.
+This proposal targeted the historical HTTP/1.1-only `ps-blitz-net` implementation at source
+base `5fd4633ccc4d53351b50ca5685761b5c436d4001` and source head
+`de471e45650681509aea8fd871019981c7ce9be3`. Its patch archive has been removed because it
+replaced current transport, TLS, and cache behavior wholesale and is not a safe implementation
+source for this branch.
 
-Source base: `5fd4633ccc4d53351b50ca5685761b5c436d4001`.
-Source head: `de471e45650681509aea8fd871019981c7ce9be3`.
-Five commits replace the network package's Tokio-based client with a Nagoya HTTP/1.1 transport and WorkTable-backed cache. This is package-scoped, not workspace-wide Tokio removal.
+The current client already provides native TLS policy, HTTP/2 and HTTP/1.1, cookie integration,
+compression support, and optional profile-scoped disk caching. The open cache issue is narrower:
+body files have a per-entry limit, but the cache has no aggregate storage quota or eviction policy.
+Track that requirement in [the open-work plan](../plans/open-work.md#http-disk-cache-storage-budget).
 
-Before activation:
-
-- Remove plaintext request Cookie values from persisted cache-variant metadata; review authenticated-response cache isolation.
-- Bound individual entries and total disk use, with eviction. A per-entry limit alone is insufficient.
-- Restore equivalent user-agent, redirect/cookie, concurrent callback, and data/file URL regression coverage removed by the proposal.
-- Sanitize consumed framing and hop-by-hop headers on live responses, including
-  Connection-nominated headers. Dechunking the body while retaining
-  Transfer-Encoding is not a valid response contract; cache-only filtering
-  does not fix it. Cover this with a live chunked-response regression.
-- Account explicitly for HTTP/2, proxy and zstd regressions. The proposed HTTP/2 feature is not an implementation.
-- Verify TLS, HTTP/1.1 framing, redirects, cancellation and cache semantics with the actual consumer, then run both default-disabled and all-feature package checks.
-
-Do not apply this patch merely because it applies cleanly. The SVG change in this PR is independent and can ship without this proposal.
+Do not apply the historical patch. Re-review concrete requirements against the current transport
+and consumer before proposing code changes.

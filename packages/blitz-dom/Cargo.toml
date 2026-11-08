@@ -2,7 +2,7 @@
 name = "ps-blitz-dom"
 description = "Blitz DOM implementation"
 documentation = "https://docs.rs/ps-blitz-dom"
-version.workspace = true
+version = "0.7.2"
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
@@ -31,7 +31,9 @@ image-formats = [
     "image/webp",
     "image/bmp",
     "image/ico",
-    "dep:jxl-oxide",
+    "dep:jxl",
+    "dep:jxl-cms",
+    "dep:bytemuck",
 ]
 # Shadow DOM and Custom Element support
 shadow-dom = []
@@ -100,7 +102,9 @@ rayon = { workspace = true }
 
 # Media & Decoding
 image = { workspace = true }
-jxl-oxide = { workspace = true, optional = true }
+jxl = { workspace = true, optional = true }
+jxl-cms = { workspace = true, optional = true }
+bytemuck = { workspace = true, optional = true }
 usvg = { workspace = true, optional = true }
 wuff = { workspace = true, optional = true }
 html-escape = { workspace = true }

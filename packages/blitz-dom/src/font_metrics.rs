@@ -1,8 +1,9 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
+use crate::deferred_font_context::DeferredFontContext;
 use crate::stylo_to_parley;
 use app_units::Au;
-use parley::{FontContext, FontVariation};
+use parley::FontVariation;
 use skrifa::MetadataProvider as _;
 use skrifa::charmap::Charmap;
 use style::properties::style_structs::Font as FontStyles;
@@ -14,7 +15,7 @@ use style::{
 
 #[derive(Clone)]
 pub(crate) struct BlitzFontMetricsProvider {
-    pub(crate) font_ctx: Arc<Mutex<FontContext>>,
+    pub(crate) font_ctx: Arc<DeferredFontContext>,
 }
 
 impl core::fmt::Debug for BlitzFontMetricsProvider {

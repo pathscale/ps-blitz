@@ -181,14 +181,19 @@ impl PlatformHost {
             counters.fetch_bytes_sent += sent as u64;
         }
 
-        self.fetch_provider.fetch(
-            request,
-            Box::new(Completion {
-                id,
-                inflight: Arc::downgrade(&self.inflight),
-                waker: self.waker.clone(),
-            }),
-        );
+        let same_origin = self.origin.matches_http_url(&request.url);
+        let completion = Box::new(Completion {
+            id,
+            origin: self.origin.clone(),
+            inflight: Arc::downgrade(&self.inflight),
+            waker: self.waker.clone(),
+        });
+        if same_origin {
+            self.fetch_provider
+                .fetch(request.restrict_redirects_to(self.origin.clone()), completion);
+        } else {
+            completion.complete(Err(FetchError::Blocked("guest-fetch-origin".into())));
+        }
 
         id
     }
@@ -309,12 +314,21 @@ impl PlatformHost {
 /// whatever it intends.
 struct Completion {
     id: RequestId,
+    origin: OriginKey,
     inflight: Weak<Mutex<InFlight>>,
     waker: Option<ReadyWaker>,
 }
 
 impl FetchHandler for Completion {
     fn complete(self: Box<Self>, result: Result<FetchResponse, FetchError>) {
+        let result = result.and_then(|mut response| {
+            if !self.origin.matches_http_url(&response.url) {
+                return Err(FetchError::Blocked("guest-fetch-origin".into()));
+            }
+            response.headers.remove("set-cookie");
+            response.headers.remove("set-cookie2");
+            Ok(response)
+        });
         let Some(inflight) = self.inflight.upgrade() else {
             // The host is gone. Dropping the response is the whole answer.
             return;

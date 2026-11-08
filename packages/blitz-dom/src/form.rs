@@ -10,7 +10,7 @@ use blitz_traits::{
     net::{Body, Entry, EntryValue, FormData, Method},
 };
 use core::str::FromStr;
-use std::fmt::Display;
+use std::{cell::RefCell, fmt::Display, marker::PhantomData, rc::Rc};
 
 /// https://url.spec.whatwg.org/#default-encode-set
 const DEFAULT_ENCODE_SET: percent_encoding::AsciiSet = percent_encoding::CONTROLS
@@ -26,7 +26,112 @@ const DEFAULT_ENCODE_SET: percent_encoding::AsciiSet = percent_encoding::CONTROL
     .add(b'{')
     .add(b'}');
 
+enum FormSubmissionGate {
+    Unrestricted,
+    Restricted(Option<LookupFormSubmission>),
+}
+
+thread_local! {
+    static FORM_SUBMISSION_GATE: RefCell<FormSubmissionGate> =
+        const { RefCell::new(FormSubmissionGate::Unrestricted) };
+}
+
+/// Scope a native form policy to the embedder's document thread, including
+/// any nested document events dispatched on that thread.
+#[must_use]
+pub struct FormSubmissionScope {
+    previous: FormSubmissionGate,
+    _thread: PhantomData<Rc<()>>,
+}
+
+impl FormSubmissionScope {
+    /// Deny native form submission until the scope ends.
+    pub fn restricted() -> Self {
+        Self::enter(FormSubmissionGate::Restricted(None))
+    }
+
+    /// Permit one matching native submission within the action dispatch.
+    pub fn allow(grant: LookupFormSubmission) -> Self {
+        Self::enter(FormSubmissionGate::Restricted(Some(grant)))
+    }
+
+    fn enter(gate: FormSubmissionGate) -> Self {
+        Self {
+            previous: FORM_SUBMISSION_GATE.with(|current| current.replace(gate)),
+            _thread: PhantomData,
+        }
+    }
+}
+
+impl Drop for FormSubmissionScope {
+    fn drop(&mut self) {
+        let previous = std::mem::replace(&mut self.previous, FormSubmissionGate::Unrestricted);
+        FORM_SUBMISSION_GATE.with(|current| current.replace(previous));
+    }
+}
+
+/// A native GET submission prepared for one submitter in the live document.
+#[derive(Debug)]
+pub struct LookupFormSubmission {
+    document: usize,
+    form: NodeId,
+    submitter: NodeId,
+    destination: url::Url,
+}
+
+impl LookupFormSubmission {
+    pub fn form_id(&self) -> NodeId {
+        self.form
+    }
+
+    pub fn destination(&self) -> &url::Url {
+        &self.destination
+    }
+}
+
+#[derive(Debug)]
+pub struct LookupFormSubmissionDenied;
+
 impl BaseDocument {
+    /// Resolve the exact form owner and effective route using the same attributes
+    /// that the native default action will read after page handlers run.
+    pub fn lookup_form_submission(
+        &self,
+        submitter: NodeId,
+    ) -> Result<Option<LookupFormSubmission>, LookupFormSubmissionDenied> {
+        let Some(form) = self.controls_to_form.get(&submitter).copied() else {
+            return Ok(None);
+        };
+        let control = self
+            .get_node(submitter)
+            .and_then(|node| node.element_data())
+            .ok_or(LookupFormSubmissionDenied)?;
+        if !is_native_submitter(control) {
+            return Ok(None);
+        }
+        let element = self
+            .get_node(form)
+            .and_then(|node| node.element_data())
+            .filter(|element| element.name.local == local_name!("form"))
+            .ok_or(LookupFormSubmissionDenied)?;
+        let (method, destination) =
+            form_route(self, element, submitter).ok_or(LookupFormSubmissionDenied)?;
+        if method != FormMethod::Get
+            || destination.scheme() != "https"
+            || destination.origin() != self.url().origin()
+            || !destination.username().is_empty()
+            || destination.password().is_some()
+        {
+            return Err(LookupFormSubmissionDenied);
+        }
+        Ok(Some(LookupFormSubmission {
+            document: self.id(),
+            form,
+            submitter,
+            destination,
+        }))
+    }
+
     /// Resets the form owner for a given node by either using an explicit form attribute
     /// or finding the nearest ancestor form element
     ///
@@ -69,33 +174,28 @@ impl BaseDocument {
     ///
     /// <https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-submission-algorithm>
     pub fn submit_form(&self, node_id: NodeId, submitter_id: NodeId) {
-        let node = &self.nodes[node_id];
-        let Some(element) = node.element_data() else {
+        let Some(element) = self.get_node(node_id).and_then(|node| node.element_data()) else {
             return;
         };
+        let Some((method, mut parsed_action)) = form_route(self, element, submitter_id) else {
+            return;
+        };
+        let permitted = FORM_SUBMISSION_GATE.with(|gate| match &mut *gate.borrow_mut() {
+            FormSubmissionGate::Unrestricted => true,
+            FormSubmissionGate::Restricted(grant) => grant.take().is_some_and(|grant| {
+                grant.document == self.id()
+                    && grant.form == node_id
+                    && grant.submitter == submitter_id
+                    && self.controls_to_form.get(&submitter_id) == Some(&node_id)
+                    && method == FormMethod::Get
+                    && parsed_action == grant.destination
+            }),
+        });
+        if !permitted {
+            return;
+        }
 
         let entry = construct_entry_list(self, node_id, submitter_id);
-
-        let method = get_form_attr(
-            self,
-            element,
-            local_name!("method"),
-            submitter_id,
-            local_name!("formmethod"),
-        )
-        .and_then(|method| method.parse::<FormMethod>().ok())
-        .unwrap_or(FormMethod::Get);
-
-        let action = get_form_attr(
-            self,
-            element,
-            local_name!("action"),
-            submitter_id,
-            local_name!("formaction"),
-        )
-        .unwrap_or_default();
-
-        let mut parsed_action = self.resolve_url(action);
 
         let scheme = parsed_action.scheme();
 
@@ -340,6 +440,31 @@ fn construct_entry_list(doc: &BaseDocument, form_id: NodeId, submitter_id: NodeI
     entry_list
 }
 
+fn form_route(
+    doc: &BaseDocument,
+    form: &ElementData,
+    submitter: NodeId,
+) -> Option<(FormMethod, url::Url)> {
+    let method = get_form_attr(
+        doc,
+        form,
+        local_name!("method"),
+        submitter,
+        local_name!("formmethod"),
+    )
+    .and_then(|method| method.parse::<FormMethod>().ok())
+    .unwrap_or(FormMethod::Get);
+    let action = get_form_attr(
+        doc,
+        form,
+        local_name!("action"),
+        submitter,
+        local_name!("formaction"),
+    )
+    .unwrap_or_default();
+    Some((method, doc.url.resolve_relative(action)?))
+}
+
 fn get_form_attr<'a>(
     doc: &'a BaseDocument,
     form: &'a ElementData,
@@ -350,6 +475,12 @@ fn get_form_attr<'a>(
     get_submitter_attr(doc, submitter_id, submitter_local).or_else(|| form.attr(form_local))
 }
 
+fn is_native_submitter(element: &ElementData) -> bool {
+    element.is_submit_button()
+        || (element.name.local == local_name!("input")
+            && element.attr(local_name!("type")) == Some("submit"))
+}
+
 fn get_submitter_attr(
     doc: &BaseDocument,
     submitter_id: NodeId,
@@ -357,15 +488,8 @@ fn get_submitter_attr(
 ) -> Option<&str> {
     doc.get_node(submitter_id)
         .and_then(|node| node.element_data())
-        .and_then(|element_data| {
-            if element_data.name.local == local_name!("button")
-                && element_data.attr(local_name!("type")) == Some("submit")
-            {
-                element_data.attr(local_name)
-            } else {
-                None
-            }
-        })
+        .filter(|element| is_native_submitter(element))
+        .and_then(|element| element.attr(local_name))
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]

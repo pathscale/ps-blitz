@@ -921,6 +921,8 @@ impl<Rend: WindowRenderer> View<Rend> {
                 };
 
                 self.doc.handle_ui_event(event);
+                self.request_poll();
+                self.request_redraw();
             }
             WindowEvent::PointerEntered { /*device_id*/.. } => {}
             WindowEvent::PointerLeft { position, primary, kind, .. } => {
@@ -1056,6 +1058,7 @@ impl<Rend: WindowRenderer> View<Rend> {
                 };
 
                 self.doc.handle_ui_event(event);
+                self.request_poll();
                 self.request_redraw();
             }
             WindowEvent::MouseWheel { delta, phase, .. } => {

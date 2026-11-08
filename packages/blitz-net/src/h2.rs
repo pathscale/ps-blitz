@@ -8,7 +8,7 @@
 //! reactor or timer. Readiness comes from the nagoya reactor, keepalive from
 //! nagoya timers.
 
-use super::{Error, MAX_BODY_BYTES, WireResponse, pool::Origin, tls};
+use super::{Error, MAX_BODY_BYTES, MAX_HEAD, WireResponse, pool::Origin, tls};
 use blitz_traits::net::http::{HeaderMap, Method, Request, Uri, Version};
 use blitz_traits::platform::{Bytes, FetchRequest, StatusCode};
 use bytes::BytesMut;
@@ -357,6 +357,7 @@ impl H2Pool {
             .enable_push(false)
             .initial_window_size(STREAM_WINDOW)
             .initial_connection_window_size(CONNECTION_WINDOW)
+            .max_header_list_size(MAX_HEAD as u32)
             .handshake::<_, Bytes>(TlsIo::new(tcp, connection, early))
             .await
             .map_err(h2_error)?;
@@ -541,6 +542,24 @@ async fn exchange(
         }
     })?;
     let (parts, mut recv) = response.into_parts();
+    let head_bytes = response_header_bytes(&parts.headers)
+        .and_then(|bytes| {
+            bytes
+                .checked_add(":status".len() + 3 + 32)
+                .ok_or(Error::TooLarge)
+        })
+        .and_then(|bytes| {
+            if bytes <= MAX_HEAD {
+                Ok(bytes)
+            } else {
+                Err(Error::TooLarge)
+            }
+        })
+        .map_err(Failure::Local)?;
+    request
+        .initiator
+        .charge(head_bytes)
+        .map_err(|reason| Failure::Local(Error::Blocked(reason)))?;
     let bodiless = request.method == Method::HEAD
         || parts.status == StatusCode::NO_CONTENT
         || parts.status == StatusCode::NOT_MODIFIED;
@@ -557,7 +576,19 @@ async fn exchange(
             .map_err(|reason| Failure::Local(Error::Blocked(reason)))?;
         buffer.extend_from_slice(&chunk);
     }
-    let _ = recv.trailers().await.map_err(Failure::After)?;
+    if let Some(trailers) = recv.trailers().await.map_err(Failure::After)? {
+        let trailer_bytes = response_header_bytes(&trailers).map_err(Failure::Local)?;
+        let combined_bytes = head_bytes
+            .checked_add(trailer_bytes)
+            .ok_or(Failure::Local(Error::TooLarge))?;
+        if combined_bytes > MAX_HEAD {
+            return Err(Failure::Local(Error::TooLarge));
+        }
+        request
+            .initiator
+            .charge(trailer_bytes)
+            .map_err(|reason| Failure::Local(Error::Blocked(reason)))?;
+    }
     stream.complete = true;
     Ok(WireResponse {
         status: parts.status,
@@ -570,6 +601,21 @@ async fn exchange(
         bodiless,
         reusable: true,
     })
+}
+
+fn response_header_bytes(headers: &HeaderMap) -> Result<usize, Error> {
+    let total = headers.iter().try_fold(0usize, |total, (name, value)| {
+        name.as_str()
+            .len()
+            .checked_add(value.as_bytes().len())
+            .and_then(|field| field.checked_add(32))
+            .and_then(|field| total.checked_add(field))
+            .ok_or(Error::TooLarge)
+    })?;
+    if total > MAX_HEAD {
+        return Err(Error::TooLarge);
+    }
+    Ok(total)
 }
 
 fn info(message: std::fmt::Arguments<'_>) {
