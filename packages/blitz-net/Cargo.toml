@@ -69,3 +69,6 @@ httpdate = { version = "^1", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = { workspace = true }
+
+[dev-dependencies]
+blitz-platform-api = { workspace = true }

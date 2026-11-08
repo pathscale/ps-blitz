@@ -39,6 +39,8 @@ pub use url::Url;
 /// assume the handler runs later, or on another thread: an implementation
 /// serving a `data:` URL may answer before `fetch` returns.
 pub trait FetchProvider: Send + Sync + 'static {
+    /// Before following any redirect, resolve its destination and enforce
+    /// [`FetchRequest::check_redirect`] before contacting that destination.
     fn fetch(&self, request: FetchRequest, handler: Box<dyn FetchHandler>);
 }
 
@@ -74,6 +76,7 @@ pub struct FetchRequest {
     pub signal: Option<crate::net::AbortSignal>,
     pub initiator: crate::resource_policy::Initiator,
     pub credentials: crate::resource_policy::Credentials,
+    redirect_origin: Option<OriginKey>,
 }
 
 impl FetchRequest {
@@ -87,7 +90,24 @@ impl FetchRequest {
             signal: None,
             initiator: crate::resource_policy::Initiator::default(),
             credentials: crate::resource_policy::Credentials::default(),
+            redirect_origin: None,
         }
+    }
+
+    /// Require every redirect destination to be HTTP(S) and on this origin.
+    pub fn restrict_redirects_to(mut self, origin: OriginKey) -> Self {
+        self.redirect_origin = Some(origin);
+        self
+    }
+
+    /// Check a resolved redirect destination before sending the next request.
+    pub fn check_redirect(&self, destination: &Url) -> Result<(), String> {
+        if let Some(origin) = &self.redirect_origin
+            && !origin.matches_http_url(destination)
+        {
+            return Err("guest-fetch-origin".into());
+        }
+        Ok(())
     }
 
     pub fn initiator(mut self, initiator: crate::resource_policy::Initiator) -> Self {
@@ -271,6 +291,11 @@ impl OriginKey {
         } else {
             Self::opaque()
         }
+    }
+
+    /// Whether the URL is HTTP(S) and belongs to this origin.
+    pub fn matches_http_url(&self, url: &Url) -> bool {
+        matches!(url.scheme(), "http" | "https") && Self::for_document(url) == *self
     }
 
     /// A fresh opaque origin, shared with nothing.
