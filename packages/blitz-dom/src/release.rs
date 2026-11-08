@@ -10,6 +10,8 @@ pub struct Teardown {
     retiring: AtomicBool,
     readers: Mutex<Vec<Waker>>,
     children: Mutex<Vec<Arc<Teardown>>>,
+    #[cfg(feature = "image-formats")]
+    jxl_decode_budget: crate::net::JxlDecodeBudget,
 }
 
 impl Teardown {
@@ -19,7 +21,15 @@ impl Teardown {
             retiring: AtomicBool::new(false),
             readers: Mutex::new(Vec::new()),
             children: Mutex::new(Vec::new()),
+            #[cfg(feature = "image-formats")]
+            jxl_decode_budget: crate::net::JxlDecodeBudget::default(),
         })
+    }
+
+    /// Share the document's JPEG XL budget with native hosts bound to this receipt.
+    #[cfg(feature = "image-formats")]
+    pub fn jxl_decode_budget(&self) -> &crate::net::JxlDecodeBudget {
+        &self.jxl_decode_budget
     }
 
     pub fn lease(self: &Arc<Self>) -> ReleaseLease {
