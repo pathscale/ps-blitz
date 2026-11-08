@@ -22,7 +22,7 @@ const READ_CHUNK: usize = 16 * 1024;
 
 pub(super) fn default_config() -> Result<Arc<ClientConfig>, Error> {
     static CONFIG: OnceLock<Result<Arc<ClientConfig>, String>> = OnceLock::new();
-    match CONFIG.get_or_init(build_config) {
+    match CONFIG.get_or_init(|| native_roots().and_then(build_config)) {
         Ok(config) => Ok(config.clone()),
         Err(error) => Err(Error::Tls(error.clone())),
     }
@@ -74,8 +74,7 @@ pub(super) fn alpn() -> Vec<Vec<u8>> {
     vec![b"h2".to_vec(), b"http/1.1".to_vec()]
 }
 
-fn build_config() -> Result<Arc<ClientConfig>, String> {
-    let roots = native_roots()?;
+fn build_config(roots: RootCertStore) -> Result<Arc<ClientConfig>, String> {
     let public = public_roots(&roots);
     let provider = crate::chacha_provider();
     let mut config = ClientConfig::builder_with_provider(provider)
@@ -361,7 +360,46 @@ mod tests {
     use super::*;
     use blitz_traits::net::{Initiator, ResourcePolicy, Url};
     use nagoya::reactor::socket::Addr;
+    use rustls::{CipherSuite, SignatureScheme, server::Acceptor};
     use std::net::IpAddr;
+
+    #[test]
+    fn client_hello_offers_only_ecc_authentication_and_chacha() {
+        let roots = RootCertStore {
+            roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+        };
+        let config = build_config(roots).unwrap();
+        let name = ServerName::try_from("example.com").unwrap();
+        let mut client = ClientConnection::new(config, name).unwrap();
+        let mut wire = Vec::new();
+        client.write_tls(&mut wire).unwrap();
+        let mut acceptor = Acceptor::default();
+        acceptor.read_tls(&mut wire.as_slice()).unwrap();
+        let accepted = acceptor.accept().unwrap().expect("complete ClientHello");
+        let hello = accepted.client_hello();
+
+        let suites: Vec<_> = hello
+            .cipher_suites()
+            .iter()
+            .copied()
+            .filter(|suite| *suite != CipherSuite::TLS_EMPTY_RENEGOTIATION_INFO_SCSV)
+            .collect();
+        assert_eq!(
+            suites,
+            [
+                CipherSuite::TLS13_CHACHA20_POLY1305_SHA256,
+                CipherSuite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+            ],
+        );
+        assert_eq!(
+            hello.signature_schemes(),
+            [
+                SignatureScheme::ECDSA_NISTP256_SHA256,
+                SignatureScheme::ECDSA_NISTP384_SHA384,
+                SignatureScheme::ED25519,
+            ],
+        );
+    }
 
     #[test]
     fn public_https_dial_requires_every_candidate_to_be_public() {
