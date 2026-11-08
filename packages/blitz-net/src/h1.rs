@@ -322,6 +322,7 @@ impl H1Client {
                 .url
                 .join(location)
                 .map_err(|_| Error::Protocol("invalid redirect URL"))?;
+            request.check_redirect(&next_url).map_err(Error::Blocked)?;
             let next_origin = Origin::from_url(&next_url)?;
             if !next_url.username().is_empty() || next_url.password().is_some() {
                 return Err(Error::InvalidRequest("redirect URL contains credentials"));

@@ -181,8 +181,7 @@ impl PlatformHost {
             counters.fetch_bytes_sent += sent as u64;
         }
 
-        let same_origin = matches!(request.url.scheme(), "http" | "https")
-            && OriginKey::for_document(&request.url) == self.origin;
+        let same_origin = self.origin.matches_http_url(&request.url);
         let completion = Box::new(Completion {
             id,
             origin: self.origin.clone(),
@@ -190,7 +189,8 @@ impl PlatformHost {
             waker: self.waker.clone(),
         });
         if same_origin {
-            self.fetch_provider.fetch(request, completion);
+            self.fetch_provider
+                .fetch(request.restrict_redirects_to(self.origin.clone()), completion);
         } else {
             completion.complete(Err(FetchError::Blocked("guest-fetch-origin".into())));
         }
@@ -322,9 +322,7 @@ struct Completion {
 impl FetchHandler for Completion {
     fn complete(self: Box<Self>, result: Result<FetchResponse, FetchError>) {
         let result = result.and_then(|mut response| {
-            if !matches!(response.url.scheme(), "http" | "https")
-                || OriginKey::for_document(&response.url) != self.origin
-            {
+            if !self.origin.matches_http_url(&response.url) {
                 return Err(FetchError::Blocked("guest-fetch-origin".into()));
             }
             response.headers.remove("set-cookie");
