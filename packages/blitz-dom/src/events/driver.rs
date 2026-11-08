@@ -1,7 +1,7 @@
 use crate::Document;
 use blitz_traits::events::{
-    BlitzPointerEvent, BlitzPointerId, DomEvent, DomEventData, EventState, Point, PointerCoords,
-    UiEvent,
+    BlitzInputEvent, BlitzPointerEvent, BlitzPointerId, DomEvent, DomEventData, EventState, Point,
+    PointerCoords, UiEvent,
 };
 use blitz_traits::node_id::NodeId;
 use std::collections::VecDeque;
@@ -363,6 +363,10 @@ impl<'doc, Handler: EventHandler> EventDriver<'doc, Handler> {
 
     fn process_queue(&mut self) {
         while let Some(mut event) = self.queue.pop_front() {
+            // A preceding listener can remove the target of a queued event.
+            if self.doc.inner().get_node(event.target).is_none() {
+                continue;
+            }
             // HTML runs a click's *pre-click activation steps* before the event
             // is dispatched, so a checkbox or radio has already taken its new
             // value by the time any listener runs. Doing it afterwards -- as
@@ -383,9 +387,34 @@ impl<'doc, Handler: EventHandler> EventDriver<'doc, Handler> {
                     self.doc.inner_mut().undo_pre_click_activation(activation);
                 }
             } else {
+                if let Some(target) = activation.and_then(|activation| activation.notification_target)
+                {
+                    self.queue_checkable_events(target);
+                }
                 self.run_default_action(&mut event);
             }
         }
+    }
+
+    fn queue_checkable_events(&mut self, target: NodeId) {
+        let doc = self.doc.inner();
+        if !doc.script_node_is_connected(target) {
+            return;
+        }
+        let Some(checked) = doc
+            .get_node(target)
+            .and_then(|node| node.element_data())
+            .and_then(|element| element.checkbox_input_checked())
+        else {
+            return;
+        };
+        let data = BlitzInputEvent {
+            value: checked.to_string(),
+        };
+        self.queue
+            .push_back(DomEvent::new(target, DomEventData::Input(data.clone())));
+        self.queue
+            .push_back(DomEvent::new(target, DomEventData::Change(data)));
     }
 
     fn adjust_element_coords(

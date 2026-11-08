@@ -88,7 +88,7 @@ fn map_dom_event_to_ui_event(
         DomEventData::Click(_) => None,
         DomEventData::ContextMenu(_) => None,
         DomEventData::DoubleClick(_) => None,
-        DomEventData::Input(_) => None,
+        DomEventData::Input(_) | DomEventData::Change(_) => None,
         DomEventData::Wheel(data) => Some(UiEvent::Wheel(data)),
         DomEventData::Scroll(_) => None,
         DomEventData::Focus(_) => None,
@@ -104,7 +104,9 @@ pub(crate) fn handle_dom_event<F: FnMut(DomEvent)>(
     mut dispatch_event: F,
 ) {
     let target_node_id = event.target;
-    let node = &mut doc.nodes[target_node_id];
+    let Some(node) = doc.get_node_mut(target_node_id) else {
+        return;
+    };
     let pos = node.absolute_position(0.0, 0.0);
 
     // Whether this event can move the caret/selection (or change the text) of a text input,
@@ -282,7 +284,7 @@ pub(crate) fn handle_dom_event<F: FnMut(DomEvent)>(
         DomEventData::Ime(event) => {
             handle_ime_event(doc, event.clone(), dispatch_event);
         }
-        DomEventData::Input(_) => {
+        DomEventData::Input(_) | DomEventData::Change(_) => {
             // Do nothing (no default action)
         }
         DomEventData::ContextMenu(_) => {
