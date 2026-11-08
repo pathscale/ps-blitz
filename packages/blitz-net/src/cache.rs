@@ -168,7 +168,11 @@ impl PrivateCache {
         let headers = client.prepare_headers(&request)?;
         let request_policy = Policy::read(&headers);
         let generation = self.generation.load(Ordering::Acquire);
-        let usable = eligible(&request, &headers) && !request_policy.no_store;
+        // A stored response cannot provide an unsent redirect request. Still
+        // run invalidation below when a live unsafe request changes a resource.
+        let usable = !request.returns_redirects()
+            && eligible(&request, &headers)
+            && !request_policy.no_store;
         let loaded = if usable {
             match self.load(&request, &headers).await {
                 Ok(loaded) => loaded,
