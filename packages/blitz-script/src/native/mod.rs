@@ -12,10 +12,12 @@ use crate::DiagnosticEntry;
 use crate::native_host::NativeIntrinsic;
 use blitz_dom::{BaseDocument, NodeId};
 
+mod buffer;
 mod builtins;
 mod dom;
 mod events;
 mod exec;
+mod message;
 mod proxy;
 mod regexp;
 mod runtime;
@@ -102,6 +104,8 @@ pub struct Guest<B: RuntimeBridge> {
     pub generation: u64,
     pub steps: usize,
     await_resumptions: usize,
+    message_clone_depth: usize,
+    pending_message_bytes: Rc<std::cell::Cell<usize>>,
     pub depth: usize,
     call_stack: Vec<String>,
     pub disposed: bool,
@@ -138,6 +142,8 @@ impl<B: RuntimeBridge> Guest<B> {
             generation: 1,
             steps: 0,
             await_resumptions: 0,
+            message_clone_depth: 0,
+            pending_message_bytes: Rc::default(),
             depth: 0,
             call_stack: Vec::new(),
             disposed: false,
@@ -252,7 +258,13 @@ impl<B: RuntimeBridge> Guest<B> {
             return Ok(value);
         }
         if let Some(object) = receiver.as_object() {
-            let property = object.borrow().props.get(key).cloned();
+            let property = {
+                let object = object.borrow();
+                if let Some(value) = object.binary_property(key) {
+                    return Ok(value);
+                }
+                object.props.get(key).cloned()
+            };
             if let Some(property) = property {
                 if let Some(get) = property.get {
                     return self.call(document, get, receiver.clone(), Vec::new(), false);
@@ -514,6 +526,10 @@ impl<B: RuntimeBridge> Guest<B> {
                     return Err(Error::type_error("microtask callback must be callable"));
                 }
                 self.queue(callback, self.global.clone(), Vec::new());
+                return Ok(Value::Undefined);
+            }
+            if name == "Guest.deliverMessagePort" && callee.kind() == "Native" {
+                self.deliver_message_port(document, this)?;
                 return Ok(Value::Undefined);
             }
             if name == "IPC.postMessage" {

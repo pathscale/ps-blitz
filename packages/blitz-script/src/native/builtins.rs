@@ -1,3 +1,4 @@
+use super::buffer::{self, ArrayBuffer, ElementKind, TypedArray};
 use super::*;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -35,7 +36,7 @@ fn string(v: &Value) -> String {
     }
 }
 
-fn number(v: &Value) -> f64 {
+pub(super) fn number(v: &Value) -> f64 {
     match v {
         Value::Undefined => f64::NAN,
         Value::Null => 0.0,
@@ -262,8 +263,21 @@ struct BoundCall {
 }
 #[derive(Clone)]
 struct IteratorState {
-    values: Vec<Value>,
+    source: IteratorSource,
     cursor: usize,
+}
+
+#[derive(Clone)]
+enum IteratorSource {
+    Snapshot(Rc<[Value]>),
+    Typed(Rc<TypedArray>, TypedIteratorKind),
+}
+
+#[derive(Clone, Copy)]
+enum TypedIteratorKind {
+    Keys,
+    Values,
+    Entries,
 }
 
 fn bound_call(value: &Value) -> Option<BoundCall> {
@@ -287,9 +301,13 @@ fn iterator_state(value: &Value) -> Option<IteratorState> {
 }
 
 fn make_iterator(values: Vec<Value>) -> Value {
+    new_iterator(IteratorSource::Snapshot(values.into()))
+}
+
+fn new_iterator(source: IteratorSource) -> Value {
     let iterator = Value::object("Iterator");
     if let Some(object) = iterator.as_object() {
-        object.borrow_mut().payload = Some(Rc::new(IteratorState { values, cursor: 0 }));
+        object.borrow_mut().payload = Some(Rc::new(IteratorState { source, cursor: 0 }));
     }
     iterator
 }
@@ -966,6 +984,10 @@ impl<B: RuntimeBridge> Guest<B> {
                             "Proxy defineProperty trap rejected the property",
                         ));
                     }
+                } else if let Some(ok) = buffer::define_index(&a0, &key, &desc) {
+                    if !ok {
+                        return Err(Error::type_error("invalid binary index descriptor"));
+                    }
                 } else if let Some(o) = a0.as_object() {
                     o.borrow_mut().props.insert(
                         key,
@@ -1230,6 +1252,9 @@ impl<B: RuntimeBridge> Guest<B> {
                     ))
                 } else {
                     let key = property_key(&a1);
+                    if let Some(ok) = buffer::define_index(&a0, &key, &descriptor) {
+                        return Ok(Some(Value::Bool(ok)));
+                    }
                     let value = descriptor.get("value");
                     let get = descriptor.get("get");
                     let set = descriptor.get("set");
@@ -1258,6 +1283,9 @@ impl<B: RuntimeBridge> Guest<B> {
                 } else if let Some(object) = a0.as_object() {
                     let key = property_key(&a1);
                     let mut object = object.borrow_mut();
+                    if let Some(index) = object.binary_index(&key) {
+                        return Ok(Some(Value::Bool(index >= object.indexed_len())));
+                    }
                     let exists = object.props.contains_key(&key)
                         || key
                             .parse::<usize>()
@@ -1326,6 +1354,13 @@ impl<B: RuntimeBridge> Guest<B> {
                 Some(symbol)
             }
             "Iterator.create" => {
+                if let Some(view) = TypedArray::of(&this) {
+                    view.len().ok_or_else(detached_buffer)?;
+                    return Ok(Some(new_iterator(IteratorSource::Typed(
+                        view,
+                        TypedIteratorKind::Values,
+                    ))));
+                }
                 let values = if this.kind() == "Map" {
                     map_entries(&this)
                         .into_iter()
@@ -1346,20 +1381,30 @@ impl<B: RuntimeBridge> Guest<B> {
             "Iterator.next" => {
                 let mut state =
                     iterator_state(&this).ok_or_else(|| Error::type_error("invalid iterator"))?;
-                let value = state
-                    .values
-                    .get(state.cursor)
-                    .cloned()
-                    .unwrap_or(Value::Undefined);
-                let done = state.cursor >= state.values.len();
-                if !done {
+                let value = match &state.source {
+                    IteratorSource::Snapshot(values) => values.get(state.cursor).cloned(),
+                    IteratorSource::Typed(view, kind) => {
+                        view.len().ok_or_else(detached_buffer)?;
+                        view.get(state.cursor).map(|value| match kind {
+                            TypedIteratorKind::Keys => Value::Number(state.cursor as f64),
+                            TypedIteratorKind::Values => value,
+                            TypedIteratorKind::Entries => {
+                                Value::array(vec![Value::Number(state.cursor as f64), value])
+                            }
+                        })
+                    }
+                };
+                let done = value.is_none();
+                if done {
+                    state.source = IteratorSource::Snapshot(Rc::from([]));
+                } else {
                     state.cursor += 1;
                 }
                 if let Some(object) = this.as_object() {
                     object.borrow_mut().payload = Some(Rc::new(state));
                 }
                 let result = Value::object("Object");
-                result.put("value", value);
+                result.put("value", value.unwrap_or_default());
                 result.put("done", Value::Bool(done));
                 Some(result)
             }
@@ -1575,13 +1620,14 @@ impl<B: RuntimeBridge> Guest<B> {
                     .collect(),
             )),
             "ArrayBuffer" => Some(if a0.kind().ends_with("Array") {
-                make_buffer_from(&a0)
+                ArrayBuffer::new_value(Some(binary_bytes(&a0)?))
             } else {
-                make_buffer(integer(&a0).clamp(0, MAX_COLLECTION as i64) as usize)
+                let length = integer(&a0).clamp(0, MAX_COLLECTION as i64) as usize;
+                ArrayBuffer::new_value(Some(vec![0; length]))
             }),
             "Uint8Array" | "Uint8ClampedArray" | "Uint16Array" | "Uint32Array" | "Int8Array"
             | "Int16Array" | "Int32Array" | "Float32Array" | "Float64Array" => {
-                Some(make_typed(name, &a0, &a1, args.get(2)))
+                Some(make_typed(name, &a0, &a1, args.get(2))?)
             }
             "Error" | "TypeError" | "RangeError" | "ReferenceError" | "SyntaxError" => {
                 let error = Value::error(name, args_string(&args, 0, ""));
@@ -1925,17 +1971,14 @@ impl<B: RuntimeBridge> Guest<B> {
                 this,
                 args,
             )?,
-            _ if name.starts_with("Array.")
-                || name.starts_with("NodeList.")
-                || name.contains("Array.") =>
-            {
-                Some(self.array_method(doc, name, this, args)?)
-            }
-            _ if name.starts_with("Uint")
-                || name.starts_with("Int")
-                || name.starts_with("Float") =>
+            _ if name
+                .split_once('.')
+                .is_some_and(|(kind, _)| ElementKind::from_name(kind).is_some()) =>
             {
                 Some(self.typed_method(doc, name, this, args)?)
+            }
+            _ if name.starts_with("Array.") || name.starts_with("NodeList.") => {
+                Some(self.array_method(doc, name, this, args)?)
             }
             _ => None,
         };
@@ -2353,72 +2396,55 @@ impl<B: RuntimeBridge> Guest<B> {
         this: Value,
         args: Vec<Value>,
     ) -> Result<Value> {
+        let view = TypedArray::of(&this)
+            .ok_or_else(|| Error::type_error("expected a typed array"))?;
+        let length = view.len().ok_or_else(detached_buffer)?;
         let method = name.rsplit('.').next().unwrap_or(name);
-        if method == "set" {
-            let offset = integer(args.first().unwrap_or(&Value::Undefined)).max(0) as usize;
-            let source = args.get(1).cloned().unwrap_or(Value::Undefined);
-            let values = self.iterable_to_vec(doc, &source)?;
-            let mut items = this.items();
-            if offset.saturating_add(values.len()) > items.len() {
-                return Err(Error::new(
-                    "RangeError",
-                    "typed array source exceeds target",
-                ));
+        let arg = |index| args.get(index).unwrap_or(&Value::Undefined);
+        match method {
+            "set" => {
+                let offset = integer(arg(1)).max(0) as usize;
+                let values = self.iterable_to_vec(doc, arg(0))?;
+                let length = view.len().ok_or_else(detached_buffer)?;
+                if offset.saturating_add(values.len()) > length {
+                    return Err(Error::new(
+                        "RangeError",
+                        "typed array source exceeds target",
+                    ));
+                }
+                if !this.as_object().unwrap().borrow().frozen {
+                    for (index, value) in values.iter().enumerate() {
+                        view.set(offset + index, value);
+                    }
+                }
+                Ok(Value::Undefined)
             }
-            for (index, value) in values.iter().enumerate() {
-                items[offset + index] = coerce_element(&this.kind(), value);
+            "subarray" => {
+                let start = index(arg(0), length);
+                let end = args.get(1).map_or(length, |value| index(value, length));
+                Ok(TypedArray::new_value(
+                    &this.kind(),
+                    view.buffer.clone(),
+                    view.offset + start * view.width(),
+                    end.saturating_sub(start),
+                ))
             }
-            replace_items(&this, items);
-            return Ok(Value::Undefined);
-        }
-        if method == "subarray" {
-            let items = this.items();
-            let start = index(args.first().unwrap_or(&Value::Number(0.0)), items.len());
-            let end = args
-                .get(1)
-                .map_or(items.len(), |value| index(value, items.len()));
-            return Ok(make_typed(
-                &this.kind(),
-                &Value::array(
-                    items[start.min(items.len())..end.max(start).min(items.len())].to_vec(),
-                ),
-                &Value::Number(0.0),
-                None,
-            ));
-        }
-        let native_name = this.kind();
-        let arrname = format!("{native_name}.{}", name.rsplit('.').next().unwrap_or(name));
-        let result = self.array_method(doc, &arrname, this.clone(), args)?;
-        if result.kind() == "Array"
-            && [
-                "filter",
-                "slice",
-                "map",
-                "toReversed",
-                "toSorted",
-                "toSpliced",
-                "with",
-            ]
-            .iter()
-            .any(|method| *method == name.rsplit('.').next().unwrap_or(name))
-        {
-            Ok(make_typed(&native_name, &result, &Value::Number(0.0), None))
-        } else if result.kind() == "Array"
-            && !["entries", "keys", "values"]
-                .iter()
-                .any(|method| name.ends_with(method))
-        {
-            replace_items(
-                &this,
-                result
-                    .items()
-                    .iter()
-                    .map(|value| coerce_element(&native_name, value))
-                    .collect(),
-            );
-            Ok(this)
-        } else {
-            Ok(result)
+            "keys" | "values" | "entries" => Ok(new_iterator(IteratorSource::Typed(
+                view,
+                match method {
+                    "keys" => TypedIteratorKind::Keys,
+                    "entries" => TypedIteratorKind::Entries,
+                    _ => TypedIteratorKind::Values,
+                },
+            ))),
+            _ => {
+                let result = self.array_method(doc, name, this.clone(), args)?;
+                if matches!(method, "filter" | "slice" | "map") {
+                    make_typed(&this.kind(), &result, &Value::Undefined, None)
+                } else {
+                    Ok(result)
+                }
+            }
         }
     }
 }
@@ -2434,11 +2460,6 @@ fn same_value(a: &Value, b: &Value) -> bool {
 }
 fn same_value_zero(a: &Value, b: &Value) -> bool {
     same_value(a, b)
-}
-fn replace_items(value: &Value, items: Vec<Value>) {
-    if let Some(o) = value.as_object() {
-        o.borrow_mut().indexed = items;
-    }
 }
 fn flatten(xs: Vec<Value>, depth: usize) -> Vec<Value> {
     let mut out = Vec::new();
@@ -2508,163 +2529,52 @@ fn set_delete(set: &Value, key: &Value) -> bool {
     }
     false
 }
-fn element_bytes(kind: &str, value: &Value) -> Vec<u8> {
-    let n = number(value);
-    match kind {
-        "Uint8Array" | "Uint8ClampedArray" => {
-            vec![coerce_integer(n, 8, false, kind == "Uint8ClampedArray") as u8]
-        }
-        "Int8Array" => vec![coerce_integer(n, 8, true, false) as i8 as u8],
-        "Uint16Array" => (coerce_integer(n, 16, false, false) as u16)
-            .to_le_bytes()
-            .to_vec(),
-        "Int16Array" => (coerce_integer(n, 16, true, false) as i16)
-            .to_le_bytes()
-            .to_vec(),
-        "Uint32Array" => (coerce_integer(n, 32, false, false) as u32)
-            .to_le_bytes()
-            .to_vec(),
-        "Int32Array" => (coerce_integer(n, 32, true, false) as i32)
-            .to_le_bytes()
-            .to_vec(),
-        "Float32Array" => (n as f32).to_le_bytes().to_vec(),
-        "Float64Array" => n.to_le_bytes().to_vec(),
-        _ => Vec::new(),
-    }
+fn binary_bytes(value: &Value) -> Result<Vec<u8>> {
+    TypedArray::of(value).map_or_else(|| Ok(Vec::new()), |view| {
+        view.bytes().ok_or_else(detached_buffer)
+    })
 }
-fn coerce_integer(n: f64, bits: u32, signed: bool, clamped: bool) -> i64 {
-    if clamped {
-        return n.round().clamp(0.0, 255.0) as i64;
-    }
-    if !n.is_finite() || n == 0.0 {
-        return 0;
-    }
-    let modulus = 2f64.powi(bits as i32);
-    let mut value = n.trunc() % modulus;
-    if value < 0.0 {
-        value += modulus
-    }
-    if signed && value >= modulus / 2.0 {
-        value -= modulus
-    }
-    value as i64
+
+fn detached_buffer() -> Error {
+    Error::type_error("ArrayBuffer is detached")
 }
-fn bytes_for(value: &Value) -> Vec<u8> {
-    if let Some(object) = value.as_object() {
-        if let Some(bytes) = object
-            .borrow()
-            .payload
-            .as_ref()
-            .and_then(|payload| payload.downcast_ref::<Vec<u8>>())
-        {
-            return bytes.clone();
-        }
-    }
-    if value.kind() == "ArrayBuffer" {
-        return value
-            .items()
-            .iter()
-            .map(|byte| number(byte).clamp(0.0, 255.0) as u8)
-            .collect();
-    }
-    let kind = value.kind();
-    value
-        .items()
-        .iter()
-        .flat_map(|item| element_bytes(&kind, item))
-        .collect()
-}
-fn make_buffer(size: usize) -> Value {
-    let out = Value::object("ArrayBuffer");
-    if let Some(o) = out.as_object() {
-        o.borrow_mut().indexed = vec![Value::Number(0.0); size];
-    }
-    out.put("byteLength", Value::Number(size as f64));
-    out
-}
-fn make_buffer_from(source: &Value) -> Value {
-    let bytes = bytes_for(source);
-    let out = Value::object("ArrayBuffer");
-    if let Some(object) = out.as_object() {
-        object.borrow_mut().indexed = bytes
-            .iter()
-            .map(|byte| Value::Number(*byte as f64))
-            .collect();
-    }
-    out.put("byteLength", Value::Number(bytes.len() as f64));
-    out
-}
-fn make_typed(kind: &str, source: &Value, offset: &Value, length: Option<&Value>) -> Value {
-    let width = element_bytes(kind, &Value::Number(0.0)).len().max(1);
-    let xs = if source.kind() == "ArrayBuffer" {
-        let bytes = bytes_for(source);
-        let start = (integer(offset).max(0) as usize).min(bytes.len());
-        let available = (bytes.len() - start) / width;
+
+fn make_typed(kind: &str, source: &Value, offset: &Value, length: Option<&Value>) -> Result<Value> {
+    let element = ElementKind::from_name(kind).expect("supported typed array constructor");
+    let width = element.width();
+    if let Some(backing) = ArrayBuffer::of(source) {
+        let bytes = backing.len().ok_or_else(detached_buffer)?;
+        let start = integer(offset).clamp(0, bytes as i64) as usize;
+        let available = (bytes - start) / width;
         let count = length
-            .map_or(available, |v| integer(v).max(0) as usize)
+            .filter(|value| !matches!(value, Value::Undefined))
+            .map_or(available, |value| integer(value).max(0) as usize)
             .min(available)
             .min(MAX_COLLECTION);
-        (0..count)
-            .map(|index| {
-                decode_element(
-                    kind,
-                    &bytes[start + index * width..start + (index + 1) * width],
-                )
-            })
-            .collect()
-    } else {
-        match source {
-            Value::Number(n) => {
-                vec![Value::Number(0.0); n.trunc().clamp(0.0, MAX_COLLECTION as f64) as usize]
+        return Ok(TypedArray::new_value(kind, source.clone(), start, count));
+    }
+    if let Some(view) = TypedArray::of(source) {
+        view.len().ok_or_else(detached_buffer)?;
+    }
+
+    let bytes = match source {
+        Value::Number(n) => {
+            vec![0; n.trunc().clamp(0.0, MAX_COLLECTION as f64) as usize * width]
+        }
+        _ => {
+            let values = array_like(source);
+            let mut bytes = Vec::with_capacity(values.len().min(MAX_COLLECTION) * width);
+            for value in values.iter().take(MAX_COLLECTION) {
+                element.append(&mut bytes, value);
             }
-            _ => array_like(source)
-                .into_iter()
-                .take(MAX_COLLECTION)
-                .map(|value| coerce_element(kind, &value))
-                .collect(),
+            bytes
         }
     };
-    let out = Value::object(kind);
-    replace_items(&out, xs);
-    out.put(
-        "byteLength",
-        Value::Number(out.items().len() as f64 * width as f64),
-    );
-    out.put("byteOffset", Value::Number(0.0));
-    out.put("buffer", make_buffer_from(&out));
-    out
+    let count = bytes.len() / width;
+    let buffer = ArrayBuffer::new_value(Some(bytes));
+    Ok(TypedArray::new_value(kind, buffer, 0, count))
 }
-fn coerce_element(kind: &str, value: &Value) -> Value {
-    let n = number(value);
-    Value::Number(match kind {
-        "Float32Array" => (n as f32) as f64,
-        "Float64Array" => n,
-        "Uint8Array" | "Uint8ClampedArray" => {
-            coerce_integer(n, 8, false, kind == "Uint8ClampedArray") as f64
-        }
-        "Int8Array" => coerce_integer(n, 8, true, false) as f64,
-        "Uint16Array" => coerce_integer(n, 16, false, false) as f64,
-        "Int16Array" => coerce_integer(n, 16, true, false) as f64,
-        "Uint32Array" => coerce_integer(n, 32, false, false) as f64,
-        "Int32Array" => coerce_integer(n, 32, true, false) as f64,
-        _ => n,
-    })
-}
-fn decode_element(kind: &str, bytes: &[u8]) -> Value {
-    let mut raw = [0u8; 8];
-    raw[..bytes.len().min(8)].copy_from_slice(&bytes[..bytes.len().min(8)]);
-    Value::Number(match kind {
-        "Uint8Array" | "Uint8ClampedArray" => raw[0] as f64,
-        "Int8Array" => raw[0] as i8 as f64,
-        "Uint16Array" => u16::from_le_bytes([raw[0], raw[1]]) as f64,
-        "Int16Array" => i16::from_le_bytes([raw[0], raw[1]]) as f64,
-        "Uint32Array" => u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]) as f64,
-        "Int32Array" => i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]) as f64,
-        "Float32Array" => f32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]) as f64,
-        "Float64Array" => f64::from_le_bytes(raw),
-        _ => 0.0,
-    })
-}
+
 fn parse_float(s: &str) -> f64 {
     let trimmed = s.trim_start();
     for i in (1..=trimmed.len()).rev() {

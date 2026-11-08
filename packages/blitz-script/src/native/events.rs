@@ -39,7 +39,7 @@ impl<B: RuntimeBridge> Guest<B> {
         key: &str,
     ) -> Result<Option<Value>> {
         let kind = receiver.kind();
-        if kind == "Event" || kind == "CustomEvent" {
+        if matches!(kind.as_str(), "Event" | "CustomEvent" | "MessageEvent") {
             return Ok(match key {
                 "preventDefault" => Some(Value::native("Event.preventDefault")),
                 "stopPropagation" => Some(Value::native("Event.stopPropagation")),
@@ -279,7 +279,7 @@ impl<B: RuntimeBridge> Guest<B> {
         if !is_event_target(&target) {
             return Err(Error::type_error("dispatch target is not an EventTarget"));
         }
-        if !matches!(event.kind().as_str(), "Event" | "CustomEvent") {
+        if !matches!(event.kind().as_str(), "Event" | "CustomEvent" | "MessageEvent") {
             return Err(Error::type_error("dispatchEvent requires an Event"));
         }
         if event
@@ -306,7 +306,11 @@ impl<B: RuntimeBridge> Guest<B> {
         if event_type.is_empty() {
             return Err(Error::type_error("event type must not be empty"));
         }
-        let target_node = target.node_id();
+        let target_node = if target.kind() == "MessagePort" {
+            None
+        } else {
+            target.node_id()
+        };
         let mut path = target_node
             .map(|id| {
                 let mut ids = doc.node_chain(id);

@@ -1,6 +1,7 @@
+use super::buffer::{ArrayBuffer, TypedArray};
+use super::message::message_channel;
 use super::*;
 use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -8,16 +9,7 @@ const MAX_BLOB_BYTES: usize = 16 * 1024 * 1024;
 const MAX_WEB_ITEMS: usize = 100_000;
 
 #[derive(Clone)]
-struct BlobBytes(Vec<u8>);
-
-#[derive(Clone)]
-struct PortState {
-    inbox: Rc<RefCell<VecDeque<Value>>>,
-    peer_queue: Rc<RefCell<VecDeque<Value>>>,
-    peer: Option<Value>,
-    started: bool,
-    closed: bool,
-}
+pub(super) struct BlobBytes(pub(super) Vec<u8>);
 
 #[derive(Clone)]
 struct UrlParams {
@@ -210,7 +202,18 @@ fn is_web_iterable(value: &Value) -> bool {
     )
 }
 
-fn bytes_from_value(value: &Value) -> Vec<u8> {
+fn bytes_from_value(value: &Value) -> Result<Vec<u8>> {
+    let bytes = if let Some(buffer) = ArrayBuffer::of(value) {
+        buffer.bytes()
+    } else if let Some(view) = TypedArray::of(value) {
+        view.bytes()
+    } else {
+        return Ok(non_binary_bytes(value));
+    };
+    bytes.ok_or_else(|| Error::type_error("ArrayBuffer is detached"))
+}
+
+fn non_binary_bytes(value: &Value) -> Vec<u8> {
     if let Some(object) = value.as_object() {
         if let Some(payload) = object.borrow().payload.as_ref() {
             if let Some(bytes) = payload.downcast_ref::<BlobBytes>() {
@@ -259,37 +262,10 @@ fn make_blob(bytes: Vec<u8>, mime: &str) -> Value {
     blob
 }
 
-fn make_uint8(bytes: &[u8]) -> Value {
-    let array = Value::object("Uint8Array");
-    if let Some(object) = array.as_object() {
-        let mut object = object.borrow_mut();
-        object.indexed = bytes
-            .iter()
-            .map(|byte| Value::Number(*byte as f64))
-            .collect();
-        object.props.insert(
-            "length".to_string(),
-            Property::data(Value::Number(bytes.len() as f64)),
-        );
-    }
-    array
-}
-
-fn make_array_buffer(bytes: &[u8]) -> Value {
-    let buffer = Value::object("ArrayBuffer");
-    if let Some(object) = buffer.as_object() {
-        let mut object = object.borrow_mut();
-        object.indexed = bytes
-            .iter()
-            .map(|byte| Value::Number(*byte as f64))
-            .collect();
-        object.props.insert(
-            "byteLength".to_owned(),
-            Property::data(Value::Number(bytes.len() as f64)),
-        );
-        object.payload = Some(Rc::new(BlobBytes(bytes.to_vec())));
-    }
-    buffer
+fn make_uint8(bytes: Vec<u8>) -> Value {
+    let length = bytes.len();
+    let buffer = ArrayBuffer::new_value(Some(bytes));
+    TypedArray::new_value("Uint8Array", buffer, 0, length)
 }
 
 fn base64_encode(bytes: &[u8]) -> String {
@@ -579,8 +555,6 @@ impl<B: RuntimeBridge> Guest<B> {
         self.global
             .put_hidden("__web_promise_callback_next", Value::Number(1.0));
         self.global
-            .put_hidden("__web_ports", Value::array(Vec::new()));
-        self.global
             .put_hidden("__web_aggregates", web_object("Object"));
         self.global
             .put_hidden("__web_finally", web_object("Object"));
@@ -757,17 +731,13 @@ impl<B: RuntimeBridge> Guest<B> {
 
     pub(super) fn web_set(
         &mut self,
-        _doc: &mut blitz_dom::BaseDocument,
+        doc: &mut blitz_dom::BaseDocument,
         receiver: &Value,
         key: &str,
         value: Value,
     ) -> Result<bool> {
         if receiver.kind() == "MessagePort" && key == "onmessage" {
-            receiver.put(key, value);
-            if let Some(state) = port_payload(receiver) {
-                state.borrow_mut().started = true;
-            }
-            self.drain_message_port(receiver);
+            self.set_message_port_handler(doc, receiver, value)?;
             return Ok(true);
         }
         if receiver.kind() == "NumberFormat" && key == "format" {
@@ -1630,7 +1600,7 @@ impl<B: RuntimeBridge> Guest<B> {
                 let options = arg(&args, 1);
                 let mut bytes = Vec::new();
                 for chunk in chunks {
-                    let next = bytes_from_value(&chunk);
+                    let next = bytes_from_value(&chunk)?;
                     if next.len() > MAX_BLOB_BYTES.saturating_sub(bytes.len()) {
                         return Err(Error::new("QuotaExceededError", "Blob exceeds size limit"));
                     }
@@ -1642,7 +1612,7 @@ impl<B: RuntimeBridge> Guest<B> {
                 &blob_bytes(&this),
             ))))),
             "Web.Blob.arrayBuffer" => {
-                Some(Value::promise(Ok(make_array_buffer(&blob_bytes(&this)))))
+                Some(Value::promise(Ok(ArrayBuffer::new_value(Some(blob_bytes(&this))))))
             }
             "Web.Blob.slice" => {
                 let bytes = blob_bytes(&this);
@@ -1665,7 +1635,7 @@ impl<B: RuntimeBridge> Guest<B> {
                 value.put_hidden("__fatal", Value::Bool(false));
                 Some(value)
             }
-            "Web.TextEncoder.encode" => Some(make_uint8(web_string(&arg(&args, 0)).as_bytes())),
+            "Web.TextEncoder.encode" => Some(make_uint8(web_string(&arg(&args, 0)).into_bytes())),
             "Web.TextDecoder" if construct => {
                 let label = args
                     .first()
@@ -1689,7 +1659,7 @@ impl<B: RuntimeBridge> Guest<B> {
                 let bytes = if args.is_empty() || matches!(arg(&args, 0), Value::Undefined) {
                     Vec::new()
                 } else {
-                    bytes_from_value(&args[0])
+                    bytes_from_value(&args[0])?
                 };
                 let text = utf8_decode(&bytes, this.get("__fatal").truthy())?;
                 Some(Value::string(text))
@@ -1768,71 +1738,20 @@ impl<B: RuntimeBridge> Guest<B> {
                 }
                 Some(Value::Undefined)
             }
-            "Web.MessageChannel" if construct => {
-                let left_queue = Rc::new(RefCell::new(VecDeque::new()));
-                let right_queue = Rc::new(RefCell::new(VecDeque::new()));
-                let port1 = web_object("MessagePort");
-                let port2 = web_object("MessagePort");
-                if let Some(object) = port1.as_object() {
-                    object.borrow_mut().payload = Some(Rc::new(Rc::new(RefCell::new(PortState {
-                        inbox: left_queue.clone(),
-                        peer_queue: right_queue.clone(),
-                        peer: None,
-                        started: true,
-                        closed: false,
-                    }))));
-                }
-                if let Some(object) = port2.as_object() {
-                    object.borrow_mut().payload = Some(Rc::new(Rc::new(RefCell::new(PortState {
-                        inbox: right_queue.clone(),
-                        peer_queue: left_queue.clone(),
-                        peer: None,
-                        started: true,
-                        closed: false,
-                    }))));
-                }
-                if let Some(state) = port_payload(&port1) {
-                    state.borrow_mut().peer = Some(port2.clone());
-                }
-                if let Some(state) = port_payload(&port2) {
-                    state.borrow_mut().peer = Some(port1.clone());
-                }
-                let channel = web_object("MessageChannel");
-                channel.put("port1", port1);
-                channel.put("port2", port2);
-                let mut ports = self.global.get("__web_ports").items();
-                ports.push(channel.get("port1"));
-                ports.push(channel.get("port2"));
-                self.global.put_hidden("__web_ports", Value::array(ports));
-                Some(channel)
-            }
+            "Web.MessageChannel" if construct => Some(message_channel()),
             "Web.MessagePort.postMessage" => {
-                if let Some(port) = port_payload(&this) {
-                    let peer = {
-                        let port = port.borrow();
-                        if port.closed {
-                            return Ok(Some(Value::Undefined));
-                        }
-                        port.peer_queue.borrow_mut().push_back(arg(&args, 0));
-                        port.peer.clone()
-                    };
-                    if let Some(peer) = peer {
-                        self.drain_message_port(&peer);
-                    }
-                }
+                let data = args
+                    .first()
+                    .ok_or_else(|| Error::type_error("postMessage requires a message"))?;
+                self.post_message_port(doc, &this, data, &arg(&args, 1))?;
                 Some(Value::Undefined)
             }
             "Web.MessagePort.start" => {
-                if let Some(port) = port_payload(&this) {
-                    port.borrow_mut().started = true;
-                }
-                self.drain_message_port(&this);
+                self.start_message_port(&this)?;
                 Some(Value::Undefined)
             }
             "Web.MessagePort.close" => {
-                if let Some(port) = port_payload(&this) {
-                    port.borrow_mut().closed = true;
-                }
+                self.close_message_port(&this)?;
                 Some(Value::Undefined)
             }
             "Web.CustomElements.define" => {
@@ -2237,34 +2156,7 @@ impl<B: RuntimeBridge> Guest<B> {
         }
     }
 
-    fn drain_message_port(&mut self, port: &Value) {
-        let Some(state) = port_payload(port) else {
-            return;
-        };
-        if !state.borrow().started || state.borrow().closed {
-            return;
-        }
-        let callback = port.get("onmessage");
-        if !matches!(callback.kind().as_str(), "Function" | "Native") {
-            return;
-        }
-        let mut messages = Vec::new();
-        while let Some(message) = state.borrow().inbox.borrow_mut().pop_front() {
-            messages.push(message);
-        }
-        for data in messages {
-            let event = web_object("MessageEvent");
-            event.put("data", data);
-            event.put("target", port.clone());
-            event.put("currentTarget", port.clone());
-            self.queue(callback.clone(), port.clone(), vec![event]);
-        }
-    }
-
     pub(super) fn web_poll(&mut self, doc: &mut blitz_dom::BaseDocument) -> Result<()> {
-        for port in self.global.get("__web_ports").items() {
-            self.drain_message_port(&port);
-        }
         for observer in self.global.get("__web_observers").items() {
             let kind = observer.kind();
             let mut records = Vec::new();
@@ -2550,16 +2442,6 @@ fn intersection_entry(doc: &blitz_dom::BaseDocument, target: Value, rect: &Value
         }),
     );
     entry
-}
-
-fn port_payload(port: &Value) -> Option<Rc<RefCell<PortState>>> {
-    port.as_object().and_then(|object| {
-        object
-            .borrow()
-            .payload
-            .as_ref()
-            .and_then(|payload| payload.downcast_ref::<Rc<RefCell<PortState>>>().cloned())
-    })
 }
 
 fn clamp_index(value: f64, length: usize) -> usize {

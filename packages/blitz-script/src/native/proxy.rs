@@ -1,3 +1,4 @@
+use super::buffer::TypedArray;
 use super::*;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -141,6 +142,9 @@ impl<B: RuntimeBridge> Guest<B> {
         if let Some(object) = target.as_object() {
             let (own, mut prototype) = {
                 let object = object.borrow();
+                if let Some(value) = object.binary_property(key) {
+                    return Ok(value);
+                }
                 (object.props.get(key).cloned(), object.prototype.clone())
             };
             if let Some(property) = own {
@@ -184,6 +188,12 @@ impl<B: RuntimeBridge> Guest<B> {
         if target.kind() == "Proxy" {
             return Ok(self.proxy_has(document, target, key)?.unwrap_or(false));
         }
+        if let Some(object) = target.as_object() {
+            let object = object.borrow();
+            if let Some(index) = object.binary_index(key) {
+                return Ok(index < object.indexed_len());
+            }
+        }
         let mut prototype = Some(target.clone());
         for _ in 0..256 {
             let Some(ref value) = prototype else {
@@ -199,7 +209,7 @@ impl<B: RuntimeBridge> Guest<B> {
                         || key
                             .parse::<usize>()
                             .ok()
-                            .is_some_and(|index| index < object.indexed.len())
+                            .is_some_and(|index| index < object.indexed_len())
                         || (key == "length"
                             && matches!(object.kind.as_str(), "Array" | "NodeList" | "String")),
                     object.prototype.clone(),
@@ -231,6 +241,7 @@ impl<B: RuntimeBridge> Guest<B> {
         let Some(object) = target.as_object() else {
             return Err(Error::type_error("ownKeys target must be an object"));
         };
+        let typed_array = TypedArray::of(target).is_some();
         let object = object.borrow();
         let mut keys: Vec<String> = object.props.keys().cloned().collect();
         if matches!(
@@ -238,12 +249,8 @@ impl<B: RuntimeBridge> Guest<B> {
             "Array" | "Arguments" | "NodeList" | "HTMLCollection"
         ) || object.kind.ends_with("Array")
         {
-            keys.extend((0..object.indexed.len()).map(|index| index.to_string()));
-            if matches!(
-                object.kind.as_str(),
-                "Array" | "Arguments" | "NodeList" | "HTMLCollection"
-            ) || object.kind.ends_with("Array")
-            {
+            keys.extend((0..object.indexed_len()).map(|index| index.to_string()));
+            if !typed_array {
                 keys.push("length".into());
             }
         }
@@ -264,6 +271,7 @@ impl<B: RuntimeBridge> Guest<B> {
         let Some(object) = target.as_object() else {
             return Err(Error::type_error("descriptor target must be an object"));
         };
+        let typed_array = TypedArray::of(target).is_some();
         let object = object.borrow();
         if let Some(property) = object.props.get(key) {
             let descriptor = Value::object("Object");
@@ -282,9 +290,9 @@ impl<B: RuntimeBridge> Guest<B> {
             return Ok(descriptor);
         }
         if let Ok(index) = key.parse::<usize>() {
-            if let Some(value) = object.indexed.get(index) {
+            if let Some(value) = object.indexed_value(index) {
                 let descriptor = Value::object("Object");
-                descriptor.put("value", value.clone());
+                descriptor.put("value", value);
                 descriptor.put("writable", Value::Bool(!object.frozen));
                 descriptor.put("enumerable", Value::Bool(true));
                 descriptor.put("configurable", Value::Bool(!object.frozen));
@@ -292,6 +300,7 @@ impl<B: RuntimeBridge> Guest<B> {
             }
         }
         if key == "length"
+            && !typed_array
             && (matches!(
                 object.kind.as_str(),
                 "Array" | "Arguments" | "NodeList" | "HTMLCollection"
@@ -636,6 +645,13 @@ impl<B: RuntimeBridge> Guest<B> {
             return Ok(Some(result.truthy()));
         }
         if let Some(object) = target.as_object() {
+            let index = {
+                let object = object.borrow();
+                object.binary_index(key).map(|index| index >= object.indexed_len())
+            };
+            if let Some(absent) = index {
+                return Ok(Some(absent));
+            }
             let existed = object.borrow().props.contains_key(key)
                 || key
                     .parse::<usize>()
@@ -683,6 +699,9 @@ impl<B: RuntimeBridge> Guest<B> {
             ],
         )? {
             return Ok(Some(result.truthy()));
+        }
+        if let Some(ok) = super::buffer::define_index(&target, key, descriptor) {
+            return Ok(Some(ok));
         }
         let Some(object) = target.as_object() else {
             return Ok(Some(false));
