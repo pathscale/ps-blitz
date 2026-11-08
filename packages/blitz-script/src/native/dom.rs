@@ -7,6 +7,8 @@
 use super::*;
 use blitz_dom::{BaseDocument, NodeData, NodeId};
 
+mod tree_walker;
+
 const MAX_TREE_VISIT: usize = 100_000;
 const MAX_MARKUP_INPUT: usize = 4 * 1024 * 1024;
 
@@ -145,6 +147,7 @@ impl<B: RuntimeBridge> Guest<B> {
             "HTMLCollection",
             "DocumentFragment",
             "ShadowRoot",
+            "TreeWalker",
             "HTMLTemplateElement",
             "SVGElement",
             "HTMLImageElement",
@@ -198,11 +201,13 @@ impl<B: RuntimeBridge> Guest<B> {
             document.borrow_mut().prototype = Some(self.global.get("Document").get("prototype"));
         }
 
+        self.install_tree_walker();
+
         let filter = Value::object("NodeFilter");
         for (name, value) in [
-            ("FILTER_ACCEPT", 1),
-            ("FILTER_REJECT", 2),
-            ("FILTER_SKIP", 3),
+            ("FILTER_ACCEPT", i64::from(tree_walker::ACCEPT)),
+            ("FILTER_REJECT", i64::from(tree_walker::REJECT)),
+            ("FILTER_SKIP", i64::from(tree_walker::SKIP)),
             ("SHOW_ALL", 4294967295i64),
             ("SHOW_ELEMENT", 1),
             ("SHOW_ATTRIBUTE", 2),
@@ -695,6 +700,9 @@ impl<B: RuntimeBridge> Guest<B> {
         key: &str,
         value: Value,
     ) -> Result<bool> {
+        if self.tree_walker_readonly(receiver, key) {
+            return Ok(true);
+        }
         if receiver.kind() == "Document" {
             if key == "title" {
                 if let Some(title) = doc.query_selector("title").ok().flatten() {
@@ -817,6 +825,18 @@ impl<B: RuntimeBridge> Guest<B> {
             return self
                 .dom_construct(doc, constructor, args, construct)
                 .map(Some);
+        }
+        if name == "DOM.createTreeWalker" {
+            if construct {
+                return Err(type_error("createTreeWalker is not a constructor"));
+            }
+            return self.create_tree_walker(doc, &this, &args).map(Some);
+        }
+        if let Some(method) = name.strip_prefix("DOM.TreeWalker.") {
+            if construct {
+                return Err(type_error("TreeWalker methods are not constructors"));
+            }
+            return self.tree_walker_call(doc, &this, method, &args).map(Some);
         }
         if name == "DOM.createElement"
             || name == "DOM.createElementNS"
@@ -1350,7 +1370,7 @@ impl<B: RuntimeBridge> Guest<B> {
             return Err(type_error(format!("{name} constructor requires new")));
         }
         match name {
-            "Node" => Err(type_error("Illegal constructor")),
+            "Node" | "TreeWalker" => Err(type_error("Illegal constructor")),
             "Text" => {
                 let id = blitz_dom_api::document::create_text_node(doc, &string_arg(&args, 0))
                     .map_err(dom_error)?;
