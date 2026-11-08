@@ -154,7 +154,7 @@ impl H1Client {
         self
     }
 
-    /// Fetch an HTTP URL, following redirects and retaining response metadata.
+    /// Fetch an HTTP URL, following redirects unless the caller handles them.
     ///
     /// `data:` and `file:` remain provider operations. Every response head,
     /// including redirects and errors, is delivered to the cookie jar before
@@ -361,7 +361,14 @@ impl H1Client {
                 }
             }
 
-            request.url = next_url;
+            let previous_url = std::mem::replace(&mut request.url, next_url);
+            if request.returns_redirects() {
+                return Ok(Some(
+                    FetchResponse::new(previous_url, wire.status)
+                        .headers(wire.headers)
+                        .with_redirect_request(request.clone()),
+                ));
+            }
             return Ok(None);
         }
 

@@ -77,6 +77,7 @@ pub struct FetchRequest {
     pub initiator: crate::resource_policy::Initiator,
     pub credentials: crate::resource_policy::Credentials,
     redirect_origin: Option<OriginKey>,
+    return_redirects: bool,
 }
 
 impl FetchRequest {
@@ -91,6 +92,7 @@ impl FetchRequest {
             initiator: crate::resource_policy::Initiator::default(),
             credentials: crate::resource_policy::Credentials::default(),
             redirect_origin: None,
+            return_redirects: false,
         }
     }
 
@@ -108,6 +110,18 @@ impl FetchRequest {
             return Err("guest-fetch-origin".into());
         }
         Ok(())
+    }
+
+    /// Return each redirect to the caller before sending the next request.
+    /// The native transport attaches the next request to the redirect response
+    /// after applying its redirect rules. The caller owns the redirect limit.
+    pub fn return_redirects(mut self) -> Self {
+        self.return_redirects = true;
+        self
+    }
+
+    pub fn returns_redirects(&self) -> bool {
+        self.return_redirects
     }
 
     pub fn initiator(mut self, initiator: crate::resource_policy::Initiator) -> Self {
@@ -146,6 +160,7 @@ pub struct FetchResponse {
     pub status: StatusCode,
     pub headers: HeaderMap,
     pub body: Bytes,
+    redirect_request: Option<Box<FetchRequest>>,
 }
 
 impl FetchResponse {
@@ -162,6 +177,7 @@ impl FetchResponse {
             status,
             headers: HeaderMap::new(),
             body: Bytes::new(),
+            redirect_request: None,
         }
     }
 
@@ -173,6 +189,17 @@ impl FetchResponse {
     pub fn body(mut self, body: Bytes) -> Self {
         self.body = body;
         self
+    }
+
+    /// Attach the prepared next request to a redirect response without a body.
+    pub fn with_redirect_request(mut self, request: FetchRequest) -> Self {
+        self.redirect_request = Some(Box::new(request));
+        self
+    }
+
+    /// Take the unsent request for the next hop, if the provider stopped here.
+    pub fn take_redirect_request(&mut self) -> Option<FetchRequest> {
+        self.redirect_request.take().map(|request| *request)
     }
 }
 
