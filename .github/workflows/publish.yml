@@ -1,31 +1,14 @@
 name: Publish crates
 
-# A workspace version bump is the release trigger.
-#
-# This used to publish ps-blitz-dom alone, on the reasoning that consumers only
-# reach this workspace through it and publishing one crate "avoids unrelated
-# crate churn". That holds right up until a change alters a type another crate
-# in the workspace *constructs*, and then it ships a release nobody can use.
-#
-# 0.3.0-beta.10 is exactly that case. Attribute values became an interned
-# `AttrAtom` instead of a `String`, which is a breaking change to a public
-# field. ps-blitz-html builds an `Attribute` in `html_sink.rs`, so the beta.6
-# copy on the registry no longer compiles against beta.10 of blitz-dom:
-#
-#     error[E0308]: mismatched types
-#       ps-blitz-html-0.3.0-beta.6/src/html_sink.rs:22
-#       expected `Atom<EmptyStaticAtomSet>`, found `String`
-#
-# blitz-dom was published and every crate that depends on its API was left four
-# releases behind, so a consumer that took the new version could not build at
-# all. The fix in this tree was already correct; it simply never shipped.
-#
-# So: publish the whole dependency-connected set, in dependency order. Each
-# `cargo publish` waits for the registry to serve what it just uploaded before
-# the next one starts, because the next crate resolves it from crates.io.
+# Select the crates for this release. Cargo reads their manifest versions
+# and publishes the selected crates in dependency order.
 on:
   workflow_dispatch:
     inputs:
+      packages:
+        description: 'Workspace crate names separated by spaces (omit versions already published)'
+        required: true
+        type: string
       dry_run:
         description: 'Package and verify without uploading'
         required: false
@@ -68,44 +51,21 @@ jobs:
       - name: Enforce the crypto policy before publication
         run: cargo deny --all-features --config deny-crypto.toml check bans
 
-      # Cargo knows which crates are publishable, what order they depend on
-      # each other in, and which versions are already on the registry. This
-      # job used to say all of it again: a dependency-ordered list of fifteen
-      # crate names, a second list of four released separately, a check that
-      # the two together covered every publishable member, a `cargo metadata`
-      # per crate to read its version, and a crates.io query per crate to ask
-      # whether that version existed.
-      #
-      # Every incident the comments in that script recorded was caused by the
-      # script. Crates fell out of the list and stopped being released while
-      # the job reported success. A `[ -n "$x" ] && echo` returned 1 under
-      # `set -e` and failed a run that had already uploaded every crate.
-      # There is still no list: the members come from cargo, and so does the
-      # order, because one multi-package `cargo publish` sorts what it is
-      # given by dependency.
-      #
-      # What cargo does not do is skip. Crates on their own version lines -
-      # ps-debug-timer, dom-abi, ps-accesskit-xplat, rdme,
-      # ps-blitz-debug-control - rarely change version, and
-      # `cargo publish --workspace` aborts on the first one already on
-      # crates.io before uploading anything. This step read that error as
-      # "nothing left to upload" and passed: 0.4.11 was released on master and
-      # never reached crates.io, stopped at ps-accesskit-xplat 0.1.1. So the one
-      # question the old script asked per crate is asked again, and only that
-      # one: is this name at this version on the index.
-      #
-      # No `--locked`. There is no tracked lockfile, and a publish should
-      # resolve the newest version each caret permits rather than freeze
-      # whatever CI last happened to build.
-      - name: Package
-        if: inputs.dry_run
-        run: cargo package --workspace
-
-      # Every failure fails the run. The old step let "already exists" through
-      # and so reported success for a release that uploaded nothing.
-      - name: Publish
-        if: '!inputs.dry_run'
+      - name: Publish selected crates
         shell: bash
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: .github/scripts/publish-missing.sh
+          CARGO_REGISTRY_TOKEN: ${{ !inputs.dry_run && secrets.CARGO_REGISTRY_TOKEN || '' }}
+          PUBLISH_PACKAGES: ${{ inputs.packages }}
+          PUBLISH_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          read -r -a packages <<< "${PUBLISH_PACKAGES//$'\n'/ }"
+          if (( ${#packages[@]} == 0 )); then
+            echo '::error::Select at least one workspace crate.'
+            exit 1
+          fi
+
+          dry_run=()
+          if [[ "$PUBLISH_DRY_RUN" == true ]]; then
+            dry_run=(--dry-run)
+          fi
+          cargo publish --registry crates-io "${dry_run[@]}" "${packages[@]/#/--package=}"
