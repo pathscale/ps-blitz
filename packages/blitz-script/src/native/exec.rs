@@ -1581,6 +1581,9 @@ impl<B: RuntimeBridge> Guest<B> {
                 if object.props.remove(&key).is_some() {
                     return Ok(true);
                 }
+                if let Some(index) = object.binary_index(&key) {
+                    return Ok(index >= object.indexed_len());
+                }
                 if let Ok(index) = key.parse::<usize>() {
                     if let Some(value) = object.indexed.get_mut(index) {
                         *value = Value::Undefined;
@@ -1636,17 +1639,7 @@ impl<B: RuntimeBridge> Guest<B> {
         if matches!(value, Value::Object(_)) {
             let iterator = self.get_property(doc, value, "@@iterator")?;
             if !matches!(iterator, Value::Undefined) {
-                let iterator = self.call(doc, iterator, value.clone(), Vec::new(), false)?;
-                let mut out = Vec::new();
-                for _ in 0..MAX_ARRAY_LENGTH {
-                    let next = self.get_property(doc, &iterator, "next")?;
-                    let step = self.call(doc, next, iterator.clone(), Vec::new(), false)?;
-                    if self.get_property(doc, &step, "done")?.truthy() {
-                        return Ok(out);
-                    }
-                    out.push(self.get_property(doc, &step, "value")?);
-                }
-                return Err(Error::new("RangeError", "iterator exceeded element limit"));
+                return self.collect_iterator(doc, value, iterator);
             }
         }
         let items = value.items();
@@ -1660,6 +1653,25 @@ impl<B: RuntimeBridge> Guest<B> {
                 .collect());
         }
         Err(Error::type_error("value is not iterable"))
+    }
+
+    pub(super) fn collect_iterator(
+        &mut self,
+        doc: &mut BaseDocument,
+        value: &Value,
+        method: Value,
+    ) -> Result<Vec<Value>> {
+        let iterator = self.call(doc, method, value.clone(), Vec::new(), false)?;
+        let mut out = Vec::new();
+        for _ in 0..MAX_ARRAY_LENGTH {
+            let next = self.get_property(doc, &iterator, "next")?;
+            let step = self.call(doc, next, iterator.clone(), Vec::new(), false)?;
+            if self.get_property(doc, &step, "done")?.truthy() {
+                return Ok(out);
+            }
+            out.push(self.get_property(doc, &step, "value")?);
+        }
+        Err(Error::new("RangeError", "iterator exceeded element limit"))
     }
 
     fn drain_one_job(&mut self, doc: &mut BaseDocument) -> Result<bool> {

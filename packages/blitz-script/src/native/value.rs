@@ -263,6 +263,9 @@ impl Value {
                 return Self::string(name);
             }
         }
+        if let Some(value) = object.binary_property(key) {
+            return value;
+        }
         if let Some(property) = object.props.get(key) {
             return property.value.clone();
         }
@@ -291,12 +294,27 @@ impl Value {
         Self::Undefined
     }
     pub fn put(&self, key: &str, value: Value) {
-        let Self::Object(object) = self else {
+        let Self::Object(cell) = self else {
             return;
         };
-        let mut object = object.borrow_mut();
+        let mut object = cell.borrow_mut();
         if object.frozen {
             return;
+        }
+        if let Some(payload) = object
+            .payload
+            .as_ref()
+            .filter(|payload| {
+                payload.is::<super::buffer::ArrayBuffer>() || payload.is::<super::buffer::TypedArray>()
+            })
+            .cloned()
+        {
+            // Numeric coercion can read the receiver or another view of its buffer.
+            drop(object);
+            if super::buffer::set_property(payload.as_ref(), key, &value) {
+                return;
+            }
+            object = cell.borrow_mut();
         }
         if let Ok(index) = key.parse::<usize>() {
             if index < 1_048_576
@@ -356,7 +374,19 @@ impl Value {
     }
     pub fn items(&self) -> Vec<Value> {
         match self {
-            Self::Object(o) => o.borrow().indexed.clone(),
+            Self::Object(o) => {
+                let object = o.borrow();
+                if object.indexed.is_empty()
+                    && let Some(blob) = object.payload.as_deref().and_then(|payload| {
+                        payload.downcast_ref::<super::web::BlobBytes>()
+                    })
+                {
+                    return blob.0.iter().map(|&byte| Self::Number(f64::from(byte))).collect();
+                }
+                object
+                    .binary_items()
+                    .unwrap_or_else(|| object.indexed.clone())
+            }
             Self::String(s) => s
                 .iter()
                 .map(|unit| Self::String(Rc::from([*unit])))
@@ -443,7 +473,10 @@ impl Value {
                     o.kind.as_str(),
                     "Array" | "Uint8Array" | "Uint8ClampedArray" | "Uint32Array" | "Float32Array"
                 ) {
-                    o.indexed
+                    let items = o.binary_items();
+                    items
+                        .as_deref()
+                        .unwrap_or(&o.indexed)
                         .iter()
                         .map(|v| {
                             if matches!(v, Self::Null | Self::Undefined) {
