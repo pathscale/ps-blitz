@@ -5,8 +5,8 @@ use web_time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use blitz_traits::{
     events::{
-        BlitzInputEvent, BlitzPointerEvent, BlitzPointerId, BlitzSubmitEvent, BlitzWheelDelta,
-        BlitzWheelEvent, DomEvent, DomEventData, MouseEventButton, MouseEventButtons,
+        BlitzPointerEvent, BlitzPointerId, BlitzSubmitEvent, BlitzWheelDelta, BlitzWheelEvent,
+        DomEvent, DomEventData, MouseEventButton, MouseEventButtons,
     },
     navigation::NavigationOptions,
 };
@@ -602,9 +602,8 @@ pub(crate) fn handle_pointerup<F: FnMut(DomEvent)>(
 ///
 /// This walks the tree the way [`handle_click`] does -- stopping at a disabled
 /// element or a text input -- because the two have to agree. The pre-click
-/// activation steps flip the checkedness of whatever this returns, and
-/// `handle_click` reports it afterwards; if they disagreed, a control would
-/// either toggle without an `input` event or fire one without having toggled.
+/// activation steps flip the checkedness of whatever this returns. The event
+/// driver reports the change after the click's listeners accept it.
 ///
 /// A `<label>` ends the walk with `None`. The label is the nearest thing with
 /// an activation behaviour of its own, and that behaviour is to fire a *fresh*
@@ -684,16 +683,12 @@ pub(crate) fn handle_click(
             }
 
             match el.name.local {
-                local_name!("input") if el.attr(local_name!("type")) == Some("checkbox") => {
-                    // Checkedness was already flipped by the pre-click
-                    // activation steps, so this is only the post-click half:
-                    // report the value the press produced.
-                    let is_checked = el.checkbox_input_checked().unwrap_or(false);
-                    let value = is_checked.to_string();
-                    dispatch_event(DomEvent::new(
-                        node_id,
-                        DomEventData::Input(BlitzInputEvent { value }),
-                    ));
+                local_name!("input")
+                    if matches!(
+                        el.attr(local_name!("type")),
+                        Some("checkbox") | Some("radio")
+                    ) =>
+                {
                     generate_focus_events(
                         doc,
                         &mut |doc| {
@@ -701,25 +696,6 @@ pub(crate) fn handle_click(
                         },
                         dispatch_event,
                     );
-                    break 'matched true;
-                }
-                local_name!("input") if el.attr(local_name!("type")) == Some("radio") => {
-                    // The selection was made by the pre-click activation steps.
-                    // TODO: make input event conditional on value actually changing
-                    let value = String::from("true");
-                    dispatch_event(DomEvent::new(
-                        node_id,
-                        DomEventData::Input(BlitzInputEvent { value }),
-                    ));
-
-                    generate_focus_events(
-                        doc,
-                        &mut |doc| {
-                            doc.set_focus_to(node_id);
-                        },
-                        dispatch_event,
-                    );
-
                     break 'matched true;
                 }
                 // A press on a select focuses it. Nothing else yet: there is no

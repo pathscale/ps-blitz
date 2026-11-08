@@ -155,6 +155,7 @@ pub enum DomEventKind {
     Submit,
 
     AppleStandardKeybinding,
+    Change,
 }
 impl DomEventKind {
     pub fn discriminant(self) -> u8 {
@@ -198,6 +199,7 @@ impl FromStr for DomEventKind {
             "keydown" => Ok(Self::KeyDown),
             "keyup" => Ok(Self::KeyUp),
             "input" => Ok(Self::Input),
+            "change" => Ok(Self::Change),
             "composition" => Ok(Self::Ime),
 
             "focus" => Ok(Self::Focus),
@@ -262,6 +264,8 @@ pub enum DomEventData {
     Submit(BlitzSubmitEvent),
 
     AppleStandardKeybinding(SmolStr),
+    /// A checkable control committed a new checked state.
+    Change(BlitzInputEvent),
 }
 impl DomEventData {
     pub fn discriminant(&self) -> u8 {
@@ -309,6 +313,7 @@ impl DomEventData {
             Self::KeyDown { .. } => "keydown",
             Self::KeyUp { .. } => "keyup",
             Self::Input { .. } => "input",
+            Self::Change { .. } => "change",
             Self::Ime { .. } => "composition",
 
             Self::Focus { .. } => "focus",
@@ -357,6 +362,7 @@ impl DomEventData {
             Self::KeyDown { .. } => DomEventKind::KeyDown,
             Self::KeyUp { .. } => DomEventKind::KeyUp,
             Self::Input { .. } => DomEventKind::Input,
+            Self::Change { .. } => DomEventKind::Change,
             Self::Ime { .. } => DomEventKind::Ime,
 
             Self::Focus { .. } => DomEventKind::Focus,
@@ -404,7 +410,7 @@ impl DomEventData {
             Self::KeyUp { .. } => true,
             Self::KeyPress { .. } => true,
             Self::Ime { .. } => true,
-            Self::Input { .. } => false,
+            Self::Input { .. } | Self::Change { .. } => false,
 
             Self::Focus { .. } => false,
             Self::Blur { .. } => false,
@@ -455,7 +461,7 @@ impl DomEventData {
             Self::KeyUp { .. } => true,
             Self::KeyPress { .. } => true,
             Self::Ime { .. } => true,
-            Self::Input { .. } => true,
+            Self::Input { .. } | Self::Change { .. } => true,
 
             Self::Focus { .. } => false,
             Self::Blur { .. } => false,

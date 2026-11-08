@@ -203,6 +203,7 @@ pub trait Document: Any + 'static {
 pub struct PreClickActivation {
     /// Every node whose checkedness moved, paired with the value it held.
     previous: Vec<(NodeId, bool)>,
+    pub(crate) notification_target: Option<NodeId>,
 }
 
 /// Escape text for inclusion in an HTML clipboard payload.
@@ -1092,23 +1093,25 @@ impl BaseDocument {
         let node_id = crate::events::pointer::checkable_activation_target(self, target)?;
         let el = self.get_node(node_id)?.data.downcast_element()?;
         let is_radio = el.attr(local_name!("type")) == Some("radio");
+        let was_checked = el.checkbox_input_checked()?;
+        let notification_target = (!is_radio || !was_checked).then_some(node_id);
 
         if !is_radio {
-            let previous = el.checkbox_input_checked()?;
             let el = self.get_node_mut(node_id)?.data.downcast_element_mut()?;
             Self::toggle_checkbox(el);
             return Some(PreClickActivation {
-                previous: vec![(node_id, previous)],
+                previous: vec![(node_id, was_checked)],
+                notification_target,
             });
         }
 
         let radio_set = el.attr(local_name!("name")).map(str::to_string);
         let Some(radio_set) = radio_set else {
-            let previous = el.checkbox_input_checked()?;
             let el = self.get_node_mut(node_id)?.data.downcast_element_mut()?;
             *el.checkbox_input_checked_mut()? = true;
             return Some(PreClickActivation {
-                previous: vec![(node_id, previous)],
+                previous: vec![(node_id, was_checked)],
+                notification_target,
             });
         };
 
@@ -1137,7 +1140,10 @@ impl BaseDocument {
             previous.push((id, *is_checked));
             *is_checked = id == node_id;
         }
-        Some(PreClickActivation { previous })
+        Some(PreClickActivation {
+            previous,
+            notification_target,
+        })
     }
 
     /// Undo [`Self::run_pre_click_activation`]. The click's *canceled
