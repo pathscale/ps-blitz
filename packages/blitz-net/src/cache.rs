@@ -24,7 +24,10 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 use worktable::prelude::*;
@@ -34,6 +37,10 @@ const MAX_METADATA: usize = 48 * 1024;
 const MAX_KEY: usize = 16 * 1024;
 const MAX_FIELDS: usize = 1024;
 const MAX_HEURISTIC: u64 = 24 * 60 * 60;
+const PROFILE_LIMITS: Limits = Limits {
+    bytes: 2 * 1024 * 1024 * 1024,
+    entries: 2048,
+};
 
 type Blob = Vec<u8>;
 
@@ -63,8 +70,48 @@ pub struct PrivateCache {
     table: HttpCacheMetaWorkTable,
     bodies: PathBuf,
     gate: Semaphore,
+    limits: Limits,
+    // The gate serializes table, file and usage mutations. The mutex just
+    // provides interior mutability; its guard is never held across an await.
+    usage: Mutex<Usage>,
     generation: AtomicU64,
     enabled: AtomicBool,
+}
+
+struct Limits {
+    bytes: u128,
+    entries: usize,
+}
+
+#[derive(Default)]
+struct Usage {
+    bytes: u128,
+    oldest: BTreeSet<(u64, String)>,
+}
+
+impl Usage {
+    fn insert(&mut self, order: (u64, String), bytes: u128) {
+        if self.oldest.insert(order) {
+            self.bytes += bytes;
+        }
+    }
+
+    fn remove(&mut self, row: &HttpCacheMetaRow) {
+        if self.oldest.remove(&(row.stored, row.key.clone())) {
+            self.bytes -= entry_bytes(row);
+        }
+    }
+}
+
+fn entry_bytes(row: &HttpCacheMetaRow) -> u128 {
+    // Charge the body and metadata payload, excluding WorkTable page overhead.
+    u128::from(row.body_length)
+        + row.key.len() as u128
+        + row.file.len() as u128
+        + row.headers.len() as u128
+        + row.variant.len() as u128
+        + size_of::<u16>() as u128
+        + 3 * size_of::<u64>() as u128
 }
 
 struct Loaded {
@@ -75,10 +122,16 @@ struct Loaded {
 impl PrivateCache {
     /// Store under `<profile_directory>/http-cache`.
     ///
+    /// Each profile retains up to 2 GiB of body and metadata payloads and
+    /// 2,048 entries. The oldest stored entries are evicted to make room.
     /// The embedder may continue without a cache if opening fails.
     pub async fn open(profile_directory: impl AsRef<Path>) -> io::Result<Arc<Self>> {
+        Self::open_with_limits(profile_directory.as_ref(), PROFILE_LIMITS).await
+    }
+
+    async fn open_with_limits(profile_directory: &Path, limits: Limits) -> io::Result<Arc<Self>> {
         let _ = nagoya::runtime::background();
-        let directory = profile_directory.as_ref().join("http-cache");
+        let directory = profile_directory.join("http-cache");
         let bodies = directory.join("bodies");
         fs::create_dir_all(&bodies)?;
         let path = directory
@@ -98,13 +151,12 @@ impl PrivateCache {
 
         // Interrupted publications can leave immutable files without rows.
         // No requests can use this instance until open returns.
-        let live: BTreeSet<String> = table
-            .select_all()
-            .execute()
-            .map_err(storage_error)?
-            .into_iter()
-            .map(|row| row.file)
-            .collect();
+        let mut live = BTreeSet::new();
+        let mut usage = Usage::default();
+        for row in table.select_all().execute().map_err(storage_error)? {
+            usage.insert((row.stored, row.key.clone()), entry_bytes(&row));
+            live.insert(row.file);
+        }
         for entry in fs::read_dir(&bodies)? {
             let entry = entry?;
             let name = entry.file_name();
@@ -116,13 +168,18 @@ impl PrivateCache {
             }
         }
 
-        Ok(Arc::new(Self {
+        let cache = Self {
             table,
             bodies,
             gate: Semaphore::new(1),
+            limits,
+            usage: Mutex::new(usage),
             generation: AtomicU64::new(0),
             enabled: AtomicBool::new(true),
-        }))
+        };
+        // Apply the quota to profiles created before these limits existed.
+        cache.trim(0, 0).await?;
+        Ok(Arc::new(cache))
     }
 
     /// Remove persisted entries and body files, including interrupted writes.
@@ -142,6 +199,7 @@ impl PrivateCache {
             }
         }
         sync_directory(&self.bodies)?;
+        *self.usage.lock().map_err(storage_error)? = Usage::default();
         self.enabled.store(true, Ordering::Release);
         Ok(())
     }
@@ -272,6 +330,7 @@ impl PrivateCache {
             // Only a complete response reaches this point. Once admitted,
             // invalidation owns the cache gate until persistence finishes.
             let _ = nagoya::spawn(async move {
+                let _permit = cache.gate.acquire().await;
                 if let Err(error) = cache.invalidate(&request, &response).await {
                     cache.disable(error);
                 }
@@ -339,6 +398,7 @@ impl PrivateCache {
         // Dropping the join handle detaches only this completed-response
         // commit. No network operation is detached by cache publication.
         let _ = nagoya::spawn(async move {
+            let _permit = cache.gate.acquire().await;
             if let Err(error) = cache
                 .store(&request, &headers, &response, started, received, generation)
                 .await
@@ -358,7 +418,6 @@ impl PrivateCache {
         received: SystemTime,
         generation: u64,
     ) -> io::Result<()> {
-        let _permit = self.gate.acquire().await;
         if !self.enabled.load(Ordering::Acquire)
             || self.generation.load(Ordering::Acquire) != generation
             || request
@@ -391,9 +450,34 @@ impl PrivateCache {
         let mut stored_headers = response.headers.clone();
         strip_hop_headers(&mut stored_headers);
         stored_headers.remove("set-cookie");
-        let encoded = encode_headers(&stored_headers)?;
-        let file_name = Nanoid::<21, Base64UrlAlphabet>::new().to_string();
-        let path = self.bodies.join(&file_name);
+        let row = HttpCacheMetaRow {
+            key,
+            file: Nanoid::<21, Base64UrlAlphabet>::new().to_string(),
+            status: response.status.as_u16(),
+            headers: encode_headers(&stored_headers)?,
+            variant: variant.expect("cacheability checked the variant"),
+            stored: seconds(received),
+            initial_age: initial_age(&response.headers, started, received),
+            body_length: response.body.len() as u64,
+        };
+        let bytes = entry_bytes(&row);
+        if bytes > self.limits.bytes || self.limits.entries == 0 {
+            return self.evict(&row.key).await;
+        }
+
+        let mut old = self.table.select(row.key.clone());
+        if let Some(previous) = &old {
+            let used = self.usage.lock().map_err(storage_error)?.bytes;
+            if used + bytes > self.limits.bytes {
+                // Prefer retiring the superseded entry over unrelated entries.
+                // Reserve space before writing, even for a replacement body.
+                self.retire(std::slice::from_ref(previous)).await?;
+                old = None;
+            }
+        }
+        self.trim(bytes, old.is_none() as usize).await?;
+
+        let path = self.bodies.join(&row.file);
         let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -414,47 +498,81 @@ impl PrivateCache {
             remove_file(&path)?;
             return Ok(());
         }
-        let old = self.table.select(key.clone());
         // Publication now runs to completion even if its caller is dropped.
         // Keep the gate and both body files until metadata is durable.
-        self.table
-            .upsert(HttpCacheMetaRow {
-                key,
-                file: file_name,
-                status: response.status.as_u16(),
-                headers: encoded,
-                variant: variant.expect("cacheability checked the variant"),
-                stored: seconds(received),
-                initial_age: initial_age(&response.headers, started, received),
-                body_length: response.body.len() as u64,
-            })
-            .await
-            .map_err(storage_error)?;
+        let order = (row.stored, row.key.clone());
+        self.table.upsert(row).await.map_err(storage_error)?;
         self.table.wait_for_ops().await.map_err(storage_error)?;
-        if let Some(old) = old
+        if let Some(old) = &old
             && valid_file_name(&old.file)
         {
-            remove_file(&self.bodies.join(old.file))?;
+            remove_file(&self.bodies.join(&old.file))?;
         }
+        let mut usage = self.usage.lock().map_err(storage_error)?;
+        if let Some(old) = &old {
+            usage.remove(old);
+        }
+        usage.insert(order, bytes);
         Ok(())
+    }
+
+    // Only called before sharing the cache or while holding the gate.
+    async fn trim(&self, added_bytes: u128, added_entries: usize) -> io::Result<()> {
+        let victims = {
+            let usage = self.usage.lock().map_err(storage_error)?;
+            let mut bytes = usage.bytes + added_bytes;
+            let mut entries = usage.oldest.len() + added_entries;
+            let mut victims = Vec::new();
+            for (_, key) in &usage.oldest {
+                if bytes <= self.limits.bytes && entries <= self.limits.entries {
+                    break;
+                }
+                let row = self
+                    .table
+                    .select(key.clone())
+                    .ok_or_else(|| io::Error::other("missing cache entry for quota accounting"))?;
+                bytes -= entry_bytes(&row);
+                entries -= 1;
+                victims.push(row);
+            }
+            victims
+        };
+        self.retire(&victims).await
     }
 
     async fn evict(&self, key: &str) -> io::Result<()> {
         if let Some(row) = self.table.select(key.to_owned()) {
+            self.retire(&[row]).await?;
+        }
+        Ok(())
+    }
+
+    async fn retire(&self, rows: &[HttpCacheMetaRow]) -> io::Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        for row in rows {
             self.table
-                .delete(key.to_owned())
+                .delete(row.key.clone())
                 .await
                 .map_err(storage_error)?;
-            self.table.wait_for_ops().await.map_err(storage_error)?;
+        }
+        // A crash can leave orphan files, but never rows whose bodies were
+        // unlinked before their deletion was durable.
+        self.table.wait_for_ops().await.map_err(storage_error)?;
+        for row in rows {
             if valid_file_name(&row.file) {
-                remove_file(&self.bodies.join(row.file))?;
+                remove_file(&self.bodies.join(&row.file))?;
             }
+        }
+        let mut usage = self.usage.lock().map_err(storage_error)?;
+        for row in rows {
+            usage.remove(row);
         }
         Ok(())
     }
 
     async fn invalidate(&self, request: &FetchRequest, response: &FetchResponse) -> io::Result<()> {
-        let _permit = self.gate.acquire().await;
         if request
             .signal
             .as_ref()
@@ -930,4 +1048,180 @@ fn sync_directory(path: &Path) -> io::Result<()> {
 
 fn storage_error(error: impl std::fmt::Display) -> io::Error {
     io::Error::other(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use blitz_traits::resource_policy::ResourcePolicy;
+    use std::{
+        io::{BufRead, BufReader},
+        net::TcpListener,
+        thread,
+        time::Duration,
+    };
+
+    struct TestProfile(PathBuf);
+
+    impl Drop for TestProfile {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    async fn fetch(
+        client: &H1Client,
+        origin: &Url,
+        path: &str,
+        cache_control: Option<&'static str>,
+    ) -> Option<usize> {
+        let url = origin.join(path).unwrap();
+        let mut request = FetchRequest::get(url.clone())
+            .initiator(Arc::new(ResourcePolicy::default()).browser(url));
+        if let Some(value) = cache_control {
+            request
+                .headers
+                .insert("cache-control", HeaderValue::from_static(value));
+        }
+        let response = client.fetch(request).await.unwrap();
+        match response.status {
+            StatusCode::OK => Some(response.body.len()),
+            StatusCode::GATEWAY_TIMEOUT => None,
+            status => panic!("unexpected HTTP status for {path}: {status}"),
+        }
+    }
+
+    #[test]
+    fn profile_quota_evicts_over_http_and_on_reopen() {
+        let scratch = std::env::var_os("BLITZ_CACHE_TEST_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                std::env::current_exe()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .to_owned()
+            });
+        let profile = scratch.join(format!(
+            "blitz-cache-test-{}",
+            Nanoid::<21, Base64UrlAlphabet>::new()
+        ));
+        fs::create_dir(&profile).unwrap();
+        let profile = TestProfile(profile);
+        let file_count = || {
+            fs::read_dir(profile.0.join("http-cache/bodies"))
+                .unwrap()
+                .count()
+        };
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let origin = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let server = thread::spawn(move || {
+            for (path, length) in [
+                ("a", 0),
+                ("b", 0),
+                ("c", 0),
+                ("d", 0),
+                ("d", 4096),
+                ("e", 4096),
+                ("f", 8192),
+                ("g", 0),
+                ("h", 7168),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                {
+                    let mut reader = BufReader::new(&mut stream);
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    assert_eq!(line, format!("GET /{path} HTTP/1.1\r\n"));
+                    loop {
+                        line.clear();
+                        assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+                        if line == "\r\n" {
+                            break;
+                        }
+                    }
+                }
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nCache-Control: max-age=600\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n"
+                )
+                .unwrap();
+                stream.write_all(&vec![b'x'; length]).unwrap();
+            }
+        });
+
+        nagoya::block_on(async {
+            let cache_only = Some("only-if-cached");
+            let cache = PrivateCache::open_with_limits(
+                &profile.0,
+                Limits {
+                    bytes: 10 * 1024,
+                    entries: 3,
+                },
+            )
+            .await
+            .unwrap();
+            let client = H1Client::new("quota-test", None)
+                .unwrap()
+                .with_cache(Arc::clone(&cache));
+
+            // Empty bodies exhaust entries well before bytes.
+            for path in ["a", "b", "c", "d"] {
+                assert_eq!(fetch(&client, &origin, path, None).await, Some(0));
+            }
+            assert_eq!(fetch(&client, &origin, "a", cache_only).await, None);
+            assert_eq!(file_count(), 3);
+
+            // Replacing a key at the entry limit keeps the other two entries.
+            assert_eq!(
+                fetch(&client, &origin, "d", Some("no-cache")).await,
+                Some(4096)
+            );
+            for (path, length) in [("b", 0), ("c", 0), ("d", 4096)] {
+                assert_eq!(
+                    fetch(&client, &origin, path, cache_only).await,
+                    Some(length)
+                );
+            }
+            assert_eq!(file_count(), 3);
+
+            cache.clear().await.unwrap();
+            assert_eq!(file_count(), 0);
+            // Two entries would fit by count, but their bodies do not fit.
+            assert_eq!(fetch(&client, &origin, "e", None).await, Some(4096));
+            assert_eq!(fetch(&client, &origin, "f", None).await, Some(8192));
+            assert_eq!(fetch(&client, &origin, "e", cache_only).await, None);
+            assert_eq!(fetch(&client, &origin, "f", cache_only).await, Some(8192));
+            assert_eq!(file_count(), 1);
+            assert_eq!(fetch(&client, &origin, "g", None).await, Some(0));
+            assert_eq!(file_count(), 2);
+            drop(client);
+            cache.close().await.unwrap();
+
+            let cache = PrivateCache::open_with_limits(
+                &profile.0,
+                Limits {
+                    bytes: 6 * 1024,
+                    entries: 3,
+                },
+            )
+            .await
+            .unwrap();
+            let client = H1Client::new("quota-test", None)
+                .unwrap()
+                .with_cache(Arc::clone(&cache));
+            assert_eq!(fetch(&client, &origin, "f", cache_only).await, None);
+            // A body larger than the budget is still delivered from the network.
+            assert_eq!(fetch(&client, &origin, "h", None).await, Some(7168));
+            assert_eq!(fetch(&client, &origin, "h", cache_only).await, None);
+            assert_eq!(fetch(&client, &origin, "g", cache_only).await, Some(0));
+            assert_eq!(file_count(), 1);
+            drop(client);
+            cache.close().await.unwrap();
+        });
+        server.join().unwrap();
+    }
 }
