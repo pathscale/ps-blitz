@@ -99,6 +99,8 @@ pub struct H1Client {
     h2: Arc<http2::H2Pool>,
     restricted_pool: Arc<Pool>,
     restricted_h2: Arc<http2::H2Pool>,
+    public_https_pool: Arc<Pool>,
+    public_https_h2: Arc<http2::H2Pool>,
     reactor: &'static Reactor,
     tls_config: Arc<nago_rustls::rustls::ClientConfig>,
 
@@ -134,6 +136,8 @@ impl H1Client {
             h2: shared_h2_pool(),
             restricted_pool: Arc::new(Pool::default()),
             restricted_h2: Arc::new(http2::H2Pool::default()),
+            public_https_pool: Arc::new(Pool::default()),
+            public_https_h2: Arc::new(http2::H2Pool::default()),
             reactor: process_reactor()?,
             tls_config: tls::default_config()?,
             user_agent,
@@ -165,7 +169,11 @@ impl H1Client {
             .check_url(&request.url)
             .map_err(Error::Blocked)?;
         let mut scoped = self.clone();
-        if request.initiator.restrict_network() {
+        if request.initiator.public_https_only() {
+            // Reuse only sockets opened under the same address restrictions.
+            scoped.pool = Arc::clone(&self.public_https_pool);
+            scoped.h2 = Arc::clone(&self.public_https_h2);
+        } else if request.initiator.restrict_network() {
             // A browser socket to a private peer must never enter this pool.
             scoped.pool = Arc::clone(&self.restricted_pool);
             scoped.h2 = Arc::clone(&self.restricted_h2);

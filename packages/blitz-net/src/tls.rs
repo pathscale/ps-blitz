@@ -191,7 +191,20 @@ pub(super) async fn resolve_addresses(
     .await
     .ok_or_else(|| Error::Dns("resolver task was cancelled".to_owned()))??;
 
-    for address in &addresses {
+    // Return the checked candidates to the transport, which dials these
+    // socket addresses directly without resolving the hostname again.
+    validate_resolved_addresses(&addresses, initiator)?;
+    Ok(addresses)
+}
+
+fn validate_resolved_addresses(
+    addresses: &[nagoya::reactor::socket::Addr],
+    initiator: &blitz_traits::net::Initiator,
+) -> Result<(), Error> {
+    if addresses.is_empty() {
+        return Err(Error::Dns("resolver returned no addresses".into()));
+    }
+    for address in addresses {
         use nagoya::reactor::socket::Addr;
         let ip = match address {
             Addr::V4(bytes, _) => std::net::IpAddr::from(*bytes),
@@ -200,7 +213,7 @@ pub(super) async fn resolve_addresses(
         };
         initiator.check_address(ip).map_err(Error::Blocked)?;
     }
-    Ok(addresses)
+    Ok(())
 }
 
 async fn connect(
@@ -339,6 +352,49 @@ impl Transport {
                 .write_all(bytes)
                 .await
                 .map_err(|error| Error::Write(error.to_string())),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use blitz_traits::net::{Initiator, ResourcePolicy, Url};
+    use nagoya::reactor::socket::Addr;
+    use std::net::IpAddr;
+
+    #[test]
+    fn public_https_dial_requires_every_candidate_to_be_public() {
+        let resources = Arc::new(ResourcePolicy::default());
+        let url = Url::parse("https://supplier.example/").unwrap();
+        let scope = resources.public_https_document(url, &Initiator::Unknown, &[]);
+        let address = |value: &str| match value.parse::<IpAddr>().unwrap() {
+            IpAddr::V4(ip) => Addr::V4(ip.octets(), 443),
+            IpAddr::V6(ip) => Addr::V6(ip.octets(), 443),
+        };
+        let public = address("8.8.8.8");
+        assert!(validate_resolved_addresses(&[], &scope).is_err());
+        assert!(validate_resolved_addresses(&[public, address("2606:4700::1")], &scope).is_ok());
+        for denied in [
+            "10.0.0.1",
+            "100.64.0.1",
+            "169.254.169.254",
+            "192.0.2.1",
+            "::ffff:127.0.0.1",
+            "::ffff:192.0.2.1",
+            "fd00::1",
+            "2001:db8::1",
+            "2002:0808:0808::1",
+            "64:ff9b::808:808",
+            "3fff::1",
+        ] {
+            assert!(
+                matches!(
+                    validate_resolved_addresses(&[public, address(denied)], &scope),
+                    Err(Error::Blocked(_))
+                ),
+                "accepted {denied}"
+            );
         }
     }
 }

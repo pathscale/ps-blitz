@@ -104,6 +104,7 @@ impl FetchRequest {
 
     /// Check a resolved redirect destination before sending the next request.
     pub fn check_redirect(&self, destination: &Url) -> Result<(), String> {
+        self.initiator.check_redirect_destination(destination)?;
         if let Some(origin) = &self.redirect_origin
             && !origin.matches_http_url(destination)
         {
