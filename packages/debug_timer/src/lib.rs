@@ -1,3 +1,5 @@
+#![cfg_attr(not(feature = "enable"), no_std)]
+
 #[cfg(feature = "enable")]
 mod real_debug_timer {
     use std::fmt::Write as _;
