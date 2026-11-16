@@ -124,8 +124,7 @@ jobs:
     # long enough that two downstream repositories each worked around it by hand
     # rather than anyone noticing it here.
     #
-    # `cargo deny`, the same tool and action ps-taffy and pays.online-backend
-    # already use, rather than a shell loop over `cargo tree` output. The policy
+    # `cargo deny` rather than a shell loop over `cargo tree` output. The policy
     # is declarative in deny.toml, cargo-deny resolves the graph properly per
     # target, and there is no hand-kept crate list to fall out of date.
     #
