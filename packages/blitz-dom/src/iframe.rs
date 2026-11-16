@@ -17,7 +17,7 @@ use crate::{BaseDocument, DocumentConfig, local_name};
 /// self-embedding pages).
 pub(crate) const MAX_SUBDOCUMENT_DEPTH: usize = 10;
 pub(crate) const MAX_IFRAMES_PER_DOCUMENT: usize = 64;
-const MAX_LIVE_IFRAMES: usize = 64;
+const MAX_LIVE_IFRAMES: usize = MAX_IFRAMES_PER_DOCUMENT * 8;
 
 static RESERVED_IFRAMES: AtomicUsize = AtomicUsize::new(0);
 
@@ -89,9 +89,19 @@ impl BaseDocument {
         let net_provider = if inherit_origin {
             Arc::clone(&self.net_provider)
         } else {
-            let base_url = base_url.as_ref()?;
-            let url = Url::parse(base_url).ok()?;
-            self.net_provider.for_child_document(url)?
+            let child = base_url
+                .as_deref()
+                .and_then(|base_url| Url::parse(base_url).ok())
+                .and_then(|url| self.net_provider.for_child_document(url));
+            match child {
+                Some(provider) => provider,
+                // A provider that holds no principal has nothing to scope, so
+                // the child shares it. One that holds a principal fails closed.
+                None if self.net_provider.resource_initiator().scope().is_none() => {
+                    Arc::clone(&self.net_provider)
+                }
+                None => return None,
+            }
         };
         let (font_ctx, defer_system_fonts) = self.font_ctx.cloned_config();
         Some(DocumentConfig {

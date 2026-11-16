@@ -1,4 +1,5 @@
 use std::char;
+use std::collections::HashSet;
 
 const MAX_SOURCE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_TOKENS: usize = 1_000_000;
@@ -731,6 +732,9 @@ struct Parser<'a> {
     nesting: usize,
     function_depth: usize,
     allow_in: bool,
+    /// Token offsets of `(` already rejected as arrow parameters, so nested
+    /// defaults cannot make the speculative parse repeat exponentially.
+    rejected_arrow_params: HashSet<usize>,
 }
 
 impl<'a> Parser<'a> {
@@ -742,6 +746,7 @@ impl<'a> Parser<'a> {
             nesting: 0,
             function_depth: 0,
             allow_in: true,
+            rejected_arrow_params: HashSet::new(),
         })
     }
 
@@ -1255,12 +1260,14 @@ impl<'a> Parser<'a> {
             if self.eat_punct("=>") {
                 return Ok(Some((vec![Pattern::Ident(name)], is_async)));
             }
-        } else if self.is_punct("(") {
+        } else if self.is_punct("(") && !self.rejected_arrow_params.contains(&self.pos) {
+            let open = self.pos;
             if let Ok(params) = self.parameters() {
                 if self.eat_punct("=>") {
                     return Ok(Some((params, is_async)));
                 }
             }
+            self.rejected_arrow_params.insert(open);
         }
         self.pos = save;
         self.nesting = saved_nesting;
