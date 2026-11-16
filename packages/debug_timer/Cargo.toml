@@ -15,7 +15,7 @@ description = "Utilities for simple timings"
 #     error[E0599]: no associated function named `init_if` found for `RealDebugTimer`
 #
 # AgencyZero carried the feature disabled for a day because of it.
-version = "0.1.4"
+version = "0.1.5"
 # The fork's own URLs. These pointed at dioxuslabs/blitz, so the crates.io page
 # for a pathscale crate sent readers to upstream, which does not carry these
 # changes and cannot answer a question about them.
